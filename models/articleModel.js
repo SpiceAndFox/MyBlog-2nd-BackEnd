@@ -6,7 +6,7 @@ const articleModel = {
   async findPublished({ filters = {}, page = 1, limit = 10 }) {
     let query = `
       SELECT
-        a.id, a.title, a.thumbnail_url, a.published_at, a.summary,
+        a.id, a.title, a.thumbnail_url, COALESCE(a.published_at, a.created_at) AS published_at, a.summary,
         jsonb_agg(DISTINCT jsonb_build_object('id', t.id, 'name', t.name, 'parent_id', t.parent_id))
           FILTER (WHERE t.id IS NOT NULL) as tags -- 使用 DISTINCT 和 FILTER 避免标签重复
       FROM articles a
@@ -61,12 +61,12 @@ const articleModel = {
       paramIndex++;
     }
     if (filters.year) {
-      whereClauses.push(`EXTRACT(YEAR FROM a.published_at) = $${paramIndex}`);
+      whereClauses.push(`EXTRACT(YEAR FROM COALESCE(a.published_at, a.created_at)) = $${paramIndex}`);
       params.push(filters.year);
       paramIndex++;
     }
     if (filters.month) {
-      whereClauses.push(`EXTRACT(MONTH FROM a.published_at) = $${paramIndex}`);
+      whereClauses.push(`EXTRACT(MONTH FROM COALESCE(a.published_at, a.created_at)) = $${paramIndex}`);
       params.push(filters.month);
       paramIndex++;
     }
@@ -79,7 +79,7 @@ const articleModel = {
       query += " WHERE " + whereClauses.join(" AND ");
     }
 
-    query += " GROUP BY a.id ORDER BY a.published_at DESC";
+    query += " GROUP BY a.id ORDER BY COALESCE(a.published_at, a.created_at) DESC";
 
     // --- 首先，计算总数 ---
     const countQuery = `SELECT count(*) FROM (${query}) AS count_subquery`;
@@ -101,7 +101,8 @@ const articleModel = {
   async findPublishedById(id) {
     const query = `
       SELECT
-        a.id, a.title, a.content, a.header_image_url, a.published_at,
+        a.id, a.title, a.content, a.header_image_url, COALESCE(a.published_at, a.created_at) AS published_at,
+        a.created_at,
         u.username as author, -- 关联 users 表获取作者名
         jsonb_agg(DISTINCT jsonb_build_object('id', t.id, 'name', t.name, 'parent_id', t.parent_id))
           FILTER (WHERE t.id IS NOT NULL) as tags
@@ -168,7 +169,7 @@ const articleModel = {
   async findByIdAdmin(id) {
     const query = `
       SELECT
-        a.id, a.title, a.content, a.thumbnail_url, a.header_image_url, a.status,
+        a.id, a.title, a.content, a.thumbnail_url, a.header_image_url, a.status, a.published_at, a.created_at,
         -- 我们需要原始的标签ID数组，方便前端在编辑页中选中
         (SELECT jsonb_agg(at.tag_id) FROM article_tags at WHERE at.article_id = a.id) as tag_ids
       FROM articles a

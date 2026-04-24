@@ -419,6 +419,13 @@ const articleController = {
         .filter((filename) => filename && !nextRefs.contentFilenames.has(filename))
         .map((filename) => `/uploads/articles/content/${filename}`);
 
+      const publishedAt =
+        status === "published"
+          ? existingArticle.status !== "published"
+            ? new Date()
+            : existingArticle.published_at || existingArticle.created_at || new Date()
+          : existingArticle.published_at;
+
       const articleData = {
         title,
         content: normalizedContent,
@@ -426,8 +433,7 @@ const articleController = {
         thumbnail_url,
         header_image_url,
         status,
-        published_at:
-          status === "published" && existingArticle.status !== "published" ? new Date() : existingArticle.published_at,
+        published_at: publishedAt,
         tag_ids: tagIdsArray,
       };
 
