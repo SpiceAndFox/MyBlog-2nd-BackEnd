@@ -13,10 +13,9 @@ const storage = multer.diskStorage({
     cb(null, path.join(uploadsRoot, "raw"));
   },
   filename(req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext);
+    const ext = path.extname(file.originalname).toLowerCase();
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${base}-${uniqueSuffix}${ext}`);
+    cb(null, `cover-${uniqueSuffix}${ext}`);
   },
 });
 

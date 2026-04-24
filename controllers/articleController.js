@@ -160,7 +160,7 @@ const processHeaderAndThumbnail = async (file) => {
   }
 };
 
-// 将正文里的临时图片移动到正式目录，并替换正文链接
+// Move temporary content images into the public content directory and rewrite their URLs.
 const promoteTempContentImages = (html = "", rawKeys = []) => {
   const uniqueKeys = Array.from(
     new Set((Array.isArray(rawKeys) ? rawKeys : []).filter(Boolean).map((k) => path.basename(k)))
@@ -217,8 +217,8 @@ const articleController = {
       const { topTag, subTag, year, month, search, page, limit } = req.query;
 
       const filters = {};
-      if (subTag) filters.tag = subTag;
-      else if (topTag) filters.tag = topTag;
+      if (topTag) filters.topTag = topTag;
+      if (subTag) filters.subTag = subTag;
       if (year) filters.year = parseInt(year, 10);
       if (month) filters.month = parseInt(month, 10);
       if (search) filters.search = search.trim();
@@ -293,6 +293,7 @@ const articleController = {
         isTemp: true,
       });
     } catch (error) {
+      if (req.file?.path) fs.unlink(req.file.path, () => {});
       logger.error("article_upload_content_image_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "图片上传失败" });
     }

@@ -8,10 +8,9 @@ fs.mkdirSync(rawDir, { recursive: true });
 const storage = multer.diskStorage({
   destination: rawDir,
   filename(req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext);
+    const ext = path.extname(file.originalname).toLowerCase();
     const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${base}-${unique}${ext}`);
+    cb(null, `content-${unique}${ext}`);
   },
 });
 

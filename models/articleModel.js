@@ -19,11 +19,45 @@ const articleModel = {
     const params = ["published"];
     let paramIndex = 2;
 
-    if (filters.tag) {
+    if (filters.subTag && filters.topTag) {
       whereClauses.push(
-        `a.id IN (SELECT article_id FROM article_tags INNER JOIN tags ON tags.id = article_tags.tag_id WHERE tags.name = $${paramIndex})`
+        `EXISTS (
+          SELECT 1
+          FROM article_tags filter_at
+          INNER JOIN tags child_tags ON child_tags.id = filter_at.tag_id
+          INNER JOIN tags parent_tags ON parent_tags.id = child_tags.parent_id
+          WHERE filter_at.article_id = a.id
+            AND child_tags.name = $${paramIndex}
+            AND parent_tags.name = $${paramIndex + 1}
+        )`
       );
-      params.push(filters.tag);
+      params.push(filters.subTag, filters.topTag);
+      paramIndex += 2;
+    } else if (filters.subTag) {
+      whereClauses.push(
+        `EXISTS (
+          SELECT 1
+          FROM article_tags filter_at
+          INNER JOIN tags child_tags ON child_tags.id = filter_at.tag_id
+          WHERE filter_at.article_id = a.id
+            AND child_tags.name = $${paramIndex}
+            AND child_tags.parent_id IS NOT NULL
+        )`
+      );
+      params.push(filters.subTag);
+      paramIndex++;
+    } else if (filters.topTag) {
+      whereClauses.push(
+        `EXISTS (
+          SELECT 1
+          FROM article_tags filter_at
+          INNER JOIN tags top_tags ON top_tags.id = filter_at.tag_id
+          WHERE filter_at.article_id = a.id
+            AND top_tags.name = $${paramIndex}
+            AND top_tags.parent_id IS NULL
+        )`
+      );
+      params.push(filters.topTag);
       paramIndex++;
     }
     if (filters.year) {
@@ -280,6 +314,32 @@ const articleModel = {
     // a.rowCount 是 pg 库返回的受影响行数
     const { rowCount } = await db.query(query, [id]);
     return rowCount;
+  },
+
+  async updateThumbnailUrl(id, thumbnailUrl) {
+    const query = `
+      UPDATE articles
+      SET thumbnail_url = $1
+      WHERE id = $2 AND (thumbnail_url IS NULL OR thumbnail_url = '')
+      RETURNING thumbnail_url;
+    `;
+    const { rows } = await db.query(query, [thumbnailUrl, id]);
+    return rows[0] || null;
+  },
+
+  async findArticlesMissingThumbnails({ limit = 100 } = {}) {
+    const normalizedLimit = Math.max(1, Math.min(1000, Number.parseInt(String(limit), 10) || 100));
+    const query = `
+      SELECT id, header_image_url
+      FROM articles
+      WHERE header_image_url IS NOT NULL
+        AND header_image_url <> ''
+        AND (thumbnail_url IS NULL OR thumbnail_url = '')
+      ORDER BY id
+      LIMIT $1;
+    `;
+    const { rows } = await db.query(query, [normalizedLimit]);
+    return rows;
   },
 
   // Check whether an uploaded URL is still referenced by any article (header/thumbnail/content).

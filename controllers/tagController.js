@@ -58,7 +58,7 @@ const tagController = {
       // 捕获数据库的唯一性约束错误
       if (error.code === "23505") {
         // '23505' 是 PostgreSQL 中 unique_violation 的错误码
-        return res.status(409).json({ error: "该标签名称已存在" });
+        return res.status(409).json({ error: "同一分类下已存在同名标签" });
       }
       logger.error("tag_create_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "创建标签失败" });
@@ -80,7 +80,7 @@ const tagController = {
       res.status(200).json(updatedTag);
     } catch (error) {
       if (error.code === "23505") {
-        return res.status(409).json({ error: "该标签名称已存在" });
+        return res.status(409).json({ error: "同一分类下已存在同名标签" });
       }
       logger.error("tag_update_failed", withRequestContext(req, { error, tagId: req.params.id }));
       res.status(500).json({ error: "更新标签失败" });
