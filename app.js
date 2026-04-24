@@ -16,6 +16,7 @@ const errorHandler = require("./middleware/errorHandler");
 // 导入所有路由
 const tagsRouter = require("./routes/tags");
 const articlesRouter = require("./routes/articles");
+const diariesRouter = require("./routes/diaries");
 const adminArticlesRouter = require("./routes/admin/articles");
 const authRouter = require("./routes/auth");
 const adminTagsRouter = require("./routes/admin/tags");
@@ -45,6 +46,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api/tags", tagsRouter);
 app.use("/api/admin/tags", adminTagsRouter);
 app.use("/api/articles", articlesRouter);
+app.use("/api/diaries", diariesRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/chat", chatRouter);
 
