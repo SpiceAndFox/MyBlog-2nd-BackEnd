@@ -1,3 +1,23 @@
+const thinkingModeOptions = [
+  { value: "disabled", label: "Disabled" },
+  { value: "enabled", label: "Enabled" },
+];
+
+const reasoningEffortOptions = [
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+];
+
+function normalizeThinkingMode(settings) {
+  const raw = String(settings?.thinkingMode || "").trim().toLowerCase();
+  return raw === "enabled" ? "enabled" : "disabled";
+}
+
+function normalizeReasoningEffort(settings) {
+  const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
+  return raw === "max" ? "max" : "high";
+}
+
 module.exports = {
   id: "deepseek",
   name: "DeepSeek",
@@ -5,9 +25,30 @@ module.exports = {
   apiKeyEnv: ["DEEPSEEK_API_KEY"],
   baseUrlEnv: ["DEEPSEEK_BASE_URL"],
   openaiCompatible: {
-    bodyExtensions: {},
+    bodyExtensions: ({ settings } = {}) => {
+      const thinkingMode = normalizeThinkingMode(settings);
+      const body = { thinking: { type: thinkingMode } };
+      if (thinkingMode === "enabled") body.reasoning_effort = normalizeReasoningEffort(settings);
+      return body;
+    },
   },
   settingsSchema: [
+    {
+      key: "thinkingMode",
+      label: "Thinking Mode",
+      type: "select",
+      options: thinkingModeOptions,
+      default: "disabled",
+      capability: "thinking",
+    },
+    {
+      key: "reasoningEffort",
+      label: "Reasoning Effort",
+      type: "select",
+      options: reasoningEffortOptions,
+      default: "high",
+      capability: "thinking",
+    },
     {
       key: "temperature",
       label: "Temperature",
@@ -17,7 +58,6 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "temperature",
-      modelBlocklist: ["deepseek-reasoner"],
     },
     {
       key: "topP",
@@ -28,15 +68,14 @@ module.exports = {
       step: 0.05,
       decimals: 2,
       capability: "topP",
-      modelBlocklist: ["deepseek-reasoner"],
     },
     {
       key: "maxOutputTokens",
       label: "Max Tokens",
       type: "number",
       min: 128,
-      max: 24000,
-      step: 64,
+      max: 384000,
+      step: 1024,
       capability: "maxTokens",
     },
     {
@@ -48,7 +87,6 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "presencePenalty",
-      modelBlocklist: ["deepseek-reasoner"],
     },
     {
       key: "frequencyPenalty",
@@ -59,7 +97,6 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "frequencyPenalty",
-      modelBlocklist: ["deepseek-reasoner"],
     },
     {
       key: "stream",
@@ -69,16 +106,14 @@ module.exports = {
     },
   ],
   models: [
-    { id: "deepseek-chat", name: "deepseek-chat" },
-    { id: "deepseek-reasoner", name: "deepseek-reasoner" },
+    { id: "deepseek-v4-flash", name: "deepseek-v4-flash" },
+    { id: "deepseek-v4-pro", name: "deepseek-v4-pro" },
   ],
   parameterPolicy: {
     blockedBodyParams: [],
-    isBodyParamAllowed: ({ model, paramName }) => {
-      const normalizedModel = String(model || "").trim();
-      if (normalizedModel !== "deepseek-reasoner") return true;
+    isBodyParamAllowed: ({ paramName, settings }) => {
+      if (normalizeThinkingMode(settings) !== "enabled") return true;
 
-      // deepseek-reasoner: 文档说明以下参数不会生效或会报错；为避免冗余与潜在错误，这里直接不发送。
       if (["temperature", "top_p", "presence_penalty", "frequency_penalty"].includes(paramName)) return false;
       if (["logprobs", "top_logprobs"].includes(paramName)) return false;
       return true;

@@ -537,8 +537,18 @@ const chatMemoryConfig = (() => {
       }),
       stream: readRequiredBoolEnv("CHAT_MEMORY_WORKER_STREAM"),
       enableWebSearch: readRequiredBoolEnv("CHAT_MEMORY_WORKER_ENABLE_WEB_SEARCH"),
-      thinkingLevel: readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
-      thinkingBudget: readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
+      thinkingMode:
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_DEEPSEEK_THINKING_MODE") ||
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_MODE"),
+      reasoningEffort:
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_DEEPSEEK_REASONING_EFFORT") ||
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_REASONING_EFFORT"),
+      thinkingLevel:
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_GEMINI_THINKING_LEVEL") ||
+        readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
+      thinkingBudget:
+        readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_GEMINI_THINKING_BUDGET") ??
+        readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
       safetyHarassment: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HARASSMENT"),
       safetyHateSpeech: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HATE_SPEECH"),
       safetySexuallyExplicit: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
@@ -715,8 +725,18 @@ const chatGistConfig = (() => {
     }),
     stream: readRequiredBoolEnv("CHAT_GIST_WORKER_STREAM"),
     enableWebSearch: readRequiredBoolEnv("CHAT_GIST_WORKER_ENABLE_WEB_SEARCH"),
-    thinkingLevel: readOptionalStringEnv("CHAT_GIST_WORKER_THINKING_LEVEL"),
-    thinkingBudget: readOptionalIntEnvStrict("CHAT_GIST_WORKER_THINKING_BUDGET"),
+    thinkingMode:
+      readOptionalStringEnv("CHAT_GIST_WORKER_DEEPSEEK_THINKING_MODE") ||
+      readOptionalStringEnv("CHAT_GIST_WORKER_THINKING_MODE"),
+    reasoningEffort:
+      readOptionalStringEnv("CHAT_GIST_WORKER_DEEPSEEK_REASONING_EFFORT") ||
+      readOptionalStringEnv("CHAT_GIST_WORKER_REASONING_EFFORT"),
+    thinkingLevel:
+      readOptionalStringEnv("CHAT_GIST_WORKER_GEMINI_THINKING_LEVEL") ||
+      readOptionalStringEnv("CHAT_GIST_WORKER_THINKING_LEVEL"),
+    thinkingBudget:
+      readOptionalIntEnvStrict("CHAT_GIST_WORKER_GEMINI_THINKING_BUDGET") ??
+      readOptionalIntEnvStrict("CHAT_GIST_WORKER_THINKING_BUDGET"),
     safetyHarassment: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_HARASSMENT"),
     safetyHateSpeech: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_HATE_SPEECH"),
     safetySexuallyExplicit: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
