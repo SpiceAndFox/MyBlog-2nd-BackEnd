@@ -5,6 +5,15 @@ const { buildContextSegments } = require("./context/segmentRegistry");
 const { buildTimeContextState } = require("./context/buildTimeContextState");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
 const { scheduleAssistantGistBackfill } = require("./memory/gistPipeline");
+const { retrieveChatRagContext } = require("./rag/retriever");
+
+function readCurrentUserContent({ recent } = {}) {
+  const messages = Array.isArray(recent?.messages) ? recent.messages : [];
+  if (!messages.length) return "";
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return "";
+  return normalizeText(last.content).trim();
+}
 
 async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
   const normalizedUserId = userId;
@@ -68,6 +77,12 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
   const timeContext = buildTimeContextState({ recentCandidates });
+  const ragContext = await retrieveChatRagContext({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    query: readCurrentUserContent({ recent }),
+    beforeMessageId: summarizedUntilMessageId,
+  });
 
   const compiled = buildContextSegments({
     systemPrompt: normalizedSystemPrompt,
@@ -76,6 +91,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     coreMemoryChars,
     rollingSummaryEnabled,
     memory,
+    ragContext,
     gapBridge,
     recent,
     timeContext,
@@ -88,6 +104,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
       systemPromptChars: normalizedSystemPrompt.length,
       coreMemoryChars: coreMemoryEnabled ? coreMemoryChars : 0,
       rollingSummaryChars: rollingSummaryEnabled ? String(memory.rollingSummary || "").length : 0,
+      rag: ragContext?.stats || null,
       gapBridge: gapBridge ? gapBridge.stats : null,
       recentWindow: {
         ...recent.stats,
@@ -101,6 +118,13 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
           summarizedUntilMessageId: memory.summarizedUntilMessageId,
           dirtySinceMessageId: memory.dirtySinceMessageId,
           rebuildRequired: memory.rebuildRequired,
+        }
+      : null,
+    rag: ragContext
+      ? {
+          enabled: Boolean(ragContext.enabled),
+          sources: Array.isArray(ragContext.sources) ? ragContext.sources : [],
+          stats: ragContext.stats || null,
         }
       : null,
   };

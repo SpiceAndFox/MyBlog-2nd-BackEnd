@@ -80,6 +80,7 @@ function assertContextState(contextState) {
   }
 
   assertOptionalMessageContainer(contextState.gapBridge, { name: "contextState.gapBridge" });
+  assertOptionalMessageContainer(contextState.ragContext, { name: "contextState.ragContext" });
 
   if (!isPlainObject(contextState.recent)) {
     throw new Error("Invalid contextState.recent: expected object");

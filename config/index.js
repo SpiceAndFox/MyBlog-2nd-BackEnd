@@ -763,6 +763,251 @@ const chatGistConfig = (() => {
   };
 })();
 
+const chatRagConfig = (() => {
+  const enabled = readRequiredBoolEnv("CHAT_RAG_ENABLED");
+  if (!enabled) return { enabled };
+
+  const embeddingProvider = readRequiredStringEnv("CHAT_RAG_EMBEDDING_PROVIDER");
+  if (embeddingProvider !== "openai-compatible") {
+    throw new Error(`Env CHAT_RAG_EMBEDDING_PROVIDER has unsupported provider: ${embeddingProvider}`);
+  }
+
+  const embeddingBaseUrl = readRequiredStringEnv("CHAT_RAG_EMBEDDING_BASE_URL");
+  const embeddingApiKey =
+    readOptionalStringEnv("CHAT_RAG_EMBEDDING_API_KEY") ||
+    (embeddingBaseUrl.includes("openrouter.ai") ? readRequiredStringEnv("OPENROUTER_API_KEY") : "");
+  if (!embeddingApiKey) throw new Error("Missing required env: CHAT_RAG_EMBEDDING_API_KEY");
+  const embeddingModel = readRequiredStringEnv("CHAT_RAG_EMBEDDING_MODEL");
+  const embeddingDimensions = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_EMBEDDING_DIMENSIONS"), {
+    name: "CHAT_RAG_EMBEDDING_DIMENSIONS",
+  });
+  const embeddingIncludeDimensionsParam = readRequiredBoolEnv("CHAT_RAG_EMBEDDING_INCLUDE_DIMENSIONS_PARAM");
+  const embeddingTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_EMBEDDING_TIMEOUT_MS"), {
+    name: "CHAT_RAG_EMBEDDING_TIMEOUT_MS",
+  });
+  const embeddingBatchSize = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_EMBEDDING_BATCH_SIZE"), {
+    name: "CHAT_RAG_EMBEDDING_BATCH_SIZE",
+  });
+  const embeddingRawBody = readRequiredJsonObjectEnv("CHAT_RAG_EMBEDDING_OPENAI_COMPATIBLE_BODY_JSON");
+  const queryEmbeddingTemplate = readRequiredStringEnv("CHAT_RAG_QUERY_EMBEDDING_TEMPLATE");
+  const documentEmbeddingTemplate = readRequiredStringEnv("CHAT_RAG_DOCUMENT_EMBEDDING_TEMPLATE");
+
+  const topK = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_TOP_K"), { name: "CHAT_RAG_TOP_K" });
+  const minSimilarity = ensureNumberInRange(readRequiredFloatEnv("CHAT_RAG_MIN_SIMILARITY"), {
+    min: 0,
+    max: 1,
+    name: "CHAT_RAG_MIN_SIMILARITY",
+  });
+  const minQueryChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_MIN_QUERY_CHARS"), {
+    name: "CHAT_RAG_MIN_QUERY_CHARS",
+  });
+  const maxContextChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_MAX_CONTEXT_CHARS"), {
+    name: "CHAT_RAG_MAX_CONTEXT_CHARS",
+  });
+  const chunkMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_CHUNK_MAX_CHARS"), {
+    name: "CHAT_RAG_CHUNK_MAX_CHARS",
+  });
+  const chunkOverlapChars = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_CHUNK_OVERLAP_CHARS"), {
+    name: "CHAT_RAG_CHUNK_OVERLAP_CHARS",
+  });
+  if (chunkOverlapChars >= chunkMaxChars) {
+    throw new Error("CHAT_RAG_CHUNK_OVERLAP_CHARS must be less than CHAT_RAG_CHUNK_MAX_CHARS");
+  }
+
+  const turnTemplate = readRequiredStringEnv("CHAT_RAG_TURN_TEMPLATE");
+  const contextHeader = readRequiredStringEnv("CHAT_RAG_CONTEXT_HEADER");
+  const contextEntryTemplate = readRequiredStringEnv("CHAT_RAG_CONTEXT_ENTRY_TEMPLATE");
+  const recallTemplate = readRequiredStringEnv("CHAT_RAG_RECALL_TEMPLATE");
+  const recallIncludeAssistant = readRequiredBoolEnv("CHAT_RAG_RECALL_INCLUDE_ASSISTANT");
+  const recallUserMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RECALL_USER_MAX_CHARS"), {
+    name: "CHAT_RAG_RECALL_USER_MAX_CHARS",
+  });
+  const recallAssistantMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RECALL_ASSISTANT_MAX_CHARS"), {
+    name: "CHAT_RAG_RECALL_ASSISTANT_MAX_CHARS",
+  });
+  const recallContentMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RECALL_CONTENT_MAX_CHARS"), {
+    name: "CHAT_RAG_RECALL_CONTENT_MAX_CHARS",
+  });
+  const contextBeforeMessages = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_CONTEXT_BEFORE_MESSAGES"), {
+    name: "CHAT_RAG_CONTEXT_BEFORE_MESSAGES",
+  });
+  const contextAfterMessages = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_CONTEXT_AFTER_MESSAGES"), {
+    name: "CHAT_RAG_CONTEXT_AFTER_MESSAGES",
+  });
+  const sceneRecallEnabled = readRequiredBoolEnv("CHAT_RAG_SCENE_RECALL_ENABLED");
+  const sceneRecallProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_RAG_SCENE_RECALL_PROVIDER"), {
+    name: "CHAT_RAG_SCENE_RECALL_PROVIDER",
+  });
+  const sceneRecallModelId = ensureSupportedModel(
+    sceneRecallProviderId,
+    readRequiredStringEnv("CHAT_RAG_SCENE_RECALL_MODEL"),
+    { name: "CHAT_RAG_SCENE_RECALL_MODEL" }
+  );
+  const sceneRecallContextTurns = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_SCENE_RECALL_CONTEXT_TURNS"), {
+    name: "CHAT_RAG_SCENE_RECALL_CONTEXT_TURNS",
+  });
+  const sceneRecallMaxInputChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_SCENE_RECALL_MAX_INPUT_CHARS"), {
+    name: "CHAT_RAG_SCENE_RECALL_MAX_INPUT_CHARS",
+  });
+  const sceneRecallMaxOutputChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_SCENE_RECALL_MAX_OUTPUT_CHARS"), {
+    name: "CHAT_RAG_SCENE_RECALL_MAX_OUTPUT_CHARS",
+  });
+  const sceneRecallTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_SCENE_RECALL_TIMEOUT_MS"), {
+    name: "CHAT_RAG_SCENE_RECALL_TIMEOUT_MS",
+  });
+  const sceneRecallPrompt = readRequiredStringEnv("CHAT_RAG_SCENE_RECALL_PROMPT");
+  const sceneRecallWorkerSettings = {
+    temperature: readRequiredSettingNumber("CHAT_RAG_SCENE_RECALL_TEMPERATURE", {
+      key: "temperature",
+      providerId: sceneRecallProviderId,
+    }),
+    topP: readRequiredSettingNumber("CHAT_RAG_SCENE_RECALL_TOP_P", {
+      key: "topP",
+      providerId: sceneRecallProviderId,
+    }),
+    maxOutputTokens: readRequiredSettingNumber("CHAT_RAG_SCENE_RECALL_MAX_OUTPUT_TOKENS", {
+      key: "maxOutputTokens",
+      providerId: sceneRecallProviderId,
+      integer: true,
+    }),
+    stream: false,
+    enableWebSearch: false,
+    thinkingMode:
+      readOptionalStringEnv("CHAT_RAG_SCENE_RECALL_DEEPSEEK_THINKING_MODE") ||
+      readOptionalStringEnv("CHAT_RAG_SCENE_RECALL_THINKING_MODE"),
+    reasoningEffort:
+      readOptionalStringEnv("CHAT_RAG_SCENE_RECALL_DEEPSEEK_REASONING_EFFORT") ||
+      readOptionalStringEnv("CHAT_RAG_SCENE_RECALL_REASONING_EFFORT"),
+  };
+  const sceneRecallRaw = {
+    openaiCompatibleBody: readRequiredJsonObjectEnv("CHAT_RAG_SCENE_RECALL_OPENAI_COMPATIBLE_BODY_JSON"),
+    googleGenAiConfig: readRequiredJsonObjectEnv("CHAT_RAG_SCENE_RECALL_GOOGLE_GENAI_CONFIG_JSON"),
+  };
+  const rerankerEnabled = readOptionalBoolEnvStrict("CHAT_RAG_RERANKER_ENABLED") === true;
+  let rerankerProvider = "openai-compatible";
+  let rerankerBaseUrl = "";
+  let rerankerApiKey = "";
+  let rerankerModel = "";
+  let rerankerTimeoutMs = 0;
+  let rerankerCandidateMultiplier = 0;
+  let rerankerMaxDocuments = 0;
+  let rerankerMaxDocumentChars = 0;
+let rerankerMinScore = 0;
+  let rerankerRawBody = {};
+  let rerankerInstruction = "";
+
+  if (rerankerEnabled) {
+    const rerankerProviderRaw = readRequiredStringEnv("CHAT_RAG_RERANKER_PROVIDER");
+    if (rerankerProviderRaw !== "openai-compatible") {
+      throw new Error(`Env CHAT_RAG_RERANKER_PROVIDER has unsupported provider: ${rerankerProviderRaw}`);
+    }
+    rerankerProvider = rerankerProviderRaw;
+    rerankerBaseUrl = readRequiredStringEnv("CHAT_RAG_RERANKER_BASE_URL");
+    rerankerApiKey =
+      readOptionalStringEnv("CHAT_RAG_RERANKER_API_KEY") ||
+      (rerankerBaseUrl.includes("openrouter.ai") ? readRequiredStringEnv("OPENROUTER_API_KEY") : "");
+    if (!rerankerApiKey) throw new Error("Missing required env: CHAT_RAG_RERANKER_API_KEY");
+    rerankerModel = readRequiredStringEnv("CHAT_RAG_RERANKER_MODEL");
+    rerankerTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RERANKER_TIMEOUT_MS"), {
+      name: "CHAT_RAG_RERANKER_TIMEOUT_MS",
+    });
+    rerankerCandidateMultiplier = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RERANKER_CANDIDATE_MULTIPLIER"), {
+      name: "CHAT_RAG_RERANKER_CANDIDATE_MULTIPLIER",
+    });
+    rerankerMaxDocuments = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RERANKER_MAX_DOCUMENTS"), {
+      name: "CHAT_RAG_RERANKER_MAX_DOCUMENTS",
+    });
+    rerankerMaxDocumentChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_RERANKER_MAX_DOCUMENT_CHARS"), {
+      name: "CHAT_RAG_RERANKER_MAX_DOCUMENT_CHARS",
+    });
+rerankerMinScore = ensureNumberInRange(readRequiredFloatEnv("CHAT_RAG_RERANKER_MIN_SCORE"), {
+      min: 0,
+      max: 1,
+      name: "CHAT_RAG_RERANKER_MIN_SCORE",
+    });
+    rerankerRawBody = readRequiredJsonObjectEnv("CHAT_RAG_RERANKER_OPENAI_COMPATIBLE_BODY_JSON");
+    rerankerInstruction = readOptionalStringEnv("CHAT_RAG_RERANKER_INSTRUCTION") || "";
+  }
+  const debugIncludeContent = readRequiredBoolEnv("CHAT_RAG_DEBUG_INCLUDE_CONTENT");
+  const mmrLambda = ensureNumberInRange(readRequiredFloatEnv("CHAT_RAG_MMR_LAMBDA"), {
+    min: 0,
+    max: 1,
+    name: "CHAT_RAG_MMR_LAMBDA",
+  });
+  const mmrCandidateMultiplier = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_MMR_CANDIDATE_MULTIPLIER"), {
+    name: "CHAT_RAG_MMR_CANDIDATE_MULTIPLIER",
+  });
+  const regenerateTurnDelayMs = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_REGENERATE_TURN_DELAY_MS"), {
+    name: "CHAT_RAG_REGENERATE_TURN_DELAY_MS",
+  });
+  const regenerateQuotaRetryMax = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RAG_REGENERATE_QUOTA_RETRY_MAX"), {
+    name: "CHAT_RAG_REGENERATE_QUOTA_RETRY_MAX",
+  });
+  const regenerateQuotaRetryDelayMs = ensureNonNegativeInt(
+    readRequiredIntEnv("CHAT_RAG_REGENERATE_QUOTA_RETRY_DELAY_MS"),
+    { name: "CHAT_RAG_REGENERATE_QUOTA_RETRY_DELAY_MS" }
+  );
+
+  return {
+    enabled,
+    embeddingProvider,
+    embeddingBaseUrl,
+    embeddingApiKey,
+    embeddingModel,
+    embeddingDimensions,
+    embeddingIncludeDimensionsParam,
+    embeddingTimeoutMs,
+    embeddingBatchSize,
+    embeddingRawBody,
+    queryEmbeddingTemplate,
+    documentEmbeddingTemplate,
+    topK,
+    minSimilarity,
+    minQueryChars,
+    maxContextChars,
+    chunkMaxChars,
+    chunkOverlapChars,
+    turnTemplate,
+    contextHeader,
+    contextEntryTemplate,
+    recallTemplate,
+    recallIncludeAssistant,
+    recallUserMaxChars,
+    recallAssistantMaxChars,
+    recallContentMaxChars,
+    contextBeforeMessages,
+    contextAfterMessages,
+    sceneRecallEnabled,
+    sceneRecallProviderId,
+    sceneRecallModelId,
+    sceneRecallContextTurns,
+    sceneRecallMaxInputChars,
+    sceneRecallMaxOutputChars,
+    sceneRecallTimeoutMs,
+    sceneRecallPrompt,
+    sceneRecallWorkerSettings,
+    sceneRecallRaw,
+    rerankerEnabled,
+    rerankerProvider,
+    rerankerBaseUrl,
+    rerankerApiKey,
+    rerankerModel,
+    rerankerTimeoutMs,
+    rerankerCandidateMultiplier,
+    rerankerMaxDocuments,
+    rerankerMaxDocumentChars,
+rerankerMinScore,
+    rerankerRawBody,
+    rerankerInstruction,
+    debugIncludeContent,
+    mmrLambda,
+    mmrCandidateMultiplier,
+    regenerateTurnDelayMs,
+    regenerateQuotaRetryMax,
+    regenerateQuotaRetryDelayMs,
+  };
+})();
+
 const llmConfig = {
   timeoutMs: ensurePositiveInt(readRequiredIntEnv("LLM_TIMEOUT_MS"), { name: "LLM_TIMEOUT_MS" }),
 };
@@ -801,6 +1046,7 @@ module.exports = {
   chatTimeContextConfig,
   chatMemoryConfig,
   chatGistConfig,
+  chatRagConfig,
   llmConfig,
   logConfig,
   articleConfig,

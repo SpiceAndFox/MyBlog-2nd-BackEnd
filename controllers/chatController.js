@@ -3,7 +3,7 @@ const chatPresetModel = require("@models/chatPresetModel");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { chatConfig, llmConfig, chatMemoryConfig } = require("../config");
+const { chatConfig, llmConfig, chatMemoryConfig, chatRagConfig } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
 const { buildRecentWindowContext } = require("../services/chat/context/buildRecentWindowContext");
 const {
@@ -14,6 +14,10 @@ const {
   requestMemoryTick,
 } = require("../services/chat/memory/writePipeline");
 const { requestAssistantGistGeneration } = require("../services/chat/memory/gistPipeline");
+const {
+  requestChatTurnIndexing,
+  requestDeleteChunksFromMessageId,
+} = require("../services/chat/rag/indexer");
 const { logger, withRequestContext } = require("../logger");
 const {
   getProviderDefinition,
@@ -346,6 +350,65 @@ function kickMemoryUpdate({ userId, presetId, needsMemory } = {}) {
     requestMemoryTick({ userId, presetId });
   } catch (error) {
     logger.error("chat_memory_tick_kick_failed", { error, userId, presetId });
+  }
+}
+
+function getRagSources(context) {
+  const sources = Array.isArray(context?.rag?.sources) ? context.rag.sources : [];
+  return sources.filter(Boolean);
+}
+
+function getRagDebug(context) {
+  if (!chatRagConfig.enabled || !chatRagConfig.debugIncludeContent) return null;
+  const rag = context?.rag;
+  if (!rag) return null;
+
+  return {
+    enabled: Boolean(rag.enabled),
+    stats: rag.stats || null,
+    sources: getRagSources(context),
+  };
+}
+
+function attachRagSources(message, context) {
+  const sources = getRagSources(context);
+  const debug = getRagDebug(context);
+  if (!message || (!sources.length && !debug)) return message;
+
+  const next = { ...message };
+  if (sources.length) next.rag_sources = sources;
+  if (debug) next.rag_debug = debug;
+  return next;
+}
+
+function kickRagTurnIndexing({ userId, presetId, sessionId, userMessage, assistantMessage, userContent, assistantContent } = {}) {
+  try {
+    requestChatTurnIndexing({
+      userId,
+      presetId,
+      sessionId,
+      userMessage,
+      assistantMessage,
+      userContent,
+      assistantContent,
+    });
+  } catch (error) {
+    logger.error("chat_rag_turn_index_kick_failed", {
+      error,
+      userId,
+      presetId,
+      sessionId,
+      userMessageId: userMessage?.id,
+      assistantMessageId: assistantMessage?.id,
+    });
+  }
+}
+
+function kickRagDeleteFromMessage({ userId, presetId, fromMessageId } = {}) {
+  try {
+    requestDeleteChunksFromMessageId({ userId, presetId, fromMessageId });
+  } catch (error) {
+    logger.error("chat_rag_delete_kick_failed", { error, userId, presetId, fromMessageId });
   }
 }
 
@@ -870,6 +933,8 @@ const chatController = {
       if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
 
       const { presetId, preset } = presetResolution;
+      kickRagDeleteFromMessage({ userId, presetId, fromMessageId: messageId });
+
       const mergedSettings = mergeSettings(session.settings, incomingSettings);
       mergedSettings.systemPromptPresetId = presetId;
       mergedSettings.systemPrompt = preset?.systemPrompt || "";
@@ -974,6 +1039,15 @@ const chatController = {
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
         kickMemoryUpdate({ userId, presetId, needsMemory });
+        kickRagTurnIndexing({
+          userId,
+          presetId,
+          sessionId,
+          userMessage: updatedUserMessage,
+          assistantMessage,
+          userContent: updatedUserMessage?.content,
+          assistantContent,
+        });
         requestAssistantGistGeneration({
           userId,
           presetId,
@@ -984,7 +1058,11 @@ const chatController = {
 
         return res
           .status(200)
-          .json({ session: updatedSession, user_message: updatedUserMessage, assistant_message: assistantMessage });
+          .json({
+            session: updatedSession,
+            user_message: updatedUserMessage,
+            assistant_message: attachRagSources(assistantMessage, context),
+          });
       }
 
       res.status(200);
@@ -1063,6 +1141,15 @@ const chatController = {
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
       kickMemoryUpdate({ userId, presetId, needsMemory });
+      kickRagTurnIndexing({
+        userId,
+        presetId,
+        sessionId,
+        userMessage: updatedUserMessage,
+        assistantMessage,
+        userContent: updatedUserMessage?.content,
+        assistantContent: normalizedAssistantContent,
+      });
       requestAssistantGistGeneration({
         userId,
         presetId,
@@ -1075,7 +1162,7 @@ const chatController = {
         type: "done",
         session: updatedSession,
         user_message: updatedUserMessage,
-        assistant_message: assistantMessage,
+        assistant_message: attachRagSources(assistantMessage, context),
       });
       res.end();
     } catch (error) {
@@ -1206,6 +1293,15 @@ const chatController = {
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
         kickMemoryUpdate({ userId, presetId, needsMemory });
+        kickRagTurnIndexing({
+          userId,
+          presetId,
+          sessionId,
+          userMessage,
+          assistantMessage,
+          userContent: userMessage?.content,
+          assistantContent,
+        });
         requestAssistantGistGeneration({
           userId,
           presetId,
@@ -1216,7 +1312,11 @@ const chatController = {
 
         return res
           .status(200)
-          .json({ session: updatedSession, user_message: userMessage, assistant_message: assistantMessage });
+          .json({
+            session: updatedSession,
+            user_message: userMessage,
+            assistant_message: attachRagSources(assistantMessage, context),
+          });
       }
 
       res.status(200);
@@ -1295,6 +1395,15 @@ const chatController = {
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
       kickMemoryUpdate({ userId, presetId, needsMemory });
+      kickRagTurnIndexing({
+        userId,
+        presetId,
+        sessionId,
+        userMessage,
+        assistantMessage,
+        userContent: userMessage?.content,
+        assistantContent: normalizedAssistantContent,
+      });
       requestAssistantGistGeneration({
         userId,
         presetId,
@@ -1307,7 +1416,7 @@ const chatController = {
         type: "done",
         session: updatedSession,
         user_message: userMessage,
-        assistant_message: assistantMessage,
+        assistant_message: attachRagSources(assistantMessage, context),
       });
       res.end();
     } catch (error) {

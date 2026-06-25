@@ -5,10 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node app.js",
-    "dev": "nodemon app.js",
-    "regenerate-gists": "node regenerateGists.js",
-    "regenerate-article-thumbnails": "node regenerateArticleThumbnails.js"
+    "start": "node --use-env-proxy app.js",
+    "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
+    "regenerate-gists": "node --use-env-proxy regenerateGists.js",
+    "regenerate-chat-rag": "node --use-env-proxy regenerateChatRag.js",
+    "regenerate-article-thumbnails": "node --use-env-proxy regenerateArticleThumbnails.js"
   },
   "keywords": [],
   "author": "",
