@@ -35,7 +35,7 @@ function formatRole(role) {
   return normalized || "Message";
 }
 
-function isHitMessage(message, source) {
+function isTargetMessage(message, source) {
   const id = Number(message?.id);
   return (
     Number.isFinite(id) &&
@@ -44,34 +44,52 @@ function isHitMessage(message, source) {
   );
 }
 
-function formatTranscriptLine(message, source) {
+function formatConversationLine(message) {
   const role = formatRole(message?.role);
-  const marker = isHitMessage(message, source) ? "（命中回合）" : "";
   const content = collapseWhitespace(message?.content);
   if (!content) return "";
-  return `${role}${marker}: ${content}`;
+  return `${role}: ${content}`;
 }
 
-function buildTranscript(messages, source) {
-  const lines = (Array.isArray(messages) ? messages : [])
-    .map((message) => formatTranscriptLine(message, source))
-    .filter(Boolean);
-  return lines.join("\n");
+function buildConversation(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map(formatConversationLine)
+    .filter(Boolean)
+    .join("\n");
 }
 
 function buildPrompt({ source, messages } = {}) {
-  const transcript = clipText(buildTranscript(messages, source), chatRagConfig.sceneRecallMaxInputChars);
+  const maxInputChars = Number(chatRagConfig.sceneRecallMaxInputChars);
+  const list = Array.isArray(messages) ? messages : [];
+  const targetMessages = list.filter((message) => isTargetMessage(message, source));
+  const contextMessages = list.filter((message) => !isTargetMessage(message, source));
+
   const system = renderTemplate(normalizeTemplate(chatRagConfig.sceneRecallPrompt), {
     max_chars: chatRagConfig.sceneRecallMaxOutputChars,
   }).trim();
 
-  const user = `
-下面是一段旧对话窗口，其中“命中回合”是本次 RAG 检索命中的那轮对话。
-请只基于这段旧对话，概括命中回合当时的情景、前因后果、说话关系和情绪氛围。
+  const header =
+    `下面是一条旧对话消息，以及它之前若干轮的对话作为参考。请只针对【消息】里那条话，` +
+    `判断它当时发生的具体情景：前因后果、说话关系、情绪氛围。仅描述情景，不要复述那条话的原文，` +
+    `不要泛泛概括整段对话，控制在 ${chatRagConfig.sceneRecallMaxOutputChars} 字以内。\n\n`;
 
-【旧对话窗口】
-${transcript}
-`.trim();
+  const targetLabel = "【消息】\n";
+  const contextLabel = "\n\n【这条消息之前的对话（供参考，不要复述）】\n";
+
+  const fixedOverhead = header.length + targetLabel.length + contextLabel.length;
+  const reserveForTarget = Math.max(0, maxInputChars - fixedOverhead);
+
+  const targetBlock = clipText(buildConversation(targetMessages), Math.ceil(reserveForTarget * 0.4));
+  const targetSection = targetBlock ? `${targetLabel}${targetBlock}` : `${targetLabel}（无）`;
+
+  const remainingForContext = Math.max(0, maxInputChars - header.length - targetSection.length - contextLabel.length);
+  const contextBlock = clipText(buildConversation(contextMessages), remainingForContext);
+  const contextSection = contextBlock ? `${contextLabel}${contextBlock}` : `${contextLabel}（无）`;
+
+  let user = `${header}${targetSection}${contextSection}`;
+  if (user.length > maxInputChars) {
+    user = `${user.slice(0, Math.max(0, maxInputChars - 3)).trim()}...`;
+  }
 
   return {
     messages: [
