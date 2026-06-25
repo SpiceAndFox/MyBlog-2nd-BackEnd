@@ -53,6 +53,16 @@ function resolveNonNegativeIntArg(args, names, fallback, { label } = {}) {
   return fallback;
 }
 
+function resolvePositiveIntArg(args, names, fallback, { label } = {}) {
+  for (const name of names) {
+    if (args[name] === undefined) continue;
+    const parsed = parsePositiveInt(args[name]);
+    if (parsed === null) throw new Error(`Invalid ${label || name}: ${String(args[name])}`);
+    return parsed;
+  }
+  return fallback;
+}
+
 function sleep(ms) {
   if (!ms) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -120,11 +130,12 @@ function printUsage() {
   console.log(
     `
 Usage:
-  pnpm regenerate-chat-rag -- --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>]
-  node --use-env-proxy regenerateChatRag.js --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>]
+  pnpm regenerate-chat-rag -- --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>] [--concurrency <n>]
+  node --use-env-proxy regenerateChatRag.js --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>] [--concurrency <n>]
 
   Without --clear, already-indexed turns are skipped (resume after interruption).
   Use --clear to wipe all chunks for this user/preset and rewrite from scratch.
+  --concurrency N (default 4): how many embedding turns run in parallel.
 
 Examples:
   pnpm regenerate-chat-rag -- --user 1 --preset default --clear
@@ -208,6 +219,7 @@ function buildTurns(messages, { limit } = {}) {
     chatRagConfig.regenerateQuotaRetryDelayMs,
     { label: "quota-retry-delay-ms" },
   );
+  const concurrency = resolvePositiveIntArg(args, ["concurrency", "c"], 4, { label: "concurrency" });
 
   if (!userId || !presetId) {
     printUsage();
@@ -232,6 +244,7 @@ function buildTurns(messages, { limit } = {}) {
       turnDelayMs,
       quotaRetryMax,
       quotaRetryDelayMs,
+      concurrency,
     });
 
     if (dryRun) return;
@@ -243,43 +256,79 @@ function buildTurns(messages, { limit } = {}) {
 
     const existingTurnKeys = clear ? new Set() : await chatRagRepo.listExistingTurnKeys({ userId, presetId });
 
-    let indexed = 0;
-    let processedTurns = 0;
-    let skippedTurns = 0;
-    for (const turn of turns) {
+    const turnsToIndex = turns.filter((turn) => {
       const turnKey = `${Number(turn.userMessage.id)}-${Number(turn.assistantMessage.id)}`;
-      if (existingTurnKeys.has(turnKey)) {
-        processedTurns += 1;
-        skippedTurns += 1;
-        process.stdout.write(
-          `\rprogress: ${processedTurns}/${turns.length} turns, ${indexed} chunks, skipped ${skippedTurns}`,
-        );
-        continue;
-      }
+      return !existingTurnKeys.has(turnKey);
+    });
 
-      const result = await indexChatTurnWithQuotaRetry(
-        {
-          userId,
-          presetId,
-          sessionId: turn.userMessage.session_id,
-          userMessage: turn.userMessage,
-          assistantMessage: turn.assistantMessage,
-          userContent: turn.userMessage.content,
-          assistantContent: turn.assistantMessage.content,
-        },
-        {
-          retryMax: quotaRetryMax,
-          retryDelayMs: quotaRetryDelayMs,
-        },
+    const skippedTurns = turns.length - turnsToIndex.length;
+    let nextIdx = 0;
+    let indexedChunks = 0;
+    let finishedCount = 0;
+    let failedCount = 0;
+    let firstError = null;
+
+    function printProgress() {
+      process.stdout.write(
+        `\rprogress: ${finishedCount + skippedTurns}/${turns.length} turns, ${indexedChunks} chunks, skipped ${skippedTurns}, failed ${failedCount}`,
       );
-      indexed += Number(result?.indexed) || 0;
-      processedTurns += 1;
-      process.stdout.write(`\rprogress: ${processedTurns}/${turns.length} turns, ${indexed} chunks, skipped ${skippedTurns}`);
-      if (processedTurns < turns.length) await sleep(turnDelayMs);
     }
 
+    async function runWorker() {
+      while (!firstError) {
+        const idx = nextIdx;
+        nextIdx += 1;
+        if (idx >= turnsToIndex.length) return;
+
+        const turn = turnsToIndex[idx];
+        if (!turn) return;
+
+        try {
+          const result = await indexChatTurnWithQuotaRetry(
+            {
+              userId,
+              presetId,
+              sessionId: turn.userMessage.session_id,
+              userMessage: turn.userMessage,
+              assistantMessage: turn.assistantMessage,
+              userContent: turn.userMessage.content,
+              assistantContent: turn.assistantMessage.content,
+            },
+            {
+              retryMax: quotaRetryMax,
+              retryDelayMs: quotaRetryDelayMs,
+            },
+          );
+          indexedChunks += Number(result?.indexed) || 0;
+        } catch (error) {
+          failedCount += 1;
+          if (!firstError) firstError = error;
+          return;
+        }
+
+        finishedCount += 1;
+        printProgress();
+        if (turnDelayMs > 0) await sleep(turnDelayMs);
+      }
+    }
+
+    const workers = [];
+    for (let i = 0; i < concurrency; i += 1) {
+      workers.push(runWorker());
+    }
+    await Promise.all(workers);
+
     process.stdout.write("\n");
-    console.log("done:", { indexedChunks: indexed, turns: turns.length, skippedTurns });
+    console.log("done:", {
+      indexedChunks,
+      turns: turns.length,
+      skippedTurns,
+      failedTurns: failedCount,
+    });
+
+    if (firstError) {
+      throw firstError;
+    }
   } finally {
     await db.end();
   }
