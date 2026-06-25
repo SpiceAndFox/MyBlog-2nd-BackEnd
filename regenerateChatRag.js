@@ -9,6 +9,7 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const db = require("./db");
 const { chatRagConfig } = require("./config");
 const { indexChatTurn, deleteChunksFromMessageId } = require("./services/chat/rag/indexer");
+const chatRagRepo = require("./services/chat/rag/repo");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -121,6 +122,9 @@ function printUsage() {
 Usage:
   pnpm regenerate-chat-rag -- --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>]
   node --use-env-proxy regenerateChatRag.js --user <userId> --preset <presetId> [--limit <turns>] [--clear] [--dry-run] [--delay-ms <ms>] [--quota-retry-max <n>] [--quota-retry-delay-ms <ms>]
+
+  Without --clear, already-indexed turns are skipped (resume after interruption).
+  Use --clear to wipe all chunks for this user/preset and rewrite from scratch.
 
 Examples:
   pnpm regenerate-chat-rag -- --user 1 --preset default --clear
@@ -237,9 +241,22 @@ function buildTurns(messages, { limit } = {}) {
       console.log("cleared:", result);
     }
 
+    const existingTurnKeys = clear ? new Set() : await chatRagRepo.listExistingTurnKeys({ userId, presetId });
+
     let indexed = 0;
     let processedTurns = 0;
+    let skippedTurns = 0;
     for (const turn of turns) {
+      const turnKey = `${Number(turn.userMessage.id)}-${Number(turn.assistantMessage.id)}`;
+      if (existingTurnKeys.has(turnKey)) {
+        processedTurns += 1;
+        skippedTurns += 1;
+        process.stdout.write(
+          `\rprogress: ${processedTurns}/${turns.length} turns, ${indexed} chunks, skipped ${skippedTurns}`,
+        );
+        continue;
+      }
+
       const result = await indexChatTurnWithQuotaRetry(
         {
           userId,
@@ -257,12 +274,12 @@ function buildTurns(messages, { limit } = {}) {
       );
       indexed += Number(result?.indexed) || 0;
       processedTurns += 1;
-      process.stdout.write(`\rprogress: ${processedTurns}/${turns.length} turns, ${indexed} chunks`);
+      process.stdout.write(`\rprogress: ${processedTurns}/${turns.length} turns, ${indexed} chunks, skipped ${skippedTurns}`);
       if (processedTurns < turns.length) await sleep(turnDelayMs);
     }
 
     process.stdout.write("\n");
-    console.log("done:", { indexedChunks: indexed, turns: turns.length });
+    console.log("done:", { indexedChunks: indexed, turns: turns.length, skippedTurns });
   } finally {
     await db.end();
   }

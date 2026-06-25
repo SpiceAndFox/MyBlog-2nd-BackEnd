@@ -156,6 +156,24 @@ async function deleteChunksFromMessageId(userId, presetId, fromMessageId) {
   return rowCount || 0;
 }
 
+async function listExistingTurnKeys({ userId, presetId } = {}) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+
+  const query = `
+    SELECT DISTINCT first_message_id, last_message_id
+    FROM chat_rag_chunks
+    WHERE user_id = $1
+      AND preset_id = $2
+  `;
+  const { rows } = await db.query(query, [normalizedUserId, normalizedPresetId]);
+  const keys = new Set();
+  for (const row of rows) {
+    keys.add(`${Number(row.first_message_id)}-${Number(row.last_message_id)}`);
+  }
+  return keys;
+}
+
 async function searchSimilarChunks({ userId, presetId, beforeMessageId, embedding, limit, minSimilarity, candidateLimit } = {}) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
@@ -304,6 +322,7 @@ async function listMessagesAroundChunk({
 module.exports = {
   upsertChunk,
   deleteChunksFromMessageId,
+  listExistingTurnKeys,
   searchSimilarChunks,
   listMessagesAroundChunk,
 };
