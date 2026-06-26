@@ -76,7 +76,7 @@ module.exports = {
       options: thinkingLevelProOptions,
       default: "MINIMAL",
       capability: "thinking",
-      modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3-flash-preview"],
+      modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.5-flash", "gemini-3-flash-preview"],
     },
     {
       key: "thinkingLevel",
@@ -96,7 +96,7 @@ module.exports = {
       step: 128,
       default: -1,
       capability: "thinking",
-      modelBlocklist: ["gemini-2.0-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"],
+      modelBlocklist: ["gemini-2.0-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"],
     },
     {
       key: "stream",
@@ -140,6 +140,7 @@ module.exports = {
     },
   ],
   models: [
+    { id: "gemini-3.5-flash", name: "gemini-3.5-flash" },
     { id: "gemini-2.5-flash", name: "gemini-2.5-flash" },
     { id: "gemini-2.0-flash", name: "gemini-2.0-flash" },
     { id: "gemini-3-flash-preview", name: "gemini-3-flash-preview" },
