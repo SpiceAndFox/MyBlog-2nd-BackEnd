@@ -1,0 +1,142 @@
+# Memory Control v2 状态契约
+
+本文定义 Memory Control v2 的权威状态形态。它承接顶层设计中的状态 schema、section、item、evidenceKind、patch op 和长度预算。顶层判断见 [../plan.md](../plan.md)，写入执行顺序见 [write-protocol.md](write-protocol.md)。
+
+## 5. 权威状态与存储落点
+
+Memory v2 的权威状态是单一 `state_v2` JSONB blob。它保存当前完整 memory state，并由 Reducer 原子写回。旧 `rolling_summary` 和 `core_memory` 只能作为 legacy 字段存在，不再参与 v2 写入决策。
+
+在现有 `chat_preset_memory` 表新增两列：
+
+- `state_v2 JSONB`：完整权威 memory state。
+- `state_v2_render TEXT`：Renderer 输出的完整可读文本，供主聊天热路径直接读取。
+
+`state_v2` blob 内置 `v` 字段作为 schema version。Reducer 按 `v` 选择 schema holder，`v` 升级必须走显式迁移函数。
+
+概念形态：
+
+```js
+{
+  v: 2,
+  rolling: {
+    scene: {
+      location: null,
+      time: null,
+      mood: null,
+      note: null,
+      lastEvidence: null,       // { messageId, quote }
+      updatedAtMessageId: null
+    },
+    participants: {
+      user: { emotion: null, action: null, intent: null, lastEvidence: null, updatedAtMessageId: null },
+      assistant: { emotion: null, action: null, intent: null, lastEvidence: null, updatedAtMessageId: null }
+    },
+    todos: [],                  // item 数组
+    recentEpisodes: [],         // item 数组，滑动窗口
+    milestones: []              // item 数组
+  },
+  core: {
+    worldFacts: [],             // item 数组
+    userProfile: [],            // item 数组
+    assistantProfile: [],       // item 数组
+    relationship: []            // item 数组
+  },
+  meta: {
+    perSectionCursor: {},      // { section: coveredUntilMessageId }
+    renderedSections: {}       // { section: 上次渲染片段 }，供 Renderer 复用
+  }
+}
+```
+
+每个可追踪 item 结构：
+
+```js
+{
+  id: "todos:uuid-xxx",         // Reducer 生成，全局唯一
+  text: "归还橡皮",              // 高密度关键词式描述
+  evidenceRefs: [{ messageId: 121, quote: "明天提醒我把橡皮还给她" }],
+  evidenceKind: "user_request", // 见附录 C
+  createdAtMessageId: 121,
+  updatedAtMessageId: 121,
+  expiresAtMessageId: null,     // 可选，短期待办用。由 Proposer 在 addItem 的 value 中设置，Reducer 校验为正整数
+  tags: ["短期"]                 // 可选
+}
+```
+
+`scene` 和 `participants` 是当前状态，用轻量字段表达，但记录最后证据与更新时间。`todos`、`recentEpisodes`、`milestones` 和 `core` 各 section 保留 item 级证据。
+
+## 6. 记忆分层
+
+| Section          | 作用                           | 生命周期       | 写入原则                                                 |
+| ---------------- | ------------------------------ | -------------- | -------------------------------------------------------- |
+| `scene`          | 当前地点、时间、氛围、环境锚点 | 高频、覆盖式   | 存完整当前状态；无变化不改                               |
+| `participants`   | 用户和助手当前情绪、动作、意图 | 高频、覆盖式   | 只记录当前状态，不承载长期人格                           |
+| `todos`          | 未完成承诺、约定、澄清项       | 中频、事件型   | 支持创建、完成、取消、过期；删除必须有终止证据           |
+| `recentEpisodes` | 最近几次有意义互动             | 高频、滑动窗口 | 普通 episode 到期自然滚出；重要 episode 可晋升 milestone |
+| `milestones`     | 关系或剧情关键转折             | 低频、归档型   | 默认新增或合并；普通日常不得进入                         |
+| `core`           | 长期事实、偏好、人格、关系模式 | 低频、保守     | 只接受明确设定或用户修正                                 |
+
+每个 section 拥有独立 `coveredUntilMessageId`（存于 `meta.perSectionCursor`）。section 之间独立推进，互不阻塞；写入执行仍受同一 `userId/presetId` 串行队列约束。
+
+## 附录 C：Evidence Kind 合法值
+
+| evidenceKind             | 说明                                      |
+| ------------------------ | ----------------------------------------- |
+| `user_request`           | 用户明确请求系统/角色稍后做某事           |
+| `user_commitment`        | 用户明确承诺稍后做某事                    |
+| `assistant_commitment`   | assistant 明确承诺稍后做某事              |
+| `todo_completion`        | 待办已完成                                |
+| `todo_cancel`            | 待办被取消                                |
+| `todo_expiration`        | 短期待办自然失效或被澄清为不再需要        |
+| `scene_change`           | 地点、时间、环境或氛围明确变化            |
+| `participant_state`      | 用户或 assistant 当前情绪、动作、意图变化 |
+| `recent_episode`         | 最近发生的有意义互动                      |
+| `relationship_milestone` | 关系或剧情关键转折                        |
+| `user_correction`        | 用户明确修正旧记忆或设定                  |
+| `long_term_fact`         | 用户/设定明确表达的长期事实               |
+
+---
+
+## 附录 D：Patch Op 合法值
+
+| op              | 允许 section                                    | 含义                         |
+| --------------- | ----------------------------------------------- | ---------------------------- |
+| `setField`      | `scene`, `participants`                         | 设置覆盖式状态字段           |
+| `clearField`    | `scene`, `participants`                         | 清除已失效的覆盖式状态字段   |
+| `addItem`       | `todos`, `recentEpisodes`, `milestones`, `core` | 新增 item                    |
+| `updateItem`    | `todos`, `recentEpisodes`, `milestones`, `core` | 局部更新已有 item            |
+| `mergeItems`    | `todos`, `recentEpisodes`, `milestones`, `core` | 合并重复或高度重叠 item      |
+| `completeTodo`  | `todos`                                         | 将待办标记为完成             |
+| `cancelTodo`    | `todos`                                         | 将待办标记为取消             |
+| `expireTodo`    | `todos`                                         | 将短期待办标记为失效         |
+| `correctItem`   | `todos`, `milestones`, `core`                   | 基于用户明确修正纠错         |
+
+Patch 约束：
+
+- `op` 必须属于上表。
+- `path` 对 `setField`、`clearField`、`updateItem` 必填。`path` 对 `scene`/`participants` 是字段名（如 `location`、`mood`、`user.emotion`）。`path` 对 `core` section 的所有 op（`addItem`/`updateItem`/`mergeItems`/`correctItem`）也必填，值为子数组名：`worldFacts`/`userProfile`/`assistantProfile`/`relationship`。其他 section（`todos`/`recentEpisodes`/`milestones`）的 `addItem` 不需要 `path`（单一数组）。
+- `itemId` 对 `updateItem`、`completeTodo`、`cancelTodo`、`expireTodo`、`correctItem` 必填（单个 item 的 id）。
+- `itemIds`（数组）对 `mergeItems` 必填，指定要合并的多个 itemId。`value` 是合并后的新 text。
+- `value` 对 `setField`、`addItem`、`updateItem`、`correctItem` 必填。
+- `evidenceRefs` 至少包含一个 `{ messageId, quote }`，除非该 op 是 Reducer 自行触发的过期清理。
+- `quote` 必须是短片段（<=80 字符），不保存大段原文。
+
+---
+
+## 附录 I：Section 长度预算
+
+| Section          | item 数量上限 | 溢出处理                                       |
+| ---------------- | ------------- | ---------------------------------------------- |
+| `scene`          | -             | 单对象，无 item 数量限制，字段级覆盖           |
+| `participants`   | -             | 单对象，无 item 数量限制，字段级覆盖           |
+| `todos`          | 15            | 拒绝新增，记录 `rejected`                      |
+| `recentEpisodes` | 5             | Reducer 自动滚出最旧 item（滑动窗口）         |
+| `milestones`     | 20            | 拒绝新增，记录 `rejected`                      |
+| `core.worldFacts` | 10           | 拒绝新增                                       |
+| `core.userProfile` | 15          | 拒绝新增                                       |
+| `core.assistantProfile` | 15      | 拒绝新增                                       |
+| `core.relationship` | 10          | 拒绝新增                                       |
+
+`recentEpisodes` 的滑动窗口由 Reducer 在每次 apply 后执行：如果 item 数 > 5，移除最旧的（按 `createdAtMessageId` 排序），被移除的 item 不记录事件（自然遗忘）。
+
+其它 section 溢出时拒绝新增，由 Proposer 在后续 tick 中通过 `mergeItems` 自行合并精简。
