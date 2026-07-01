@@ -4,7 +4,7 @@
 
 ## 1. Renderer
 
-Renderer 把结构化 state 渲染为主聊天模型可读的稳定文本，并写入 `state_v2_render`。
+Renderer 把结构化 `memory_state` 渲染为主聊天模型可读的稳定文本。Renderer 输出不是权威状态，不写入独立 DB 列。
 
 Renderer 是纯代码模板，不调用 LLM。具体模板见附录 G。
 
@@ -13,13 +13,13 @@ Renderer 必须：
 - 区分长期核心记忆与近期状态。
 - 明确哪些是当前状态，哪些是历史背景。
 - 避免把旧场景强行延续到当前回复。
-- 保持文本稳定：未变化 section 不重写表达，直接用上次渲染结果。
+- 保持文本稳定：相同 `memory_state` 与相同 Renderer 代码必须生成相同文本。
 
 ## 12. Context 接入
 
-首版采用兼容 rendered text 路径。
+首版采用实时 render 路径。
 
-v2 renderer 把 state 渲染为完整 memory 文本，落库到 `chat_preset_memory.state_v2_render`。上下文装配新增单一 `memoryV2` segment：当 v2 feature flag 开启且 `state_v2_render` 可用时，只由 `memoryV2` 注入完整 v2 memory，旧 `rollingSummary` / `coreMemory` segment 禁用，避免重复注入。
+上下文装配新增单一 `memoryV2` segment：当 v2 feature flag 开启且 `chat_preset_memory.memory_state` 可用时，`memoryV2` 读取结构化状态并调用 Renderer 实时生成完整 v2 memory 文本。旧 `rollingSummary` / `coreMemory` segment 禁用，避免重复注入。
 
 fallback 只在 v2 不可用或 feature flag 关闭时生效，回到旧 `rolling_summary` / `core_memory` 列。
 
@@ -48,45 +48,45 @@ Observer 传入 messages 时已标注 `contentKind: "raw" | "gist"`（见附录 
 
 ## 附录 G：Renderer 模板
 
-Renderer 是纯代码模板，把结构化 state 渲染为稳定文本。未变化的 section 直接复用上一次的渲染片段（存于内存或 state blob 的 `meta.renderedSections`）。
+Renderer 是纯代码模板，把结构化 `memory_state` 渲染为稳定文本。Renderer 不调用 LLM，不读取 patch/event log，不依赖数据库中的物化 render 文本。
 
 ### 模板
 
 ```
 [当前状态]
-- 地点: {scene.location || "未知"}
-- 时间: {scene.time || "未知"}
-- 氛围: {scene.mood || "未知"}
-- 备注: {scene.note || ""}
-- 用户: 情绪={participants.user.emotion || "?"} | 动作={participants.user.action || "?"} | 意图={participants.user.intent || "?"}
-- 助手: 情绪={participants.assistant.emotion || "?"} | 动作={participants.assistant.action || "?"} | 意图={participants.assistant.intent || "?"}
+- 地点: {current.scene.location || "未知"}
+- 时间: {current.scene.time || "未知"}
+- 氛围: {current.scene.mood || "未知"}
+- 备注: {current.scene.note || ""}
+- 用户: 情绪={current.participants.user.emotion || "?"} | 动作={current.participants.user.action || "?"} | 意图={current.participants.user.intent || "?"}
+- 助手: 情绪={current.participants.assistant.emotion || "?"} | 动作={current.participants.assistant.action || "?"} | 意图={current.participants.assistant.intent || "?"}
 
 [待办]
-{todos.map(t => `- ${t.tags.includes("长期") ? "[长期]" : "[短期]"} ${t.text}`).join("\n") || "(无)"}
+{working.todos.map(t => `- ${t.tags.includes("长期") ? "[长期]" : "[短期]"} ${t.text}`).join("\n") || "(无)"}
 
 [最近经历]
-{recentEpisodes.slice(-3).map(e => `- ${e.text}`).join("\n") || "(无)"}
+{working.recentEpisodes.slice(-3).map(e => `- ${e.text}`).join("\n") || "(无)"}
 
 [重要里程碑]
-{milestones.map(m => `- ${m.text}`).join("\n") || "(无)"}
+{longTerm.milestones.map(m => `- ${m.text}`).join("\n") || "(无)"}
 
 [长期核心记忆]
 [长期事实]
-{core.worldFacts.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{longTerm.worldFacts.map(f => `- ${f.text}`).join("\n") || "(无)"}
 [User 核心档案]
-{core.userProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{longTerm.userProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
 [Assistant 核心档案]
-{core.assistantProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{longTerm.assistantProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
 [关系当前状态]
-{core.relationship.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{longTerm.relationship.map(f => `- ${f.text}`).join("\n") || "(无)"}
 ```
 
 ### 渲染规则
 
 - 空字段用 "未知" 或 "(无)" 占位，保持结构稳定。
 - `recentEpisodes` 只渲染最近 3 条（滑动窗口）。
-- 未变化 section 的渲染片段直接复用上次结果，不重新生成（避免文本漂移）。
-- 只有 `renderedText`（完整拼接结果）写入 `state_v2_render` 并进入主聊天热路径。
-- `renderedSections`（各 section 的片段）可存于 state blob 的 `meta` 中供下次复用，也可作为 admin/debug 视图。
+- Renderer 只做确定性模板拼接；同一份 `memory_state` 在同一版 Renderer 下必须输出相同文本。
+- `renderedText` 是运行时产物，只进入本次 context assembly，不写回 `chat_preset_memory`。
+- 如果未来确实需要 render 缓存，必须作为非权威缓存设计，并带 `renderer_version`；首版不引入。
 
 ---

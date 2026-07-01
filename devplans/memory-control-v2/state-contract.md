@@ -4,21 +4,22 @@
 
 ## 5. 权威状态与存储落点
 
-Memory v2 的权威状态是单一 `state_v2` JSONB blob。它保存当前完整 memory state，并由 Reducer 原子写回。旧 `rolling_summary` 和 `core_memory` 只能作为 legacy 字段存在，不再参与 v2 写入决策。
+Memory v2 的权威状态是单一 `memory_state` JSONB blob。它保存当前完整 memory state，并由 Reducer 原子写回。旧 `rolling_summary` 和 `core_memory` 只能作为 legacy 字段存在，不再参与 v2 写入决策。
 
-在现有 `chat_preset_memory` 表新增两列：
+在现有 `chat_preset_memory` 表新增一列：
 
-- `state_v2 JSONB`：完整权威 memory state。
-- `state_v2_render TEXT`：Renderer 输出的完整可读文本，供主聊天热路径直接读取。
+- `memory_state JSONB`：完整权威 memory state。
 
-`state_v2` blob 内置 `v` 字段作为 schema version。Reducer 按 `v` 选择 schema holder，`v` 升级必须走显式迁移函数。
+Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory_state` 后实时调用纯代码 Renderer 生成上下文文本。
+
+`memory_state` blob 内置 `version` 字段作为 schema version。Reducer 按 `version` 选择 schema holder，`version` 升级必须走显式迁移函数。
 
 概念形态：
 
 ```js
 {
-  v: 2,
-  rolling: {
+  version: 2,
+  current: {
     scene: {
       location: null,
       time: null,
@@ -30,20 +31,21 @@ Memory v2 的权威状态是单一 `state_v2` JSONB blob。它保存当前完整
     participants: {
       user: { emotion: null, action: null, intent: null, lastEvidence: null, updatedAtMessageId: null },
       assistant: { emotion: null, action: null, intent: null, lastEvidence: null, updatedAtMessageId: null }
-    },
-    todos: [],                  // item 数组
-    recentEpisodes: [],         // item 数组，滑动窗口
-    milestones: []              // item 数组
+    }
   },
-  core: {
+  working: {
+    todos: [],                  // item 数组
+    recentEpisodes: []          // item 数组，滑动窗口
+  },
+  longTerm: {
+    milestones: [],             // item 数组，长期归档
     worldFacts: [],             // item 数组
     userProfile: [],            // item 数组
     assistantProfile: [],       // item 数组
     relationship: []            // item 数组
   },
   meta: {
-    perSectionCursor: {},      // { section: coveredUntilMessageId }
-    renderedSections: {}       // { section: 上次渲染片段 }，供 Renderer 复用
+    perSectionCursor: {}        // { section: coveredUntilMessageId }
   }
 }
 ```
@@ -63,18 +65,18 @@ Memory v2 的权威状态是单一 `state_v2` JSONB blob。它保存当前完整
 }
 ```
 
-`scene` 和 `participants` 是当前状态，用轻量字段表达，但记录最后证据与更新时间。`todos`、`recentEpisodes`、`milestones` 和 `core` 各 section 保留 item 级证据。
+`scene` 和 `participants` 是当前状态，用轻量字段表达，但记录最后证据与更新时间。`todos` 与 `recentEpisodes` 是工作区记忆；`milestones` 与 core 各数组位于长期区并保留 item 级证据。
 
 ## 6. 记忆分层
 
-| Section          | 作用                           | 生命周期       | 写入原则                                                 |
-| ---------------- | ------------------------------ | -------------- | -------------------------------------------------------- |
-| `scene`          | 当前地点、时间、氛围、环境锚点 | 高频、覆盖式   | 存完整当前状态；无变化不改                               |
-| `participants`   | 用户和助手当前情绪、动作、意图 | 高频、覆盖式   | 只记录当前状态，不承载长期人格                           |
-| `todos`          | 未完成承诺、约定、澄清项       | 中频、事件型   | 支持创建、完成、取消、过期；删除必须有终止证据           |
-| `recentEpisodes` | 最近几次有意义互动             | 高频、滑动窗口 | 普通 episode 到期自然滚出；重要 episode 可晋升 milestone |
-| `milestones`     | 关系或剧情关键转折             | 低频、归档型   | 默认新增或合并；普通日常不得进入                         |
-| `core`           | 长期事实、偏好、人格、关系模式 | 低频、保守     | 只接受明确设定或用户修正                                 |
+| Section          | 存储位置                    | 作用                           | 生命周期       | 写入原则                                                 |
+| ---------------- | --------------------------- | ------------------------------ | -------------- | -------------------------------------------------------- |
+| `scene`          | `current.scene`             | 当前地点、时间、氛围、环境锚点 | 高频、覆盖式   | 存完整当前状态；无变化不改                               |
+| `participants`   | `current.participants`      | 用户和助手当前情绪、动作、意图 | 高频、覆盖式   | 只记录当前状态，不承载长期人格                           |
+| `todos`          | `working.todos`             | 未完成承诺、约定、澄清项       | 中频、事件型   | 支持创建、完成、取消、过期；删除必须有终止证据           |
+| `recentEpisodes` | `working.recentEpisodes`    | 最近几次有意义互动             | 高频、滑动窗口 | 普通 episode 到期自然滚出；重要 episode 可晋升 milestone |
+| `milestones`     | `longTerm.milestones`       | 关系或剧情关键转折             | 低频、归档型   | 长期保存，默认新增或合并；普通日常不得进入               |
+| `core`           | `longTerm.*`（不含 milestones） | 长期事实、偏好、人格、关系模式 | 低频、保守     | 只接受明确设定或用户修正                                 |
 
 每个 section 拥有独立 `coveredUntilMessageId`（存于 `meta.perSectionCursor`）。section 之间独立推进，互不阻塞；写入执行仍受同一 `userId/presetId` 串行队列约束。
 
@@ -114,7 +116,7 @@ Memory v2 的权威状态是单一 `state_v2` JSONB blob。它保存当前完整
 Patch 约束：
 
 - `op` 必须属于上表。
-- `path` 对 `setField`、`clearField`、`updateItem` 必填。`path` 对 `scene`/`participants` 是字段名（如 `location`、`mood`、`user.emotion`）。`path` 对 `core` section 的所有 op（`addItem`/`updateItem`/`mergeItems`/`correctItem`）也必填，值为子数组名：`worldFacts`/`userProfile`/`assistantProfile`/`relationship`。其他 section（`todos`/`recentEpisodes`/`milestones`）的 `addItem` 不需要 `path`（单一数组）。
+- `path` 对 `setField`、`clearField`、`updateItem` 必填。`path` 对 `scene`/`participants` 是字段名（如 `location`、`mood`、`user.emotion`）。`path` 对 `core` section 的所有 op（`addItem`/`updateItem`/`mergeItems`/`correctItem`）也必填，值为长期区子数组名：`worldFacts`/`userProfile`/`assistantProfile`/`relationship`。`milestones` 虽存于 `longTerm`，但作为独立 section 操作，`addItem` 不需要 `path`。其他 section（`todos`/`recentEpisodes`）的 `addItem` 也不需要 `path`（单一数组）。
 - `itemId` 对 `updateItem`、`completeTodo`、`cancelTodo`、`expireTodo`、`correctItem` 必填（单个 item 的 id）。
 - `itemIds`（数组）对 `mergeItems` 必填，指定要合并的多个 itemId。`value` 是合并后的新 text。
 - `value` 对 `setField`、`addItem`、`updateItem`、`correctItem` 必填。
@@ -131,11 +133,11 @@ Patch 约束：
 | `participants`   | -             | 单对象，无 item 数量限制，字段级覆盖           |
 | `todos`          | 15            | 拒绝新增，记录 `rejected`                      |
 | `recentEpisodes` | 5             | Reducer 自动滚出最旧 item（滑动窗口）         |
-| `milestones`     | 20            | 拒绝新增，记录 `rejected`                      |
-| `core.worldFacts` | 10           | 拒绝新增                                       |
-| `core.userProfile` | 15          | 拒绝新增                                       |
-| `core.assistantProfile` | 15      | 拒绝新增                                       |
-| `core.relationship` | 10          | 拒绝新增                                       |
+| `longTerm.milestones` | 20       | 拒绝新增，记录 `rejected`                      |
+| `longTerm.worldFacts` | 10       | 拒绝新增                                       |
+| `longTerm.userProfile` | 15      | 拒绝新增                                       |
+| `longTerm.assistantProfile` | 15  | 拒绝新增                                       |
+| `longTerm.relationship` | 10      | 拒绝新增                                       |
 
 `recentEpisodes` 的滑动窗口由 Reducer 在每次 apply 后执行：如果 item 数 > 5，移除最旧的（按 `createdAtMessageId` 排序），被移除的 item 不记录事件（自然遗忘）。
 

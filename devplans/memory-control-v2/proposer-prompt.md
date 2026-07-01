@@ -6,15 +6,23 @@
 
 Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 service 文件中。
 
+首版至少拆出以下 prompt：
+
+- `prompts/memory/current-state-proposer.md`
+- `prompts/memory/todo-proposer.md`
+- `prompts/memory/episode-proposer.md`
+- `prompts/memory/core-proposer.md`
+
 首版不做 prompt 版本化（个人项目用 git 管理 prompt 变更即可）。如果后续需要 A/B 测试 prompt，再加版本字段。
 
 ## 附录 B：Proposer Prompt 设计
 
 ### B.1 Function Calling Schema
 
-Proposer 的输出通过 function calling 强制。定义一个 tool，其 parameters JSON schema 对应附录 A 的输出结构。关键约束：
+每个专用 Proposer 的输出都通过 function calling 强制。定义一个 tool，其 parameters JSON schema 对应该 Proposer 的输出结构。关键约束：
 
-- `sectionResults` 的 key 只能是 eligibleSections 中出现的 section。
+- `proposer` 必须等于当前调用的 Proposer 名称。
+- `sectionResults` 的 key 只能是该 Proposer 本次负责的 target sections。
 - 每个 sectionResult 的 `status` 是 enum：`patches | noop | unable_to_decide`。
 - `patches` 数组中每个 patch 的 `op` 是 enum（见附录 D）。
 - `evidenceKind` 是 enum（见附录 C）。
@@ -27,14 +35,14 @@ Proposer 的输出通过 function calling 强制。定义一个 tool，其 param
 你是一个高密度信息提取引擎，服务于情感 Roleplay 系统的记忆管理。你的任务是观察最近对话，为每个 eligible section 提出结构化变更（patch）或判断无需变更（noop）。
 
 ### 核心原则
-1. 只对 eligible section 输出结果。非 eligible section 不要输出。
+1. 只对本次 target sections 输出结果。非 target section 不要输出。
 2. 每个 section 必须明确输出 patches / noop / unable_to_decide 之一。
 3. patch 必须附 evidenceKind 和 evidenceRefs。evidenceRefs 的 quote 必须是消息原文的短片段（<=80字），不要改写。
 4. evidenceRefs 的 messageId 必须是输入 messages 中真实存在的 id。
 5. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
 6. todos 只记录明确的请求/承诺，模糊愿望不要写入。
-7. milestones 只记录关系或剧情关键转折，日常琐事不要写入。
-8. core 只接受用户明确表达的长期事实或用户修正，临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定子数组（worldFacts/userProfile/assistantProfile/relationship）。
+7. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
+8. core 只接受用户明确表达的长期事实或用户修正，临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
 9. 删除/完成/取消待办必须用对应 op（completeTodo/cancelTodo/expireTodo），不要用通用 removeItem。
 10. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
 
@@ -60,6 +68,6 @@ Proposer 的输出通过 function calling 强制。定义一个 tool，其 param
 
 ### B.3 User Prompt
 
-将附录 A 的 Observer 输出 JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 function calling 实现）。
+将附录 A 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 function calling 实现）。
 
 ---
