@@ -1,12 +1,12 @@
 # Memory Control v2 渲染与上下文接入
 
-本文定义 Memory Control v2 如何从结构化状态变成主聊天模型可读上下文，以及它与旧 memory segment、RAG、assistant gist 的边界。写入协议见 [write-protocol.md](write-protocol.md)。
+本文定义 Memory Control v2 如何从结构化状态变成主聊天模型可读上下文，以及它与 context segment、RAG、raw message evidence 的边界。写入协议见 [write-protocol.md](write-protocol.md)。
 
 ## 1. Renderer
 
 Renderer 把结构化 `memory_state` 渲染为主聊天模型可读的稳定文本。Renderer 输出不是权威状态，不写入独立 DB 列。
 
-Renderer 是纯代码模板，不调用 LLM。具体模板见附录 G。
+Renderer 是纯代码模板，不调用 LLM。具体模板见第 5 节。
 
 Renderer 必须：
 
@@ -15,15 +15,15 @@ Renderer 必须：
 - 避免把旧场景强行延续到当前回复。
 - 保持文本稳定：相同 `memory_state` 与相同 Renderer 代码必须生成相同文本。
 
-## 12. Context 接入
+## 2. Context 接入
 
 首版采用实时 render 路径。
 
-上下文装配新增单一 `memoryV2` segment：当 v2 feature flag 开启且 `chat_preset_memory.memory_state` 可用时，`memoryV2` 读取结构化状态并调用 Renderer 实时生成完整 v2 memory 文本。旧 `rollingSummary` / `coreMemory` segment 禁用，避免重复注入。
+上下文装配使用单一 `memory` segment：当 `chat_preset_memory.memory_state` 存在且 schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本。
 
-fallback 只在 v2 不可用或 feature flag 关闭时生效，回到旧 `rolling_summary` / `core_memory` 列。
+如果 `memory_state` 不存在、`version` 不支持或 schema 校验失败，`memory` segment 直接不注入。是否存在旧格式、是否需要迁移或回放，是迁移层的问题，不由 context segment 耦合历史版本名称。
 
-## 13. RAG 边界
+## 3. RAG 边界
 
 Memory v2 和 RAG 不互相替代。
 
@@ -34,19 +34,15 @@ Memory v2 和 RAG 不互相替代。
 
 只在某次旧对话中重要、但不应持续影响当前关系状态的事实，应留在 RAG，不进入 core memory。
 
-## 14. Gist 与原文输入
+## 4. Raw Message 输入与 Gist 边界
 
-现有 assistant gist 可以作为低成本辅助输入，但不能替代原始对话。
+Memory v2 的 proposer 输入统一使用 raw message。user 与 assistant 消息都从原始 `chat_messages` 读取，evidenceRef 的 quote 必须能在对应 raw message content 中校验。
 
-Observer 固定读取最近用户原文，因为用户消息通常承载偏好、承诺、修正和长期事实。Assistant 轮次优先使用 gist。
+assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRef 来源。它的历史动机是避免 assistant 语言风格随着长线对话逐渐趋同，而不是为 memory 写入压缩上下文；该能力若继续保留，应作为独立风格隔离/调试辅助，不参与权威 memory state 的证据链。
 
-**证据可靠性差异**：用户消息（raw）的 evidenceRef quote 是原始表达，证据可靠性高。Assistant 消息（gist）的 evidenceRef quote 来自 gist 压缩文本而非原文，证据可靠性低于 raw——gist 可能已丢失或改写关键细节。Reducer 做 quote 模糊匹配时，对 gist 来源的 message 用相同策略（gist 文本本身是稳定的，匹配 gist 文本即可），但系统应诚实认知：gist 来源的证据是"gist 记录了什么"，不是"assistant 原文说了什么"。
+Observer 传入 messages 时只需要标注 `contentKind: "raw"`。Reducer 对所有 evidenceRefs 使用同一套 messageId 存在性校验和 quote 模糊匹配策略。
 
-Observer 传入 messages 时已标注 `contentKind: "raw" | "gist"`（见附录 A），Reducer 可通过 messageId 查到对应 message 的 contentKind，无需在 evidenceRef 中重复标注。
-
-首版不实现"按需拉取 assistant 原文"的复杂逻辑。如果后续发现 gist 丢失关键证据导致 memory 质量下降，再考虑对高风险 patch（core/milestones）按 messageId 拉取 assistant 原文。
-
-## 附录 G：Renderer 模板
+## 5. Renderer 模板
 
 Renderer 是纯代码模板，把结构化 `memory_state` 渲染为稳定文本。Renderer 不调用 LLM，不读取 patch/event log，不依赖数据库中的物化 render 文本。
 

@@ -14,7 +14,7 @@ const thinkingLevelOptions = [
   { value: "HIGH", label: "High (default)" },
 ];
 
-const thinkingLevelProOptions = thinkingLevelOptions.filter((option) => ["LOW", "HIGH"].includes(option.value));
+const thinkingLevelProOptions = thinkingLevelOptions.filter((option) => ["LOW", "MEDIUM", "HIGH"].includes(option.value));
 
 module.exports = {
   id: "gemini",
@@ -74,7 +74,7 @@ module.exports = {
       label: "Thinking Level",
       type: "select",
       options: thinkingLevelProOptions,
-      default: "MINIMAL",
+      default: "HIGH",
       capability: "thinking",
       modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.5-flash", "gemini-3-flash-preview"],
     },
@@ -85,7 +85,7 @@ module.exports = {
       options: thinkingLevelOptions,
       default: "MINIMAL",
       capability: "thinking",
-      modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3-pro-preview"],
+      modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.1-pro-preview"],
     },
     {
       key: "thinkingBudget",
@@ -96,7 +96,7 @@ module.exports = {
       step: 128,
       default: -1,
       capability: "thinking",
-      modelBlocklist: ["gemini-2.0-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"],
+      modelBlocklist: ["gemini-2.0-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview"],
     },
     {
       key: "stream",
@@ -144,7 +144,7 @@ module.exports = {
     { id: "gemini-2.5-flash", name: "gemini-2.5-flash" },
     { id: "gemini-2.0-flash", name: "gemini-2.0-flash" },
     { id: "gemini-3-flash-preview", name: "gemini-3-flash-preview" },
-    { id: "gemini-3-pro-preview", name: "gemini-3-pro-preview" },
+    { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro-preview" },
   ],
   capabilities: {
     stream: true,

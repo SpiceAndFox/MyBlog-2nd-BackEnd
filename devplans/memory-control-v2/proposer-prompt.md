@@ -2,7 +2,7 @@
 
 本文定义 Proposer 的 function calling / structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。
 
-## 16. Prompt 管理
+## 1. Prompt 管理
 
 Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 service 文件中。
 
@@ -15,21 +15,23 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 
 首版不做 prompt 版本化（个人项目用 git 管理 prompt 变更即可）。如果后续需要 A/B 测试 prompt，再加版本字段。
 
-## 附录 B：Proposer Prompt 设计
+固定 prompt 统一管理是后续横向重构计划：扫描后端中长期维护的系统/任务级 prompt，将它们迁移到 `prompts/<domain>/*`，由 service 读取。service 文件只保留动态变量拼装、参数传递和调用逻辑。短小且完全局部的运行时格式化模板可以继续留在代码中。
 
-### B.1 Function Calling Schema
+## 2. Proposer Prompt 设计
+
+### 2.1 Function Calling Schema
 
 每个专用 Proposer 的输出都通过 function calling 强制。定义一个 tool，其 parameters JSON schema 对应该 Proposer 的输出结构。关键约束：
 
 - `proposer` 必须等于当前调用的 Proposer 名称。
 - `sectionResults` 的 key 只能是该 Proposer 本次负责的 target sections。
 - 每个 sectionResult 的 `status` 是 enum：`patches | noop | unable_to_decide`。
-- `patches` 数组中每个 patch 的 `op` 是 enum（见附录 D）。
-- `evidenceKind` 是 enum（见附录 C）。
+- `patches` 数组中每个 patch 的 `op` 是 enum（见 [state-contract.md](state-contract.md) 的 Patch Op 合法值）。
+- `evidenceKind` 是 enum（见 [state-contract.md](state-contract.md) 的 Evidence Kind 合法值）。
 - `evidenceRefs` 至少 1 项，每项含 `messageId`（integer）和 `quote`（string，max 80 字符）。
-- `path`、`itemId`、`itemIds` 的必填规则按附录 D 约束。function calling schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- `path`、`itemId`、`itemIds` 的必填规则按 [state-contract.md](state-contract.md) 的 Patch Op 约束。function calling schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
 
-### B.2 System Prompt 要点
+### 2.2 System Prompt 要点
 
 ```
 你是一个高密度信息提取引擎，服务于情感 Roleplay 系统的记忆管理。你的任务是观察最近对话，为每个 eligible section 提出结构化变更（patch）或判断无需变更（noop）。
@@ -66,8 +68,8 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - ✅ "被忽视感 > 愤怒 | 侧头回避 | 拒绝交流"
 ```
 
-### B.3 User Prompt
+### 2.3 User Prompt
 
-将附录 A 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 function calling 实现）。
+将 [write-protocol.md](write-protocol.md) 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 function calling 实现）。
 
 ---

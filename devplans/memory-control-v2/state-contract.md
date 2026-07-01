@@ -2,7 +2,7 @@
 
 本文定义 Memory Control v2 的权威状态形态。它承接顶层设计中的状态 schema、section、item、evidenceKind、patch op 和长度预算。顶层判断见 [../plan.md](../plan.md)，写入执行顺序见 [write-protocol.md](write-protocol.md)。
 
-## 5. 权威状态与存储落点
+## 1. 权威状态与存储落点
 
 Memory v2 的权威状态是单一 `memory_state` JSONB blob。它保存当前完整 memory state，并由 Reducer 原子写回。旧 `rolling_summary` 和 `core_memory` 只能作为 legacy 字段存在，不再参与 v2 写入决策。
 
@@ -57,7 +57,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
   id: "todos:uuid-xxx",         // Reducer 生成，全局唯一
   text: "归还橡皮",              // 高密度关键词式描述
   evidenceRefs: [{ messageId: 121, quote: "明天提醒我把橡皮还给她" }],
-  evidenceKind: "user_request", // 见附录 C
+  evidenceKind: "user_request", // 见第 3 节
   createdAtMessageId: 121,
   updatedAtMessageId: 121,
   expiresAtMessageId: null,     // 可选，短期待办用。由 Proposer 在 addItem 的 value 中设置，Reducer 校验为正整数
@@ -67,7 +67,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 
 `scene` 和 `participants` 是当前状态，用轻量字段表达，但记录最后证据与更新时间。`todos` 与 `recentEpisodes` 是工作区记忆；`milestones` 与 core 各数组位于长期区并保留 item 级证据。
 
-## 6. 记忆分层
+## 2. 记忆分层
 
 | Section          | 存储位置                    | 作用                           | 生命周期       | 写入原则                                                 |
 | ---------------- | --------------------------- | ------------------------------ | -------------- | -------------------------------------------------------- |
@@ -80,7 +80,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 
 每个 section 拥有独立 `coveredUntilMessageId`（存于 `meta.perSectionCursor`）。section 之间独立推进，互不阻塞；写入执行仍受同一 `userId/presetId` 串行队列约束。
 
-## 附录 C：Evidence Kind 合法值
+## 3. Evidence Kind 合法值
 
 | evidenceKind             | 说明                                      |
 | ------------------------ | ----------------------------------------- |
@@ -99,7 +99,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 
 ---
 
-## 附录 D：Patch Op 合法值
+## 4. Patch Op 合法值
 
 | op              | 允许 section                                    | 含义                         |
 | --------------- | ----------------------------------------------- | ---------------------------- |
@@ -125,7 +125,7 @@ Patch 约束：
 
 ---
 
-## 附录 I：Section 长度预算
+## 5. Section 长度预算
 
 | Section          | item 数量上限 | 溢出处理                                       |
 | ---------------- | ------------- | ---------------------------------------------- |
