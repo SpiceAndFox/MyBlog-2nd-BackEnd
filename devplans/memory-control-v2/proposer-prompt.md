@@ -39,18 +39,17 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 
 每个 Proposer 收到的 user payload 都是 envelope：
 
-- `task`：本次 proposer、mode、target sections/paths、observed message ids 和调度原因。
-- `writableState`：本次允许写入的目标 section/path 当前状态。
+- `task`：本次 proposer、mode、target sections/paths、observed message ids 和 `trigger`。
+- `writableState`：本次允许写入的目标 section/path 当前状态；item 一律保留 evidenceRefs 和 evidenceKind。
 - `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。
-- `evidenceMessages`：普通写入 patch 可引用的 raw messages。
-- `maintenance`：仅 `compactionProposer` 使用，包含 sourceItems、blockedPatchSummary 和 sourceEvidenceMessages。
+- `evidenceMessages`：用于 quote 校验的 raw messages。普通模式下是最近对话 raw messages；维护模式下是 `writableState` source items 既有 evidenceRefs 对应的 raw messages。
 
 规则：
 
 - 输出 `sectionResults` 只能包含 `task.targetSections`。
 - `path` 只能落在 `task.targetPaths` 或目标 section 的合法 path 内。
-- 普通写入 patch 的 `evidenceRefs` 只能引用 `evidenceMessages`。
-- `compactionProposer` 的 `evidenceRefs` 只能复制 `maintenance.sourceItems` 中已有的 evidenceRefs，并由 `maintenance.sourceEvidenceMessages` 校验。
+- 普通模式 `task.trigger.type` 必须是 `lagThreshold`；普通写入 patch 的 `evidenceRefs` 只能引用 `evidenceMessages`。
+- 维护模式 `task.trigger.type` 必须是 `lengthBudget`，且带 `limit` 与 `blockedPatchSummary`；`compactionProposer` 的 `evidenceRefs` 只能复制 `writableState` source items 中已有的 evidenceRefs，并由 `evidenceMessages` 校验。
 - `readOnlyContext` 只能影响判断和去重，不能直接变成 patch 证据。
 - `readOnlyContext` 的输入范围由调用方按 Proposer 类型固定组装。不要要求根据当前消息语义临时增加背景；如果现有背景不足以判断，输出 `unable_to_decide`。
 
@@ -103,10 +102,10 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 1. 只处理输入 target 指定的 section/path。
 2. 只能输出 mergeItems / noop / unable_to_decide。
 3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
-4. mergeItems 的 itemIds 必须全部来自 sourceItems，且至少 2 个。
+4. mergeItems 的 itemIds 必须全部来自 writableState 中的目标 source items，且至少 2 个。
 5. evidenceKind 使用 memory_compaction，除非输入中存在明确 user_correction 证据。
-6. evidenceRefs 只能复制 maintenance.sourceItems 中已有的 evidenceRefs，并由 maintenance.sourceEvidenceMessages 校验；不要引用 blockedPatch 或 readOnlyContext 的证据来证明旧 item 合并。
-7. value.text 必须是 sourceItems 的高密度合并，不得引入 sourceItems 未表达的新事实。
+6. evidenceRefs 只能复制 writableState source items 中已有的 evidenceRefs，并由 evidenceMessages 校验；不要引用 task.trigger.blockedPatchSummary、evidenceMessages 或 readOnlyContext 来证明新事实。
+7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
 8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成“已处理”。
 9. milestones/core 只能合并高度重叠项；不能因为容量压力遗忘长期事实。
 ```

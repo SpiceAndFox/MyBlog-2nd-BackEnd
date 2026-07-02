@@ -123,7 +123,7 @@ Patch 约束：
 - `value` 对 `setField`、`addItem`、`updateItem`、`correctItem` 必填。
 - `evidenceRefs` 至少包含一个 `{ messageId, quote }`，除非该 op 是 Reducer 自行触发的过期清理。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `evidenceMessages`。
 - `quote` 必须是短片段（<=80 字符），不保存大段原文。
-- `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。其 `evidenceRefs` 必须来自被合并 source items 的既有证据，并由 `maintenance.sourceEvidenceMessages` 校验，不能引用新的对话片段或 read-only context 来制造新事实。
+- `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。其 `evidenceRefs` 必须来自维护模式 `writableState` 中被合并 source items 的既有证据，并由 envelope 的 `evidenceMessages` 校验，不能引用新的对话片段或 read-only context 来制造新事实。
 
 ---
 
