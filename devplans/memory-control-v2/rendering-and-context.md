@@ -37,15 +37,11 @@ Memory v2 和 RAG 不互相替代。
 
 ## 4. Proposer 输入与 Gist 边界
 
-Memory v2 的 Proposer 输入使用 envelope，分为 writable target、read-only memory context 和 evidence messages。
+Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。本节只补充与上下文接入相关的边界：
 
-- `evidenceMessages` 统一来自原始 `chat_messages`，user 与 assistant 消息都使用 raw content。普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验。
-- `readOnlyContext` 来自当前 `memory_state` 的结构化片段，用于帮助 Proposer 理解对话背景；它的 section/path 范围由 Proposer 类型固定决定。固定范围以完整 segment 为单位，不能按 observed messages 的语义动态选择，也不能作为新事实的证据来源。
-- `writableState` 只包含本次 target section/path，约束 Proposer 的写入范围。
-
-assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRef 来源。它的历史动机是避免 assistant 语言风格随着长线对话逐渐趋同，而不是为 memory 写入压缩上下文；该能力若继续保留，应作为独立风格隔离/调试辅助，不参与权威 memory state 的证据链。
-
-Observer 传入 raw messages 时必须标注 `contentKind: "raw"`。Reducer 对所有 evidenceRefs 使用同一套 messageId 存在性校验和 quote 模糊匹配策略；read-only memory context 不参与 quote 校验。
+- `evidenceMessages` 统一来自原始 `chat_messages`，user 与 assistant 消息都使用 raw content。Observer 传入时必须标注 `contentKind: "raw"`。
+- 普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验（校验策略见 [state-contract.md](state-contract.md) §7）；read-only memory context 不参与 quote 校验。
+- assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRef 来源。
 
 ## 5. Renderer 模板
 

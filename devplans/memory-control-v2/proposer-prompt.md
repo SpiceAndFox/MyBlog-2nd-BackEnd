@@ -1,6 +1,6 @@
 # Memory Control v2 Proposer Prompt 契约
 
-本文定义 Proposer 的 schema-constrained structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。
+本文定义 Proposer 的 schema-constrained structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。
 
 ## 1. Prompt 管理
 
@@ -14,46 +14,19 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - `prompts/memory/core-proposer.md`
 - `prompts/memory/compaction-proposer.md`
 
-首版不做 prompt 版本化（个人项目用 git 管理 prompt 变更即可）。如果后续需要 A/B 测试 prompt，再加版本字段。
-
-固定 prompt 统一管理是后续横向重构计划：扫描后端中长期维护的系统/任务级 prompt，将它们迁移到 `prompts/<domain>/*`，由 service 读取。service 文件只保留动态变量拼装、参数传递和调用逻辑。短小且完全局部的运行时格式化模板可以继续留在代码中。
-
 ## 2. Proposer Prompt 设计
 
 ### 2.1 Schema-Constrained Output
 
-每个专用 Proposer 的输出都必须通过 provider 支持的 schema-constrained structured output 强制。实现可以使用 function/tool calling，也可以使用 JSON schema response format；provider adapter 必须把输出统一校验为同一个 Proposer result schema。禁止裸 prompt + `JSON.parse` 作为主路径。
+每个专用 Proposer 的输出都必须通过 provider 支持的 schema-constrained structured output 强制（实现可以是 function/tool calling 或 JSON schema response format，由 provider adapter 决定；禁止裸 prompt + `JSON.parse` 作为主路径）。输出 schema 的字段、枚举和必填规则见 [state-contract.md](state-contract.md) §5.5。
 
-关键约束：
+schema 作者注意：
 
-- `proposer` 必须等于当前调用的 Proposer 名称。
-- `sectionResults` 的 key 只能是该 Proposer 本次负责的 target sections。
-- 每个 sectionResult 的 `status` 是 enum：`patches | noop | unable_to_decide`。
-- `patches` 数组中每个 patch 的 `op` 是 enum（见 [state-contract.md](state-contract.md) 的 Patch Op 合法值）。
-- `evidenceKind` 是 enum（见 [state-contract.md](state-contract.md) 的 Evidence Kind 合法值）。
-- `evidenceRefs` 至少 1 项，每项含 `messageId`（integer）和 `quote`（string，max 80 字符）。
-- `path`、`itemId`、`itemIds` 的必填规则按 [state-contract.md](state-contract.md) 的 Patch Op 约束。schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
+- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction` 或基于明确用户修正的 `user_correction`。
 
-### 2.2 Input Envelope 约束
-
-每个 Proposer 收到的 user payload 都是 envelope：
-
-- `task`：本次 proposer、mode、target sections/paths、observed message ids 和 `trigger`。
-- `writableState`：本次允许写入的目标 section/path 当前状态；item 一律保留 evidenceRefs 和 evidenceKind。
-- `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。
-- `evidenceMessages`：用于 quote 校验的 raw messages。普通模式下是最近对话 raw messages；维护模式下是 `writableState` source items 既有 evidenceRefs 对应的 raw messages。
-
-规则：
-
-- 输出 `sectionResults` 只能包含 `task.targetSections`。
-- `path` 只能落在 `task.targetPaths` 或目标 section 的合法 path 内。
-- 普通模式 `task.trigger.type` 必须是 `lagThreshold`；普通写入 patch 的 `evidenceRefs` 只能引用 `evidenceMessages`。
-- 维护模式 `task.trigger.type` 必须是 `lengthBudget`，且带 `limit` 与 `blockedPatchSummary`；`compactionProposer` 的 `evidenceRefs` 只能复制 `writableState` source items 中已有的 evidenceRefs，并由 `evidenceMessages` 校验。
-- `readOnlyContext` 只能影响判断和去重，不能直接变成 patch 证据。
-- `readOnlyContext` 的输入范围由调用方按 Proposer 类型固定组装。不要要求根据当前消息语义临时增加背景；如果现有背景不足以判断，输出 `unable_to_decide`。
-
-### 2.3 System Prompt 要点
+### 2.2 System Prompt 要点
 
 ```
 你是一个高密度信息提取引擎，服务于情感 Roleplay 系统的记忆管理。你的任务是观察最近对话，为每个 eligible section 提出结构化变更（patch）或判断无需变更（noop）。
@@ -63,12 +36,13 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 2. 每个 section 必须明确输出 patches / noop / unable_to_decide 之一。
 3. patch 必须附 evidenceKind 和 evidenceRefs。evidenceRefs 的 quote 必须是原始消息短片段（<=80字），不要改写。
 4. 普通写入 patch 的 evidenceRefs 必须来自 evidenceMessages；readOnlyContext 只能用于理解背景，不能作为证据，也不能被当作完整世界状态来推断缺失事实。
-5. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
-6. todos 只记录明确的请求/承诺，模糊愿望不要写入。
-7. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
-8. core 只接受用户明确表达的长期事实或用户修正，临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
-9. 删除/完成/取消待办必须用对应 op（completeTodo/cancelTodo/expireTodo），不要用通用 removeItem。
-10. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
+5. 如果现有背景不足以判断，输出 unable_to_decide，不要把背景猜成事实。
+6. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
+7. todos 只记录明确的请求/承诺，模糊愿望不要写入。
+8. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
+9. core 只接受用户明确表达的长期事实或用户修正，临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
+10. 删除/完成/取消待办必须用对应 op（completeTodo/cancelTodo/expireTodo），不要用通用 removeItem。
+11. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
 
 ### evidenceKind 判断指南
 - user_request: 用户明确请求系统/角色稍后做某事
@@ -91,9 +65,9 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - ✅ "被忽视感 > 愤怒 | 侧头回避 | 拒绝交流"
 ```
 
-### 2.4 Compaction Proposer 要点
+### 2.3 Compaction Proposer 要点
 
-`compactionProposer` 使用独立 prompt。它不是摘要器，也不是普通记忆写入器；它只解决长度预算压力下的安全合并。
+`compactionProposer` 使用独立 prompt。它不是摘要器，也不是普通记忆写入器；它只解决长度预算压力下的安全合并。维护模式 envelope 的字段语义见 [state-contract.md](state-contract.md) §5.2。
 
 ```
 你是 memory 维护合并器。你的任务是在给定 section/path 的 source items 中寻找重复或高度重叠项，并提出 mergeItems patch。你不能新增事实、不能删除长期记忆、不能跨 section 合并、不能跨 core path 合并。
@@ -106,12 +80,12 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 5. evidenceKind 使用 memory_compaction，除非输入中存在明确 user_correction 证据。
 6. evidenceRefs 只能复制 writableState source items 中已有的 evidenceRefs，并由 evidenceMessages 校验；不要引用 task.trigger.blockedPatchSummary、evidenceMessages 或 readOnlyContext 来证明新事实。
 7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
-8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成“已处理”。
+8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成"已处理"。
 9. milestones/core 只能合并高度重叠项；不能因为容量压力遗忘长期事实。
 ```
 
-### 2.5 User Prompt
+### 2.4 User Prompt
 
-将 [write-protocol.md](write-protocol.md) 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
+将 [state-contract.md](state-contract.md) §5.1 / §5.2 中对应 Proposer 的 task envelope JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
 
 ---
