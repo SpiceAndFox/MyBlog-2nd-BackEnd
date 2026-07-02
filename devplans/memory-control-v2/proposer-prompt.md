@@ -1,6 +1,6 @@
 # Memory Control v2 Proposer Prompt 契约
 
-本文定义 Proposer 的 function calling / structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。
+本文定义 Proposer 的 schema-constrained structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。
 
 ## 1. Prompt 管理
 
@@ -12,6 +12,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - `prompts/memory/todo-proposer.md`
 - `prompts/memory/episode-proposer.md`
 - `prompts/memory/core-proposer.md`
+- `prompts/memory/compaction-proposer.md`
 
 首版不做 prompt 版本化（个人项目用 git 管理 prompt 变更即可）。如果后续需要 A/B 测试 prompt，再加版本字段。
 
@@ -19,9 +20,11 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 
 ## 2. Proposer Prompt 设计
 
-### 2.1 Function Calling Schema
+### 2.1 Schema-Constrained Output
 
-每个专用 Proposer 的输出都通过 function calling 强制。定义一个 tool，其 parameters JSON schema 对应该 Proposer 的输出结构。关键约束：
+每个专用 Proposer 的输出都必须通过 provider 支持的 schema-constrained structured output 强制。实现可以使用 function/tool calling，也可以使用 JSON schema response format；provider adapter 必须把输出统一校验为同一个 Proposer result schema。禁止裸 prompt + `JSON.parse` 作为主路径。
+
+关键约束：
 
 - `proposer` 必须等于当前调用的 Proposer 名称。
 - `sectionResults` 的 key 只能是该 Proposer 本次负责的 target sections。
@@ -29,7 +32,8 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - `patches` 数组中每个 patch 的 `op` 是 enum（见 [state-contract.md](state-contract.md) 的 Patch Op 合法值）。
 - `evidenceKind` 是 enum（见 [state-contract.md](state-contract.md) 的 Evidence Kind 合法值）。
 - `evidenceRefs` 至少 1 项，每项含 `messageId`（integer）和 `quote`（string，max 80 字符）。
-- `path`、`itemId`、`itemIds` 的必填规则按 [state-contract.md](state-contract.md) 的 Patch Op 约束。function calling schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- `path`、`itemId`、`itemIds` 的必填规则按 [state-contract.md](state-contract.md) 的 Patch Op 约束。schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction` 或基于明确用户修正的 `user_correction`。
 
 ### 2.2 System Prompt 要点
 
@@ -61,6 +65,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - relationship_milestone: 关系或剧情关键转折
 - user_correction: 用户明确修正旧记忆或设定
 - long_term_fact: 用户/设定明确表达的长期事实
+- memory_compaction: 基于已有 memory item 的预算维护与去重合并，不代表新事实
 
 ### 高密度句法
 所有 text/value 使用关键词 + 符号格式，严禁完整句子。
@@ -68,8 +73,27 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - ✅ "被忽视感 > 愤怒 | 侧头回避 | 拒绝交流"
 ```
 
-### 2.3 User Prompt
+### 2.3 Compaction Proposer 要点
 
-将 [write-protocol.md](write-protocol.md) 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 function calling 实现）。
+`compactionProposer` 使用独立 prompt。它不是摘要器，也不是普通记忆写入器；它只解决长度预算压力下的安全合并。
+
+```
+你是 memory 维护合并器。你的任务是在给定 section/path 的 source items 中寻找重复或高度重叠项，并提出 mergeItems patch。你不能新增事实、不能删除长期记忆、不能跨 section 合并、不能跨 core path 合并。
+
+### 核心原则
+1. 只处理输入 target 指定的 section/path。
+2. 只能输出 mergeItems / noop / unable_to_decide。
+3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
+4. mergeItems 的 itemIds 必须全部来自 sourceItems，且至少 2 个。
+5. evidenceKind 使用 memory_compaction，除非输入中存在明确 user_correction 证据。
+6. evidenceRefs 只能复制 sourceItems 中已有的 evidenceRefs；不要引用 blockedPatch 的新证据来证明旧 item 合并。
+7. value.text 必须是 sourceItems 的高密度合并，不得引入 sourceItems 未表达的新事实。
+8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成“已处理”。
+9. milestones/core 只能合并高度重叠项；不能因为容量压力遗忘长期事实。
+```
+
+### 2.4 User Prompt
+
+将 [write-protocol.md](write-protocol.md) 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
 
 ---

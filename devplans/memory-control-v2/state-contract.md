@@ -96,6 +96,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 | `relationship_milestone` | 关系或剧情关键转折                        |
 | `user_correction`        | 用户明确修正旧记忆或设定                  |
 | `long_term_fact`         | 用户/设定明确表达的长期事实               |
+| `memory_compaction`      | 基于已有 memory item 的预算维护与去重合并 |
 
 ---
 
@@ -118,10 +119,11 @@ Patch 约束：
 - `op` 必须属于上表。
 - `path` 对 `setField`、`clearField`、`updateItem` 必填。`path` 对 `scene`/`participants` 是字段名（如 `location`、`mood`、`user.emotion`）。`path` 对 `core` section 的所有 op（`addItem`/`updateItem`/`mergeItems`/`correctItem`）也必填，值为长期区子数组名：`worldFacts`/`userProfile`/`assistantProfile`/`relationship`。`milestones` 虽存于 `longTerm`，但作为独立 section 操作，`addItem` 不需要 `path`。其他 section（`todos`/`recentEpisodes`）的 `addItem` 也不需要 `path`（单一数组）。
 - `itemId` 对 `updateItem`、`completeTodo`、`cancelTodo`、`expireTodo`、`correctItem` 必填（单个 item 的 id）。
-- `itemIds`（数组）对 `mergeItems` 必填，指定要合并的多个 itemId。`value` 是合并后的新 text。
+- `itemIds`（数组）对 `mergeItems` 必填，指定要合并的多个 itemId。`value` 是合并后的新 item 值，至少包含 `text`。
 - `value` 对 `setField`、`addItem`、`updateItem`、`correctItem` 必填。
 - `evidenceRefs` 至少包含一个 `{ messageId, quote }`，除非该 op 是 Reducer 自行触发的过期清理。
 - `quote` 必须是短片段（<=80 字符），不保存大段原文。
+- `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。其 `evidenceRefs` 必须来自被合并 source items 的既有证据，不能引用新的对话片段来制造新事实。
 
 ---
 
@@ -131,14 +133,16 @@ Patch 约束：
 | ---------------- | ------------- | ---------------------------------------------- |
 | `scene`          | -             | 单对象，无 item 数量限制，字段级覆盖           |
 | `participants`   | -             | 单对象，无 item 数量限制，字段级覆盖           |
-| `todos`          | 15            | 拒绝新增，记录 `rejected`                      |
-| `recentEpisodes` | 5             | Reducer 自动滚出最旧 item（滑动窗口）         |
-| `longTerm.milestones` | 20       | 拒绝新增，记录 `rejected`                      |
-| `longTerm.worldFacts` | 10       | 拒绝新增                                       |
-| `longTerm.userProfile` | 15      | 拒绝新增                                       |
-| `longTerm.assistantProfile` | 15  | 拒绝新增                                       |
-| `longTerm.relationship` | 10      | 拒绝新增                                       |
+| `todos`          | 15            | 暂缓新增，触发 compaction task；失败后最终拒绝 |
+| `recentEpisodes` | 5             | Reducer 自动滚出最旧 item（滑动窗口）          |
+| `longTerm.milestones` | 20       | 暂缓新增，触发 compaction task；失败后最终拒绝 |
+| `longTerm.worldFacts` | 10       | 暂缓新增，触发 compaction task；失败后最终拒绝 |
+| `longTerm.userProfile` | 15      | 暂缓新增，触发 compaction task；失败后最终拒绝 |
+| `longTerm.assistantProfile` | 15  | 暂缓新增，触发 compaction task；失败后最终拒绝 |
+| `longTerm.relationship` | 10      | 暂缓新增，触发 compaction task；失败后最终拒绝 |
 
 `recentEpisodes` 的滑动窗口由 Reducer 在每次 apply 后执行：如果 item 数 > 5，移除最旧的（按 `createdAtMessageId` 排序），被移除的 item 不记录事件（自然遗忘）。
 
-其它 section 溢出时拒绝新增，由 Proposer 在后续 tick 中通过 `mergeItems` 自行合并精简。
+其它 section 溢出时不立即把当前消息视为已处理。Reducer 先记录 `deferred` 事件并触发 `compactionProposer` 维护任务。维护任务只能通过 `mergeItems + evidenceKind: "memory_compaction"` 合并同 section/同 path 下的重复或高度重叠 item，不能使用通用删除，也不能把新事实写入长期记忆。
+
+compaction task 有界执行：同一 section/path 对同一阻塞窗口最多尝试 1 次。若维护任务 `accepted` 并释放容量，原 section 在下一次 tick 重新处理同一消息窗口；若维护任务 `noop`、`unable_to_decide`、`error`，或释放容量后仍超限，则原新增 patch 最终 `rejected: length_budget_exceeded` 并推进 cursor，避免永久卡住。
