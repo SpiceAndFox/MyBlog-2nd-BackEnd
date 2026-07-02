@@ -35,7 +35,25 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - `path`、`itemId`、`itemIds` 的必填规则按 [state-contract.md](state-contract.md) 的 Patch Op 约束。schema 中用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction` 或基于明确用户修正的 `user_correction`。
 
-### 2.2 System Prompt 要点
+### 2.2 Input Envelope 约束
+
+每个 Proposer 收到的 user payload 都是 envelope：
+
+- `task`：本次 proposer、mode、target sections/paths、observed message ids 和调度原因。
+- `writableState`：本次允许写入的目标 section/path 当前状态。
+- `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。
+- `evidenceMessages`：普通写入 patch 可引用的 raw messages。
+- `maintenance`：仅 `compactionProposer` 使用，包含 sourceItems、blockedPatchSummary 和 sourceEvidenceMessages。
+
+规则：
+
+- 输出 `sectionResults` 只能包含 `task.targetSections`。
+- `path` 只能落在 `task.targetPaths` 或目标 section 的合法 path 内。
+- 普通写入 patch 的 `evidenceRefs` 只能引用 `evidenceMessages`。
+- `compactionProposer` 的 `evidenceRefs` 只能复制 `maintenance.sourceItems` 中已有的 evidenceRefs，并由 `maintenance.sourceEvidenceMessages` 校验。
+- `readOnlyContext` 只能影响判断和去重，不能直接变成 patch 证据。
+
+### 2.3 System Prompt 要点
 
 ```
 你是一个高密度信息提取引擎，服务于情感 Roleplay 系统的记忆管理。你的任务是观察最近对话，为每个 eligible section 提出结构化变更（patch）或判断无需变更（noop）。
@@ -43,8 +61,8 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 ### 核心原则
 1. 只对本次 target sections 输出结果。非 target section 不要输出。
 2. 每个 section 必须明确输出 patches / noop / unable_to_decide 之一。
-3. patch 必须附 evidenceKind 和 evidenceRefs。evidenceRefs 的 quote 必须是消息原文的短片段（<=80字），不要改写。
-4. evidenceRefs 的 messageId 必须是输入 messages 中真实存在的 id。
+3. patch 必须附 evidenceKind 和 evidenceRefs。evidenceRefs 的 quote 必须是原始消息短片段（<=80字），不要改写。
+4. 普通写入 patch 的 evidenceRefs 必须来自 evidenceMessages；readOnlyContext 只能用于理解背景，不能作为证据。
 5. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
 6. todos 只记录明确的请求/承诺，模糊愿望不要写入。
 7. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
@@ -73,7 +91,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - ✅ "被忽视感 > 愤怒 | 侧头回避 | 拒绝交流"
 ```
 
-### 2.3 Compaction Proposer 要点
+### 2.4 Compaction Proposer 要点
 
 `compactionProposer` 使用独立 prompt。它不是摘要器，也不是普通记忆写入器；它只解决长度预算压力下的安全合并。
 
@@ -86,13 +104,13 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
 4. mergeItems 的 itemIds 必须全部来自 sourceItems，且至少 2 个。
 5. evidenceKind 使用 memory_compaction，除非输入中存在明确 user_correction 证据。
-6. evidenceRefs 只能复制 sourceItems 中已有的 evidenceRefs；不要引用 blockedPatch 的新证据来证明旧 item 合并。
+6. evidenceRefs 只能复制 maintenance.sourceItems 中已有的 evidenceRefs，并由 maintenance.sourceEvidenceMessages 校验；不要引用 blockedPatch 或 readOnlyContext 的证据来证明旧 item 合并。
 7. value.text 必须是 sourceItems 的高密度合并，不得引入 sourceItems 未表达的新事实。
 8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成“已处理”。
 9. milestones/core 只能合并高度重叠项；不能因为容量压力遗忘长期事实。
 ```
 
-### 2.4 User Prompt
+### 2.5 User Prompt
 
 将 [write-protocol.md](write-protocol.md) 中对应 Proposer 的 task JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
 
