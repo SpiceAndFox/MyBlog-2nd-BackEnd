@@ -52,6 +52,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 - 普通写入 patch 的 `evidenceRefs` 只能引用 `evidenceMessages`。
 - `compactionProposer` 的 `evidenceRefs` 只能复制 `maintenance.sourceItems` 中已有的 evidenceRefs，并由 `maintenance.sourceEvidenceMessages` 校验。
 - `readOnlyContext` 只能影响判断和去重，不能直接变成 patch 证据。
+- `readOnlyContext` 的输入范围由调用方按 Proposer 类型固定组装。不要要求根据当前消息语义临时增加背景；如果现有背景不足以判断，输出 `unable_to_decide`。
 
 ### 2.3 System Prompt 要点
 
@@ -62,7 +63,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 1. 只对本次 target sections 输出结果。非 target section 不要输出。
 2. 每个 section 必须明确输出 patches / noop / unable_to_decide 之一。
 3. patch 必须附 evidenceKind 和 evidenceRefs。evidenceRefs 的 quote 必须是原始消息短片段（<=80字），不要改写。
-4. 普通写入 patch 的 evidenceRefs 必须来自 evidenceMessages；readOnlyContext 只能用于理解背景，不能作为证据。
+4. 普通写入 patch 的 evidenceRefs 必须来自 evidenceMessages；readOnlyContext 只能用于理解背景，不能作为证据，也不能被当作完整世界状态来推断缺失事实。
 5. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
 6. todos 只记录明确的请求/承诺，模糊愿望不要写入。
 7. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
