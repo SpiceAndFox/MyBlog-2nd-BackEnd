@@ -94,18 +94,20 @@ Proposer 输入必须区分三类信息：
 - Proposer 可以读取 `readOnlyContext`，但不得输出非 target section 的 patch。
 - 普通写入 patch 的 `evidenceRefs.messageId` 必须来自 `evidenceMessages`，不得引用 `readOnlyContext` 中 item 的历史证据来证明新事实。
 - `readOnlyContext` 必须带结构化 section 名称，不能把 Renderer 文本或旧 summary 整段塞给 Proposer。
-- `readOnlyContext` 应按 Proposer 需要裁剪，避免把完整长期档案无差别输入模型。裁剪策略必须是纯代码、可复现。
+- `readOnlyContext` 应按 Proposer 需要组装。可以给足相关背景，但必须保持结构化、可复现，避免把 Renderer 文本或旧 summary 当作上下文来源。
 - 如果 read-only 背景不足，Proposer 应输出 `unable_to_decide`，而不是把背景猜成事实。
 
-建议的 read-only context 矩阵：
+建议的 read-only context profile：
 
-| Proposer | Writable target | Read-only context |
-| -------- | --------------- | ----------------- |
-| `currentStateProposer` | `scene`, `participants` | 旧 `current.scene` / `current.participants`，避免无变化时重复改写 |
-| `todoProposer` | `todos` | `current.scene`、`current.participants`、已有 active todos，必要时少量 `longTerm.relevantCore.relationship` |
-| `episodeProposer` | `recentEpisodes`, `milestones` | `current.scene`、`current.participants`、最近 `recentEpisodes`、`milestones`、相关 `core.relationship` / `userProfile` / `assistantProfile` |
-| `coreProposer` | `core` | 相关 core 子数组、`milestones`、必要的当前人物状态；用于去重和判断是否只是临时状态 |
-| `compactionProposer` | 被预算阻塞的 section/path | 目标 source items、source item 证据、被阻塞 patch 摘要，以及少量相关 current / milestone / core 背景防止误合并 |
+| Proposer               | Writable target                | Read-only context                                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `currentStateProposer` | `scene`, `participants`        | 旧 `current.scene` / `current.participants`，最近 1 条 `recentEpisodes`；用于理解延续场景和避免无变化时重复改写，不得把旧状态写回当前                                                                                                    |
+| `todoProposer`         | `todos`                        | `current.scene`、`current.participants`、已有 active todos、相关 `recentEpisodes`、`core.relationship` / `userProfile`；用于识别"刚才那件事"、关系承诺和长期偏好                                                                         |
+| `episodeProposer`      | `recentEpisodes`, `milestones` | `current.scene`、`current.participants`、最近 `recentEpisodes`、`milestones`、active todos、`core.relationship` / `userProfile` / `assistantProfile`；这是 read-only context 最宽的普通 Proposer，用于判断 episode 去重和 milestone 晋升 |
+| `coreProposer`         | `core`                         | 目标 core 子数组、相关 core sibling 子数组、`milestones`、最近 `recentEpisodes`、必要的当前人物状态和关系背景；用于判断长期事实、用户修正、去重，以及排除临时状态                                                                        |
+| `compactionProposer`   | 被预算阻塞的 section/path      | 目标 source items、source item 证据、被阻塞 patch 摘要、相关 current / recentEpisodes / milestones / core 背景；用于防止把语义相近但关系阶段不同的 item 错误合并                                                                         |
+
+`readOnlyContext` 可以相对充分，但必须由纯代码按上述 profile 从 `memory_state` 结构化组装。禁止把 Renderer 文本、旧 summary 或未分区的整块 `memory_state` 无差别塞入 Proposer。
 
 每个 Proposer 看到自己负责的 eligible sections 后，自行决定每个 section 输出什么：
 
@@ -290,14 +292,10 @@ Observer 给每个 Proposer task 的输入是单独 envelope（结构化 JSON，
   },
   "writableState": {
     "working": {
-      "recentEpisodes": [
-        { "id": "episode:7", "text": "雨夜争执 > 和解 | 用户表达不安", "createdAtMessageId": 110 }
-      ]
+      "recentEpisodes": [{ "id": "episode:7", "text": "雨夜争执 > 和解 | 用户表达不安", "createdAtMessageId": 110 }]
     },
     "longTerm": {
-      "milestones": [
-        { "id": "milestone:2", "text": "关系转折: 第一次明确互相信任", "createdAtMessageId": 80 }
-      ]
+      "milestones": [{ "id": "milestone:2", "text": "关系转折: 第一次明确互相信任", "createdAtMessageId": 80 }]
     }
   },
   "readOnlyContext": {
@@ -313,12 +311,8 @@ Observer 给每个 Proposer task 的输入是单独 envelope（结构化 JSON，
     },
     "longTerm": {
       "relevantCore": {
-        "relationship": [
-          { "id": "core:relationship:3", "text": "关系模式: 慢热 | 安全感确认后更依赖" }
-        ],
-        "userProfile": [
-          { "id": "core:user:5", "text": "偏好: 低压陪伴 | 不喜欢被逼问" }
-        ]
+        "relationship": [{ "id": "core:relationship:3", "text": "关系模式: 慢热 | 安全感确认后更依赖" }],
+        "userProfile": [{ "id": "core:user:5", "text": "偏好: 低压陪伴 | 不喜欢被逼问" }]
       }
     },
     "omitted": ["longTerm.worldFacts", "longTerm.assistantProfile"]
@@ -400,13 +394,9 @@ Proposer 输出必须通过 schema-constrained structured output 返回：
       "participants": { "user": { "emotion": "放松" } }
     },
     "longTerm": {
-      "milestones": [
-        { "id": "milestone:2", "text": "关系转折: 第一次明确互相信任" }
-      ],
+      "milestones": [{ "id": "milestone:2", "text": "关系转折: 第一次明确互相信任" }],
       "relevantCore": {
-        "relationship": [
-          { "id": "core:rel:3", "text": "关系模式: 慢热 | 安全感确认后更依赖" }
-        ]
+        "relationship": [{ "id": "core:rel:3", "text": "关系模式: 慢热 | 安全感确认后更依赖" }]
       }
     }
   },
