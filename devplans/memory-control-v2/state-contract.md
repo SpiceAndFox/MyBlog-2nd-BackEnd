@@ -427,7 +427,7 @@ Reducer 校验 `evidenceRefs.quote` 是否能在对应 `messageId` 的 raw messa
 
 `recentEpisodes` 的滑动窗口由 Reducer 在每次 apply 后执行：如果 item 数 > 5，移除最旧的（按 `createdAtMessageId` 排序），被移除的 item 不记录事件（自然遗忘）。
 
-其它 section 溢出时不立即把当前消息视为已处理。Reducer 先记录 `deferred` 事件并触发 `compactionProposer` 维护任务。维护任务只能通过 `mergeItems + evidenceKind: "memory_compaction"` 合并同 section/同 path 下的重复或高度重叠 item，不能使用通用删除，也不能把新事实写入长期记忆。compaction task 有界执行：同一 section/path 对同一阻塞窗口最多尝试 1 次。若维护任务 `accepted` 并释放容量，原 section 在下一次 tick 重新处理同一消息窗口；若维护任务 `noop`/`unable_to_decide`/`error`，或释放容量后仍超限，则原新增 patch 最终 `rejected: length_budget_exceeded` 并推进 cursor，避免永久卡住。
+其它 section 溢出时不立即把当前消息视为已处理。Reducer 先记录 `deferred` 事件并触发 `compactionProposer` 维护任务。维护任务只能通过 `mergeItems + evidenceKind: "memory_compaction"` 合并同 section/同 path 下的重复或高度重叠 item，不能使用通用删除，也不能把新事实写入长期记忆。compaction task 有界执行：同一 section/path 对同一阻塞窗口最多尝试 1 次。若维护任务 `accepted` 并释放容量，原 section 在下一次 tick 重新处理同一消息窗口；若维护任务 `noop`/`unable_to_decide`，或释放容量后仍超限，则原新增 patch 最终 `rejected: length_budget_exceeded` 并推进 cursor；若维护任务技术性失败（`error`），按 [write-protocol.md](write-protocol.md) §3.1 error 恢复策略处理。避免永久卡住。
 
 ## 9. 审计事件表
 
@@ -466,7 +466,7 @@ CREATE INDEX idx_memory_events_section_decision
 - `policy_not_allowed`：section + op + evidenceKind 不在 policy table
 - `item_not_found`：itemId 指向不存在的 item
 - `duplicate_item`：core item text 高度相似
-- `length_budget_exceeded`：section item 数量超上限；首次为 `deferred`，compaction 有界失败后为最终 `rejected`
+- `length_budget_exceeded`：section item 数量超上限；首次为 `deferred`，compaction 无合并空间后为最终 `rejected`
 - `llm_call_failed`：Proposer LLM 调用失败
 - `safety_policy_blocked`：provider 安全策略拦截
 - `max_retry_exceeded`：重试耗尽
