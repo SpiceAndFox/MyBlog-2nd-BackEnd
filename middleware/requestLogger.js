@@ -1,7 +1,9 @@
 const crypto = require("crypto");
+const { readBoolEnv } = require("../config/readEnv");
 const { logger } = require("../logger");
 
 const IGNORED_PREFIXES = ["/uploads"];
+const LOG_HTTP_SUCCESS_REQUESTS = readBoolEnv("LOG_HTTP_SUCCESS_REQUESTS", false);
 
 function normalizeHeader(value, { maxLength = 512 } = {}) {
   if (typeof value !== "string") return "";
@@ -37,6 +39,8 @@ function requestLogger(req, res, next) {
     const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
     const roundedDuration = Math.round(durationMs * 100) / 100;
     const statusCode = res.statusCode || 0;
+    if (statusCode < 400 && !LOG_HTTP_SUCCESS_REQUESTS) return;
+
     const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
 
     const userAgent = normalizeHeader(req.get?.("user-agent") || req.headers["user-agent"]);

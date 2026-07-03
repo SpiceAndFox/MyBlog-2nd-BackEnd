@@ -1016,6 +1016,7 @@ const logConfig = {
   level: readStringEnv("LOG_LEVEL", "info"),
   toConsole: readBoolEnv("LOG_TO_CONSOLE", true),
   toFile: readBoolEnv("LOG_TO_FILE", true),
+  httpSuccessRequests: readBoolEnv("LOG_HTTP_SUCCESS_REQUESTS", false),
   dir: readStringEnv("LOG_DIR", "logs"),
   errorFile: readStringEnv("LOG_ERROR_FILE", "error.log"),
   warnFile: readStringEnv("LOG_WARN_FILE", "warn.log"),
