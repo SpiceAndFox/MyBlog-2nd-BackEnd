@@ -1187,6 +1187,8 @@ const chatController = {
 
   async sendMessage(_req, res) {
     const req = _req;
+    let errorSession = null;
+    let userMessage = null;
 
     try {
       const userId = req.user?.id;
@@ -1198,6 +1200,7 @@ const chatController = {
 
       const session = await chatModel.getSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
+      errorSession = session;
       if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
@@ -1243,12 +1246,13 @@ const chatController = {
 
       let updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
+      errorSession = updatedSession;
 
       if (await isChatMemoryLocked({ userId, presetId })) {
         return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
       }
 
-      const userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
+      userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
 
       const context = await compileChatContextMessages({
@@ -1292,6 +1296,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
+        errorSession = updatedSession;
         kickMemoryUpdate({ userId, presetId, needsMemory });
         kickRagTurnIndexing({
           userId,
@@ -1394,6 +1399,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
+      errorSession = updatedSession;
       kickMemoryUpdate({ userId, presetId, needsMemory });
       kickRagTurnIndexing({
         userId,
@@ -1432,7 +1438,10 @@ const chatController = {
       }
 
       logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
-      res.status(500).json({ error: message });
+      const payload = { error: message };
+      if (errorSession) payload.session = errorSession;
+      if (userMessage) payload.user_message = userMessage;
+      res.status(500).json(payload);
     }
   },
 };
