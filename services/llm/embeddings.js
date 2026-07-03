@@ -1,4 +1,5 @@
 const { chatRagConfig } = require("../../config");
+const { buildOpenRouterAttributionHeaders } = require("./providers/openrouter/headers");
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -19,15 +20,7 @@ function buildUrl(baseUrl, path) {
 function buildHeaderExtensions() {
   const baseUrl = String(chatRagConfig.embeddingBaseUrl || "");
   if (!baseUrl.includes("openrouter.ai")) return {};
-
-  const headers = {};
-  const siteUrl = String(process.env.OPENROUTER_SITE_URL || "").trim();
-  if (siteUrl) headers["HTTP-Referer"] = siteUrl;
-
-  const appName = String(process.env.OPENROUTER_APP_NAME || "").trim();
-  if (appName) headers["X-Title"] = appName;
-
-  return headers;
+  return buildOpenRouterAttributionHeaders();
 }
 
 async function readJsonSafe(response) {

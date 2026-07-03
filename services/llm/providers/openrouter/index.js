@@ -1,61 +1,118 @@
-function normalizeOptionalString(value) {
-  const normalized = String(value || "").trim();
-  return normalized || "";
-}
-
-function buildOptionalHeaders() {
-  const headers = {};
-
-  const siteUrl = normalizeOptionalString(process.env.OPENROUTER_SITE_URL);
-  if (siteUrl) headers["HTTP-Referer"] = siteUrl;
-
-  const appName = normalizeOptionalString(process.env.OPENROUTER_APP_NAME);
-  if (appName) headers["X-Title"] = appName;
-
-  return headers;
-}
+const { buildOpenRouterAttributionHeaders } = require("./headers");
 
 function normalizeModelId(modelId) {
   return String(modelId || "").trim();
 }
 
-function isOpenAiModel(modelId) {
-  return normalizeModelId(modelId).startsWith("openai/");
+const GLM_5_2_MODEL_ID = "z-ai/glm-5.2";
+const PRESENCE_PENALTY_PARAM = "presence_penalty";
+const FREQUENCY_PENALTY_PARAM = "frequency_penalty";
+
+const reasoningEffortOptions = [
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+];
+
+function normalizeReasoningEffort(settings) {
+  const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
+  return raw === "xhigh" ? "xhigh" : raw === "high" ? "high" : "";
 }
 
-function buildWebPluginConfig({ settings } = {}) {
+function buildWebSearchToolConfig({ settings } = {}) {
   const maxResults = Number(settings?.webSearchMaxResults);
 
-  const plugin = { id: "web", engine: "exa" };
+  const tool = {
+    type: "openrouter:web_search",
+    parameters: {
+      engine: "exa",
+    },
+  };
 
   if (Number.isFinite(maxResults)) {
     const normalized = Math.trunc(maxResults);
-    if (normalized > 0 && normalized <= 10) plugin.max_results = normalized;
+    if (normalized > 0 && normalized <= 10) tool.parameters.max_results = normalized;
   }
 
-  return plugin;
+  return tool;
 }
 
-function buildBodyExtensions({ settings } = {}) {
+function buildBodyExtensions({ model, settings } = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
 
-  const enableWebSearch = Boolean(settings.enableWebSearch);
-  if (!enableWebSearch) return {};
+  const body = {};
 
-  return {
-    plugins: [buildWebPluginConfig({ settings })],
-  };
+  const enableWebSearch = Boolean(settings.enableWebSearch);
+  if (enableWebSearch) {
+    body.tools = [buildWebSearchToolConfig({ settings })];
+  }
+
+  if (normalizeModelId(model) === GLM_5_2_MODEL_ID) {
+    const effort = normalizeReasoningEffort(settings);
+    if (effort) {
+      body.reasoning = {
+        effort,
+        exclude: true,
+      };
+    }
+  }
+
+  return body;
 }
 
 const MODELS = [
-  { id: "openai/gpt-4o-mini", name: "openai/gpt-4o-mini" },
-  { id: "openai/gpt-4o", name: "openai/gpt-4o" },
-  { id: "anthropic/claude-sonnet-4.5", name: "anthropic/claude-sonnet-4.5" },
-  { id: "anthropic/claude-haiku-4.5", name: "anthropic/claude-haiku-4.5" },
-  { id: "minimax/minimax-m2.1", name: "minimax/minimax-m2.1" },
+  {
+    id: "openai/gpt-4o-mini",
+    name: "openai/gpt-4o-mini",
+    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
+  },
+  {
+    id: "openai/gpt-4o",
+    name: "openai/gpt-4o",
+    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
+  },
+  {
+    id: "anthropic/claude-sonnet-4.5",
+    name: "anthropic/claude-sonnet-4.5",
+    supportedParameters: [],
+  },
+  {
+    id: "anthropic/claude-haiku-4.5",
+    name: "anthropic/claude-haiku-4.5",
+    supportedParameters: [],
+  },
+  {
+    id: "minimax/minimax-m2.1",
+    name: "minimax/minimax-m2.1",
+    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
+  },
+  {
+    id: GLM_5_2_MODEL_ID,
+    name: GLM_5_2_MODEL_ID,
+    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
+    reasoningEfforts: ["xhigh", "high"],
+  },
 ];
 
-const NON_OPENAI_MODEL_IDS = MODELS.map((model) => model?.id).filter((id) => id && !isOpenAiModel(id));
+const MODEL_BY_ID = new Map(MODELS.map((model) => [model.id, model]));
+
+function modelSupportsParameter(modelId, paramName) {
+  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  if (!model) return false;
+  return Array.isArray(model.supportedParameters) && model.supportedParameters.includes(paramName);
+}
+
+function modelSupportsReasoningEffort(modelId) {
+  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  return Array.isArray(model?.reasoningEfforts) && model.reasoningEfforts.length > 0;
+}
+
+const PRESENCE_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
+  (id) => !modelSupportsParameter(id, PRESENCE_PENALTY_PARAM)
+);
+const FREQUENCY_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
+  (id) => !modelSupportsParameter(id, FREQUENCY_PENALTY_PARAM)
+);
+const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
 
 module.exports = {
   id: "openrouter",
@@ -65,7 +122,7 @@ module.exports = {
   baseUrlEnv: ["OPENROUTER_BASE_URL"],
   openaiCompatible: {
     bodyExtensions: buildBodyExtensions,
-    headers: () => buildOptionalHeaders(),
+    headers: () => buildOpenRouterAttributionHeaders(),
   },
   settingsSchema: [
     {
@@ -108,30 +165,39 @@ module.exports = {
       capability: "topP",
     },
     {
+      key: "reasoningEffort",
+      label: "Reasoning Effort",
+      type: "select",
+      options: reasoningEffortOptions,
+      default: "high",
+      capability: "thinking",
+      modelBlocklist: REASONING_EFFORT_BLOCKLIST,
+    },
+    {
       key: "presencePenalty",
-      label: "Presence Penalty (OpenAI models)",
+      label: "Presence Penalty",
       type: "range",
       min: -2,
       max: 2,
       step: 0.1,
       decimals: 1,
       capability: "presencePenalty",
-      modelBlocklist: NON_OPENAI_MODEL_IDS,
+      modelBlocklist: PRESENCE_PENALTY_BLOCKLIST,
     },
     {
       key: "frequencyPenalty",
-      label: "Frequency Penalty (OpenAI models)",
+      label: "Frequency Penalty",
       type: "range",
       min: -2,
       max: 2,
       step: 0.1,
       decimals: 1,
       capability: "frequencyPenalty",
-      modelBlocklist: NON_OPENAI_MODEL_IDS,
+      modelBlocklist: FREQUENCY_PENALTY_BLOCKLIST,
     },
     {
       key: "enableWebSearch",
-      label: "Web Search (OpenRouter plugin: Exa)",
+      label: "Web Search (OpenRouter: Exa)",
       type: "toggle",
       capability: "webSearch",
     },
@@ -146,9 +212,8 @@ module.exports = {
   parameterPolicy: {
     blockedBodyParams: [],
     isBodyParamAllowed: ({ model, paramName }) => {
-      const normalizedModelId = normalizeModelId(model);
-      if (["presence_penalty", "frequency_penalty"].includes(paramName)) {
-        return isOpenAiModel(normalizedModelId);
+      if (paramName === PRESENCE_PENALTY_PARAM || paramName === FREQUENCY_PENALTY_PARAM) {
+        return modelSupportsParameter(model, paramName);
       }
 
       return true;
@@ -163,6 +228,6 @@ module.exports = {
     maxTokens: true,
     webSearch: true,
     tools: false,
-    thinking: false,
+    thinking: true,
   },
 };
