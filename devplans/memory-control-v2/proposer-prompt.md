@@ -24,7 +24,7 @@ schema 作者注意：
 
 - 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
 - `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
-- `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction` 或基于明确用户修正的 `user_correction`。
+- `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`。
 
 ### 2.2 System Prompt 要点
 
@@ -77,7 +77,7 @@ schema 作者注意：
 2. 只能输出 mergeItems / noop / unable_to_decide。
 3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
 4. mergeItems 的 itemIds 必须全部来自 writableState 中的目标 source items，且至少 2 个。
-5. evidenceKind 使用 memory_compaction，除非输入中存在明确 user_correction 证据。
+5. evidenceKind 只能使用 `memory_compaction`。维护模式不观察新消息，无法见证用户修正；用户修正由 normal proposer 处理。
 6. evidenceRefs 只能复制 writableState source items 中已有的 evidenceRefs，并由 evidenceMessages 校验；不要引用 task.trigger.blockedPatchSummary、evidenceMessages 或 readOnlyContext 来证明新事实。
 7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
 8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成"已处理"。
