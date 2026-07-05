@@ -40,7 +40,7 @@ schema 作者注意：
 6. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
 7. todos 只记录明确的请求/承诺，模糊愿望不要写入。
 8. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
-9. core 只接受用户明确表达的长期事实或用户修正，临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
+9. core 只接受用户或设定明确表达的长期事实（含 assistant 设定人格），临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
 10. 删除/完成/取消待办必须用对应 op（completeTodo/cancelTodo/expireTodo），不要用通用 removeItem。
 11. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
 
