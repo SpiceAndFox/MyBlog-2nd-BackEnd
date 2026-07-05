@@ -18,6 +18,8 @@ function normalizeReasoningEffort(settings) {
   return raw === "max" ? "max" : "high";
 }
 
+const deprecatedPenaltyParams = ["presence_penalty", "frequency_penalty"];
+
 module.exports = {
   id: "deepseek",
   name: "DeepSeek",
@@ -79,26 +81,6 @@ module.exports = {
       capability: "maxTokens",
     },
     {
-      key: "presencePenalty",
-      label: "Presence Penalty",
-      type: "range",
-      min: -2,
-      max: 2,
-      step: 0.1,
-      decimals: 1,
-      capability: "presencePenalty",
-    },
-    {
-      key: "frequencyPenalty",
-      label: "Frequency Penalty",
-      type: "range",
-      min: -2,
-      max: 2,
-      step: 0.1,
-      decimals: 1,
-      capability: "frequencyPenalty",
-    },
-    {
       key: "stream",
       label: "Streaming",
       type: "toggle",
@@ -112,9 +94,11 @@ module.exports = {
   parameterPolicy: {
     blockedBodyParams: [],
     isBodyParamAllowed: ({ paramName, settings }) => {
+      if (deprecatedPenaltyParams.includes(paramName)) return false;
+
       if (normalizeThinkingMode(settings) !== "enabled") return true;
 
-      if (["temperature", "top_p", "presence_penalty", "frequency_penalty"].includes(paramName)) return false;
+      if (["temperature", "top_p"].includes(paramName)) return false;
       if (["logprobs", "top_logprobs"].includes(paramName)) return false;
       return true;
     },
@@ -124,8 +108,8 @@ module.exports = {
     temperature: true,
     topP: true,
     maxTokens: true,
-    presencePenalty: true,
-    frequencyPenalty: true,
+    presencePenalty: false,
+    frequencyPenalty: false,
     webSearch: false,
     tools: false,
     thinking: true,
