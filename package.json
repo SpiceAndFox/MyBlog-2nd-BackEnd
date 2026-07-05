@@ -9,6 +9,7 @@
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
     "regenerate-gists": "node --use-env-proxy regenerateGists.js",
     "regenerate-chat-rag": "node --use-env-proxy regenerateChatRag.js",
+    "migrate-chat-rag-embedding-meta": "node migrateChatRagEmbeddingMeta.js",
     "regenerate-article-thumbnails": "node --use-env-proxy regenerateArticleThumbnails.js"
   },
   "keywords": [],

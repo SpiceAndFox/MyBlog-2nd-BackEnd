@@ -10,8 +10,12 @@ const FREQUENCY_PENALTY_PARAM = "frequency_penalty";
 
 const reasoningEffortOptions = [
   { value: "high", label: "High" },
-  { value: "xhigh", label: "XHigh" },
+  { value: "xhigh", label: "Max" },
 ];
+
+function isReasoningEnabled(settings) {
+  return settings?.reasoningEnabled !== false;
+}
 
 function normalizeReasoningEffort(settings) {
   const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
@@ -47,12 +51,19 @@ function buildBodyExtensions({ model, settings } = {}) {
   }
 
   if (normalizeModelId(model) === GLM_5_2_MODEL_ID) {
-    const effort = normalizeReasoningEffort(settings);
-    if (effort) {
+    if (!isReasoningEnabled(settings)) {
       body.reasoning = {
-        effort,
+        enabled: false,
         exclude: true,
       };
+    } else {
+      const effort = normalizeReasoningEffort(settings);
+      if (effort) {
+        body.reasoning = {
+          effort,
+          exclude: true,
+        };
+      }
     }
   }
 
@@ -165,6 +176,14 @@ module.exports = {
       capability: "topP",
     },
     {
+      key: "reasoningEnabled",
+      label: "Enable Reasoning",
+      type: "toggle",
+      default: true,
+      capability: "thinking",
+      modelBlocklist: REASONING_EFFORT_BLOCKLIST,
+    },
+    {
       key: "reasoningEffort",
       label: "Reasoning Effort",
       type: "select",
@@ -172,6 +191,7 @@ module.exports = {
       default: "high",
       capability: "thinking",
       modelBlocklist: REASONING_EFFORT_BLOCKLIST,
+      disabledWhen: { key: "reasoningEnabled", value: false },
     },
     {
       key: "presencePenalty",
