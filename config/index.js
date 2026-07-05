@@ -293,6 +293,11 @@ const chatConfig = {
     openrouter: ensureSupportedModel("openrouter", readRequiredStringEnv("OPENROUTER_DEFAULT_MODEL"), {
       name: "OPENROUTER_DEFAULT_MODEL",
     }),
+    "opencode-zen-claude": ensureSupportedModel(
+      "opencode-zen-claude",
+      readRequiredStringEnv("OPENCODE_ZEN_CLAUDE_DEFAULT_MODEL"),
+      { name: "OPENCODE_ZEN_CLAUDE_DEFAULT_MODEL" }
+    ),
   },
   defaultSettings: baseChatDefaultSettings,
   defaultSettingsByProvider: {
@@ -310,6 +315,11 @@ const chatConfig = {
     openrouter: readProviderDefaultSettings({
       providerId: "openrouter",
       envPrefix: "OPENROUTER",
+      baseDefaults: baseChatDefaultSettings,
+    }),
+    "opencode-zen-claude": readProviderDefaultSettings({
+      providerId: "opencode-zen-claude",
+      envPrefix: "OPENCODE_ZEN_CLAUDE",
       baseDefaults: baseChatDefaultSettings,
     }),
   },
