@@ -42,6 +42,23 @@ function clampBodyNumber(providerId, key, value, { integer } = {}) {
   return integer ? Math.trunc(nextValue) : nextValue;
 }
 
+function buildWebSearchTools({ providerId, model, settings } = {}) {
+  if (!readSetting(settings, "enableWebSearch")) return [];
+  if (!isBodyParamAllowed(providerId, "tools", { model, settings })) return [];
+
+  const tool = {
+    type: "web_search_20250305",
+    name: "web_search",
+  };
+
+  const maxUses = clampBodyNumber(providerId, "webSearchMaxUses", readSetting(settings, "webSearchMaxUses"), {
+    integer: true,
+  });
+  if (maxUses !== null) tool.max_uses = maxUses;
+
+  return [tool];
+}
+
 async function readJsonSafe(response) {
   const text = await response.text();
   if (!text) return { json: null, text: "" };
@@ -146,6 +163,9 @@ function buildBody({ providerId, model, messages, temperature, topP, maxTokens, 
     body.top_p = normalizedTopP;
   }
 
+  const tools = buildWebSearchTools({ providerId, model, settings });
+  if (tools.length) body.tools = tools;
+
   return body;
 }
 
@@ -162,6 +182,15 @@ function extractResponseContent(data) {
       continue;
     }
 
+    if (
+      block.type === "server_tool_use" ||
+      block.type === "web_search_tool_result" ||
+      block.type === "thinking" ||
+      block.type === "redacted_thinking"
+    ) {
+      continue;
+    }
+
     if (block.type === "tool_use") {
       toolNames.push(String(block.name || "").trim());
       continue;
@@ -172,6 +201,10 @@ function extractResponseContent(data) {
 
   const content = textParts.join("").trim();
   if (content) return content;
+
+  if (data?.stop_reason === "pause_turn") {
+    throw new Error("Model paused while executing server tools, but pause_turn continuation is not implemented yet.");
+  }
 
   if (toolNames.length || data?.stop_reason === "tool_use") {
     const names = toolNames.filter(Boolean).slice(0, 6).join(", ");
@@ -320,6 +353,10 @@ async function* streamChatCompletionDeltas({ response }) {
 
         if (parsed?.type === "error") {
           throw new Error(pickErrorMessage({ status: 500, json: parsed, text: "" }));
+        }
+
+        if (parsed?.type === "message_delta" && parsed?.delta?.stop_reason === "pause_turn") {
+          throw new Error("Model paused while executing server tools, but pause_turn continuation is not implemented yet.");
         }
 
         if (parsed?.type === "content_block_start" && parsed?.content_block?.type === "text") {
