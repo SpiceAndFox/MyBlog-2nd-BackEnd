@@ -57,7 +57,7 @@ schema 作者注意：
 - relationship_milestone: 关系或剧情关键转折
 - user_correction: 用户明确修正旧记忆或设定
 - assistant_correction: assistant 明确修正关于自己、世界或关系的已有记忆
-- long_term_fact: 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 对陈述是原话，对推断是行为描述
+- long_term_fact: 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 始终是 raw message 短片段——对陈述是原话，对推断是体现该行为的原话（如"我冲过去把门踹开了"）；推断理由写在 value.text 中，不放在 quote
 - memory_compaction: 基于已有 memory item 的预算维护与去重合并，不代表新事实
 
 ### 高密度句法
@@ -79,7 +79,7 @@ schema 作者注意：
 3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
 4. mergeItems 的 itemIds 必须全部来自 writableState 中的目标 source items，且至少 2 个。
 5. evidenceKind 只能使用 `memory_compaction`。维护模式不观察新消息，无法见证用户修正；用户修正由 normal proposer 处理。
-6. evidenceRefs 只能复制 writableState source items 中已有的 evidenceRefs，并由 evidenceMessages 校验；不要引用 task.trigger.blockedPatchSummary、evidenceMessages 或 readOnlyContext 来证明新事实。
+6. evidenceRefs 必须是 writableState source items 中已有 evidenceRefs 的完整并集（所有 source items 的所有证据都要复制，不能只取其中一条或部分）；由 evidenceMessages 校验；不要引用 task.trigger.blockedPatchSummary、evidenceMessages 或 readOnlyContext 来证明新事实。
 7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
 8. todos 只能合并重复/同一事项的待办；不能把未完成待办删除成"已处理"。
 9. milestones/core 只能合并高度重叠项；不能因为容量压力遗忘长期事实。

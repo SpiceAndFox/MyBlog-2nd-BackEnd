@@ -47,7 +47,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
     relationship: []            // item 数组
   },
   meta: {
-    halted: false,             // 全局 halt flag，true 时聊天接口拒绝新消息，见 §9.2
+    halted: false,             // 该 userId/presetId 的 halt flag，true 时该会话的聊天接口拒绝新消息，见 §9.2
     perSectionCursor: {},      // { section: coveredUntilMessageId }
     recovery: {}               // { section: { consecutiveErrors, awaitingContextExpansion, lastErrorReason, lastErrorTickId } }，见 §9.2
   }
@@ -100,7 +100,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 | `relationship_milestone` | 关系或剧情关键转折                        |
 | `user_correction`        | 用户明确修正旧记忆或设定                  |
 | `assistant_correction`   | assistant 明确修正关于自己、世界或关系的已有记忆 |
-| `long_term_fact`         | 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 对陈述是原话，对推断是行为描述 |
+| `long_term_fact`         | 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 始终是 raw message 短片段——对陈述是原话，对推断是体现该行为的原话（如"我冲过去把门踹开了"）；推断理由写在 value.text 中，不放在 quote |
 | `memory_compaction`      | 基于已有 memory item 的预算维护与去重合并 |
 
 ## 4. Patch Op 合法值与约束
@@ -333,7 +333,7 @@ Proposer 输出必须通过 provider 支持的 schema-constrained structured out
 ```
 
 - 每个目标 section 的 `status` 必须是 `patches | noop | unable_to_decide` 之一。非目标 section 不出现在 `sectionResults` 中。
-- `patches` 数组中每个 patch 含 `op`、`path`/`itemId`/`itemIds`（按 §4 必填规则）、`value`、`evidenceKind`（§3 枚举）、`evidenceRefs`（至少 1 项，每项含 `messageId` integer 和 `quote` string max 80 字符）。
+- `patches` 数组中每个 patch 含 `op`、`path`/`itemId`/`itemIds`（按 §4 必填规则）、`value`（按 §4 必填规则）、`evidenceKind`（§3 枚举）、`evidenceRefs`（至少 1 项，每项含 `messageId` integer 和 `quote` string max 80 字符）。
 - `evidenceKind` 是 Reducer 做 policy gate 的枚举输入（§6）。Reducer 不把它当可信度分数；真实证据仍必须通过 `messageId + quote` 校验（§7）。
 - `patchId` 由 Reducer 生成，Proposer 不需要输出，用于 event log 引用。
 - `core` section 的 patch 额外需要 `path` 指定 `longTerm` 下的子数组（`worldFacts`/`userProfile`/`assistantProfile`/`relationship`）。示例：
@@ -518,7 +518,7 @@ CREATE INDEX idx_memory_ops_log_outcome
 - `safety_policy_blocked`：provider 安全策略拦截（finish_reason 含 content_filter 或 refusal）。
 - `output_schema_invalid`：provider 返回了内容但 adapter 无法解析为 §5.5 schema。与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前，由 adapter 识别。schema-constrained output 正常情况下不应出现此错误，出现即 provider/schema 配置 bug，视为持续性，不重试同输入。
 - `unable_to_decide`：Proposer 自认信息不足。首次记录并扩窗口重试一次；二次仍 `unable_to_decide` → 推进 cursor。ops_log outcome 始终记 `unable_to_decide`（记实际发生的事），不触发 halt。
-- `halted`：仅用于瞬时错误（`llm_call_failed`/`safety_policy_blocked`）达 `consecutiveErrors` 阈值（3 次）后触发全局 halt。`output_schema_invalid` 直接触发 halt 时也使用此 outcome。`unable_to_decide` 路径不使用此 outcome（它推进 cursor 而非 halt）。
+- `halted`：仅用于瞬时错误（`llm_call_failed`/`safety_policy_blocked`）达 `consecutiveErrors` 阈值（3 次）后触发 halt（`meta.halted=true`）。`output_schema_invalid` 直接触发 halt 时也使用此 outcome。`unable_to_decide` 路径不使用此 outcome（它推进 cursor 而非 halt）。halt 作用于该 `userId/presetId` 的会话——`meta.halted` 存在于单个 `memory_state`，true 时该会话的聊天接口拒绝新消息，不影响其他会话。
 
 ops_log 只记 Proposer 调用层的结果。patch 是否被 Reducer 接受、拒绝、暂缓，查 events 表。
 
@@ -537,7 +537,7 @@ recovery: {
 
 语义：
 
-- `consecutiveErrors`：仅瞬时 error outcome（`llm_call_failed`/`safety_policy_blocked`）时 +1，`accepted`/`rejected`/`noop`/`deferred` 时重置为 0。`output_schema_invalid` 不走此计数器——它是持续性错误，直接触发全局 halt（见 [write-protocol.md](write-protocol.md) §3.1）。达 [write-protocol.md](write-protocol.md) §3.1 阈值（3 次）后触发全局 halt（`meta.halted=true`），`consecutiveErrors` 保留不清零，等手动 resume 时重置。
+- `consecutiveErrors`：仅瞬时 error outcome（`llm_call_failed`/`safety_policy_blocked`）时 +1，`accepted`/`rejected`/`noop`/`deferred` 时重置为 0。`output_schema_invalid` 不走此计数器——它是持续性错误，直接触发 halt（见 [write-protocol.md](write-protocol.md) §3.1）。达 [write-protocol.md](write-protocol.md) §3.1 阈值（3 次）后触发 halt（`meta.halted=true`），`consecutiveErrors` 保留不清零，等手动 resume 时重置。
 - `awaitingContextExpansion`：首次 `unable_to_decide` 置 true、不推进 cursor。下一 tick Observer 读到 true → 发扩大的 contextWindow（如 +10）。二次仍 `unable_to_decide` → 推进 cursor、清 false。任何 patch 决策（accepted/rejected/noop/deferred）也清 false。
 - 两者独立：一个管 error 路径，一个管 unable_to_decide 路径，不互相干扰。
 
