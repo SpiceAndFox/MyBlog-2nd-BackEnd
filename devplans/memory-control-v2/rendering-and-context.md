@@ -24,6 +24,8 @@ Renderer 必须：
 
 如果 `memory_state` 不存在、`version` 不支持或 schema 校验失败，`memory` segment 直接不注入。是否存在旧格式、是否需要迁移或回放，是迁移层的问题，不由 context segment 耦合历史版本名称。
 
+跳过注入时必须记录原因（state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查（见 [harness.md](harness.md) §3.9）。不得静默跳过。
+
 ## 3. RAG 边界
 
 Memory v2 和 RAG 不互相替代。
