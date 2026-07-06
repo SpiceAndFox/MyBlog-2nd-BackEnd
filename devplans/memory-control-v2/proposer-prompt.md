@@ -23,7 +23,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 schema 作者注意：
 
 - 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
-- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`。
 
 ### 2.2 System Prompt 要点
@@ -45,18 +45,19 @@ schema 作者注意：
 11. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
 
 ### evidenceKind 判断指南
-- user_request: 用户明确请求系统/角色稍后做某事
-- user_commitment: 用户明确承诺稍后做某事
-- assistant_commitment: assistant 明确承诺稍后做某事
+- user_request: 用户明确请求系统/角色稍后做某事（assistant 是行动者）
+- user_commitment: 用户明确承诺稍后做某事（user 是行动者，user 发起）
+- assistant_request: assistant 明确请求用户稍后做某事（user 是行动者，assistant 发起）
+- assistant_commitment: assistant 明确承诺稍后做某事（assistant 是行动者）
 - todo_completion: 待办已完成
 - todo_cancel: 待办被取消
 - todo_expiration: 短期待办自然失效
 - scene_change: 地点/时间/环境/氛围明确变化
-- participant_state: 用户或 assistant 当前情绪/动作/意图变化
+- participant_change: 用户或 assistant 当前情绪/动作/意图变化
 - recent_episode: 最近发生的有意义互动
 - relationship_milestone: 关系或剧情关键转折
 - user_correction: 用户明确修正旧记忆或设定
-- assistant_correction: assistant 明确修正关于自己、世界或关系的已有记忆
+- assistant_correction: assistant 明确修正已有记忆（场景、状态、待办、经历、里程碑、长期事实等）。与 user_correction 权限相同，可修正所有允许 correction 的 section
 - long_term_fact: 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 始终是 raw message 短片段——对陈述是原话，对推断是体现该行为的原话（如"我冲过去把门踹开了"）；推断理由写在 value.text 中，不放在 quote
 - memory_compaction: 基于已有 memory item 的预算维护与去重合并，不代表新事实
 
@@ -88,5 +89,275 @@ schema 作者注意：
 ### 2.4 User Prompt
 
 将 [state-contract.md](state-contract.md) §5.1 / §5.2 中对应 Proposer 的 task envelope JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
+
+## 3. Per-Proposer op→field 必填速查表
+
+[state-contract.md](state-contract.md) §4 的字段必填规则是 Reducer 校验视角的 master 规则。本节按 Proposer 拆分，供 schema 作者和 prompt 编写者速查。每个 Proposer 的 output schema 只包含自己合法的 op（派生关系见 [state-contract.md](state-contract.md) §4.1）。
+
+### currentStateProposer（scene, participants）
+
+| op          | path       | itemId | itemIds | value | evidenceRefs |
+| ----------- | ---------- | ------ | ------- | ----- | ------------ |
+| `setField`  | 必填(字段名) | 不需要  | 不需要   | 必填   | 必填         |
+| `clearField`| 必填(字段名) | 不需要  | 不需要   | 不需要 | 必填         |
+
+### todoProposer（todos）
+
+| op             | path  | itemId | itemIds | value      | evidenceRefs |
+| -------------- | ----- | ------ | ------- | ---------- | ------------ |
+| `addItem`      | 不需要 | 不需要  | 不需要   | 必填       | 必填         |
+| `updateItem`   | 不需要 | 必填   | 不需要   | 必填       | 必填         |
+| `mergeItems`   | 不需要 | 不需要  | 必填    | 必填(text) | 必填(并集)   |
+| `completeTodo` | 不需要 | 必填   | 不需要   | 不需要     | 必填         |
+| `cancelTodo`   | 不需要 | 必填   | 不需要   | 不需要     | 必填         |
+| `expireTodo`   | 不需要 | 必填   | 不需要   | 不需要     | 必填         |
+
+> `expireTodo` 是 Proposer 观察到用户澄清"不再需要"时输出的 patch（evidenceKind: `todo_expiration`），需要 evidenceRefs。与 Reducer 自行触发的 `expiresAtTime < now` wall-clock 清理不同——后者不产生 patch、不产生 event（自然遗忘）。
+
+### episodeProposer（recentEpisodes, milestones）
+
+| op           | path  | itemId | itemIds | value      | evidenceRefs |
+| ------------ | ----- | ------ | ------- | ---------- | ------------ |
+| `addItem`    | 不需要 | 不需要  | 不需要   | 必填       | 必填         |
+| `updateItem` | 不需要 | 必填   | 不需要   | 必填       | 必填         |
+| `mergeItems` | 不需要 | 不需要  | 必填    | 必填(text) | 必填(并集)   |
+
+### coreProposer（core）
+
+| op           | path         | itemId | itemIds | value      | evidenceRefs |
+| ------------ | ------------ | ------ | ------- | ---------- | ------------ |
+| `addItem`    | 必填(子数组名) | 不需要  | 不需要   | 必填       | 必填         |
+| `updateItem` | 必填(子数组名) | 必填   | 不需要   | 必填       | 必填         |
+| `mergeItems` | 必填(子数组名) | 不需要  | 必填    | 必填(text) | 必填(并集)   |
+
+`path` 值为 `worldFacts`/`userProfile`/`assistantProfile`/`relationship` 之一。
+
+### compactionProposer（维护模式）
+
+| op           | path             | itemId | itemIds | value      | evidenceRefs              |
+| ------------ | ---------------- | ------ | ------- | ---------- | ------------------------- |
+| `mergeItems` | 必填(core 时)     | 不需要  | 必填    | 必填(text) | 必填(source items 证据并集) |
+
+`evidenceKind` 只能是 `memory_compaction`。evidenceRefs 必须是 `writableState` source items 既有 evidenceRefs 的完整并集，不能引用新对话片段。
+
+## 4. Golden Examples
+
+Golden Example 约束 schema 无法表达的东西：text/value 的高密度质量、quote 选取标准、op 选择边界、evidenceKind 判定。每个 `prompts/memory/*.md` 应包含对应 Proposer 的 golden + negative example。本节给出跨 Proposer 的参考集，prompt 作者可据此扩充。
+
+### 4.1 currentStateProposer
+
+**✅ setField + scene_change（地点变化）**
+```json
+{ "op": "setField", "path": "location", "value": "医院走廊",
+  "evidenceKind": "scene_change",
+  "evidenceRefs": [{ "messageId": 121, "quote": "我到了医院门口" }] }
+```
+quote 是原话短片段，value 是高密度关键词。
+
+**✅ setField + participant_change（情绪变化）**
+```json
+{ "op": "setField", "path": "user.emotion", "value": "强忍委屈",
+  "evidenceKind": "participant_change",
+  "evidenceRefs": [{ "messageId": 122, "quote": "我没事真的没事" }] }
+```
+
+**✅ clearField + scene_change（场景已失效）**
+```json
+{ "op": "clearField", "path": "note",
+  "evidenceKind": "scene_change",
+  "evidenceRefs": [{ "messageId": 125, "quote": "我们已经离开那家店了" }] }
+```
+`clearField` 表示"此字段已失效"，不是设为 null。
+
+**✅ setField + user_correction（用户修正错误场景记忆）**
+```json
+{ "op": "setField", "path": "location", "value": "家里",
+  "evidenceKind": "user_correction",
+  "evidenceRefs": [{ "messageId": 128, "quote": "我们其实一直在家没出去过" }] }
+```
+之前误记为医院，用户澄清实际在家。correction 区分"场景变了"和"之前记错了"。
+
+**✅ setField + assistant_correction（assistant 修正错误状态记忆）**
+```json
+{ "op": "setField", "path": "user.emotion", "value": "疲惫",
+  "evidenceKind": "assistant_correction",
+  "evidenceRefs": [{ "messageId": 129, "quote": "你不是在生气，只是太累了" }] }
+```
+assistant 角色重新诠释用户状态，从"生气"修正为"疲惫"。
+
+**❌ 模糊氛围当 scene_change**
+```json
+{ "op": "setField", "path": "mood", "value": "感觉有点不一样了",
+  "evidenceKind": "scene_change",
+  "evidenceRefs": [{ "messageId": 121, "quote": "感觉有点不一样了" }] }
+```
+"有点不一样"不是明确的场景变化，应输出 noop 或更具体的描述。
+
+### 4.2 todoProposer
+
+**✅ addItem + user_request（用户请求系统稍后做）**
+```json
+{ "op": "addItem", "value": { "text": "归还橡皮" },
+  "evidenceKind": "user_request",
+  "evidenceRefs": [{ "messageId": 121, "quote": "明天提醒我把橡皮还给她" }] }
+```
+
+**✅ addItem + user_commitment + expiresAtTime（用户承诺，带过期）**
+```json
+{ "op": "addItem",
+  "value": { "text": "去钓鱼", "expiresAtTime": "2026-07-21T00:00:00Z" },
+  "evidenceKind": "user_commitment",
+  "evidenceRefs": [{ "messageId": 130, "quote": "我们两周后去钓鱼吧" }] }
+```
+`expiresAtTime` = task.now + 14天 + 1天（活动当天仍是活跃期，次日才过期）。
+
+**✅ addItem + assistant_request（assistant 请求用户做某事）**
+```json
+{ "op": "addItem", "value": { "text": "按时吃饭" },
+  "evidenceKind": "assistant_request",
+  "evidenceRefs": [{ "messageId": 131, "quote": "你要记得按时吃饭" }] }
+```
+assistant 是发起者，user 是行动者。与 `user_commitment`（user 自发承诺）不同——assistant 应主动追问此类待办。
+
+**✅ completeTodo + todo_completion**
+```json
+{ "op": "completeTodo", "itemId": "todos:abc-1",
+  "evidenceKind": "todo_completion",
+  "evidenceRefs": [{ "messageId": 140, "quote": "橡皮我已经还了" }] }
+```
+
+**✅ updateItem + user_correction（用户修正待办内容）**
+```json
+{ "op": "updateItem", "itemId": "todos:abc-1",
+  "value": { "text": "归还橡皮和笔记本" },
+  "evidenceKind": "user_correction",
+  "evidenceRefs": [{ "messageId": 135, "quote": "对了还有笔记本也要还" }] }
+```
+纠错走 `updateItem` + `user_correction`，不再使用单独的 correctItem op。
+
+**❌ 模糊愿望当 user_request**
+```json
+{ "op": "addItem", "value": { "text": "想变好" },
+  "evidenceKind": "user_request",
+  "evidenceRefs": [{ "messageId": 121, "quote": "我希望能变好" }] }
+```
+"希望能变好"是模糊愿望，不是明确请求/承诺，不应写入 todos。
+
+### 4.3 episodeProposer
+
+**✅ addItem + recent_episode（近期有意义互动）**
+```json
+{ "op": "addItem",
+  "value": { "text": "屋顶和解: 用户承认害怕被离开 | assistant 等待并靠近" },
+  "evidenceKind": "recent_episode",
+  "evidenceRefs": [{ "messageId": 121, "quote": "很怕你会走" }] }
+```
+text 用高密度关键词 + 符号格式，不用完整句子。
+
+**✅ addItem + relationship_milestone（关系关键转折）**
+```json
+{ "op": "addItem",
+  "value": { "text": "关系转折: 第一次明确互相信任" },
+  "evidenceKind": "relationship_milestone",
+  "evidenceRefs": [{ "messageId": 150, "quote": "我愿意相信你" }] }
+```
+
+**✅ updateItem + user_correction（用户修正 episode 描述）**
+```json
+{ "op": "updateItem", "itemId": "episode:7",
+  "value": { "text": "雨夜争执 > 和解 | 用户表达不安而非指责" },
+  "evidenceKind": "user_correction",
+  "evidenceRefs": [{ "messageId": 160, "quote": "我不是在指责你" }] }
+```
+
+**✅ updateItem + assistant_correction（assistant 修正 episode 描述）**
+```json
+{ "op": "updateItem", "itemId": "episode:7",
+  "value": { "text": "雨夜争执 > 和解 | assistant 先开口打破沉默" },
+  "evidenceKind": "assistant_correction",
+  "evidenceRefs": [{ "messageId": 161, "quote": "其实那天是我先开口的" }] }
+```
+assistant 角色重新诠释互动经过，与 `user_correction` 权限相同。
+
+**❌ 日常闲聊当 milestone**
+```json
+{ "op": "addItem", "value": { "text": "一起吃了顿饭" },
+  "evidenceKind": "relationship_milestone",
+  "evidenceRefs": [{ "messageId": 145, "quote": "一起去吃饭吧" }] }
+```
+普通日常不得进入 milestones，应输出 noop 或走 recentEpisodes。
+
+### 4.4 coreProposer
+
+**✅ addItem + long_term_fact（明确陈述）**
+```json
+{ "op": "addItem", "path": "userProfile",
+  "value": { "text": "姓名: 小明" },
+  "evidenceKind": "long_term_fact",
+  "evidenceRefs": [{ "messageId": 121, "quote": "我叫小明" }] }
+```
+
+**✅ addItem + long_term_fact（行为推断）**
+```json
+{ "op": "addItem", "path": "userProfile",
+  "value": { "text": "性格: 内向(初识) > 依赖(熟悉后) | 恐高" },
+  "evidenceKind": "long_term_fact",
+  "evidenceRefs": [{ "messageId": 121, "quote": "我其实挺内向的，但熟了就会很粘人" }] }
+```
+quote 是体现该行为的原话，推断理由写在 value.text 中，不放在 quote。
+
+**✅ updateItem + user_correction（用户修正自己的档案）**
+```json
+{ "op": "updateItem", "path": "userProfile", "itemId": "core:user:5",
+  "value": { "text": "偏好: 低压陪伴 | 不喜欢被逼问 | 讨厌突然的肢体接触" },
+  "evidenceKind": "user_correction",
+  "evidenceRefs": [{ "messageId": 170, "quote": "我不喜欢别人突然碰我" }] }
+```
+
+**✅ updateItem + assistant_correction（assistant 修正世界设定）**
+```json
+{ "op": "updateItem", "path": "worldFacts", "itemId": "core:world:2",
+  "value": { "text": "世界设定: 魔法只在夜间生效" },
+  "evidenceKind": "assistant_correction",
+  "evidenceRefs": [{ "messageId": 175, "quote": "对了，这个世界的魔法只在晚上才管用" }] }
+```
+`assistant_correction` 与 `user_correction` 权限相同，均可修正所有 core 子数组。
+
+**❌ 一次性情绪当 long_term_fact**
+```json
+{ "op": "addItem", "path": "userProfile",
+  "value": { "text": "情绪: 今天很难过" },
+  "evidenceKind": "long_term_fact",
+  "evidenceRefs": [{ "messageId": 121, "quote": "我今天好难过" }] }
+```
+一次性情绪不构成 trait，不应进入 core。行为推断只在窗口内有清晰、显著的行为模式时才成立。
+
+### 4.5 compactionProposer
+
+**✅ mergeItems + memory_compaction（合并重叠 userProfile）**
+```json
+{ "op": "mergeItems", "path": "userProfile",
+  "itemIds": ["core:1", "core:9"],
+  "value": { "text": "偏好/关系模式: 夜间更适合长聊 | 慢热后依赖" },
+  "evidenceKind": "memory_compaction",
+  "evidenceRefs": [
+    { "messageId": 88, "quote": "我晚上比较想聊天" },
+    { "messageId": 101, "quote": "我一般慢热" }
+  ] }
+```
+evidenceRefs 是所有 source items 既有 evidenceRefs 的完整并集。value.text 是 source items 的高密度合并，不引入新事实。
+
+**❌ compaction 引用新对话片段**
+```json
+{ "op": "mergeItems", "path": "userProfile",
+  "itemIds": ["core:1", "core:9"],
+  "value": { "text": "偏好: 夜间长聊 | 慢热 | 最近说想养猫" },
+  "evidenceKind": "memory_compaction",
+  "evidenceRefs": [
+    { "messageId": 88, "quote": "我晚上比较想聊天" },
+    { "messageId": 200, "quote": "我想养只猫" }
+  ] }
+```
+维护模式不观察新消息，evidenceRefs 只能来自 source items 既有证据。"想养猫"是新事实，不能通过 compaction 写入。
 
 ---

@@ -62,7 +62,7 @@ Reducer 必须按顺序执行：
 4. **policy gate**：按 section + op + evidenceKind 查 [state-contract.md](state-contract.md) §6 的 policy table，判断是否允许。
 5. **结构化冲突检测**：只检查同字段覆盖（`setField`）、同 itemId 操作（`updateItem`/`completeTodo` 等）、同 section/path 合并、itemId 是否真实存在和操作顺序合法性。不做语义冲突检测。
 6. **长度预算**：各 section item 数量上限（[state-contract.md](state-contract.md) §8）。`recentEpisodes` 超限时确定性滚出最旧 item；其它 section 新增超限时返回 `deferred: length_budget_exceeded` 并触发 compaction task，维护失败后才最终拒绝新增。
-7. **过期清理**：Reducer 自行触发，扫描 `expiresAtMessageId` 已过期的 todo，从数组中移除。这是纯确定性清理，不需要 evidenceRefs，不产生事件行（自然遗忘）。此取舍的理由见 [state-contract.md](state-contract.md) §8。
+7. **过期清理**：Reducer 自行触发，扫描 `expiresAtTime < now`（wall-clock）的 todo，从数组中移除。这是纯确定性清理，不需要 evidenceRefs，不产生事件行（自然遗忘）。此取舍的理由见 [state-contract.md](state-contract.md) §8。
 8. **apply**：通过校验的 patch 应用到 state，生成新 state。
 9. **事件记录**：每个 patch 的决策写一行 `chat_memory_events`（[state-contract.md](state-contract.md) §9.1）；`noop` 写一行占位（`decision=noop`，`patch_id` 为 null）。一个 section 一个 tick 可能有多个 patch，因此可能有多行 event。section 级 cursor 推进是派生的：看该 section 该 tick 的所有 event 行聚合（见 §3）。
 
@@ -177,7 +177,7 @@ resume 做的事：重置 `meta.halted=false` 和所有 `meta.recovery[section].
 
 ## 4. Core 写入机制
 
-`core` 的新增只接受 `long_term_fact` 一种 evidenceKind：长期事实，包括明确表达的（用户描述"我叫小明"、assistant 设定人格"这个世界有魔法"）和从行为推断的（用户多次在冲突中回避→倾向回避冲突）。对已有 core item 的改写基于 `user_correction` 或 `assistant_correction`，走 `correctItem`/`updateItem`（见 [state-contract.md](state-contract.md) §6 policy table）——`addItem + user_correction/assistant_correction` 不再允许，因为"修正"语义上隐含"纠正已存在的东西"，应走更新 op；若纠正后要新增一条全新 core item，本质就是一条新的 `long_term_fact`。
+`core` 的新增只接受 `long_term_fact` 一种 evidenceKind：长期事实，包括明确表达的（用户描述"我叫小明"、assistant 设定人格"这个世界有魔法"）和从行为推断的（用户多次在冲突中回避→倾向回避冲突）。对已有 core item 的改写基于 `user_correction` 或 `assistant_correction`，走 `updateItem`（见 [state-contract.md](state-contract.md) §6 policy table）——`addItem + user_correction/assistant_correction` 不再允许，因为"修正"语义上隐含"纠正已存在的东西"，应走更新 op；若纠正后要新增一条全新 core item，本质就是一条新的 `long_term_fact`。
 
 `assistant_correction` 与 `user_correction` 权限相同，均可修正所有 core 子数组（`worldFacts`/`userProfile`/`assistantProfile`/`relationship`）。
 
@@ -193,9 +193,9 @@ core 的去重完全由 Proposer 在自己的 `writableState` 范围内顺带完
 
 - `scene` 和 `participants` 被新状态覆盖（`setField`）。
 - `recentEpisodes` 按窗口自然滚出（Reducer 清理超出上限的旧 item）；只有真正关键的 episode 由 `episodeProposer` 主动输出 `addItem` 到 `longTerm.milestones`。
-- `todos` 只能因完成、取消、失效或澄清而删除（`completeTodo`/`cancelTodo`/`expireTodo`/`correctItem`）。
-- `milestones` 位于长期区，默认不删除，只允许 `mergeItems` 和基于 `user_correction`/`assistant_correction` 的 `correctItem`。
-- `core` 不存在真正删除 op；用户或 assistant 表达删除意图时，Proposer 输出 `correctItem` 在 value 中写明修正/作废语义。所有 core 子数组均接受 `user_correction`/`assistant_correction`（见 [state-contract.md](state-contract.md) §6）。
+- `todos` 只能因完成、取消、失效或澄清而删除（`completeTodo`/`cancelTodo`/`expireTodo`/`updateItem`）。
+- `milestones` 位于长期区，默认不删除，只允许 `mergeItems` 和基于 `user_correction`/`assistant_correction` 的 `updateItem`。
+- `core` 不存在真正删除 op；用户或 assistant 表达删除意图时，Proposer 输出 `updateItem` 在 value 中写明修正/作废语义。所有 core 子数组均接受 `user_correction`/`assistant_correction`（见 [state-contract.md](state-contract.md) §6）。
 
 禁止 Proposer 使用通用 `removeItem`。删除必须表达为更窄的语义 op（见 [state-contract.md](state-contract.md) §4）。`compactionProposer` 也不例外：它的主要能力是 `mergeItems`，不是删除。容量压力不能成为长期记忆静默遗忘的理由。
 
