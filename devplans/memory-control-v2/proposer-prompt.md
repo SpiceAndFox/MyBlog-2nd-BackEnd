@@ -92,7 +92,7 @@ schema 作者注意：
 
 ## 3. Per-Proposer op→field 必填速查表
 
-[state-contract.md](state-contract.md) §4 的字段必填规则是 Reducer 校验视角的 master 规则。本节按 Proposer 拆分，供 schema 作者和 prompt 编写者速查。每个 Proposer 的 output schema 只包含自己合法的 op（派生关系见 [state-contract.md](state-contract.md) §4.1）。
+[state-contract.md](state-contract.md) §4 的字段必填规则是 Reducer 校验视角的 master 规则。本节按 Proposer 拆分，供 schema 作者和 prompt 编写者速查。每个 Proposer 的 output schema 只包含自己合法的 op（适用 Proposer 列见 [state-contract.md](state-contract.md) §4）。
 
 ### currentStateProposer（scene, participants）
 

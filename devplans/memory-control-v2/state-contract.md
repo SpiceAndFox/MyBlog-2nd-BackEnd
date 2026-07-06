@@ -118,16 +118,18 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 
 ## 4. Patch Op 合法值与约束
 
-| op             | 允许 section                                    | 含义                       |
-| -------------- | ----------------------------------------------- | -------------------------- |
-| `setField`     | `scene`, `participants`                         | 设置覆盖式状态字段         |
-| `clearField`   | `scene`, `participants`                         | 清除已失效的覆盖式状态字段 |
-| `addItem`      | `todos`, `recentEpisodes`, `milestones`, `core` | 新增 item                  |
-| `updateItem`   | `todos`, `recentEpisodes`, `milestones`, `core` | 局部更新已有 item          |
-| `mergeItems`   | `todos`, `recentEpisodes`, `milestones`, `core` | 合并重复或高度重叠 item    |
-| `completeTodo` | `todos`                                         | 将待办完成并从数组移除     |
-| `cancelTodo`   | `todos`                                         | 将待办取消并从数组移除     |
-| `expireTodo`   | `todos`                                         | 将短期待办失效并从数组移除 |
+下表同时服务两个视角：Reducer 按 op 校验字段结构，schema/prompt 作者按 Proposer 查合法 op。Reducer 的 section+op 合法性最终查 §6 policy table。
+
+| op             | 含义                       | 适用 Proposer                                                                     |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------- |
+| `setField`     | 设置覆盖式状态字段         | `currentStateProposer`                                                            |
+| `clearField`   | 清除已失效的覆盖式状态字段 | `currentStateProposer`                                                            |
+| `addItem`      | 新增 item                  | `todoProposer`, `episodeProposer`, `coreProposer`                                 |
+| `updateItem`   | 局部更新已有 item          | `todoProposer`, `episodeProposer`, `coreProposer`                                 |
+| `mergeItems`   | 合并重复或高度重叠 item    | `todoProposer`, `episodeProposer`, `coreProposer`, `compactionProposer`           |
+| `completeTodo` | 将待办完成并从数组移除     | `todoProposer`                                                                    |
+| `cancelTodo`   | 将待办取消并从数组移除     | `todoProposer`                                                                    |
+| `expireTodo`   | 将短期待办失效并从数组移除 | `todoProposer`                                                                    |
 
 字段必填规则：
 
@@ -138,18 +140,6 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 - `evidenceRefs`：至少包含一个 `{ messageId, quote }`，除非该 op 是 Reducer 自行触发的过期清理。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `evidenceMessages`（见 §5）。
 - `quote`：必须是短片段（<=80 字符），不保存大段原文。
 - `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。其 `evidenceRefs` 必须来自维护模式 `writableState` 中被合并 source items 的既有证据，并由 envelope 的 `evidenceMessages` 校验，不能引用新的对话片段或 read-only context 来制造新事实。
-
-### 4.1 Per-Proposer 派生 op enum
-
-下表是 Reducer 校验用的 master op 枚举。每个 Proposer 的 output schema enum 只列自己合法的 op 子集。派生关系由 §4 允许 section 列 + §6 policy table 决定：
-
-| Proposer               | 合法 op                                                                           |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `currentStateProposer` | `setField`, `clearField`                                                          |
-| `todoProposer`         | `addItem`, `updateItem`, `mergeItems`, `completeTodo`, `cancelTodo`, `expireTodo` |
-| `episodeProposer`      | `addItem`, `updateItem`, `mergeItems`                                             |
-| `coreProposer`         | `addItem`, `updateItem`, `mergeItems`                                             |
-| `compactionProposer`   | `mergeItems`                                                                      |
 
 ## 5. Proposer 输入/输出信封
 
