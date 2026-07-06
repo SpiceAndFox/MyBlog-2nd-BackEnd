@@ -40,7 +40,7 @@ schema 作者注意：
 6. scene 和 participants 是当前状态，用 setField 覆盖；无变化时输出 noop。
 7. todos 只记录明确的请求/承诺，模糊愿望不要写入。
 8. milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
-9. core 只接受用户或设定明确表达的长期事实（含 assistant 设定人格），临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。
+9. core 接受长期事实（含 assistant 设定人格和行为推断的人格特征），临时剧情、一次性情绪不要写入。core 的 patch 必须用 path 指定长期区子数组（worldFacts/userProfile/assistantProfile/relationship）。已有 core item 的改写接受 user_correction（用户修正）或 assistant_correction（assistant 修正已有记忆），两者权限相同，均可修正所有 core 子数组。行为推断使用 long_term_fact，只在窗口内有清晰、显著的行为模式时才输出，一次性动作不构成 trait。
 10. 删除/完成/取消待办必须用对应 op（completeTodo/cancelTodo/expireTodo），不要用通用 removeItem。
 11. 成人内容：客观记录事件本质、双方意愿、关系变化，不摘录感官描写。
 
@@ -56,7 +56,8 @@ schema 作者注意：
 - recent_episode: 最近发生的有意义互动
 - relationship_milestone: 关系或剧情关键转折
 - user_correction: 用户明确修正旧记忆或设定
-- long_term_fact: 用户/设定明确表达的长期事实
+- assistant_correction: assistant 明确修正关于自己、世界或关系的已有记忆
+- long_term_fact: 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 对陈述是原话，对推断是行为描述
 - memory_compaction: 基于已有 memory item 的预算维护与去重合并，不代表新事实
 
 ### 高密度句法
