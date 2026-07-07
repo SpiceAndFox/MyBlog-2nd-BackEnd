@@ -24,7 +24,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 schema 作者注意：
 
 - 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
-- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
+- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField`/`updateItem`/core 的所有 op 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
 
 ### 2.2 System Prompt 要点
