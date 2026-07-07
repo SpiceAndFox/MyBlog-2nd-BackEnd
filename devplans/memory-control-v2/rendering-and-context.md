@@ -43,8 +43,8 @@ Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [stat
 
 - 普通模式的 `observedMessages` 统一来自原始 `chat_messages`，user 与 assistant 消息都使用 raw content。Observer 传入时必须标注 `contentKind: "raw"`。
 - 普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验（校验策略见 [state-contract.md](state-contract.md) §7）；read-only memory context 不参与 quote 校验。
-- 维护模式不向 Proposer 暴露 raw messages 或既有 evidence quote。
-- assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRef 来源。
+- 维护模式不向 Proposer 暴露 raw messages、既有 evidenceGroups 或 quote。
+- assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRefs 来源。
 
 ## 5. Renderer 模板
 
