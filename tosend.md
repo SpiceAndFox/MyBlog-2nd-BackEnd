@@ -12,3 +12,8 @@
 [Chat]
 1）时间提示词重复两遍可能就有奇效
 2）web search agent
+3）关于时间系统，时间戳和scene不能冲突，实时更新需要做一下。比如如果当前时间和scene（如12点时scene还是夜晚）冲突，则主动修改scene。
+
+[Test]
+1）测试用例一定要写
+2）在不同llm model间选择（如agent、memory）也需要设计一组测试用例
