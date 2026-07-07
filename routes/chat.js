@@ -13,6 +13,7 @@ router.get("/presets", chatController.listPresets);
 router.get("/presets/trash", chatController.listTrashedPresets);
 router.post("/presets", chatController.createPreset);
 router.patch("/presets/:presetId", chatController.updatePreset);
+router.post("/presets/:presetId/memory/rebuild", chatController.rebuildPresetMemory);
 router.delete("/presets/:presetId", chatController.deletePreset);
 router.patch("/presets/:presetId/restore", chatController.restorePreset);
 router.delete("/presets/:presetId/permanent", chatController.deletePresetPermanently);

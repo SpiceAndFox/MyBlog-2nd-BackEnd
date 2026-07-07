@@ -590,19 +590,6 @@ const chatController = {
       });
       if (!preset) return res.status(404).json({ error: "Preset not found" });
 
-      if (preset?.systemPromptChanged) {
-        try {
-          await lockAndRebuildChatMemoryAsync({
-            userId,
-            presetId: preset.id,
-            sinceMessageId: 0,
-            reason: "system_prompt_changed",
-          });
-        } catch (error) {
-          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId: preset.id }));
-        }
-      }
-
       res.status(200).json({ preset });
     } catch (error) {
       if (error?.code === "23505") {
@@ -612,6 +599,66 @@ const chatController = {
         return res.status(400).json({ error: error.message });
       }
       logger.error("chat_preset_update_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async rebuildPresetMemory(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presetId = normalizePresetId(req.params.presetId);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+
+      const preset = await chatPresetModel.getPreset(userId, presetId);
+      if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+      await markPresetMemoryDirty({
+        userId,
+        presetId: preset.id,
+        sinceMessageId: 0,
+        rebuildRequired: true,
+        reason: "manual_rebuild",
+      });
+
+      const logContext = withRequestContext(req, {
+        userId,
+        presetId: preset.id,
+        providerId: chatMemoryConfig.workerProviderId,
+        modelId: chatMemoryConfig.workerModelId,
+      });
+
+      void rebuildRollingSummarySync({ userId, presetId: preset.id })
+        .then((result) => {
+          logger.info("chat_memory_manual_rebuild_completed", {
+            ...logContext,
+            updated: Boolean(result?.updated),
+            reason: result?.reason,
+            needsMemory: Boolean(result?.needsMemory),
+            processedBatches: result?.processedBatches,
+            processedMessages: result?.processedMessages,
+          });
+        })
+        .catch((error) => {
+          logger.error("chat_memory_manual_rebuild_failed", { ...logContext, error });
+          logger.error("chat_memory_rebuild_hard_lock_retained", {
+            ...logContext,
+            reason: "manual_rebuild_failed",
+            note: "rebuildRequired lock is intentionally retained; chat remains blocked with 423 until rebuild succeeds or is manually released",
+          });
+        });
+
+      res.status(202).json({
+        presetId: preset.id,
+        memory: {
+          status: "queued",
+          rebuildRequired: true,
+        },
+      });
+    } catch (error) {
+      if (error?.code === "42P01") {
+        return res.status(500).json({ error: "Chat memory table is not initialized" });
+      }
+      logger.error("chat_preset_memory_rebuild_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
