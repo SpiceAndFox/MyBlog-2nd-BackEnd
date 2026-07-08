@@ -18,13 +18,14 @@ Renderer 必须：
 
 ## 2. Context 接入
 
-首版采用实时 render 路径。
+首版采用实时 render 路径。`memory` segment 的注入受两道门控：
 
-上下文装配使用单一 `memory` segment：当 `chat_preset_memory.memory_state` 存在且 schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本。
+1. **窗口溢出门控**：候选消息数超过 `CHAT_RECENT_WINDOW_MAX_MESSAGES`（当前默认 80）时，最近窗口装不下全部历史，`memory` segment 才注入；窗口能装下全部历史时直接用 recent window，不注入 memory。此门控由 context compiler 既有逻辑承载，v2 沿用。
+2. **状态门控**：窗口溢出后，`chat_preset_memory.memory_state` 存在且 schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本。`memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入。
 
-如果 `memory_state` 不存在、`version` 不支持或 schema 校验失败，`memory` segment 直接不注入。是否存在旧格式、是否需要迁移或回放，是迁移层的问题，不由 context segment 耦合历史版本名称。
+跳过注入时必须记录原因（窗口未溢出 / state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查（见 [harness.md](harness.md) §3.9）。不得静默跳过。
 
-跳过注入时必须记录原因（state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查（见 [harness.md](harness.md) §3.9）。不得静默跳过。
+是否存在旧格式、是否需要迁移或回放，是迁移层的问题，不由 context segment 耦合历史版本名称。
 
 ## 3. RAG 边界
 
