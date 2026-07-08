@@ -62,9 +62,7 @@
       "working": { "standingAgreements": [], "recentEpisodes": [] },
       "longTerm": { "userProfile": [], "assistantProfile": [] }
     },
-    "observedMessages": [
-      { "id": 121, "role": "user", "contentKind": "raw", "content": "明天提醒我把橡皮还给她" }
-    ]
+    "observedMessages": [{ "id": 121, "role": "user", "contentKind": "raw", "content": "明天提醒我把橡皮还给她" }]
   },
   "proposerOutputs": [
     {
