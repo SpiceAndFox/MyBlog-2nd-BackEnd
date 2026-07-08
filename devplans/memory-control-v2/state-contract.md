@@ -372,8 +372,8 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
 
 | Proposer               | Writable target                | Read-only context                                                                                                                                        |
 | ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `currentStateProposer` | `scene`                        | `working.recentEpisodes`、`working.standingAgreements`、`longTerm.relationship`                                                                          |
-| `todoProposer`         | `todos`                        | `current.scene`、`working.standingAgreements`、`working.recentEpisodes`、`longTerm.relationship`、`longTerm.userProfile`                                 |
+| `currentStateProposer` | `scene`                        | `working.recentEpisodes`                                                                                                                                  |
+| `todoProposer`         | `todos`                        | `current.scene`、`working.standingAgreements`、`working.recentEpisodes`、`longTerm.userProfile`、`longTerm.assistantProfile`                             |
 | `agreementProposer`    | `standingAgreements`           | `current.scene`、`working.todos` active 子集、`working.recentEpisodes`、`longTerm.relationship`、`longTerm.userProfile`、`longTerm.assistantProfile`     |
 | `episodeProposer`      | `recentEpisodes`, `milestones` | `current.scene`、`working.todos` active 子集、`working.standingAgreements`、`longTerm.relationship`、`longTerm.userProfile`、`longTerm.assistantProfile` |
 | `coreProposer`         | `core`                         | `current.scene`、`working.recentEpisodes`、`working.standingAgreements`、`longTerm.milestones`、非目标 core sibling arrays                               |
