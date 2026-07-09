@@ -293,6 +293,16 @@ const chatConfig = {
     openrouter: ensureSupportedModel("openrouter", readRequiredStringEnv("OPENROUTER_DEFAULT_MODEL"), {
       name: "OPENROUTER_DEFAULT_MODEL",
     }),
+    "opencode-go-openai": ensureSupportedModel(
+      "opencode-go-openai",
+      readRequiredStringEnv("OPENCODE_GO_OPENAI_DEFAULT_MODEL"),
+      { name: "OPENCODE_GO_OPENAI_DEFAULT_MODEL" }
+    ),
+    "opencode-go-messages": ensureSupportedModel(
+      "opencode-go-messages",
+      readRequiredStringEnv("OPENCODE_GO_MESSAGES_DEFAULT_MODEL"),
+      { name: "OPENCODE_GO_MESSAGES_DEFAULT_MODEL" }
+    ),
     "opencode-zen-claude": ensureSupportedModel(
       "opencode-zen-claude",
       readRequiredStringEnv("OPENCODE_ZEN_CLAUDE_DEFAULT_MODEL"),
@@ -315,6 +325,16 @@ const chatConfig = {
     openrouter: readProviderDefaultSettings({
       providerId: "openrouter",
       envPrefix: "OPENROUTER",
+      baseDefaults: baseChatDefaultSettings,
+    }),
+    "opencode-go-openai": readProviderDefaultSettings({
+      providerId: "opencode-go-openai",
+      envPrefix: "OPENCODE_GO_OPENAI",
+      baseDefaults: baseChatDefaultSettings,
+    }),
+    "opencode-go-messages": readProviderDefaultSettings({
+      providerId: "opencode-go-messages",
+      envPrefix: "OPENCODE_GO_MESSAGES",
       baseDefaults: baseChatDefaultSettings,
     }),
     "opencode-zen-claude": readProviderDefaultSettings({

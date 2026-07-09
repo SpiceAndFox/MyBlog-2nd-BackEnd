@@ -2,9 +2,19 @@ const grok = require("./grok");
 const deepseek = require("./deepseek");
 const gemini = require("./gemini");
 const openrouter = require("./openrouter");
+const opencodeGoOpenai = require("./opencodeGoOpenai");
+const opencodeGoMessages = require("./opencodeGoMessages");
 const opencodeZenClaude = require("./opencodeZenClaude");
 
-const PROVIDER_DEFINITIONS = [grok, deepseek, gemini, openrouter, opencodeZenClaude]
+const PROVIDER_DEFINITIONS = [
+  grok,
+  deepseek,
+  gemini,
+  openrouter,
+  opencodeGoOpenai,
+  opencodeGoMessages,
+  opencodeZenClaude,
+]
   .map((provider) => (provider && typeof provider === "object" ? provider : null))
   .filter(Boolean);
 
