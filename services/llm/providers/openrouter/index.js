@@ -16,19 +16,20 @@ const reasoningEffortOptions = [
   { value: "xhigh", label: "Max" },
 ];
 
-const REASONING_EFFORTS_BY_MODEL = {
-  [GLM_5_2_MODEL_ID]: ["xhigh", "high"],
-  [GROK_4_5_MODEL_ID]: ["high", "medium", "low"],
-};
-
 function isReasoningEnabled(settings) {
   return settings?.reasoningEnabled !== false;
 }
 
 function normalizeReasoningEffort(settings, modelId) {
   const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
-  const supported = REASONING_EFFORTS_BY_MODEL[normalizeModelId(modelId)];
-  if (!Array.isArray(supported) || !supported.includes(raw)) return "";
+  const supported = getModel(modelId)?.reasoningEfforts;
+  if (!Array.isArray(supported) || !supported.length) return "";
+  if (!raw) return "";
+  if (!supported.includes(raw)) {
+    throw new Error(
+      `Invalid reasoningEffort for model ${normalizeModelId(modelId)}: ${raw}. Allowed values: ${supported.join(", ")}`
+    );
+  }
   return raw;
 }
 
@@ -112,19 +113,23 @@ const MODELS = [
 
 const MODEL_BY_ID = new Map(MODELS.map((model) => [model.id, model]));
 
+function getModel(modelId) {
+  return MODEL_BY_ID.get(normalizeModelId(modelId)) || null;
+}
+
 function modelSupportsParameter(modelId, paramName) {
-  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  const model = getModel(modelId);
   if (!model) return false;
   return Array.isArray(model.supportedParameters) && model.supportedParameters.includes(paramName);
 }
 
 function modelSupportsReasoningEffort(modelId) {
-  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  const model = getModel(modelId);
   return Array.isArray(model?.reasoningEfforts) && model.reasoningEfforts.length > 0;
 }
 
 function modelCanDisableReasoning(modelId) {
-  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  const model = getModel(modelId);
   return Boolean(model?.canDisableReasoning);
 }
 

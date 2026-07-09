@@ -23,6 +23,83 @@ function findSchemaControl(schema, key) {
   );
 }
 
+function getProviderModel(providerId, modelId) {
+  const definition = getProviderDefinition(normalizeKey(providerId));
+  const normalizedModelId = normalizeKey(modelId);
+  if (!definition || !normalizedModelId) return null;
+  const models = Array.isArray(definition.models) ? definition.models : [];
+  return models.find((model) => normalizeKey(model?.id) === normalizedModelId) || null;
+}
+
+function isControlAllowedForModel(control, modelId) {
+  const normalizedModelId = normalizeKey(modelId);
+  const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
+  return !normalizedModelId || !blocklist.map(normalizeKey).includes(normalizedModelId);
+}
+
+function getControlOptions(control, { model } = {}) {
+  const options = Array.isArray(control?.options) ? control.options : [];
+  const sourceField = normalizeKey(control?.optionsFrom);
+  if (!sourceField) return options;
+
+  const allowed = Array.isArray(model?.[sourceField]) ? model[sourceField] : null;
+  if (!allowed) return options;
+
+  const allowedSet = new Set(allowed.map(normalizeKey).filter(Boolean));
+  return options.filter((option) => allowedSet.has(normalizeKey(option?.value)));
+}
+
+function getActiveSchemaControls(providerId, modelId) {
+  const schema = getProviderSettingsSchema(providerId);
+  const controlsByKey = new Map();
+
+  for (const control of schema) {
+    const key = normalizeKey(control?.key);
+    if (!key || controlsByKey.has(key)) continue;
+    if (!isControlAllowedForModel(control, modelId)) continue;
+    controlsByKey.set(key, control);
+  }
+
+  return Array.from(controlsByKey.values());
+}
+
+function validateSettingsWithSchema(settings, { providerId, modelId } = {}) {
+  if (!isPlainObject(settings)) return null;
+
+  const model = getProviderModel(providerId, modelId);
+  const controls = getActiveSchemaControls(providerId, modelId);
+
+  for (const control of controls) {
+    const key = normalizeKey(control?.key);
+    if (!key || !Object.prototype.hasOwnProperty.call(settings, key)) continue;
+
+    const type = normalizeKey(control?.type);
+    const value = settings[key];
+
+    if (type === "toggle") {
+      if (typeof value !== "boolean") return `Invalid setting ${key}: expected boolean`;
+      continue;
+    }
+
+    if (type === "select") {
+      const normalizedValue = normalizeKey(value);
+      const allowedValues = getControlOptions(control, { model }).map((option) => normalizeKey(option?.value)).filter(Boolean);
+      if (!normalizedValue || !allowedValues.includes(normalizedValue)) {
+        return `Invalid setting ${key} for model ${normalizeKey(modelId) || "(empty)"}: ${
+          normalizedValue || "(empty)"
+        }. Allowed values: ${allowedValues.join(", ") || "(none)"}`;
+      }
+      continue;
+    }
+
+    if (type === "range" || type === "number") {
+      if (!Number.isFinite(Number(value))) return `Invalid setting ${key}: expected number`;
+    }
+  }
+
+  return null;
+}
+
 function getNumericRangeFromControl(control) {
   if (!isPlainObject(control)) return null;
   const type = normalizeKey(control.type);
@@ -94,9 +171,13 @@ function clampNumberWithRange(value, range, { fallback } = {}) {
 
 module.exports = {
   getProviderSettingsSchema,
+  getProviderModel,
+  getControlOptions,
+  getActiveSchemaControls,
+  isControlAllowedForModel,
+  validateSettingsWithSchema,
   getProviderNumericRange,
   getGlobalNumericRange,
   clampNumber,
   clampNumberWithRange,
 };
-

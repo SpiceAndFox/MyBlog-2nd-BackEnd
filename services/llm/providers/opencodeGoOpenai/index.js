@@ -1,23 +1,55 @@
+// 能力与约束全部声明在 MODELS 数组的模型属性上，
+// 通过 MODEL_BY_ID 做 O(1) 查询，派生 blocklist 统一从属性计算。
+// 新增模型只需在 MODELS 加一条并填好属性，无需改动并行数组或分支逻辑。
+
 const MODELS = [
-  { id: "glm-5.2", name: "GLM-5.2" },
-  { id: "glm-5.1", name: "GLM-5.1" },
-  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
-  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-  { id: "mimo-v2.5-pro", name: "MiMo-V2.5-Pro" },
-  { id: "mimo-v2.5", name: "MiMo-V2.5" },
+  {
+    id: "glm-5.2",
+    name: "GLM-5.2",
+    supportsThinking: true,
+    reasoningEfforts: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+    supportsWebSearch: true,
+  },
+  {
+    id: "glm-5.1",
+    name: "GLM-5.1",
+    supportsThinking: true,
+    supportsWebSearch: true,
+  },
+  {
+    id: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro",
+    supportsThinking: true,
+    reasoningEfforts: ["max", "high"],
+    // DeepSeek 思考开启时禁止采样/对数概率参数（上游 API 约束）
+    blocksSamplingWhenThinking: true,
+  },
+  {
+    id: "deepseek-v4-flash",
+    name: "DeepSeek V4 Flash",
+    supportsThinking: true,
+    reasoningEfforts: ["max", "high"],
+    blocksSamplingWhenThinking: true,
+  },
+  {
+    id: "mimo-v2.5-pro",
+    name: "MiMo-V2.5-Pro",
+  },
+  {
+    id: "mimo-v2.5",
+    name: "MiMo-V2.5",
+  },
 ];
 
-const GLM_MODELS = ["glm-5.2", "glm-5.1"];
-const DEEPSEEK_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
-const THINKING_MODELS = [...GLM_MODELS, ...DEEPSEEK_MODELS];
-const REASONING_EFFORT_MODELS = ["glm-5.2", ...DEEPSEEK_MODELS];
-const WEB_SEARCH_MODELS = ["glm-5.2", "glm-5.1"];
+const MODEL_BY_ID = new Map(MODELS.map((model) => [model.id, model]));
 
 const THINKING_MODE_OPTIONS = [
   { value: "enabled", label: "Enabled" },
   { value: "disabled", label: "Disabled" },
 ];
 
+// reasoning effort 的全集；每个模型通过 reasoningEfforts 属性声明自己支持的子集，
+// 前端经 optionsFrom: "reasoningEfforts" 自动裁剪。
 const REASONING_EFFORT_OPTIONS = [
   { value: "max", label: "Max" },
   { value: "high", label: "High" },
@@ -40,24 +72,29 @@ function normalizeModelId(modelId) {
   return String(modelId || "").trim();
 }
 
+function getModel(modelId) {
+  return MODEL_BY_ID.get(normalizeModelId(modelId)) || null;
+}
+
 function hasFiniteSetting(settings, key) {
   return Number.isFinite(Number(settings?.[key]));
 }
 
 function modelSupportsThinking(modelId) {
-  return THINKING_MODELS.includes(normalizeModelId(modelId));
+  return Boolean(getModel(modelId)?.supportsThinking);
 }
 
 function modelSupportsReasoningEffort(modelId) {
-  return REASONING_EFFORT_MODELS.includes(normalizeModelId(modelId));
+  const model = getModel(modelId);
+  return Array.isArray(model?.reasoningEfforts) && model.reasoningEfforts.length > 0;
 }
 
 function modelSupportsWebSearch(modelId) {
-  return WEB_SEARCH_MODELS.includes(normalizeModelId(modelId));
+  return Boolean(getModel(modelId)?.supportsWebSearch);
 }
 
-function isDeepSeekModel(modelId) {
-  return DEEPSEEK_MODELS.includes(normalizeModelId(modelId));
+function modelBlocksSamplingWhenThinking(modelId) {
+  return Boolean(getModel(modelId)?.blocksSamplingWhenThinking);
 }
 
 function normalizeThinkingMode(settings) {
@@ -65,14 +102,20 @@ function normalizeThinkingMode(settings) {
   return raw === "disabled" ? "disabled" : "enabled";
 }
 
-function normalizeReasoningEffort(settings) {
+function normalizeReasoningEffort(settings, modelId) {
   const raw = String(settings?.reasoningEffort || "").trim();
-  return REASONING_EFFORT_OPTIONS.some((option) => option.value === raw) ? raw : "max";
-}
-
-function normalizeDeepSeekReasoningEffort(settings) {
-  const raw = String(settings?.reasoningEffort || "").trim();
-  return raw === "high" ? "high" : "max";
+  const model = getModel(modelId);
+  const allowed = Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts : [];
+  if (!allowed.length) {
+    throw new Error(`Model does not support reasoning effort: ${normalizeModelId(modelId) || "(empty)"}`);
+  }
+  if (!raw) return allowed.includes("max") ? "max" : allowed[0];
+  if (!allowed.includes(raw)) {
+    throw new Error(
+      `Invalid reasoningEffort for model ${normalizeModelId(modelId)}: ${raw}. Allowed values: ${allowed.join(", ")}`
+    );
+  }
+  return raw;
 }
 
 function normalizeWebSearchRecency(settings) {
@@ -107,9 +150,7 @@ function buildBodyExtensions({ model, settings } = {}) {
   }
 
   if (modelSupportsReasoningEffort(modelId) && thinkingMode === "enabled") {
-    body.reasoning_effort = isDeepSeekModel(modelId)
-      ? normalizeDeepSeekReasoningEffort(settings)
-      : normalizeReasoningEffort(settings);
+    body.reasoning_effort = normalizeReasoningEffort(settings, modelId);
   }
 
   if (settings?.enableWebSearch && modelSupportsWebSearch(modelId)) {
@@ -119,9 +160,9 @@ function buildBodyExtensions({ model, settings } = {}) {
   return body;
 }
 
+// 派生 blocklist：从模型属性计算，与 openrouter 模式一致。
 const THINKING_MODE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsThinking(id));
-const GLM_REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => id !== "glm-5.2");
-const DEEPSEEK_REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !isDeepSeekModel(id));
+const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
 const WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsWebSearch(id));
 
 module.exports = {
@@ -148,19 +189,10 @@ module.exports = {
       label: "Reasoning Effort",
       type: "select",
       options: REASONING_EFFORT_OPTIONS,
+      optionsFrom: "reasoningEfforts",
       default: "max",
       capability: "thinking",
-      modelBlocklist: GLM_REASONING_EFFORT_BLOCKLIST,
-      disabledWhen: { key: "thinkingMode", value: "disabled" },
-    },
-    {
-      key: "reasoningEffort",
-      label: "Reasoning Effort",
-      type: "select",
-      options: REASONING_EFFORT_OPTIONS.filter((option) => option.value === "max" || option.value === "high"),
-      default: "max",
-      capability: "thinking",
-      modelBlocklist: DEEPSEEK_REASONING_EFFORT_BLOCKLIST,
+      modelBlocklist: REASONING_EFFORT_BLOCKLIST,
       disabledWhen: { key: "thinkingMode", value: "disabled" },
     },
     {
@@ -241,7 +273,7 @@ module.exports = {
       if (paramName === "reasoning_effort") {
         return modelSupportsReasoningEffort(model) && normalizeThinkingMode(settings) === "enabled";
       }
-      if (isDeepSeekModel(model) && normalizeThinkingMode(settings) === "enabled") {
+      if (modelBlocksSamplingWhenThinking(model) && normalizeThinkingMode(settings) === "enabled") {
         if (paramName === "temperature" || paramName === "top_p") return false;
         if (paramName === "logprobs" || paramName === "top_logprobs") return false;
       }

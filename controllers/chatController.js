@@ -35,6 +35,10 @@ const {
   getGlobalNumericRange,
   getProviderNumericRange,
   clampNumberWithRange,
+  getActiveSchemaControls,
+  getProviderModel,
+  getControlOptions,
+  validateSettingsWithSchema,
 } = require("../services/llm/settingsSchema");
 
 const CHAT_DAY_TIME_ZONE = String(chatConfig.dayTimeZone).trim();
@@ -191,9 +195,8 @@ function sanitizeChatSettings(rawSettings) {
   if (typeof rawSettings.stream === "boolean") sanitized.stream = rawSettings.stream;
 
   const providerId = String(sanitized.providerId || "").trim();
-  const providerDefinition = providerId ? getProviderDefinition(providerId) : null;
-  const schema = Array.isArray(providerDefinition?.settingsSchema) ? providerDefinition.settingsSchema : [];
   const modelId = String(sanitized.modelId || "").trim();
+  const schema = providerId ? getActiveSchemaControls(providerId, modelId) : [];
 
   for (const control of schema) {
     const key = typeof control?.key === "string" ? control.key.trim() : "";
@@ -215,10 +218,6 @@ function sanitizeChatSettings(rawSettings) {
       const value = rawSettings[key].trim();
       if (!value) continue;
 
-      const options = Array.isArray(control.options) ? control.options : [];
-      const allowed = new Set(options.map((option) => String(option?.value ?? "").trim()).filter(Boolean));
-      if (!allowed.has(value)) continue;
-
       sanitized[key] = value;
       continue;
     }
@@ -232,7 +231,16 @@ function sanitizeChatSettings(rawSettings) {
   return sanitized;
 }
 
-function normalizeChatSettingsWithSchema(settings, { providerId } = {}) {
+function getControlDefaultValue(control, model) {
+  const key = String(control?.key || "").trim();
+  const modelDefaults = model?.defaults && typeof model.defaults === "object" && !Array.isArray(model.defaults)
+    ? model.defaults
+    : {};
+  if (key && Object.prototype.hasOwnProperty.call(modelDefaults, key)) return modelDefaults[key];
+  return control?.default;
+}
+
+function normalizeChatSettingsWithSchema(settings, { providerId, modelId } = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
 
   const normalized = { ...settings };
@@ -257,7 +265,80 @@ function normalizeChatSettingsWithSchema(settings, { providerId } = {}) {
     }
   }
 
+  const activeControls = providerId ? getActiveSchemaControls(providerId, modelId) : [];
+  const activeKeys = new Set(activeControls.map((control) => String(control?.key || "").trim()).filter(Boolean));
+  const providerSchema = providerId ? getProviderDefinition(providerId)?.settingsSchema : [];
+  const schemaKeys = new Set(
+    (Array.isArray(providerSchema) ? providerSchema : []).map((control) => String(control?.key || "").trim()).filter(Boolean)
+  );
+  for (const key of schemaKeys) {
+    if (!activeKeys.has(key)) delete normalized[key];
+  }
+
+  const model = getProviderModel(providerId, modelId);
+  for (const control of activeControls) {
+    const key = String(control?.key || "").trim();
+    if (!key) continue;
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
+      const defaultValue = getControlDefaultValue(control, model);
+      if (defaultValue === undefined) continue;
+      normalized[key] = defaultValue;
+    }
+
+    const type = String(control?.type || "").trim();
+    if (type === "toggle") {
+      if (typeof normalized[key] !== "boolean") delete normalized[key];
+      continue;
+    }
+
+    if (type === "select") {
+      const value = String(normalized[key] || "").trim();
+      const allowed = new Set(getControlOptions(control, { model }).map((option) => String(option?.value ?? "").trim()));
+      if (!value || !allowed.has(value)) {
+        delete normalized[key];
+        continue;
+      }
+      normalized[key] = value;
+    }
+  }
+
   return normalized;
+}
+
+function resolveProviderModelForSettings(settings) {
+  const defaultProviderId = chatConfig.defaultProviderId;
+  const candidateProviderId = String(settings?.providerId || defaultProviderId || "").trim();
+  if (!isSupportedProvider(candidateProviderId)) {
+    return { status: 400, error: `Unsupported provider: ${candidateProviderId}` };
+  }
+
+  const providerId = candidateProviderId;
+  const providerDefinition = getProviderDefinition(providerId);
+  const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+  const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+  const defaultModelId =
+    (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+      ? configuredDefaultModelId.trim()
+      : fallbackModelId) || "";
+
+  if (!defaultModelId) {
+    return { status: 500, error: `Missing model definitions for provider: ${providerId}` };
+  }
+
+  const requestedModelId = String(settings?.modelId || "").trim();
+  if (requestedModelId && !isSupportedModel(providerId, requestedModelId)) {
+    return { status: 400, error: `Unsupported model for provider ${providerId}: ${requestedModelId}` };
+  }
+
+  return {
+    providerId,
+    providerDefinition,
+    modelId: requestedModelId || defaultModelId,
+  };
+}
+
+function validateResolvedSettings(settings, { providerId, modelId } = {}) {
+  return validateSettingsWithSchema(settings, { providerId, modelId });
 }
 
 function mergeSettings(baseSettings, overrideSettings) {
@@ -806,11 +887,25 @@ const chatController = {
       if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
 
       const { presetId, preset } = presetResolution;
-      const settings = {
+      let settings = {
         ...rawSettings,
         systemPromptPresetId: presetId,
         systemPrompt: preset?.systemPrompt || "",
       };
+      const providerResolution = resolveProviderModelForSettings(settings);
+      if (providerResolution.error) return res.status(providerResolution.status).json({ error: providerResolution.error });
+
+      const { providerId, modelId, providerDefinition } = providerResolution;
+      const validationError = validateResolvedSettings(settings, { providerId, modelId });
+      if (validationError) return res.status(400).json({ error: validationError });
+
+      settings = normalizeChatSettingsWithSchema(settings, { providerId, modelId });
+      settings.providerId = providerId;
+      settings.modelId = modelId;
+      settings.systemPromptPresetId = presetId;
+      settings.systemPrompt = preset?.systemPrompt || "";
+      if (providerDefinition?.capabilities?.webSearch === false) settings.enableWebSearch = false;
+
       const title = req.body?.title;
       const session = await chatModel.createSession(userId, { title, settings, presetId });
       res.status(201).json({ session });
@@ -985,7 +1080,21 @@ const chatController = {
       const mergedSettings = mergeSettings(session.settings, incomingSettings);
       mergedSettings.systemPromptPresetId = presetId;
       mergedSettings.systemPrompt = preset?.systemPrompt || "";
-      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings);
+      const providerResolution = resolveProviderModelForSettings(mergedSettings);
+      if (providerResolution.error) return res.status(providerResolution.status).json({ error: providerResolution.error });
+
+      const { providerId, modelId, providerDefinition } = providerResolution;
+      const validationError = validateResolvedSettings(mergedSettings, { providerId, modelId });
+      if (validationError) return res.status(400).json({ error: validationError });
+
+      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId, modelId });
+      effectiveSettings.providerId = providerId;
+      effectiveSettings.modelId = modelId;
+      effectiveSettings.systemPromptPresetId = presetId;
+      effectiveSettings.systemPrompt = preset?.systemPrompt || "";
+      if (providerDefinition?.capabilities?.webSearch === false) {
+        effectiveSettings.enableWebSearch = false;
+      }
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
 
@@ -1010,35 +1119,7 @@ const chatController = {
         return res.status(200).json({ session: updatedSession, user_message: updatedUserMessage });
       }
 
-      const defaultProviderId = chatConfig.defaultProviderId;
-      const candidateProviderId = effectiveSettings.providerId || defaultProviderId;
-      if (!isSupportedProvider(candidateProviderId)) {
-        return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
-      }
-      const providerId = String(candidateProviderId).trim();
-      const providerDefinition = getProviderDefinition(providerId);
-
-      const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
-      const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
-      const defaultModelId =
-        (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
-          ? configuredDefaultModelId.trim()
-          : fallbackModelId) || "";
-      if (!defaultModelId) {
-        return res.status(500).json({ error: `Missing model definitions for provider: ${providerId}` });
-      }
-
-      const modelIdCandidate = String(effectiveSettings.modelId || defaultModelId).trim();
-      const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
-
-      const providerSettings = normalizeChatSettingsWithSchema(effectiveSettings, { providerId });
-      providerSettings.providerId = providerId;
-      providerSettings.modelId = modelId;
-      providerSettings.systemPromptPresetId = presetId;
-      providerSettings.systemPrompt = preset?.systemPrompt || "";
-      if (providerDefinition?.capabilities?.webSearch === false) {
-        providerSettings.enableWebSearch = false;
-      }
+      const providerSettings = effectiveSettings;
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, providerSettings, presetId)) || updatedSession;
 
@@ -1259,28 +1340,14 @@ const chatController = {
       mergedSettings.systemPromptPresetId = presetId;
       mergedSettings.systemPrompt = preset?.systemPrompt || "";
 
-      const defaultProviderId = chatConfig.defaultProviderId;
-      const candidateProviderId = mergedSettings.providerId || defaultProviderId;
-      if (!isSupportedProvider(candidateProviderId)) {
-        return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
-      }
-      const providerId = String(candidateProviderId).trim();
-      const providerDefinition = getProviderDefinition(providerId);
+      const providerResolution = resolveProviderModelForSettings(mergedSettings);
+      if (providerResolution.error) return res.status(providerResolution.status).json({ error: providerResolution.error });
 
-      const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
-      const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
-      const defaultModelId =
-        (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
-          ? configuredDefaultModelId.trim()
-          : fallbackModelId) || "";
-      if (!defaultModelId) {
-        return res.status(500).json({ error: `Missing model definitions for provider: ${providerId}` });
-      }
+      const { providerId, modelId, providerDefinition } = providerResolution;
+      const validationError = validateResolvedSettings(mergedSettings, { providerId, modelId });
+      if (validationError) return res.status(400).json({ error: validationError });
 
-      const modelIdCandidate = String(mergedSettings.modelId || defaultModelId).trim();
-      const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
-
-      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId });
+      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId, modelId });
       effectiveSettings.providerId = providerId;
       effectiveSettings.modelId = modelId;
       effectiveSettings.systemPromptPresetId = presetId;

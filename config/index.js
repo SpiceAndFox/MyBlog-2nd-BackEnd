@@ -1,5 +1,12 @@
 const { readBoolEnv, readFloatEnv, readIntEnv, readStringEnv } = require("./readEnv");
-const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
+const {
+  getGlobalNumericRange,
+  getProviderNumericRange,
+  clampNumberWithRange,
+  getActiveSchemaControls,
+  getProviderModel,
+  getControlOptions,
+} = require("../services/llm/settingsSchema");
 const { getProviderDefinition } = require("../services/llm/providers");
 
 function normalizeKey(value) {
@@ -258,7 +265,21 @@ function readEnumEnv(name, { allowedValues, fallback } = {}) {
   return normalized;
 }
 
-function withOpenCodeGoOpenaiDefaults(settings) {
+function readProviderSelectEnv({ providerId, modelId, key, envName, fallback } = {}) {
+  const control = getActiveSchemaControls(providerId, modelId).find((entry) => normalizeKey(entry?.key) === normalizeKey(key));
+  if (!control) {
+    if (readOptionalStringEnv(envName)) {
+      throw new Error(`Env ${envName} is not supported by provider/model: ${providerId}/${modelId}`);
+    }
+    return undefined;
+  }
+
+  const model = getProviderModel(providerId, modelId);
+  const allowedValues = getControlOptions(control, { model }).map((option) => normalizeKey(option?.value)).filter(Boolean);
+  return readEnumEnv(envName, { allowedValues, fallback });
+}
+
+function withOpenCodeGoOpenaiDefaults(settings, { modelId } = {}) {
   const base = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
   const next = { ...base };
 
@@ -266,10 +287,14 @@ function withOpenCodeGoOpenaiDefaults(settings) {
     allowedValues: ["enabled", "disabled"],
     fallback: "enabled",
   });
-  next.reasoningEffort = readEnumEnv("OPENCODE_GO_OPENAI_DEFAULT_REASONING_EFFORT", {
-    allowedValues: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+  const reasoningEffort = readProviderSelectEnv({
+    providerId: "opencode-go-openai",
+    modelId,
+    key: "reasoningEffort",
+    envName: "OPENCODE_GO_OPENAI_DEFAULT_REASONING_EFFORT",
     fallback: "max",
   });
+  if (reasoningEffort !== undefined) next.reasoningEffort = reasoningEffort;
   next.webSearchMaxResults = ensureNumberInRange(
     readOptionalIntEnvStrict("OPENCODE_GO_OPENAI_DEFAULT_WEB_SEARCH_MAX_RESULTS") ?? 5,
     getProviderNumericRange("opencode-go-openai", "webSearchMaxResults"),
@@ -367,7 +392,14 @@ const chatConfig = {
         providerId: "opencode-go-openai",
         envPrefix: "OPENCODE_GO_OPENAI",
         baseDefaults: baseChatDefaultSettings,
-      })
+      }),
+      {
+        modelId: ensureSupportedModel(
+          "opencode-go-openai",
+          readRequiredStringEnv("OPENCODE_GO_OPENAI_DEFAULT_MODEL"),
+          { name: "OPENCODE_GO_OPENAI_DEFAULT_MODEL" }
+        ),
+      }
     ),
     "opencode-go-messages": readProviderDefaultSettings({
       providerId: "opencode-go-messages",
@@ -521,8 +553,8 @@ const chatMemoryConfig = (() => {
       if (Number.isFinite(number)) sanitized[key] = number;
     }
 
-    const definition = getProviderDefinition(workerProviderId);
-    const schema = Array.isArray(definition?.settingsSchema) ? definition.settingsSchema : [];
+    const schema = getActiveSchemaControls(workerProviderId, workerModelId);
+    const model = getProviderModel(workerProviderId, workerModelId);
     const modelId = workerModelId;
 
     for (const control of schema) {
@@ -545,9 +577,14 @@ const chatMemoryConfig = (() => {
         const value = rawSettings[key].trim();
         if (!value) continue;
 
-        const options = Array.isArray(control.options) ? control.options : [];
-        const allowed = new Set(options.map((option) => normalizeKey(option?.value)).filter(Boolean));
-        if (!allowed.has(value)) continue;
+        const allowed = new Set(getControlOptions(control, { model }).map((option) => normalizeKey(option?.value)).filter(Boolean));
+        if (!allowed.has(value)) {
+          throw new Error(
+            `Invalid worker setting ${key} for provider/model ${workerProviderId}/${workerModelId}: ${value}. Allowed values: ${
+              Array.from(allowed).join(", ") || "(none)"
+            }`
+          );
+        }
 
         sanitized[key] = value;
         continue;
@@ -710,8 +747,8 @@ const chatGistConfig = (() => {
       if (Number.isFinite(number)) sanitized[key] = number;
     }
 
-    const definition = getProviderDefinition(workerProviderId);
-    const schema = Array.isArray(definition?.settingsSchema) ? definition.settingsSchema : [];
+    const schema = getActiveSchemaControls(workerProviderId, workerModelId);
+    const model = getProviderModel(workerProviderId, workerModelId);
     const modelId = workerModelId;
 
     for (const control of schema) {
@@ -734,9 +771,14 @@ const chatGistConfig = (() => {
         const value = rawSettings[key].trim();
         if (!value) continue;
 
-        const options = Array.isArray(control.options) ? control.options : [];
-        const allowed = new Set(options.map((option) => normalizeKey(option?.value)).filter(Boolean));
-        if (!allowed.has(value)) continue;
+        const allowed = new Set(getControlOptions(control, { model }).map((option) => normalizeKey(option?.value)).filter(Boolean));
+        if (!allowed.has(value)) {
+          throw new Error(
+            `Invalid worker setting ${key} for provider/model ${workerProviderId}/${workerModelId}: ${value}. Allowed values: ${
+              Array.from(allowed).join(", ") || "(none)"
+            }`
+          );
+        }
 
         sanitized[key] = value;
         continue;
