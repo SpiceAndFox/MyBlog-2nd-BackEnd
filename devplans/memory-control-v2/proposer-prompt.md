@@ -25,7 +25,7 @@ schema 作者注意：
 
 - 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
 - `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：`setField`/`clearField` 要求 `path`；`core` 的所有 op（`addItem`/`updateItem`/`mergeItems`）要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。`core` 的 `updateItem`/`mergeItems` 同时要求 `path` 和 `itemId`/`itemIds`。
-- `todos` 的 `addItem`/`updateItem` 的 `value` 可选包含 `expiresAt`，schema 用 `oneOf` 表达 `{ "mode": "absolute", "date": "date" }` 与 `{ "mode": "relative", "days"?: int, "months"?: int, "years"?: int }` 两种形态（见 [state-contract.md](state-contract.md) §4）。
+- `todos` 的 `addItem`/`updateItem` 的 `value` 可选包含 `expiresAt`，schema 用 `oneOf` 表达 `{ "mode": "absolute", "date": "date" }` 与 `{ "mode": "relative", "days"?: int, "months"?: int, "years"?: int }` 两种形态（见 [state-contract.md](state-contract.md) §4）。relative 模式下 `days`/`months`/`years` 至少出现一个，schema 用 `anyOf: [{required: [days]}, {required: [months]}, {required: [years]}]` 表达。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
 
 ### 2.2 Prompt 设计原则
