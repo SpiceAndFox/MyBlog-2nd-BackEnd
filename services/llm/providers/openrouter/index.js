@@ -97,14 +97,12 @@ const MODELS = [
     name: GLM_5_2_MODEL_ID,
     supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
     reasoningEfforts: ["xhigh", "high"],
-    canDisableReasoning: true,
   },
   {
     id: GROK_4_5_MODEL_ID,
     name: GROK_4_5_MODEL_ID,
     supportedParameters: [],
     reasoningEfforts: ["high", "medium", "low"],
-    canDisableReasoning: false,
   },
 ];
 
@@ -121,11 +119,6 @@ function modelSupportsReasoningEffort(modelId) {
   return Array.isArray(model?.reasoningEfforts) && model.reasoningEfforts.length > 0;
 }
 
-function modelCanDisableReasoning(modelId) {
-  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
-  return Boolean(model?.canDisableReasoning);
-}
-
 const PRESENCE_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
   (id) => !modelSupportsParameter(id, PRESENCE_PENALTY_PARAM)
 );
@@ -133,7 +126,6 @@ const FREQUENCY_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
   (id) => !modelSupportsParameter(id, FREQUENCY_PENALTY_PARAM)
 );
 const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
-const REASONING_DISABLE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelCanDisableReasoning(id));
 
 module.exports = {
   id: "openrouter",
@@ -191,7 +183,6 @@ module.exports = {
       type: "toggle",
       default: false,
       capability: "thinking",
-      modelBlocklist: REASONING_DISABLE_BLOCKLIST,
     },
     {
       key: "reasoningEffort",

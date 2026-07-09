@@ -118,6 +118,7 @@ function mergeRawBodyParams({ providerId, model, settings, body, rawBody }) {
     if (value === undefined) continue;
     if (protectedKeys.has(paramName)) continue;
     if (schemaKeys.has(paramName)) continue;
+    if (Object.prototype.hasOwnProperty.call(body, paramName)) continue;
     if (!isBodyParamAllowed(providerId, paramName, { model, settings })) continue;
     body[paramName] = value;
   }

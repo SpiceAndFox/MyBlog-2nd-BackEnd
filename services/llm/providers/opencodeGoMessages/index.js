@@ -1,10 +1,5 @@
 const MODELS = [
   { id: "minimax-m3", name: "MiniMax M3" },
-  { id: "minimax-m2.7", name: "MiniMax M2.7" },
-  { id: "minimax-m2.5", name: "MiniMax M2.5" },
-  { id: "qwen3.7-max", name: "Qwen3.7 Max" },
-  { id: "qwen3.7-plus", name: "Qwen3.7 Plus" },
-  { id: "qwen3.6-plus", name: "Qwen3.6 Plus" },
 ];
 
 const BLOCKED_BODY_PARAMS = ["presence_penalty", "frequency_penalty", "tools"];

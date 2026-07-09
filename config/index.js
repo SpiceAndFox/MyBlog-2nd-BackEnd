@@ -248,6 +248,41 @@ function readProviderDefaultSettings({ providerId, envPrefix, baseDefaults } = {
   return next;
 }
 
+function readEnumEnv(name, { allowedValues, fallback } = {}) {
+  const allowed = Array.isArray(allowedValues) ? allowedValues : [];
+  const value = readOptionalStringEnv(name) || fallback;
+  const normalized = normalizeKey(value);
+  if (!allowed.includes(normalized)) {
+    throw new Error(`Env ${name} must be one of: ${allowed.join(", ")}. Got: ${normalized || "(empty)"}`);
+  }
+  return normalized;
+}
+
+function withOpenCodeGoOpenaiDefaults(settings) {
+  const base = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+  const next = { ...base };
+
+  next.thinkingMode = readEnumEnv("OPENCODE_GO_OPENAI_DEFAULT_THINKING_MODE", {
+    allowedValues: ["enabled", "disabled"],
+    fallback: "enabled",
+  });
+  next.reasoningEffort = readEnumEnv("OPENCODE_GO_OPENAI_DEFAULT_REASONING_EFFORT", {
+    allowedValues: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+    fallback: "max",
+  });
+  next.webSearchMaxResults = ensureNumberInRange(
+    readOptionalIntEnvStrict("OPENCODE_GO_OPENAI_DEFAULT_WEB_SEARCH_MAX_RESULTS") ?? 5,
+    getProviderNumericRange("opencode-go-openai", "webSearchMaxResults"),
+    { name: "OPENCODE_GO_OPENAI_DEFAULT_WEB_SEARCH_MAX_RESULTS" }
+  );
+  next.webSearchRecency = readEnumEnv("OPENCODE_GO_OPENAI_DEFAULT_WEB_SEARCH_RECENCY", {
+    allowedValues: ["noLimit", "oneDay", "oneWeek", "oneMonth", "oneYear"],
+    fallback: "noLimit",
+  });
+
+  return next;
+}
+
 const baseChatDefaultSettings = {
   temperature: readRequiredSettingNumber("CHAT_DEFAULT_TEMPERATURE", { key: "temperature" }),
   topP: readRequiredSettingNumber("CHAT_DEFAULT_TOP_P", { key: "topP" }),
@@ -327,11 +362,13 @@ const chatConfig = {
       envPrefix: "OPENROUTER",
       baseDefaults: baseChatDefaultSettings,
     }),
-    "opencode-go-openai": readProviderDefaultSettings({
-      providerId: "opencode-go-openai",
-      envPrefix: "OPENCODE_GO_OPENAI",
-      baseDefaults: baseChatDefaultSettings,
-    }),
+    "opencode-go-openai": withOpenCodeGoOpenaiDefaults(
+      readProviderDefaultSettings({
+        providerId: "opencode-go-openai",
+        envPrefix: "OPENCODE_GO_OPENAI",
+        baseDefaults: baseChatDefaultSettings,
+      })
+    ),
     "opencode-go-messages": readProviderDefaultSettings({
       providerId: "opencode-go-messages",
       envPrefix: "OPENCODE_GO_MESSAGES",
