@@ -12,7 +12,20 @@ function listModelsForProvider(providerId) {
   const normalizedProviderId = normalizeProviderId(providerId);
   const definition = getProviderDefinition(normalizedProviderId);
   const models = Array.isArray(definition?.models) ? definition.models : [];
-  return models.map((model) => ({ id: model.id, name: model.name })).filter((model) => model.id);
+  return models
+    .map((model) => {
+      const id = String(model?.id || "").trim();
+      if (!id) return null;
+      const entry = { id, name: model.name };
+      if (model.defaults && typeof model.defaults === "object" && !Array.isArray(model.defaults)) {
+        entry.defaults = model.defaults;
+      }
+      if (Array.isArray(model.reasoningEfforts) && model.reasoningEfforts.length) {
+        entry.reasoningEfforts = model.reasoningEfforts;
+      }
+      return entry;
+    })
+    .filter(Boolean);
 }
 
 function isSupportedModel(providerId, modelId) {
