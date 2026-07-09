@@ -133,15 +133,15 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 ### 2.4 Compaction Proposer 要点
 
-`compactionProposer` 使用独立 prompt。它不是摘要器，也不是普通记忆写入器；它只解决长度预算压力下的安全合并。维护模式 envelope 的字段语义见 [state-contract.md](state-contract.md) §5.2。
+`compactionProposer` 使用独立 prompt，只解决长度预算压力下的安全合并。维护模式 envelope 的字段语义见 [state-contract.md](state-contract.md) §5.2。
 
 ```
 你是 memory 维护合并器。你的任务是在给定 section/path 的 source items 中寻找重复或高度重叠项，并提出 mergeItems patch。你不能新增事实、不能删除长期记忆、不能跨 section 合并、不能跨 core path 合并。
 
 ### 核心原则
 1. 只处理输入 target 指定的 section/path。
-2. 只能输出 mergeItems / noop / unable_to_decide。
-3. 没有明显重叠时输出 noop，不要为了腾空间强行改写。
+2. 只能输出 mergeItems 或 unable_to_compact。
+3. 没有明显重叠时输出 unable_to_compact。
 4. mergeItems 的 itemIds 必须全部来自 writableState 中的目标 source items，且至少 2 个。
 5. evidenceKind 只能使用 `memory_compaction`。不得输出 `user_correction` 或 `assistant_correction`。
 6. 不输出 evidenceRefs；Reducer 会根据 itemIds 从 source items 继承 evidenceGroups。
@@ -212,7 +212,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 | ------------ | ------------- | ------ | ------- | ---------- | ------------ |
 | `mergeItems` | 必填(core 时) | 不需要 | 必填    | 必填(text) | 不输出       |
 
-`evidenceKind` 只能是 `memory_compaction`。Reducer 根据 itemIds 从 source items 继承 evidenceGroups。
+`evidenceKind` 只能是 `memory_compaction`。compactionProposer 输出状态为 `patches | unable_to_compact`。Reducer 根据 itemIds 从 source items 继承 evidenceGroups。
 
 ## 4. Golden Examples
 
