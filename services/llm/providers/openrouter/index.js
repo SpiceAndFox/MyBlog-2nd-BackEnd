@@ -5,21 +5,31 @@ function normalizeModelId(modelId) {
 }
 
 const GLM_5_2_MODEL_ID = "z-ai/glm-5.2";
+const GROK_4_5_MODEL_ID = "x-ai/grok-4.5";
 const PRESENCE_PENALTY_PARAM = "presence_penalty";
 const FREQUENCY_PENALTY_PARAM = "frequency_penalty";
 
 const reasoningEffortOptions = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Max" },
 ];
+
+const REASONING_EFFORTS_BY_MODEL = {
+  [GLM_5_2_MODEL_ID]: ["xhigh", "high"],
+  [GROK_4_5_MODEL_ID]: ["high", "medium", "low"],
+};
 
 function isReasoningEnabled(settings) {
   return settings?.reasoningEnabled !== false;
 }
 
-function normalizeReasoningEffort(settings) {
+function normalizeReasoningEffort(settings, modelId) {
   const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
-  return raw === "xhigh" ? "xhigh" : raw === "high" ? "high" : "";
+  const supported = REASONING_EFFORTS_BY_MODEL[normalizeModelId(modelId)];
+  if (!Array.isArray(supported) || !supported.includes(raw)) return "";
+  return raw;
 }
 
 function buildWebSearchToolConfig({ settings } = {}) {
@@ -44,26 +54,37 @@ function buildBodyExtensions({ model, settings } = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
 
   const body = {};
+  const modelId = normalizeModelId(model);
 
   const enableWebSearch = Boolean(settings.enableWebSearch);
   if (enableWebSearch) {
     body.tools = [buildWebSearchToolConfig({ settings })];
   }
 
-  if (normalizeModelId(model) === GLM_5_2_MODEL_ID) {
+  if (modelId === GLM_5_2_MODEL_ID) {
     if (!isReasoningEnabled(settings)) {
       body.reasoning = {
         enabled: false,
         exclude: true,
       };
     } else {
-      const effort = normalizeReasoningEffort(settings);
+      const effort = normalizeReasoningEffort(settings, modelId);
       if (effort) {
         body.reasoning = {
           effort,
           exclude: true,
         };
       }
+    }
+  } else if (modelId === GROK_4_5_MODEL_ID) {
+    // grok-4.5 reasoning is mandatory and cannot be disabled;
+    // only forward the effort when set.
+    const effort = normalizeReasoningEffort(settings, modelId);
+    if (effort) {
+      body.reasoning = {
+        effort,
+        exclude: true,
+      };
     }
   }
 
@@ -72,35 +93,18 @@ function buildBodyExtensions({ model, settings } = {}) {
 
 const MODELS = [
   {
-    id: "openai/gpt-4o-mini",
-    name: "openai/gpt-4o-mini",
-    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
-  },
-  {
-    id: "openai/gpt-4o",
-    name: "openai/gpt-4o",
-    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
-  },
-  {
-    id: "anthropic/claude-sonnet-4.5",
-    name: "anthropic/claude-sonnet-4.5",
-    supportedParameters: [],
-  },
-  {
-    id: "anthropic/claude-haiku-4.5",
-    name: "anthropic/claude-haiku-4.5",
-    supportedParameters: [],
-  },
-  {
-    id: "minimax/minimax-m2.1",
-    name: "minimax/minimax-m2.1",
-    supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
-  },
-  {
     id: GLM_5_2_MODEL_ID,
     name: GLM_5_2_MODEL_ID,
     supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
     reasoningEfforts: ["xhigh", "high"],
+    canDisableReasoning: true,
+  },
+  {
+    id: GROK_4_5_MODEL_ID,
+    name: GROK_4_5_MODEL_ID,
+    supportedParameters: [],
+    reasoningEfforts: ["high", "medium", "low"],
+    canDisableReasoning: false,
   },
 ];
 
@@ -117,6 +121,11 @@ function modelSupportsReasoningEffort(modelId) {
   return Array.isArray(model?.reasoningEfforts) && model.reasoningEfforts.length > 0;
 }
 
+function modelCanDisableReasoning(modelId) {
+  const model = MODEL_BY_ID.get(normalizeModelId(modelId));
+  return Boolean(model?.canDisableReasoning);
+}
+
 const PRESENCE_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
   (id) => !modelSupportsParameter(id, PRESENCE_PENALTY_PARAM)
 );
@@ -124,6 +133,7 @@ const FREQUENCY_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
   (id) => !modelSupportsParameter(id, FREQUENCY_PENALTY_PARAM)
 );
 const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
+const REASONING_DISABLE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelCanDisableReasoning(id));
 
 module.exports = {
   id: "openrouter",
@@ -181,7 +191,7 @@ module.exports = {
       type: "toggle",
       default: true,
       capability: "thinking",
-      modelBlocklist: REASONING_EFFORT_BLOCKLIST,
+      modelBlocklist: REASONING_DISABLE_BLOCKLIST,
     },
     {
       key: "reasoningEffort",
