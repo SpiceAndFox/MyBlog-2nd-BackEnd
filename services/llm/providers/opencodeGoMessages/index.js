@@ -20,7 +20,7 @@ module.exports = {
   id: "opencode-go-messages",
   name: "OpenCode Go (Messages)",
   adapter: "anthropic-messages",
-  apiKeyEnv: ["OPENCODE_API_KEY"],
+  apiKeyEnv: ["OPENCODE_GO_API_KEY"],
   baseUrlEnv: ["OPENCODE_GO_BASE_URL"],
   settingsSchema: [
     {

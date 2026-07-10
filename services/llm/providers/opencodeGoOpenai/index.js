@@ -169,7 +169,7 @@ module.exports = {
   id: "opencode-go-openai",
   name: "OpenCode Go (OpenAI-compatible)",
   adapter: "openai-compatible",
-  apiKeyEnv: ["OPENCODE_API_KEY"],
+  apiKeyEnv: ["OPENCODE_GO_API_KEY"],
   baseUrlEnv: ["OPENCODE_GO_BASE_URL"],
   openaiCompatible: {
     bodyExtensions: buildBodyExtensions,

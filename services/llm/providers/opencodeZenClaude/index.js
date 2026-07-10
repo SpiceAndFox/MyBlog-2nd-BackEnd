@@ -48,7 +48,7 @@ module.exports = {
   id: "opencode-zen-claude",
   name: "OpenCode Zen (Claude)",
   adapter: "anthropic-messages",
-  apiKeyEnv: ["OPENCODE_API_KEY"],
+  apiKeyEnv: ["OPENCODE_ZEN_API_KEY"],
   baseUrlEnv: ["OPENCODE_ZEN_MESSAGES_BASE_URL"],
   settingsSchema: [
     {
