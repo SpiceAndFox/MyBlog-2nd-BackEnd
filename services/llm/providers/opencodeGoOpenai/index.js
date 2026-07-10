@@ -9,6 +9,7 @@ const MODELS = [
     supportsThinking: true,
     reasoningEfforts: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
     supportsWebSearch: true,
+    defaults: { temperature: 0.75, topP: 0.95 },
   },
   {
     id: "glm-5.1",

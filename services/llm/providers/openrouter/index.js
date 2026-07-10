@@ -99,7 +99,7 @@ const MODELS = [
     supportedParameters: [FREQUENCY_PENALTY_PARAM, PRESENCE_PENALTY_PARAM],
     reasoningEfforts: ["xhigh", "high"],
     canDisableReasoning: true,
-    defaults: { reasoningEnabled: false, reasoningEffort: "xhigh" },
+    defaults: { reasoningEnabled: false, reasoningEffort: "xhigh", temperature: 0.75, topP: 0.95 },
   },
   {
     id: GROK_4_5_MODEL_ID,

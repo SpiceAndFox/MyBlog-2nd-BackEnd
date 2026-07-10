@@ -536,10 +536,13 @@ const chatController = {
           const models = listModelsForProvider(id);
           const definition = getProviderDefinition(id);
 
+          const defaultModelId = resolveDefaultModelId(id);
+          const defaultModelEntry = models.find((m) => String(m?.id || "").trim() === defaultModelId);
           const defaults = {
             ...((chatConfig.defaultSettingsByProvider || {})[id] || chatConfig.defaultSettings || {}),
+            ...(defaultModelEntry?.defaults || {}),
             providerId: id,
-            modelId: resolveDefaultModelId(id),
+            modelId: defaultModelId,
           };
           if (definition?.capabilities?.webSearch === false) defaults.enableWebSearch = false;
 
@@ -573,8 +576,11 @@ const chatController = {
       }
 
       const selectedProviderDefinition = getProviderDefinition(defaultProviderId);
+      const defaultProviderModels = listModelsForProvider(defaultProviderId);
+      const defaultModelEntry = defaultProviderModels.find((m) => String(m?.id || "").trim() === defaultModelId);
       const defaults = {
         ...((chatConfig.defaultSettingsByProvider || {})[defaultProviderId] || chatConfig.defaultSettings || {}),
+        ...(defaultModelEntry?.defaults || {}),
         providerId: defaultProviderId,
         modelId: defaultModelId,
       };
