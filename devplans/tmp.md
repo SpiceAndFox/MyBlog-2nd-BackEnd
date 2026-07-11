@@ -15,7 +15,7 @@
 - **关键变更**：
   - 确立 PostgreSQL `memory_state` 是唯一当前 Memory authority，旧 rolling/core 不再作为 v2 authority 或同时注入。
   - 新增 `working.overdue`、`working.expiredScenes`，保留 current/working/longTerm 原层级；本批只确定语义 sections，`meta` 依次由第 2 批落 `targetCursors`、第 4 批落 `revision` 并移除 `halted/recovery`、第 9 批落 `sourceGeneration`。
-  - current.scene 与 session 完全解耦；sessionId 只保留 provenance，不 key scene、不触发 scene reset。
+  - current.scene 与 session 完全解耦；sessionId 不 key scene、不触发 scene reset，也不复制到 evidence、event 或 Recall provenance。
   - 声明 userProfile/assistantProfile/worldFacts/relationship 允许 User 和 Assistant 双方维护；add/update policy 在第 3 批落地，forget 的 tombstone/suppression 语义在第 10 批同批落地。
   - 本批不定义 snapshot 事务、Recovery 替代机制或一次性迁移，分别留给第 4、9 批。
 - **依赖**：无，首批。
@@ -88,7 +88,7 @@
 - **关键变更**：
   - Memory Observer 不使用 user-boundary 裁剪，按 target cursor 读取完整 source。
   - `needsMemory` 采用简单 Unicode 字符阈值，不堆叠 message count/tokenizer/context 百分比。
-  - recent window 可跨 session；消息保留 sessionId provenance 但不注入 session boundary 控制标记。
+  - recent window 可跨 session，不注入会改变语义处理的 session boundary 控制标记。
   - 尾部不足 lagThreshold 非 correctness bug；不引入 idle flush 或 session rollover flush。
   - 极长新消息挤出未处理尾批时由 per-target gapBridge 补齐。
   - GapBridge 按 target cursor 查询有效 gap（C < messageId < R），独立逻辑字符预算。
@@ -197,7 +197,7 @@
 3. 最终迁移时停止旧 worker/注入并物理删除旧 Memory 数据；新系统从 raw messages 重建。
 4. 每个成功提交的 Memory revision 都保存 state snapshot。当前不强制额外生成数据库外部备份；如果运维层自行备份，备份不得进入应用上下文或提供给 Agent。
 5. user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。
-6. sessionId 仍保存在消息、evidence、event 和 Recall provenance 中，但不用于 key 当前 scene，也不自动触发 scene reset。
+6. `sessionId` 不复制到 evidence、event 或 Recall provenance；这些结构通过 messageId/source messageIds 追溯来源。
 
 ## 3. State 结构
 
@@ -356,7 +356,7 @@ compacting
 Reducer 对 evidence 做以下纯代码校验：
 
 1. messageId 必须属于 task observed messages。
-2. 数据库中的 user、preset、session、role、createdAt、content hash 必须与 proposal 时一致。
+2. 数据库中的 user、preset、role、createdAt、content hash 必须与 proposal 时一致。
 3. 普通 patch 的 evidence 可来自 task 的 observed messages（包括 newBatch 和 overlap）；不增加“至少一条必须来自 newBatch”的硬校验。
 4. quote 必须非空，不能只有空白或纯标点。
 5. quote 和 raw content 继承原设计的同一套确定性归一化：转小写并去除空白和配置中明确列出的标点差异。正式 schema 必须固定具体函数和标点集，不得由各 Provider 或调用点自行实现。
@@ -423,7 +423,7 @@ Reducer 对 evidence 做以下纯代码校验：
 1. 主聊天 recent window 继续保留 user-boundary 裁剪，避免上下文从孤立的 Assistant 回复开始。
 2. Memory Observer 不使用 user-boundary 裁剪，必须按 target cursor 读取完整 source。
 3. `needsMemory` 采用简单的 Unicode 字符阈值作为主要判断，不同时堆叠 message count、tokenizer 预估和 context 百分比。
-4. session 之间语义连续，因此 recent window 可以跨 session；消息保留 sessionId provenance，但不向 Proposer 注入会改变语义处理的 session boundary 控制标记。
+4. session 之间语义连续，因此 recent window 可以跨 session；不向 Proposer 注入会改变语义处理的 session boundary 控制标记。
 
 ## 13. LagThreshold 与尾批
 
