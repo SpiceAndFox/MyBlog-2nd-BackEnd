@@ -26,7 +26,7 @@ schema 作者注意：
 
 - 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
 - `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：只有 `scene.setField`/`scene.clearField` 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。所有 item section 由 `sectionResults` key 直接寻址，不使用 `path`。
-- `todos` 的 `addItem`/`updateItem` 的 `value` 可选包含 `expiresAt`，schema 用 `oneOf` 表达 `{ "mode": "absolute", "date": "date" }` 与 `{ "mode": "relative", "days"?: int, "months"?: int, "years"?: int }` 两种形态（见 [state-contract.md](state-contract.md) §4）。relative 模式下 `days`/`months`/`years` 至少出现一个，schema 用 `anyOf: [{required: [days]}, {required: [months]}, {required: [years]}]` 表达。
+- `todos.addItem.value` 必须含 `text`、`actor`、`requester`，可选含 `dueAt`；`todos.updateItem.value` 必须含 `dueChange`。`dueChange` 用 `oneOf` 严格表达 `{ "mode": "keep" }`、`{ "mode": "clear" }`、`{ "mode": "set", "dueAt": ... }`，各分支禁止额外字段。`dueAt` 的 absolute/relative schema 与 relative 时长必填规则见 [state-contract.md](state-contract.md) §4。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
 - 普通 patch 的 `evidenceRefs[].quote` schema 设置 `maxLength: 200`；Reducer 仍按 Unicode code points 复核长度、信息量和匹配，不把 Provider schema 当作最终证据校验。
 
@@ -75,13 +75,19 @@ schema 作者注意：
 
 value.text 客观记录事件本质、双方意愿、关系变化，不写感官描写。quote 可以摘录原话片段（含感官描写），因为 quote 仅用于审计溯源，不渲染给主聊天模型。
 
-#### expiresAt（仅 todoProposer）
+#### actor、requester 与 dueAt（仅 todoProposer）
 
-短期待办如有明确时间约定，在 value 中设置 expiresAt：
+每个新增 todo 都要明确：
+
+- `actor`：实际执行者，值为 `user`、`assistant` 或 `both`。
+- `requester`：提出请求或承诺的一方，值为 `user` 或 `assistant`。
+
+如有明确 deadline，在 add value 的 `dueAt` 或 update value 的 `dueChange.mode=set` 中设置：
 
 - 听到明确日期 → `{ "mode": "absolute", "date": "YYYY-MM-DD" }`
 - 听到相对时长 → `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`
-- 只提取你听到的，不要做日期计算。推断不出具体日期时（如"下周三"无法确定是几号），不设 expiresAt。
+- 只提取你听到的，不要按 worker 当前时间做日期计算。Reducer 会以 evidence message 的 `createdAt` 为相对时间 anchor。
+- 更新 todo 时始终显式输出 `dueChange`：不改期限用 `keep`，删除期限用 `clear`，设置/替换期限用 `set`。字段省略不表示清空。
 
 #### evidenceKind 判断指南
 
@@ -112,12 +118,12 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 - scene 是当前场景状态，用 setField/clearField 字段级覆盖；无变化时输出 noop。
 - scene 多字段变化时输出多个 setField patch，每个 patch 恰好 1 条 evidenceRef。
-- clearField 表示"此字段已失效"，不是设为 null。
+- clearField 表示“此字段已失效”；patch 不携带 `value:null`，Reducer 会把固定字段的 value 设为 null，并保留清除 event/provenance。
 
 #### todoProposer（todos）
 
 - todos 只记录明确、可完成、可取消或可过期的请求/承诺。模糊愿望和持续互动约定不要写入 todos。
-- 短期待办如有明确时间约定，设置 expiresAt（见 §2.2 expiresAt）。
+- 新增时必须设置 actor/requester；有明确期限时设置 dueAt（见 §2.2）。更新时必须设置 dueChange。
 - `status` 与 `becameOverdueAt` 由 Reducer 管理，Proposer 不得输出或修改；todoProposer 的 writableState 可包含 active/overdue items，以便两者都能 complete/cancel。
 
 #### agreementProposer（standingAgreements）
@@ -158,7 +164,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 5. evidenceKind 只能使用 `memory_compaction`。不得输出 `user_correction` 或 `assistant_correction`。
 6. 不输出 evidenceRefs；Reducer 会根据 itemIds 从 source items 继承 evidenceGroups。
 7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
-8. todos 只能合并重复/同一事项的 active 待办；overdue todo 不参与 compaction，不能把未完成待办删除成"已处理"。
+8. todos 只能合并重复/同一事项且 actor、requester、dueAt 分别相同的 active 待办；overdue todo 不参与 compaction，不能改写这些字段或把未完成待办删除成"已处理"。
 9. standingAgreements 只能合并重复/高度重叠的约定；不能把有效约定删除成"已处理"。
 10. milestones/worldFacts/userProfile/assistantProfile/relationship 只能在各自 section 内合并高度重叠项；不能因为容量压力遗忘长期事实。
 ```
@@ -188,7 +194,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 | `cancelTodo`   | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
 | `expireTodo`   | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
 
-> `expireTodo` 是 Proposer 观察到用户澄清“不再需要”时输出的终止 patch（evidenceKind: `todo_expiration`），需要 evidenceRefs。Wall-clock 到达 `expiresAtTime` 不调用 `expireTodo`、也不删除 item；Reducer 原位设置 `status=overdue` 并写 `system_cleanup: todo_became_overdue`。
+> `expireTodo` 是 Proposer 观察到用户澄清“不再需要”时输出的终止 patch（evidenceKind: `todo_expiration`），需要 evidenceRefs。Wall-clock 到达 `dueAt` 不调用 `expireTodo`、也不删除 item；Reducer 原位设置 `status=overdue` 并写 `system_cleanup: todo_became_overdue`。
 
 ### agreementProposer（standingAgreements）
 
@@ -327,44 +333,44 @@ assistant 修正场景时间。
 ```json
 {
   "op": "addItem",
-  "value": { "text": "归还橡皮" },
+  "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
   "evidenceKind": "user_request",
   "evidenceRefs": [{ "messageId": 121, "quote": "明天提醒我把橡皮还给她" }]
 }
 ```
 
-**✅ addItem + user_commitment + expiresAt（用户承诺，带过期）**
+**✅ addItem + user_commitment + dueAt（用户承诺，带 deadline）**
 
 ```json
 {
   "op": "addItem",
-  "value": { "text": "去钓鱼", "expiresAt": { "mode": "relative", "days": 14 } },
+  "value": { "text": "去钓鱼", "actor": "both", "requester": "user", "dueAt": { "mode": "relative", "days": 14 } },
   "evidenceKind": "user_commitment",
   "evidenceRefs": [{ "messageId": 130, "quote": "我们两周后去钓鱼吧" }]
 }
 ```
 
-LLM 只提取"两周"= 14 天。Reducer 计算 expiresAtTime = task.now + 14天 + 1天（buffer，活动当天仍活跃）。
+LLM 只提取“两周”= 14 天。Reducer 以 message 130 的数据库 `createdAt` 为 anchor 计算 `dueAt`，不使用 task/worker 执行时间。
 
-**✅ addItem + user_commitment + expiresAt（绝对日期）**
+**✅ addItem + user_commitment + dueAt（绝对日期）**
 
 ```json
 {
   "op": "addItem",
-  "value": { "text": "去玩", "expiresAt": { "mode": "absolute", "date": "2026-07-10" } },
+  "value": { "text": "去玩", "actor": "both", "requester": "user", "dueAt": { "mode": "absolute", "date": "2026-07-10" } },
   "evidenceKind": "user_commitment",
   "evidenceRefs": [{ "messageId": 133, "quote": "我们十号去玩吧" }]
 }
 ```
 
-LLM 提取明确日期，Reducer 计算 expiresAtTime = 2026-07-10 + 1天（buffer）。
+LLM 提取明确日期；Reducer 将该日期结束后的首个日界线持久化为 `dueAt`。`dueAt` 是 deadline，不是删除时间。
 
 **✅ addItem + assistant_request（assistant 请求用户做某事）**
 
 ```json
 {
   "op": "addItem",
-  "value": { "text": "按时吃饭" },
+  "value": { "text": "按时吃饭", "actor": "user", "requester": "assistant" },
   "evidenceKind": "assistant_request",
   "evidenceRefs": [{ "messageId": 131, "quote": "你要记得按时吃饭" }]
 }
@@ -389,7 +395,7 @@ assistant 是发起者，user 是行动者。与 `user_commitment`（user 自发
 {
   "op": "updateItem",
   "itemId": "todo:1",
-  "value": { "text": "归还橡皮和笔记本" },
+  "value": { "text": "归还橡皮和笔记本", "dueChange": { "mode": "keep" } },
   "evidenceKind": "user_correction",
   "evidenceRefs": [{ "messageId": 135, "quote": "对了还有笔记本也要还" }]
 }
@@ -402,7 +408,7 @@ assistant 是发起者，user 是行动者。与 `user_commitment`（user 自发
 ```json
 {
   "op": "addItem",
-  "value": { "text": "准备生日惊喜" },
+  "value": { "text": "准备生日惊喜", "actor": "assistant", "requester": "assistant" },
   "evidenceKind": "assistant_commitment",
   "evidenceRefs": [{ "messageId": 132, "quote": "我来准备生日惊喜吧" }]
 }
@@ -439,7 +445,7 @@ assistant 是行动者兼发起者。
 ```json
 {
   "op": "addItem",
-  "value": { "text": "想变好" },
+  "value": { "text": "想变好", "actor": "user", "requester": "user" },
   "evidenceKind": "user_request",
   "evidenceRefs": [{ "messageId": 121, "quote": "我希望能变好" }]
 }
