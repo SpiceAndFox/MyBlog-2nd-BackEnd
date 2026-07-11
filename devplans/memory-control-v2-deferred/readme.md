@@ -6,6 +6,6 @@
 
 - [Suppression Proposer](suppression-proposer.md)：使用 LLM 对 forget/correction 消息做片段级 RAG suppression。
 - [Gap Compressor](gap-compressor.md)：使用 LLM 压缩超预算 gapBridge，并处理单条 raw message 本身超预算的情况。
-- [Expired Scenes / Overdue 长期容量](expired-scenes-overdue-capacity.md)：更精细的归档、压缩、检索和长期清理策略。
+- [Overdue Todo 长期容量](expired-scenes-overdue-capacity.md)：长期未完成 overdue todo 的归档、检索和清理策略。
 
 延后条目重新进入主设计前，必须重新评估调用成本、失败路径、schema/校验复杂度，以及当前确定性替代方案是否已经足够。
