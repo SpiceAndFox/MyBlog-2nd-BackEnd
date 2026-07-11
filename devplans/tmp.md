@@ -58,6 +58,7 @@
 - userProfile 与 assistantProfile 都允许 User 和 Assistant 双方全权 add/update/forget。
 - worldFacts 与 relationship 同样允许双方 add/update/forget。
 - evidence role 仍按数据库真实消息校验，但不再用 role 限制 User/Assistant 对两个 Profile 的操作权。
+- `memory_state.meta` 不再保存旧 `recovery: {}`；Recovery 能力没有删除，而是迁移到 durable task、per-target status 和 ops log，详见 §16。
 
 ## 4. Target、Proposer 与 Cursor
 
@@ -139,7 +140,7 @@ compacting
 5. Compaction apply 和原 proposal replay 各自形成明确 revision，并各自同步 snapshot。
 6. Source generation seed 必须同步写完整 snapshot。
 7. State、events、snapshot、cursor、task 终态和 target health 必须在同一事务提交。
-8. Snapshot 包含全部语义 section、全部 target cursors、revision 和 sourceGeneration；不包含 task lease/retry 等瞬时调度状态。
+8. Snapshot 包含全部语义 section、全部 target cursors、revision 和 sourceGeneration；不包含 task lease/retry/错误计数等运行恢复状态。这些状态必须在专用表中持久化，并非只保存在进程内。
 9. Event replay 不重新调用 LLM，只使用 event 中的 normalized applied operation、result item ID 和确定性字段。
 10. Add event 的 result item ID 不能为 null。
 11. 为解决 eventId/itemId/provenance 的循环依赖，Reducer 在事务中预留 event IDs、生成 item IDs、构造最终 state/hash，再插入完整 events。
@@ -247,6 +248,17 @@ Reducer 对 evidence 做以下纯代码校验：
 - `degraded`
 - `rebuilding`
 
+per-target status（§16.1）到用户侧状态的映射：
+
+| per-target status | 用户侧状态 | 说明 |
+| --- | --- | --- |
+| `healthy` | `healthy` | 该 target 正常运行 |
+| `retry_wait` | `degraded` | 瞬时错误退避重试中，记忆可能滞后 |
+| `halted` | `degraded` | compaction 无法完成等原因导致该 target 暂停，需人工 resume |
+| `rebuilding` | `rebuilding` | source rebuild 进行中 |
+
+任一 target 非 healthy 即整体显示对应 degraded/rebuilding 告警；所有 target 恢复 healthy 后整体回到 healthy。
+
 共识：
 
 1. 任何可能影响对话质量的问题都必须显式告知用户，包括 Provider/网络失败、target 积压、compaction halt、schema/state/hash 异常、dirty rebuild、gap compression 失败、RAG/Recall 未追平等。
@@ -258,6 +270,56 @@ Reducer 对 evidence 做以下纯代码校验：
 7. 管理员直接维护、resume/rebuild 等恢复入口不能因 target halt 而不可访问；同一 target 的普通 proposal 仍按顺序等待，不能绕过 halt。
 
 ## 16. 自动恢复
+
+### 16.1 Recovery 状态归属
+
+旧设计中的 `memory_state.meta.recovery` 不再作为语义 state 字段，但其中能力必须完整迁移，不能静默丢弃。
+
+字段归属：
+
+| 旧 recovery 字段/语义 | 新持久化位置 |
+| --- | --- |
+| `consecutiveErrors` | per-target status |
+| `awaitingContextExpansion` | 当前 durable task/proposal 的 `contextExpansionAttempt` |
+| `lastErrorReason` | per-target status，同时写 ops log |
+| `lastErrorTickId` | ops log 的 taskId/attempt；per-target status 保存 lastTaskId |
+| halt 状态与原因 | per-target status |
+| retry attempt/notBefore | durable task |
+| lease owner/token/expiry | durable task |
+| 完整错误历史 | ops log |
+
+建议的 per-target status 概念结构：
+
+```js
+{
+  userId,
+  presetId,
+  sourceGeneration,
+  targetKey,
+  status: "healthy" | "retry_wait" | "halted" | "rebuilding",
+  consecutiveErrors,
+  lastErrorReason,
+  lastTaskId,
+  nextRetryAt,
+  updatedAt
+}
+```
+
+持久化规则：
+
+1. Recovery 状态必须保存在数据库，进程内计数器不能成为 authority。
+2. Provider/schema/lease 等未产生语义 patch 的失败，只原子更新 task、per-target status 和 ops log；不增加 memory revision，也不写完整 state snapshot。
+3. 成功提交语义 patch 时，state/event/snapshot/cursor/task 终态和对应 target status 的错误计数重置必须在同一事务完成。
+4. `unable_to_decide` 首次扩窗口的状态属于该 proposal/window，不属于长期 target state，因此记录在 durable task 的 `contextExpansionAttempt` 中。
+5. Compaction halt、deferred proposal 和 replay 阶段属于 durable task/target status，不写进语义 memory_state。
+6. Renderer 和用户告警同时读取语义 memory_state 与 per-target status；删除 recovery 字段不能导致 degraded/rebuilding/halted 状态不可见。
+7. Crash recovery 分两条：语义 state 从 snapshot/events 恢复，运行恢复状态从 durable task/per-target status/ops log 恢复。
+
+### 16.2 旧 `meta.recovery` 迁移
+
+默认 cutover 路径物理删除旧 Memory 并从 raw messages 重建新 state，不继承旧错误计数、halt 或 context-expansion flag；新 generation 的 target status 从 healthy/0 初始化。
+
+如果开发期间存在已运行的 v2 state 且需要 in-place 移除 `meta.recovery`（而非清空重建），在同一事务中：先创建 per-target status 表，将旧 `meta.recovery` 按 §4 的联合 target 映射（scene family → `scene`，todos/agreements → `commitments`，recentEpisodes/milestones → `episodes`，所有 core path → `core`）写入 per-target status——`consecutiveErrors` 取最大值，`lastErrorReason` 取时间最新的一条；`awaitingContextExpansion=true` 能定位窗口则迁移到对应 task 的 `contextExpansionAttempt=1`，否则清除并记 migration ops log；旧全局 `halted` 能定位 target 则只 halt 对应 target，否则标记所有 target halted 并要求管理员逐 target resume——然后删除 JSON 中的 `meta.recovery` 字段。迁移失败必须整体回滚。
 
 至少包含以下恢复路径：
 
