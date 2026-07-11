@@ -27,7 +27,7 @@
 - **关键变更**：
   - `coreProposer` 拆分为 `profileRelationshipProposer`（userProfile + assistantProfile + relationship）和 `worldFactProposer`（worldFacts）；normal Proposer 从 5 增至 6。
   - 用 `targetCursors` 替换 per-section cursor：todos / standingAgreements / episodes / profileRelationship / worldFacts / scene。
-  - 联合处理的 sections 共享一个 cursor；compaction task 不拥有 raw-message cursor。
+  - 联合处理的 sections 共享一个 cursor；maintenance task 不拥有 raw-message cursor。
   - 更新六个 Proposer 的 writable target、evidenceKind 派生枚举、envelope 和 readOnlyContext 固定范围。
 - **依赖**：第 1 批的 section 结构。
 
@@ -60,12 +60,16 @@
 - **tmp.md 章节**：§5 Proposal 持久化与 Compaction 状态机、§6 CompactionProposer 权限
 - **目标文档**：write-protocol.md §2.1 §3 §3.1、state-contract.md §4 §6 §8 §9、proposer-prompt.md §2.3 §2.4 §3 §4、harness.md §3.5 §3.6
 - **关键变更**：
-  - 完整落地 proposal_persisted → capacity_blocked → compacting → compaction_applied/failed → replaying_original_proposal → succeeded/replay_failed 状态机。
-  - 禁止 accepted + deferred 非原子混合提交；compaction 后从数据库确定性 replay 原 proposal，不重新调原 Proposer。
-  - compaction apply 和成功 replay 各自形成 revision+snapshot；replay_failed 只更新 task/status/ops log，不写语义 revision。
-  - `mergeItems` 只允许 compactionProposer；normal Proposer 删除主动去重权限；compactionProposer 只能同 section merge。
-  - Merge ID 由 Reducer 生成，evidenceGroups 从 source items 继承，pending proposal 引用的 itemIds 受硬保护。
-  - compaction/replay 无法完成时只 halt 对应 target，保留 proposal/cursor，其他 targets 和主聊天继续。
+  - 拆分 normal task 与 maintenance task 两条独立状态链：normal task stage（`proposal_persisted → capacity_blocked → replaying_original_proposal → succeeded | replay_failed`）和 maintenance task stage（`pending → compacting → compaction_applied | compaction_failed`）；`target_halted` 只是 per-target status，不是 task stage。maintenance task 必须持久化 `parent_task_id`，parent task 必须持久化当前 `maintenance_task_id`。
+  - 禁止 accepted + deferred 非原子混合提交；capacity-blocked 时只为触发容量阻塞的 patch 写 `deferred` event（`result_revision=null`），其余 patch 暂不写最终 decision，完整 proposal 保存在 parent task；replay 时使用原稳定 `patchId` 写全部最终 `accepted/rejected/noop` events。一个多阶段 normal task 允许拥有"capacity-blocked 审计 group"和"最终 replay group"。
+  - compaction 后从数据库确定性 replay 原 proposal，不重新调原 Proposer；compaction apply 和成功 replay 各自形成 revision+snapshot；replay_failed 只更新 task/status/ops log，不写语义 revision。
+  - replay 的 stale 判定只看 target cursor 仍等于原 `cursorBefore`、proposal 仍是该 target 的活动 proposal、引用 item 仍存在并通过当前 state 的纯代码预检、schema/source hashes 仍兼容；其他 target 导致的全局 revision 增长不使 proposal stale；原始 `baseRevision` 只用于审计。replay revision 基于执行时最新全局 revision 创建。
+  - `mergeItems` 只允许 compactionProposer；normal Proposer 删除主动去重权限；compactionProposer 只能同 section merge。Todo merge 的 `actor/requester/dueAt` 附加约束移到第 6 批随字段引入后落地；第 5 批只规定"仅 active todo、同 section 合并"。
+  - Merge ID 由 Reducer 生成，evidenceGroups 从 source items 继承，pending proposal 引用的 itemIds 受硬保护；merge event 新增 `merged_from_item_ids` 列存储完整 source item IDs，不再使用 `itemIds.join(",")`。
+  - per-target status 新增 `capacity_blocked` 值；capacity-blocked 期间 Observer 不为该 target 创建新 normal task；resume 不立即设 healthy，只有成功 replay、cursor 推进并提交 snapshot 后才恢复 healthy。
+  - 多 section proposal 超容量时按 `task.targetSections` 固定顺序逐 section 压缩，每次只压缩一个阻塞 section，每次 compaction revision 后重新预检完整 proposal；仍有阻塞 section 时继续创建下一个 maintenance task，而不是立即 `replay_failed`；尝试上限按 `(parentTaskId, section)` 计算。
+  - compaction/replay 无法完成时只 halt 对应 target，保留 proposal/cursor，其他 targets 和主聊天继续；resume 复用原 maintenance task 重新进入 compaction，不创建新 child task。
+  - `sourceGeneration` 变化时 compaction/replay proposal 的 stale 分支移到第 9 批随 `sourceGeneration` 引入后落地；第 5 批依靠 cursor、source hashes、schema version 和 item 校验判定 replay 可行性。
 - **依赖**：第 2 批的 targets，第 3 批的 capacity/policy，第 4 批的 durable task/snapshot/per-target status。
 
 ### 第 6 批：Scene 与 Todo/Overdue 领域生命周期（tmp.md §10、§11）
@@ -75,7 +79,7 @@
 - **关键变更**：
   - Scene 到期写入单值 `current.previousScene` 并写 `scene_expired`；替换旧 previousScene 时写 `expired_scene_evicted`，不使用 compaction。
   - Renderer 将 previousScene 标记为过期/上次已知场景，housekeeping 未持久化时使用 effective view。
-  - Todo 新增 actor/requester；dueAt 以 evidence message createdAt 为相对时间 anchor；`updateTodo.dueChange` 必须显式 keep/clear/set。
+  - Todo 新增 actor/requester；dueAt 以 evidence message createdAt 为相对时间 anchor；`updateTodo.dueChange` 必须显式 keep/clear/set；todo merge 的 actor/requester/dueAt 相同约束在本批随字段引入后落地（从第 5 批移入）。
   - 到期 todo 留在 `working.todos`，原位更新 `status=overdue` 并保留 provenance，写 `todo_became_overdue`；overdue todo 可 complete/cancel，当前不 archive/compaction。
   - recentEpisodes 滑动窗口滚出、scene 和 todo 自动变化全部使用第 4 批的 system cleanup event 机制。
   - 完成 recentEpisodes、previousScene、todo overdue 状态对第 3 批基础容量规则的确定性例外。
@@ -117,7 +121,7 @@
 - **目标文档**：write-protocol.md §7 §8、state-contract.md §1 §9、rendering-and-context.md §3、overview.md §8、harness.md §3.10、`memory-control-v2-deferred/scene-snapshot-recall.md` §3.5 §6.4（该文档已 defer，仍单向同步本批变更以保持一致性，但不影响当前实现）
 - **关键变更**：
   - 自动 source rebuild 触发条件：编辑历史、regenerate 截断、删除、session trash/restore、preset 归属变化、排序语义变化。普通追加不增 sourceGeneration。
-  - 在 `memory_state.meta` 落地单调 `sourceGeneration`，并将它作为 Memory/RAG/Recall source invalidation 的共享权威世代。
+  - 在 `memory_state.meta` 落地单调 `sourceGeneration`，并将它作为 Memory/RAG/Recall source invalidation 的共享权威世代；`sourceGeneration` 变化时 compaction/replay proposal 的 stale 分支在本批随字段引入后落地（从第 5 批移入）。
   - Rebuild 流程：generation+1 → 设置 dirty → 取消旧 tasks → 初始化新 state+snapshot → 从 raw messages 重放 → force drain → 校验 → 清 dirty → healthy。
   - Raw source mutation、generation increment、dirty boundary、旧 task 取消必须同事务；不引入通用 outbox。
   - RAG/Recall 各自持久化独立 projection checkpoint（processedGeneration + processedBoundaryMessageId）；不因 Memory target 追平就推定 RAG/Recall 追平。
@@ -279,45 +283,53 @@
 
 保留 deferred、LLM compaction 和 compaction 后确定性重放，但禁止 accepted + deferred 的非原子混合提交。
 
-状态机：
+状态分属两类 task 和 per-target status，不是单条链：
+
+**Normal task stage**（`task_type=normal`）：
 
 ```text
-pending
-→ proposing
-→ proposal_persisted
+pending → proposing → proposal_persisted
 → capacity_blocked
-→ compacting
-→ compaction_applied
 → replaying_original_proposal
 ├→ succeeded
-└→ replay_failed/target_halted
+└→ replay_failed
 ```
 
-Compaction 无法完成时使对应 target 进入 halt，而不是推进 cursor：
+**Maintenance task stage**（`task_type=maintenance`）：
 
 ```text
-compacting
-├→ compaction_applied            # 至少一个 patch apply 成功（其他可能因保护而 reject，见 §5.10）
-└→ compaction_failed/target_halted  # 全部 patch 被保护或无安全合并空间
+pending → compacting
+├→ compaction_applied       # 至少一个 patch apply 成功（其他可能因保护而 reject，见规则 12）
+└→ compaction_failed        # 全部 patch 被保护或无安全合并空间
 ```
+
+`target_halted` 只是 per-target status（`capacity_blocked` 或 `halted`），不是 task stage。maintenance task 必须持久化 `parent_task_id` 指向 normal task；normal task 的 `stage_payload` 持久化当前 `maintenance_task_id`。
 
 完整规则：
 
 1. Proposer 输出经结构校验后，为每个 patch 分配稳定 patchId。
-2. 在 apply 任何 patch 前，完整持久化原 proposal、source hashes、generation、cursorBefore、targetMessageId、prompt/model/schema 版本。
-3. Reducer 先预检整个 proposal bundle。
-4. 如果任一 patch 因 section 条数或可渲染字符容量需要 compaction，本轮不 apply proposal 中的其他 patch，避免 partial commit。
-5. 创建 durable compaction task，并暂停同一 target 的后续 normal task。
-6. Compaction 成功后，从数据库读取原 proposal，在当前 state 上先对完整 proposal 重做纯代码预检，预检通过后才确定性 replay；不得重新调用原 Proposer。
-7. Compaction 已提交但 replay 预检仍因容量不足而失败时，进入 `replay_failed/target_halted`，reason=`capacity_still_exceeded`；原 proposal 保留、cursor 不推进、replay 不产生部分 state 变更。
-8. Replay 的其他非 stale 确定性失败同样进入 `replay_failed/target_halted`，并记录精确 reason；Source generation 在此期间变化则不属于 replay_failed，旧 proposal/compaction task 标记 stale 并交由 rebuild。
-9. `replay_failed` 终局只原子更新 durable task、per-target status 和 ops log；因为 replay 尚未产生语义变更，不增加 Memory revision，不写新 state snapshot。
-10. Pending proposal 保护：Reducer 对 compaction patch 的 `itemIds` 与该 target 所有 pending（capacity_blocked/compacting）proposal 引用的 itemId 集合做交集校验——这是纯代码硬校验，不是 prompt 约束。相交的 compaction patch 被 reject，reason=`item_protected_by_pending_proposal`；该 compaction patch 不 apply，同一 compaction task 的其他 patch 仍可正常 apply。一个 compaction task 的全部 patch 均因保护而 reject 时，视同 `unable_to_compact`，进入 §5 状态机的 `compaction_failed/target_halted`。
-11. Compaction/replay 必须记录实际释放的 item 数和 rendered chars，以便诊断 replay 为何仍然超容量。
-12. Compaction 或 replay 失败时只 halt 对应 Memory target：该 target 的 cursor 不推进，原 proposal 保留，后续 normal proposals 暂停。
-13. 其他 Memory targets 和主聊天继续运行；系统不设置由 Memory target halt 派生的全局 `chatBlocked` 或 user/preset 级 halt。
-14. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和滞后边界，不得只写后台日志。
-15. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，只 resume 对应 target；对 replay_failed 状态，resume 在当前 state 上重新进入 compaction，释放足够容量后再 replay 原 proposal。
+2. 在 apply 任何 patch 前，完整持久化原 proposal、source hashes、cursorBefore、targetMessageId、prompt/model/schema 版本到 normal task 的 `task_payload`。`sourceGeneration` 在第 9 批引入后加入持久化范围。
+3. Reducer 先预检整个 proposal bundle（schema、evidence、policy、结构化冲突、容量）。
+4. 如果任一 patch 因 section 条数或可渲染字符容量需要 compaction，本轮不 apply proposal 中的任何 patch，避免 partial commit。normal task 进入 `capacity_blocked`，per-target status 进入 `capacity_blocked`。
+5. capacity-blocked 事务只为真正触发容量阻塞的 patch 写 `decision=deferred`、`result_revision=null` 的 event group（"capacity-blocked 审计 group"）；其他 patch 暂不写最终 decision，完整 proposal 保存在 parent task。同事务创建 maintenance task（`task_type=maintenance`、`parent_task_id` 指向 normal task），normal task 的 `stage_payload` 持久化 `maintenance_task_id`。
+6. maintenance task 按 `task.targetSections` 固定顺序，每次只压缩一个阻塞 section。每次 compaction revision 后重新预检完整 proposal 的模拟 post-state；仍有其他阻塞 section 时继续创建下一个 maintenance task，而不是立即 `replay_failed`。尝试上限按 `(parentTaskId, section)` 计算，同一 section 对同一阻塞窗口最多尝试 1 次。
+7. Compaction 成功释放容量后，normal task 从 `capacity_blocked` 进入 `replaying_original_proposal`。从数据库读取原 proposal，在当前 state 上先对完整 proposal 重做纯代码预检，预检通过后才确定性 replay；不得重新调用原 Proposer。
+8. Replay 时使用原稳定 `patchId` 为全部 patch 写最终 `accepted/rejected/noop` events（"最终 replay group"）。普通 rejected 仍允许与 accepted 在最终 replay revision 中共存，禁止的只是 `accepted + capacity-deferred` 混合提交。replay revision 基于执行时最新全局 revision 创建。
+9. Compaction 已提交但 replay 预检仍因容量不足而失败时，进入 `replay_failed`，reason=`capacity_still_exceeded`；原 proposal 保留、cursor 不推进、replay 不产生部分 state 变更。
+10. Replay 的其他非 stale 确定性失败同样进入 `replay_failed`，并记录精确 reason。`sourceGeneration` 在此期间变化的 stale 分支由第 9 批定义；第 5 批的 replay stale 判定只看以下条件：
+    - 当前 target cursor 仍等于原 `cursorBefore`；
+    - proposal 仍是该 target 的活动 proposal（normal task 非终局）；
+    - 引用 item 仍存在并通过当前 state 的纯代码预检；
+    - schema/source hashes 仍兼容。
+
+    其他 target 导致的全局 revision 增长不使 proposal stale；原始 `baseRevision` 只用于审计。
+11. `replay_failed` 终局只原子更新 durable task、per-target status 和 ops log；因为 replay 尚未产生语义变更，不增加 Memory revision，不写新 state snapshot。
+12. Pending proposal 保护：Reducer 对 compaction patch 的 `itemIds` 与该 target 所有 pending（capacity_blocked/compacting）proposal 引用的 itemId 集合做交集校验——这是纯代码硬校验，不是 prompt 约束。相交的 compaction patch 被 reject，reason=`item_protected_by_pending_proposal`；该 compaction patch 不 apply，同一 maintenance task 的其他 patch 仍可正常 apply。一个 maintenance task 的全部 patch 均因保护而 reject 时，视同 `unable_to_compact`，进入 `compaction_failed`。
+13. Compaction/replay 必须记录实际释放的 item 数和 rendered chars，以便诊断 replay 为何仍然超容量。
+14. Compaction 或 replay 失败时只 halt 对应 Memory target：该 target 的 cursor 不推进，原 proposal 保留，后续 normal proposals 暂停。
+15. 其他 Memory targets 和主聊天继续运行；系统不设置由 Memory target halt 派生的全局 `chatBlocked` 或 user/preset 级 halt。
+16. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和滞后边界，不得只写后台日志。
+17. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，只 resume 对应 target。resume 复用原 maintenance task 重新进入 compaction，不创建新 child task。resume 不立即设 healthy：per-target status 从 `halted` 变为 `capacity_blocked`，只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。maintenance 脚本可绕过 halt，普通 Observer 不可绕过。
 
 ## 6. CompactionProposer 权限
 
@@ -327,12 +339,12 @@ compacting
 4. mergeItems 不能跨 section。
 5. compaction 是 system maintenance operation，不伪装成普通 message evidenceKind。
 6. Merge 后的新 item ID 由 Reducer 生成 UUID/ULID，禁止使用 `itemIds.join(",")`。
-7. Merge event 必须记录 `mergedFromItemIds`、resultItemId 和 replay 所需完整 normalized value。
+7. Merge event 必须记录 `mergedFromItemIds`（完整 source item ID 数组，按持久化 patch 中的稳定顺序）、resultItemId 和 replay 所需完整 normalized value。event 表新增 `merged_from_item_ids` 列存储该数组，merge event 的 `item_id` 列为 null。`normalized_operation` 同时包含 source IDs、resultItemId 和完整最终 merged item。删除所有 `itemIds.join(",")` 规则。
 8. 被合并旧 items 从 active state 移除，但历史通过 event chain 保留。
 9. Merge 后 evidence 从输入 items 继承，compactionProposer 不能伪造 raw-message evidence。
 10. compactionProposer 可维护 todos 的 active items、standingAgreements、milestones、userProfile、assistantProfile、relationship 和 worldFacts；recentEpisodes 仍由 Reducer 的滑动窗口处理。
 11. previousScene 和 overdue todo 不使用 compactionProposer：previousScene 是单值替换字段，overdue todo 仅限制 Renderer 注入的最新 N 条和可渲染字符数。
-12. Merge 的前置约束对所有 section 通用：被合并的 item 不得被任何 pending proposal 引用（§5.10 的 Reducer 硬校验）。Todo merge 额外要求同 section、actor 相同、requester 相同、dueAt 相同。
+12. Merge 的前置约束对所有 section 通用：被合并的 item 不得被任何 pending proposal 引用（§5 规则 12 的 Reducer 硬校验）。Todo merge 额外要求同 section、仅限 active items；`actor/requester/dueAt` 相同约束移到第 6 批随字段引入后落地。
 
 ## 7. Snapshot、Event 与恢复
 
@@ -460,6 +472,7 @@ Reducer 对 evidence 做以下纯代码校验：
 | ----------------- | ------------ | ------------------------------------------------------------------------------- |
 | `healthy`         | `healthy`    | 该 target 正常运行                                                              |
 | `retry_wait`      | `degraded`   | 瞬时错误退避重试中，记忆可能滞后                                                |
+| `capacity_blocked`| `degraded`   | 容量阻塞，等待 compaction/replay，记忆可能滞后                                  |
 | `halted`          | `degraded`   | compaction/replay 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
 | `rebuilding`      | `rebuilding` | source rebuild 进行中                                                           |
 
@@ -503,7 +516,7 @@ Reducer 对 evidence 做以下纯代码校验：
   presetId,
   sourceGeneration,
   targetKey,
-  status: "healthy" | "retry_wait" | "halted" | "rebuilding",
+  status: "healthy" | "retry_wait" | "capacity_blocked" | "halted" | "rebuilding",
   consecutiveErrors,
   lastErrorReason,
   lastTaskId,
