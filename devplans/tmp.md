@@ -93,6 +93,16 @@
 6. Compaction task 不拥有独立 raw-message cursor；它是被 capacity-blocked normal task 派生出的维护任务。
 7. profileRelationshipProposer 联合判断 User Profile、Assistant Profile 和 Relationship，三个 section 共享一个 cursor。
 8. worldFacts 由独立 worldFactProposer 处理，不与 Profile/Relationship 共享 cursor。
+9. 相比原设计的 5 个 normal Proposers，所有 targets 同时 eligible 时的最大 LLM 调用数增至 6；Observer 仍只调用达到触发条件的 target，不得每 tick 无条件调用全部 Proposers。
+
+### 4.1 新 Proposer 的 readOnlyContext
+
+| Proposer | writableState | readOnlyContext |
+| --- | --- | --- |
+| profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.worldFacts |
+| worldFactProposer | longTerm.worldFacts | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.userProfile、assistantProfile、relationship |
+
+两者继承原 envelope 边界：writableState item 可保留 ID 以供 update/forget；readOnlyContext item 不暴露 ID 或 evidenceGroups，只作语义背景，不能单独证明新事实或作为 evidenceRefs 来源。
 
 ## 5. Proposal 持久化与 Compaction 状态机
 
@@ -108,7 +118,8 @@ pending
 → compacting
 → compaction_applied
 → replaying_original_proposal
-→ succeeded
+├→ succeeded
+└→ replay_failed/target_halted
 ```
 
 Compaction 无法完成时使对应 target 进入 halt，而不是推进 cursor：
@@ -125,13 +136,16 @@ compacting
 3. Reducer 先预检整个 proposal bundle。
 4. 如果任一 patch 因 section 条数或可渲染字符容量需要 compaction，本轮不 apply proposal 中的其他 patch，避免 partial commit。
 5. 创建 durable compaction task，并暂停同一 target 的后续 normal task。
-6. Compaction 成功后，从数据库读取原 proposal，在当前 state 上重新做纯代码校验并确定性 replay；不得重新调用原 Proposer。
-7. Source generation 在此期间变化时，旧 proposal/compaction task stale，由 rebuild 处理，不能 apply 到新 generation。
-8. CompactionProposer 不得 merge/remove 原 proposal 正在引用的 itemId。
-9. Compaction 失败时只 halt 对应 Memory target：该 target 的 cursor 不推进，原 proposal 保留，后续 normal proposals 暂停。
-10. 其他 Memory targets 和主聊天继续运行；系统不设置由 Memory target halt 派生的全局 `chatBlocked` 或 user/preset 级 halt。
-11. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和滞后边界，不得只写后台日志。
-12. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，只 resume 对应 target；resume 先重试 compaction，再 replay 原 proposal。
+6. Compaction 成功后，从数据库读取原 proposal，在当前 state 上先对完整 proposal 重做纯代码预检，预检通过后才确定性 replay；不得重新调用原 Proposer。
+7. Compaction 已提交但 replay 预检仍因容量不足而失败时，进入 `replay_failed/target_halted`，reason=`capacity_still_exceeded`；原 proposal 保留、cursor 不推进、replay 不产生部分 state 变更。
+8. Replay 的其他非 stale 确定性失败同样进入 `replay_failed/target_halted`，并记录精确 reason；Source generation 在此期间变化则不属于 replay_failed，旧 proposal/compaction task 标记 stale 并交由 rebuild。
+9. `replay_failed` 终局只原子更新 durable task、per-target status 和 ops log；因为 replay 尚未产生语义变更，不增加 Memory revision，不写新 state snapshot。
+10. CompactionProposer 不得 merge/remove 原 proposal 正在引用的 itemId。
+11. Compaction/replay 必须记录实际释放的 item 数和 rendered chars，以便诊断 replay 为何仍然超容量。
+12. Compaction 或 replay 失败时只 halt 对应 Memory target：该 target 的 cursor 不推进，原 proposal 保留，后续 normal proposals 暂停。
+13. 其他 Memory targets 和主聊天继续运行；系统不设置由 Memory target halt 派生的全局 `chatBlocked` 或 user/preset 级 halt。
+14. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和滞后边界，不得只写后台日志。
+15. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，只 resume 对应 target；对 replay_failed 状态，resume 在当前 state 上重新进入 compaction，释放足够容量后再 replay 原 proposal。
 
 ## 6. CompactionProposer 权限
 
@@ -275,7 +289,7 @@ Reducer 对 evidence 做以下纯代码校验：
 | --- | --- | --- |
 | `healthy` | `healthy` | 该 target 正常运行 |
 | `retry_wait` | `degraded` | 瞬时错误退避重试中，记忆可能滞后 |
-| `halted` | `degraded` | compaction 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
+| `halted` | `degraded` | compaction/replay 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
 | `rebuilding` | `rebuilding` | source rebuild 进行中 |
 
 任一 target 非 healthy 即整体显示对应 degraded/rebuilding 告警；所有 target 恢复 healthy 后整体回到 healthy。
@@ -286,7 +300,7 @@ Reducer 对 evidence 做以下纯代码校验：
 2. 内部仍保存精确 reason、taskId、target、generation、attempt 等诊断信息，但不要求用户理解大量错误枚举。
 3. 告警应持续到恢复完成，而不是只弹一次短暂提示。
 4. 恢复后应明确提示 Memory 已追平到相应 boundary。
-5. Compaction 无法完成时必须 halt 对应 Memory target；其他 targets 和主聊天继续运行。
+5. Compaction 或原 proposal replay 无法完成时必须 halt 对应 Memory target；其他 targets 和主聊天继续运行。
 6. Halt 时用户必须知道对应记忆类别已暂停、原因、cursor/处理边界和需要人工恢复，不得只写后台日志。
 7. Renderer 继续渲染 halted target 最后一次成功提交的稳定 state，但必须在 Memory context 中明确标记“该类记忆可能滞后”；recent window 和该 target 的 GapBridge 仍可提供未写入 Memory 的 raw-message 覆盖。
 8. resume/rebuild 等服务器维护脚本不受 target halt 限制；在 resume 完成前，只有该 target 的普通 proposal 不得绕过 halt。
@@ -348,7 +362,7 @@ Reducer 对 evidence 做以下纯代码校验：
 3. Revision/cursor stale：丢弃旧执行结果，按 durable task/proposal 和当前 state 重新校验。
 4. Source dirty/generation 变化：启动 source rebuild。
 5. State/schema 损坏：优先从 snapshot 恢复；必要时从 raw messages rebuild。
-6. Compaction 失败：保留原 proposal，只 halt 对应 target，显式告警并等待服务器维护脚本 resume；其他 targets 和主聊天继续运行。
+6. Compaction/replay 失败：保留原 proposal，只 halt 对应 target，显式告警并等待服务器维护脚本 resume；其他 targets 和主聊天继续运行。
 7. RAG/Recall projection 落后：保持 degraded/rebuilding，追平当前 generation 后恢复。
 
 ## 17. Source Generation 与 Rebuild
@@ -386,7 +400,17 @@ sourceGeneration + 1
 → 用户状态 rebuilding → healthy
 ```
 
-Raw source mutation、generation increment、dirty boundary、旧 task 取消和 Memory/RAG/Recall invalidation intent 必须在同一数据库事务中持久化，禁止 controller 在 source 已提交后 best-effort 标 dirty。当前不引入通用 outbox；进程内 wake-up 只负责降低延迟，worker 启动/轮询时必须以数据库 dirty 状态为恢复依据。
+Raw source mutation、generation increment、dirty boundary 和旧 Memory tasks 取消必须在同一数据库事务中持久化，禁止 controller 在 source 已提交后 best-effort 标 dirty。当前不引入通用 outbox；RAG/Recall invalidation 由各自 checkpoint 与权威 sourceGeneration 的不一致确定性派生，进程内 wake-up 只负责降低延迟。
+
+### 17.1 RAG/Recall projection drain
+
+1. RAG 和 Recall 各自持久化独立 projection checkpoint，至少包含 `processedGeneration` 和 `processedBoundaryMessageId`；不得因 Memory target 已追平就推定 RAG/Recall 也已追平。
+2. Worker 在进程启动、周期轮询和进程内 wake-up 时，比较 projection checkpoint 与权威 `memory_state.sourceGeneration` 及当前 source boundary。
+3. `processedGeneration !== sourceGeneration` 时，projection 进入 degraded/rebuilding，按当前 generation 失效并重建相关 RAG/Recall 派生数据；normal append 未改变 generation 时，仍按 `processedBoundaryMessageId` 增量追平。
+4. 每轮 drain 先捕获 generation 和 boundary；提交 projection 结果前必须重新校验 generation。期间 generation 再次变化时，本轮结果 stale，不得把 checkpoint 推进到旧 generation。
+5. 只有 projection 追平 captured boundary 且 generation 仍一致后，才能原子更新自身 checkpoint 并恢复 healthy。
+6. 进程内 wake-up 只用于降低延迟；启动/周期轮询时的 generation/boundary 比较是不依赖 outbox 的 correctness 保证。
+7. 任何实际参与当前 context compile 的 projection 未追平时，用户告警必须持续，不得把落后 projection 标记为当前状态。
 
 ## 18. Force Drain 与一次性迁移
 
@@ -450,7 +474,7 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 - safety/refusal；
 - unable rate；
 - quote similarity 分布、quote-too-short/quote-not-found/quote-too-long rate；
-- compaction success/failure/halt rate；
+- compaction success/failure、replay_failed 和 target halt rate；
 - deferred proposal age；
 - queue age/backlog；
 - revision/cursor stale；
@@ -460,6 +484,8 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 - Memory degraded/rebuilding 持续时间。
 
 低价 LLM API 使多次调用成本可以接受，但不能因此忽略延迟、限流、失败率和错误累积。
+
+相比原设计，normal Proposer 从 5 个增至 6 个。必须分 target 监控 calls/message、eligible rate、输入/输出 tokens、延迟和费用；如果 profileRelationship/worldFacts 拆分导致成本或延迟明显不可接受，再根据真实指标调整拆分粒度，不凭预测提前合并。
 
 ## 24. 配置原则
 
