@@ -337,7 +337,7 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
 
 字段说明：
 
-- `task`：携带 durable `taskId`、创建时的 `baseRevision`、本次 `targetKey`、该 target 的 `cursorBefore`、proposer、mode、target sections、observed message ids、`trigger` 和 `now`。一个 normal task 恰好对应一个 target，因此只有一个 `cursorBefore`、一个 new batch 和一个 `targetMessageId`；正常 apply 前必须重新校验 `baseRevision === memory_state.meta.revision` 且 `cursorBefore === meta.targetCursors[targetKey]`，stale 结果不得直接 apply。compaction 后 replay 原 proposal 时，`baseRevision` 只用于审计；replay 的 stale 判定见 [write-protocol.md](write-protocol.md) §2.1 步骤 7，replay revision 基于执行时最新全局 revision 创建。
+- `task`：携带 durable `taskId`、创建时的 `baseRevision`、本次 `targetKey`、该 target 的 `cursorBefore`、proposer、mode、target sections、observed message ids、`trigger` 和 `now`。一个 normal task 恰好对应一个 target，因此只有一个 `cursorBefore`、一个 new batch 和一个 `targetMessageId`；正常 apply 前必须重新校验 `baseRevision === memory_state.meta.revision` 且 `cursorBefore === meta.targetCursors[targetKey]`，stale 结果不得直接 apply。compaction 后 replay 原 proposal 时，task 的 `baseRevision` 只用于审计；replay 的 stale 判定见 [write-protocol.md](write-protocol.md) §2.1 步骤 7，replay group 的 `base_revision` 取 replay 事务开始时的最新全局 revision（见 §9.2）。
 - `writableState`：本次允许写入的目标 sections 当前状态。item 使用 §5 的 writableState redacted view（含 id）；无值字段显式传 null。
 - `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。item 使用 §5 的 readOnlyContext redacted view（不含 id），固定范围见 §5.3。
 - `observedMessages`：普通模式下 LLM 可见的原始消息观察窗口，与 `observedMessageIds` 一一对应。每项携带真实 `role`、`createdAt` 和 `contentHash`；`contentHash` 固定为 raw `content` 的 UTF-8 SHA-256，格式为 `sha256:` 加 64 位小写十六进制。这些 proposal-time 字段写入 §9.3 durable task 的 immutable `task_payload`，Reducer apply 时与数据库当前行重新核对。普通写入 patch 的 `evidenceRefs.messageId` 必须来自 `observedMessages`。窗口组装规则见 [write-protocol.md](write-protocol.md) §2。
@@ -668,7 +668,7 @@ CREATE TABLE chat_memory_event_groups (
   task_id         UUID NOT NULL,
   target_key      TEXT NOT NULL,
   schema_version  INTEGER NOT NULL,
-  base_revision   BIGINT NOT NULL,
+  base_revision   BIGINT NOT NULL,            -- 该 group 实际事务开始时的最新全局 revision；不等同于 task 创建时的 base_revision
   result_revision BIGINT,
   cursor_before   BIGINT,
   cursor_after    BIGINT,
@@ -677,6 +677,8 @@ CREATE TABLE chat_memory_event_groups (
   UNIQUE (user_id, preset_id, result_revision)
 );
 ```
+
+`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 的 `base_revision` 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已让全局 revision 涨过 task 创建时的值。每个 group 必须满足 `result_revision = base_revision + 1`。`chat_memory_tasks.base_revision` 在 task 创建后不变，只作输入审计和普通首次提交的 stale 校验。
 
 每个 patch 产生一行 event；`noop` 产生一行占位。Reducer 自行改变持久化 state 时必须产生 `system_cleanup` event，禁止 silent mutation。
 
@@ -734,7 +736,7 @@ Replay 与 ID 规则：
 3. 语义 replay 只消费 `result_revision IS NOT NULL` 的 groups，按 `event_index` replay normalized operations，再校验并应用 `cursor_after`；`result_revision IS NULL` 的 groups 只用于审计/运行恢复，不占 revision 序列。必须验证 schema version、revision 连续性、cursor 连续性以及 group/task/target 一致性。
 4. compaction/replay 的专用 revision 阶段在 [write-protocol.md](write-protocol.md) §2.1 定义：compaction apply 和原 proposal replay 各自形成明确 revision，并各自同步 snapshot；capacity-blocked 审计 group 的 `result_revision` 为 null，最终 replay group 的 `result_revision` 基于执行时最新全局 revision。本批不引入 state hash。
 
-target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` / `rejected: length_budget_exceeded` 时均不推进。只有 proposal 的所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进（见 [write-protocol.md](write-protocol.md) §3）。不能只凭某一 section 的 accepted event 推进联合 target。
+target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` 时均不推进。只有 proposal 的所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进（见 [write-protocol.md](write-protocol.md) §3）。不能只凭某一 section 的 accepted event 推进联合 target。容量超限不产生 patch 级 `rejected`，而是由 `deferred`（审计 group）和 task 级 `compaction_failed` / `replay_failed` 表达（见 [write-protocol.md](write-protocol.md) §2.1、§3.1）。
 
 `reject_reason` 合法值（仅 `rejected` 时填写）：
 
@@ -748,7 +750,6 @@ target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal prop
 - `policy_not_allowed`：section + op + evidenceKind 不在 policy table。
 - `item_not_found`：itemId 指向不存在的 item。
 - `item_protected_by_pending_proposal`：compaction patch 的 itemIds 与该 target 的 pending proposal 引用的 itemId 集合相交（见 [write-protocol.md](write-protocol.md) §2.1 步骤 5）。
-- `length_budget_exceeded`：section 的 `maxItems` 或 `maxRenderedChars` 超上限；capacity-blocked 阶段为 `deferred`（`result_revision=null` 审计 group），compaction 成功后在 replay group 中按最终结果写 `accepted`/`rejected`；compaction 或 replay 终局失败时 halt 对应 target。
 - `invalid_expiry_in_past`：`expiresAt` 计算出的 `expiresAtTime` 不在未来。
 
 `item_id` 列：对单 item 操作（`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`）存目标 item id；对 `mergeItems` 存 null（source item IDs 由 `merged_from_item_ids` 列存储）；对 `addItem`/`setField`/`clearField`/`noop` 存 null。完整信息在 `patch_summary` JSONB 中。`merged_from_item_ids` 列：仅 `mergeItems` event 使用，存储持久化 patch 中的稳定顺序 source item ID 数组；其他 event 为 null。
@@ -768,8 +769,8 @@ CREATE TABLE chat_memory_tasks (
   cursor_before              BIGINT,
   target_message_id          BIGINT,
   base_revision              BIGINT NOT NULL,
-  task_payload               JSONB NOT NULL,    -- immutable proposal-time input/evidence metadata
-  stage_payload              JSONB,             -- 当前 durable boundary 所需数据；专用阶段由后续批次扩展
+  task_payload               JSONB NOT NULL,    -- immutable proposal-time input/evidence metadata（创建后不可变）
+  stage_payload              JSONB,             -- 当前阶段运行数据：persistedProposal、maintenanceTaskId、compaction 进度等；可变
   attempt                    INTEGER NOT NULL DEFAULT 0,
   context_expansion_attempt  INTEGER NOT NULL DEFAULT 0,
   not_before                 TIMESTAMPTZ,
@@ -789,7 +790,7 @@ CREATE INDEX idx_memory_tasks_recovery
 2. `context_expansion_attempt` 取代旧 `awaitingContextExpansion`，属于当前 proposal/window，不写入长期 target status。
 3. 进程启动和周期轮询读取 `queued/running/retry_wait` 等非终态 task，从最后一个持久化 stage 继续；单实例串行约束沿用，本批不引入多实例 lease。
 4. worker 恢复 task 前重新校验当前 revision、cursorBefore 和 target status。stale 执行结果不得直接提交。compaction/replay 的 stale 判定和 replay 流程见 [write-protocol.md](write-protocol.md) §2.1 步骤 7：replay 的 stale 判定只看 target cursor、proposal 活动性、引用 item 存在性和 schema/source 兼容性，不看全局 revision；原始 `baseRevision` 只用于审计。
-5. `stage` 枚举按 `task_type` 区分：normal task 使用 `pending | proposing | proposal_persisted | capacity_blocked | replaying_original_proposal | succeeded | replay_failed`；maintenance task 使用 `pending | compacting | compaction_applied | compaction_failed`。`target_halted` 不是 task stage，只是 per-target status。maintenance task 的 `parent_task_id` 必须指向来源 normal task；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须持久化当前 `maintenance_task_id`。
+5. `stage` 枚举按 `task_type` 区分：normal task 使用 `pending | proposing | proposal_persisted | capacity_blocked | replaying_original_proposal | succeeded | replay_failed`；maintenance task 使用 `pending | compacting | compaction_applied | compaction_failed`。`target_halted` 不是 task stage，只是 per-target status。maintenance task 的 `parent_task_id` 必须指向来源 normal task；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`（完整原 proposal，供 replay 读取）和 `maintenanceTaskId`（当前关联的 maintenance task ID）。`task_payload` 在 task 创建时固化 Proposer 输入后不可变，Proposer 运行时输出的 proposal 不写入 `task_payload`，只写入可变的 `stage_payload`。
 6. Observer 可以一次发现多个 eligible targets，但只能先排 intent；每个 durable task 必须在进入 user/preset 串行执行位时用最新 state 创建并固化 `base_revision/cursor_before/task_payload`，不能让正常的前序 target revision 把同 tick 后续 target 变成伪 stale。
 
 ### 9.4 Per-target status
@@ -855,7 +856,7 @@ CREATE INDEX idx_memory_ops_log_outcome
 
 ### 9.6 原子提交与 Crash Recovery
 
-1. **Revision 事务**：正常 proposal apply 时 `result_revision` 必须等于 `base_revision + 1`；compaction 后 replay 原 proposal 时 `result_revision` 基于执行时最新全局 revision 创建（见 [write-protocol.md](write-protocol.md) §2.1 步骤 7）。`memory_state` post-state、`meta.revision`、完整 snapshot、event group/events、cursor、task 终态和对应 target status 必须同事务提交。成功后错误计数归零、status 恢复 healthy 也在该事务完成。
+1. **Revision 事务**：每个 event group 的 `result_revision` 必须等于该 group 的 `base_revision + 1`，其中 `base_revision` 是该 group 实际事务开始时的最新全局 revision（见 §9.2 `base_revision` 语义）。正常 proposal apply 时 group 的 `base_revision` 等于 task 创建时的 `base_revision`；compaction apply 和 replay 各自取事务开始时的最新全局 revision。`memory_state` post-state、`meta.revision`、完整 snapshot、event group/events、cursor、task 终态和对应 target status 必须同事务提交。成功后错误计数归零、status 恢复 healthy 也在该事务完成。
 2. **无 revision 事务**：Provider/schema 等运行失败只原子更新 durable task、per-target status 和 ops log；`result_revision=null` 的 deferred 等 decision group 还必须把 event group/events、原 task stage 与派生 maintenance task 一并原子提交。两者都不增加 revision、不写 snapshot。
 3. **语义恢复**：优先读取最新 schema-valid snapshot，再按 result_revision 连续 replay 后续 event groups；校验 revision/cursor/group/task/target 连续性。snapshot 缺失或 state/schema 损坏时的 raw-message rebuild 在第 9 批细化。
 4. **运行恢复**：从非终态 durable task、per-target status 与 ops log 恢复 retry/halt/context-expansion，不从 snapshot 推断运行状态。

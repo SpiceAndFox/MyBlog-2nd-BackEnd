@@ -130,7 +130,7 @@ pending → compacting
 触发流程：
 
 1. normal proposal 中的 item patch 经模拟 apply 后，目标 section 将超过 `maxItems` 或 `maxRenderedChars`；不只检查 `addItem`，会增长渲染文本的 `updateItem` 等操作同样受容量门约束。Reducer 对完整 proposal 的最终模拟 post-state 做容量检查。
-2. 如果任一 section 超容量，本轮不 apply proposal 中的任何 patch（禁止 accepted + deferred 非原子混合提交）。normal task 进入 `capacity_blocked` stage，per-target status 进入 `capacity_blocked`。capacity-blocked 事务只为触发容量阻塞的 patch 写 `decision: "deferred"`、`result_revision=null` 的 event group（"capacity-blocked 审计 group"）；其他 patch 暂不写最终 decision，完整 proposal 保存在 normal task 的 `task_payload`。同事务创建 maintenance task（`task_type=maintenance`、`parent_task_id` 指向 normal task），normal task 的 `stage_payload` 持久化 `maintenance_task_id`。cursor 不推进。
+2. 如果任一 section 超容量，本轮不 apply proposal 中的任何 patch（禁止 accepted + deferred 非原子混合提交）。normal task 进入 `capacity_blocked` stage，per-target status 进入 `capacity_blocked`。capacity-blocked 事务只为触发容量阻塞的 patch 写 `decision: "deferred"`、`result_revision=null` 的 event group（"capacity-blocked 审计 group"）；其他 patch 暂不写最终 decision，完整 proposal 写入 normal task 的 `stage_payload.persistedProposal`（`task_payload` 在 task 创建时固化后不可变，不存放 Proposer 运行时输出）。同事务创建 maintenance task（`task_type=maintenance`、`parent_task_id` 指向 normal task），normal task 的 `stage_payload.maintenanceTaskId` 持久化对应 maintenance task ID。cursor 不推进。
 3. maintenance task 按 `task.targetSections` 固定顺序，每次只压缩一个阻塞 section。maintenance task 与普通 task 共用同一 `userId/presetId` 串行队列（见 §2），使用 [state-contract.md](state-contract.md) §5.2 的 maintenance 模式 envelope；trigger 的 `dimension` 记录本次阻塞来自 `maxItems` 还是 `maxRenderedChars`。其 `targetKey` 只关联来源 normal target；`targetMessageId` 只复制来源 normal proposal 的阻塞边界，用于关联、幂等和后续 replay。两者均不表示 compaction 拥有或推进 raw-message cursor，compaction 也不据此读取 raw messages。
 4. `compactionProposer` 的 section `status` 为 `patches` 或 `unable_to_compact`（约束见 [state-contract.md](state-contract.md) §5.5）。`status` 为 `patches` 时，patch 的 `op` 只能是 `mergeItems`。
 5. Reducer 对 compaction patch 继续执行 schema、itemIds、policy、结构化冲突和 source evidence 完整性校验。`memory_compaction` 的 evidenceGroups 由 Reducer 根据 `itemIds` 从 source items 继承。Pending proposal 保护：Reducer 对 compaction patch 的 `itemIds` 与该 target 所有 pending（capacity_blocked/compacting）proposal 引用的 itemId 集合做交集校验——这是纯代码硬校验，不是 prompt 约束。相交的 compaction patch 被 reject，reason=`item_protected_by_pending_proposal`；该 compaction patch 不 apply，同一 maintenance task 的其他 patch 仍可正常 apply。一个 maintenance task 的全部 patch 均因保护而 reject 时，视同 `unable_to_compact`，进入 `compaction_failed`。
@@ -157,7 +157,7 @@ maintenance task 有界执行：尝试上限按 `(parentTaskId, section)` 计算
 
 本节的 `cursor` 指当前 target 的 `coveredUntilMessageId`，存于 `meta.targetCursors[targetKey]`。
 
-核心原则：**Proposer 已经看过消息并给出了明确判断（patches 或 noop），且 Reducer 不需要外部维护任务才能完成决策，则消息视为已处理，cursor 推进。** Proposer 无法判断（`unable_to_decide`）、技术性失败（`error`）、预算维护暂缓（`deferred`）、compaction 无合并空间（`unable_to_compact`）或合并后仍超限（`length_budget_exceeded`）时不推进。
+核心原则：**Proposer 已经看过消息并给出了明确判断（patches 或 noop），且 Reducer 不需要外部维护任务才能完成决策，则消息视为已处理，cursor 推进。** Proposer 无法判断（`unable_to_decide`）、技术性失败（`error`）、预算维护暂缓（`deferred`）时不推进。容量问题的终局由 task 级 `compaction_failed` / `replay_failed` 表达，不是 patch 级 reject reason。
 
 `accepted`/`rejected`/`deferred`/`noop` 是 Reducer 的 patch 决策，落 revision event group/events；`error`/`unable_to_decide`/`unable_to_compact` 发生在 patch 产生之前，落 ops log 并更新 durable task/per-target status。`error` 达阈值后只 halt 对应 target；`unable_to_decide` 扩窗口重试一次后仍无法判断则以 cursor revision 终结；`unable_to_compact` halt 对应 target。
 
@@ -166,13 +166,12 @@ maintenance task 有界执行：尝试上限按 `(parentTaskId, section)` 计算
 | `accepted`                             | 推进        | events  | 至少一个 patch 被 apply                                                                                                                       |
 | `noop`                                 | 推进        | events  | Proposer 明确说无变化；记 `decision=noop` 占位行                                                                                              |
 | `rejected`                             | 推进        | events  | patches 全被拒（policy/quote/schema/item 校验等）                                                                                             |
-| `rejected`（`length_budget_exceeded`） | 不推进      | events  | replay group 中按最终结果写 `rejected`；compaction 或 replay 终局失败时 halt 对应 target（见 §3.1）                                                                              |
 | `deferred`                             | 不推进      | events  | item patch 被长度预算阻塞，capacity-blocked 审计 group 中写 `deferred`（`result_revision=null`），已触发 maintenance task                                                                                              |
 | `unable_to_decide`                     | 不推进      | ops_log | Proposer 自认判断不了；按 §3.1 扩大上下文重试，仍无法判断后推进 cursor                                                                        |
-| `unable_to_compact`                    | 不推进      | ops_log | compactionProposer 判定无安全合并空间；halt 对应 target（见 §3.1）                                                                            |
+| `unable_to_compact`                    | 不推进      | ops_log | compactionProposer 判定无安全合并空间；maintenance task 进入 `compaction_failed`，halt 对应 target（见 §3.1）                                  |
 | `error`                                | 不推进      | ops_log | Provider Adapter 返回 `status: "error"`（[state-contract.md](state-contract.md) §10）；按 §3.1 重试，达到阈值后 halt 对应 target              |
 
-cursor 按整个 normal proposal 的 target 级结果聚合，而不是按单个 section 或单行 event 判断。联合 target（`episodes` 与 `profileRelationship`）的所有 `sectionResults` 必须都形成可推进终局：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 patch 为 `deferred` / `rejected: length_budget_exceeded` 时，整个 target cursor 不推进；不能因为另一个 section 已 `accepted`/`noop`/普通 `rejected` 就提前推进。全部 section 均已终局且不存在上述阻塞结果时，有任一 `accepted`/`noop`/普通 `rejected` event 即推进。event 按 `target_key` 聚合；`section` 直接记录九个正式 section 之一。
+cursor 按整个 normal proposal 的 target 级结果聚合，而不是按单个 section 或单行 event 判断。联合 target（`episodes` 与 `profileRelationship`）的所有 `sectionResults` 必须都形成可推进终局：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 patch 为 `deferred` 时，整个 target cursor 不推进；不能因为另一个 section 已 `accepted`/`noop`/普通 `rejected` 就提前推进。全部 section 均已终局且不存在上述阻塞结果时，有任一 `accepted`/`noop`/普通 `rejected` event 即推进。event 按 `target_key` 聚合；`section` 直接记录九个正式 section 之一。
 
 一个 section 的 `patches` 数组里可能多个 patch 独立校验，部分 `accepted`、部分普通 `rejected` 时可以推进；有任一 `deferred` 时不推进。`deferred` 阻止推进是因为该 target 需要在 compaction 后 replay 原 proposal——capacity-blocked 时本轮不 apply 任何 patch（禁止 accepted+deferred 混合提交），compaction 成功后从数据库确定性 replay 原 proposal，不重新调用 Proposer。被拒 patch 的 `reject_reason` 仍各自落 event 行供审计。
 
@@ -222,9 +221,9 @@ resume 只更新指定 per-target status 和对应 task：对于 `retry_wait` ta
 - tick orchestrator 在运行状态事务中写 ops log、将 maintenance task 置为 `compaction_failed`，并将对应 target status 置为 `halted`。不增加 revision/snapshot。
 - resume 复用原 maintenance task 重新进入 compaction，不创建新 child task；per-target status 从 `halted` 变为 `capacity_blocked`，不立即设 healthy。
 
-**length_budget_exceeded（compaction accepted 但 replay 预检仍因容量不足）**
+**replay_failed（compaction accepted 但 replay 预检仍因容量不足或其他确定性失败）**
 
-- normal task 进入 `replay_failed`（reason=`capacity_still_exceeded`），per-target status 置为 `halted`；不增加 revision/snapshot。
+- normal task 进入 `replay_failed`（reason=`capacity_still_exceeded` 或其他确定性失败原因），per-target status 置为 `halted`；不增加 revision/snapshot。
 - resume 复用原 maintenance task 重新进入 compaction，不创建新 child task；per-target status 从 `halted` 变为 `capacity_blocked`，不立即设 healthy。
 
 ## 4. 长期档案与世界事实写入机制
