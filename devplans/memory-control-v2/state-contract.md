@@ -678,7 +678,7 @@ CREATE TABLE chat_memory_event_groups (
 );
 ```
 
-`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 的 `base_revision` 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已让全局 revision 涨过 task 创建时的值。每个 group 必须满足 `result_revision = base_revision + 1`。`chat_memory_tasks.base_revision` 在 task 创建后不变，只作输入审计和普通首次提交的 stale 校验。
+`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 的 `base_revision` 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已让全局 revision 涨过 task 创建时的值。对所有 `result_revision IS NOT NULL` 的 event group，必须满足 `result_revision = base_revision + 1`；`result_revision IS NULL` 的审计 group（如 capacity-blocked 审计 group）不形成 revision，但其 `base_revision` 仍记录该无 revision 事务开始时的最新全局 revision，供审计追溯。`chat_memory_tasks.base_revision` 在 task 创建后不变，只作输入审计和普通首次提交的 stale 校验。
 
 每个 patch 产生一行 event；`noop` 产生一行占位。Reducer 自行改变持久化 state 时必须产生 `system_cleanup` event，禁止 silent mutation。
 
