@@ -31,13 +31,11 @@
   working: {
     todos: [],
     overdue: [],
-    agreements: []
-  },
-  episodes: {
     recentEpisodes: [],
-    milestones: []
   },
   core: {
+    milestones: []
+    agreements: [],
     worldFacts: [],
     userProfile: [],
     assistantProfile: [],
@@ -65,12 +63,12 @@
 
 一个 Proposer 联合处理的多个 section 必须共享一个 target cursor，禁止“共享 Proposer + 独立 section cursor”。
 
-| targetKey | Proposer | 可写 section | cursor |
-| --- | --- | --- | --- |
-| `scene` | currentStateProposer | currentScene | `scene` |
-| `commitments` | commitmentProposer | todos、overdue、agreements | `commitments` |
-| `episodes` | episodeProposer | recentEpisodes、milestones | `episodes` |
-| `core` | coreProposer | worldFacts、userProfile、assistantProfile、relationship | `core` |
+| targetKey     | Proposer             | 可写 section                                            | cursor        |
+| ------------- | -------------------- | ------------------------------------------------------- | ------------- |
+| `scene`       | currentStateProposer | currentScene                                            | `scene`       |
+| `commitments` | commitmentProposer   | todos、overdue、agreements                              | `commitments` |
+| `episodes`    | episodeProposer      | recentEpisodes、milestones                              | `episodes`    |
+| `core`        | coreProposer         | worldFacts、userProfile、assistantProfile、relationship | `core`        |
 
 约束：
 
@@ -172,8 +170,7 @@ Reducer 对 evidence 做以下纯代码校验：
 
 ```js
 {
-  maxItems,
-  maxRenderedChars
+  (maxItems, maxRenderedChars);
 }
 ```
 
