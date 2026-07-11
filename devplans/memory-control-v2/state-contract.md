@@ -70,7 +70,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
   createdAtMessageId: 121,
   updatedAtMessageId: 121,
   actor: "user",               // 仅 todo：实际执行者 user | assistant | both
-  requester: "assistant",      // 仅 todo：提出请求或承诺的一方 user | assistant
+  requester: "user",            // 仅 todo：提出请求或承诺的一方 user | assistant
   status: "active",             // 仅 todo：active | overdue；到期时 Reducer 原位更新
   becameOverdueAt: null,        // 仅 todo：首次进入 overdue 的时间
   dueAt: null                   // 仅 todo：deadline 的 ISO 8601 timestamp；null 表示无期限
