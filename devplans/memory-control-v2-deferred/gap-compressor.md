@@ -21,7 +21,7 @@ LLM gapCompressor 需要新增：
 
 1. Gap 未超独立预算时，完整注入 raw messages。
 2. Gap 超预算时，按 messageId 倒序选择最近 N 条可完整容纳的 raw messages，再按升序注入。
-3. 不截断单条消息后伪装完整；无法容纳的消息计入 omitted。
+3. 不截断单条消息后伪装完整；无法容纳的消息（包括单条本身已超整个 gap 预算的消息）计入 omitted。
 4. 输出记录 `gapTruncated=true`、omitted message count 和最早保留 messageId。
 5. 用户看到 degraded 告警：“部分早期对话未在上下文中”。
 6. 相关 target state 标记为可能滞后，不能无提示称为当前状态。
@@ -36,6 +36,7 @@ LLM gapCompressor 需要新增：
 - source edit/generation 变化时缓存必须失效；
 - 同一 gap 不应在每轮请求重复调用；
 - 压缩失败必须回退到当前最近 N 条方案并告警；
+- 单条 raw message 本身超预算时，如何在不伪装完整原文的前提下做有界压缩、缓存和 source invalidation；
 - 最终文本仍受主模型物理 context 上限约束。
 
 ## 重新评估条件

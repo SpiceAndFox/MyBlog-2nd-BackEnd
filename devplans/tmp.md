@@ -16,14 +16,14 @@
 1. 本文是对原 Memory Control v2 设计的变更共识，不是通过省略内容重新定义全部契约。
 2. 未在本文中明确修改、替换或延后的原设计契约继续有效；本文省略不代表删除。
 3. item/evidenceGroups/evidenceKind/op/policy table、Proposer envelope/readOnlyContext、Prompt、Renderer、Scene Snapshot/Recall 等未在本文完整重述的契约，默认继承原正式文档。
-4. 未经明确确认的实现细节不得因为出现在讨论稿中就被视为已定规范；这类内容统一列入 §25。
+4. 未经明确确认的实现细节不得因为出现在讨论稿中就被视为已定规范；明确推迟的问题统一记录在 `memory-control-v2-deferred`。
 
 ## 2. 权威状态与作用域
 
 1. PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory authority。
 2. 旧 rolling summary/core memory 不转换为新系统 authority，也不与新 Memory 同时注入。
 3. 最终迁移时停止旧 worker/注入并物理删除旧 Memory 数据；新系统从 raw messages 重建。
-4. 如果运维层保留数据库级离线备份，备份不得进入应用上下文或提供给 Agent；是否强制生成该备份尚未确认。
+4. 每个成功提交的 Memory revision 都保存 state snapshot。当前不强制额外生成数据库外部备份；如果运维层自行备份，备份不得进入应用上下文或提供给 Agent。
 5. user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。
 6. sessionId 仍保存在消息、evidence、event 和 Recall provenance 中，但不用于 key 当前 scene，也不自动触发 scene reset。
 
@@ -74,13 +74,14 @@
 
 一个 Proposer 联合处理的多个 section 必须共享一个 target cursor，禁止“共享 Proposer + 独立 section cursor”。
 
-| targetKey    | Proposer             | 可写 section                                            | cursor       |
-| ------------ | -------------------- | ------------------------------------------------------- | ------------ |
-| `scene`      | currentStateProposer | current.scene                                           | `scene`      |
-| `todos`      | todoProposer         | working.todos；overdue 为 Reducer 维护的同族状态    | `todos`      |
-| `agreements` | agreementProposer    | working.standingAgreements                              | `agreements` |
-| `episodes`   | episodeProposer      | working.recentEpisodes、longTerm.milestones            | `episodes`   |
-| core sections | coreProposer        | longTerm 下除 milestones 外的原 core sections    | 见下文       |
+| targetKey            | Proposer                    | 可写 section                                                   | cursor                |
+| -------------------- | --------------------------- | -------------------------------------------------------------- | --------------------- |
+| `scene`              | currentStateProposer        | current.scene                                                  | `scene`               |
+| `todos`              | todoProposer                | working.todos；overdue 为 Reducer 维护的同族状态           | `todos`               |
+| `agreements`         | agreementProposer           | working.standingAgreements                                     | `agreements`          |
+| `episodes`           | episodeProposer             | working.recentEpisodes、longTerm.milestones                   | `episodes`            |
+| `profileRelationship` | profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship       | `profileRelationship` |
+| `worldFacts`         | worldFactProposer           | longTerm.worldFacts                                            | `worldFacts`          |
 
 约束：
 
@@ -90,7 +91,8 @@
 4. overdue 由 Reducer 根据 todo 的 dueAt 确定性迁移，不新增 commitmentProposer。
 5. cursor 只在该 task 的 proposal 全部形成终局后推进。
 6. Compaction task 不拥有独立 raw-message cursor；它是被 capacity-blocked normal task 派生出的维护任务。
-7. coreProposer 及其各 core section cursor 保留原设计；“一次联合处理全部 core paths”与“各 path 独立 cursor”的最终协调方案尚未确认，不擅自改成共享 core cursor。
+7. profileRelationshipProposer 联合判断 User Profile、Assistant Profile 和 Relationship，三个 section 共享一个 cursor。
+8. worldFacts 由独立 worldFactProposer 处理，不与 Profile/Relationship 共享 cursor。
 
 ## 5. Proposal 持久化与 Compaction 状态机
 
@@ -126,9 +128,9 @@ compacting
 6. Compaction 成功后，从数据库读取原 proposal，在当前 state 上重新做纯代码校验并确定性 replay；不得重新调用原 Proposer。
 7. Source generation 在此期间变化时，旧 proposal/compaction task stale，由 rebuild 处理，不能 apply 到新 generation。
 8. CompactionProposer 不得 merge/remove 原 proposal 正在引用的 itemId。
-9. Compaction 失败时 cursor 不推进，原 proposal 保留，并必须显式告警。
-10. Halt 是否只限对应 Memory target，还是同时阻断主聊天，对话中出现过两种表述，精确范围列入 §25，不再把“仅 target halt”写成已确定共识。
-11. 人工清理容量、调整配置、更换模型或修复问题后，可 resume 相关 Memory 处理；resume 先重试 compaction，再 replay 原 proposal。
+9. Compaction 失败时 cursor 不推进，原 proposal 保留，并 halt 该 user/preset 的 Memory 处理与主聊天。
+10. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和恢复入口，不得只写后台日志。
+11. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，可 resume；resume 先重试 compaction，再 replay 原 proposal。
 
 ## 6. CompactionProposer 权限
 
@@ -141,8 +143,8 @@ compacting
 7. Merge event 必须记录 `mergedFromItemIds`、resultItemId 和 replay 所需完整 normalized value。
 8. 被合并旧 items 从 active state 移除，但历史通过 event chain 保留。
 9. Merge 后 evidence 从输入 items 继承，compactionProposer 不能伪造 raw-message evidence。
-10. compactionProposer 继承原设计的可维护范围：todos、standingAgreements、milestones 和 core sections；recentEpisodes 仍由 Reducer 的滑动窗口处理。
-11. expiredScenes 和 overdue 是本次新增 section，compactionProposer 是否可以合并它们尚未确认，在确认前不扩大权限。
+10. compactionProposer 可维护 todos、standingAgreements、milestones、userProfile、assistantProfile、relationship 和 worldFacts；recentEpisodes 仍由 Reducer 的滑动窗口处理。
+11. expiredScenes 和 overdue 不使用 compactionProposer：expiredScenes 保留最新 1 条，overdue 当前仅限制 Renderer 注入的最新 N 条和可渲染字符数。
 12. Todo merge 至少满足：同 section、actor 相同、requester 相同、dueAt 相同，并且相关 item 不受原 deferred proposal 保护。
 
 ## 7. Snapshot、Event 与恢复
@@ -159,7 +161,7 @@ compacting
 10. Add event 的 result item ID 不能为 null。
 11. 为解决 eventId/itemId/provenance 的循环依赖，Reducer 在事务中预留 event IDs、生成 item IDs、构造最终 state，再插入完整 events。
 12. 自动 overdue 转移、scene expiry、recentEpisodes 滑动窗口滚出、archive 等持久化变化必须记录 system cleanup event，禁止 silent delete。
-13. Event/snapshot replay 必须校验 revision 连续性、cursor 连续性和 group task/target 一致性。是否额外引入 state hash 列入 §25。
+13. Event/snapshot replay 必须校验 schema、revision 连续性、cursor 连续性和 group task/target 一致性。当前不引入 state hash。
 
 ## 8. Evidence 与 Quote
 
@@ -181,11 +183,12 @@ Reducer 对 evidence 做以下纯代码校验：
 
 ## 9. Memory 容量与长度预算
 
-每个会进入主聊天上下文的 Memory section 只使用两个容量维度：
+除下文明确的确定性例外外，每个会进入主聊天上下文的 Memory item section 只使用两个容量维度：
 
 ```js
 {
-  (maxItems, maxRenderedChars);
+  maxItems,
+  maxRenderedChars
 }
 ```
 
@@ -193,13 +196,16 @@ Reducer 对 evidence 做以下纯代码校验：
 
 1. `maxRenderedChars` 只计算可能被 Renderer 输出的语义文本，例如 item.text 和 scene value。
 2. quote、evidence、hash、ID、provenance、event、task proposal、compaction audit 等不渲染内容不计入 Memory 容量。
-3. 除 recentEpisodes 外，超过 section 的 maxItems 或 maxRenderedChars 时，proposal 进入 deferred/compaction 状态机。recentEpisodes 保持 Reducer 确定性滑动窗口，超限时滚出最旧 item 并记录 system cleanup event，不调用 compactionProposer。
+3. 普通 item section 超过 maxItems 或 maxRenderedChars 时，proposal 进入 deferred/compaction 状态机；recentEpisodes、expiredScenes 和 overdue 使用下述确定性例外，不调用 compactionProposer。
 4. 不设置 Memory 业务层的 Proposer proposal/envelope 总字符上限。
 5. 不要求 LLM 自己准确控制 proposal 总字符数。
 6. Provider context/output 的物理硬上限仍然存在，但它属于 Adapter/Provider 能力边界，不是 Memory 容量策略。
 7. Observer 在请求超过 Provider 能力时缩小 batch；单条消息仍无法处理时进入 degraded 并显式提醒，不能静默丢弃。
-8. 各 section 的 maxItems/maxRenderedChars、scene TTL、overdue/archive 时间、lagThreshold、gapBridge 预算等都从集中配置读取，禁止散落硬编码。
+8. 各 section 的容量、scene TTL、overdue 渲染条数、lagThreshold、gapBridge 预算等都从集中配置读取，禁止散落硬编码。
 9. 除 quote 最大 200 已确定外，其余具体默认数值需结合真实历史分布确定并写入配置文档。
+10. recentEpisodes 超限时滚出最旧 item 并记录 system cleanup event。
+11. expiredScenes 的 maxItems 配置为 1；新 scene 过期时替换旧 item 并记录 `system_cleanup: expired_scene_evicted` event。
+12. overdue 当前不设会阻塞写入或触发 compaction 的 active-state maxItems；Renderer 只按 `becameOverdueAt DESC` 注入配置的最新 N 条，并受 maxRenderedChars 约束。
 
 ## 10. Scene 生命周期
 
@@ -208,7 +214,7 @@ Reducer 对 evidence 做以下纯代码校验：
 3. current.scene 有配置化过期时间，不得硬编码在业务代码中。
 4. Scene 到期后不直接删除，而是作为完整 item 移入 expiredScenes。
 5. 移动时保留 scene 值和 provenance，写 `system_cleanup: scene_expired` event，并清空 current.scene 固定字段。
-6. expiredScenes 有独立 maxItems/maxRenderedChars；超限时的精确处理策略尚未确认，不默认授权 compactionProposer。
+6. expiredScenes 的 maxItems 配置为 1；新 scene 过期时以最新记录替换旧记录，写 `system_cleanup: expired_scene_evicted` event，不调用 compactionProposer。
 7. Renderer 将 expiredScenes 明确标为“已过期场景/上次已知场景”，不得称为当前状态。
 8. Renderer 在后台 housekeeping 尚未持久化时先构造 effective view，避免本次请求继续把已到期 scene 标成 current。
 
@@ -218,11 +224,11 @@ Reducer 对 evidence 做以下纯代码校验：
 2. actor 合法值为 user/assistant/both；requester 表示提出请求或承诺的一方。
 3. 相对时间以 evidence message 的 createdAt 为 anchor，不使用 worker/task 执行时间。
 4. `dueAt` 表示 deadline，不表示直接删除时间。
-5. 当 `now >= dueAt` 时，由纯代码将 todo 从 todos 移入同级 overdue section，保留 itemId、actor、requester、dueAt 和 provenance。
+5. 当 `now >= dueAt` 时，由纯代码将 todo 从 todos 移入同级 overdue section，保留 itemId、actor、requester、dueAt 和 provenance，并记录确定性 `becameOverdueAt`。
 6. 迁移写 `system_cleanup: todo_became_overdue` event。
 7. Renderer 在持久化迁移尚未执行时先按 overdue 渲染 effective view。
-8. Overdue 可以 complete/cancel，也可以在配置化保留期后 archive。
-9. Todos 与 overdue 各自拥有独立 maxItems/maxRenderedChars，不互相占用容量。
+8. Overdue 可以 complete/cancel。当前不自动 archive，更精细的归档、检索和清理策略推迟处理。
+9. Todos 保留 maxItems/maxRenderedChars；overdue 的 active state 当前不设 maxItems，只为 Renderer 设置独立 maxRenderedItems/maxRenderedChars，不占用 todos 容量。
 10. `updateTodo` 必须显式输出 dueChange union：keep、clear 或 set；字段省略不能同时表示“不修改”和“清空”。
 
 ## 12. needsMemory 与 Recent Window
@@ -239,7 +245,7 @@ Reducer 对 evidence 做以下纯代码校验：
 3. 不引入普通 idle flush 或按 session rollover flush。
 4. 极长新消息把未处理尾批挤出 recent window 时，由 per-target gapBridge 补齐。
 5. Source rebuild 必须忽略 lagThreshold，force drain 到 captured boundary 后才能清 dirty。
-6. 一次性迁移/cutover 和管理员排查也可调用相同内部 force-drain 能力。
+6. 一次性迁移和服务器维护脚本排查也可调用相同内部 force-drain 能力。
 
 ## 14. GapBridge
 
@@ -248,9 +254,9 @@ Reducer 对 evidence 做以下纯代码校验：
 3. GapBridge 拥有独立逻辑字符预算，不与 Memory Renderer 的 section 容量竞争。
 4. Gap 未超预算时直接注入 raw messages。
 5. Gap 超预算时不调用 LLM 压缩，而是按 messageId 倒序选择最近 N 条完整 raw messages，再恢复为升序注入；N 和字符预算进入集中配置。
-6. 截断结果必须持久化记录“已截断”、省略规模和保留边界，不能伪装成完整 gap；精确字段 schema 尚未确认。
+6. 截断结果必须持久化记录“已截断”、省略规模和保留边界，不能伪装成完整 gap。
 7. 发生截断时继续主聊天，但进入 degraded，并向用户明确告警“部分早期对话未在上下文中”；旧 target state 必须标记为可能滞后，不能无提示声称是当前状态。
-8. 不允许为了填满预算而截断单条 raw message 后仍声称其是完整原文；单条消息本身超预算时的取舍列入 §25，实现前需另行确认。
+8. 单条 raw message 本身超预算时，当前回退只能将其计入 omitted 并显式告警，不截断后伪装成完整原文；压缩或其他精细处理与 Gap Compressor 一并推迟。
 9. GapBridge 的逻辑预算独立，但其最终文本仍计入主模型不可突破的物理 context 上限。
 10. 使用 LLM 压缩超预算 gap 的方案推迟到 [Gap Compressor 延后设计](memory-control-v2-deferred/gap-compressor.md)。
 
@@ -268,7 +274,7 @@ Reducer 对 evidence 做以下纯代码校验：
 | --- | --- | --- |
 | `healthy` | `healthy` | 该 target 正常运行 |
 | `retry_wait` | `degraded` | 瞬时错误退避重试中，记忆可能滞后 |
-| `halted` | `degraded` | compaction 无法完成等原因导致该 target 暂停，需人工 resume |
+| `halted` | `degraded` | compaction 无法完成，该 user/preset 主聊天已阻断，需服务器维护脚本 resume |
 | `rebuilding` | `rebuilding` | source rebuild 进行中 |
 
 任一 target 非 healthy 即整体显示对应 degraded/rebuilding 告警；所有 target 恢复 healthy 后整体回到 healthy。
@@ -279,9 +285,9 @@ Reducer 对 evidence 做以下纯代码校验：
 2. 内部仍保存精确 reason、taskId、target、generation、attempt 等诊断信息，但不要求用户理解大量错误枚举。
 3. 告警应持续到恢复完成，而不是只弹一次短暂提示。
 4. 恢复后应明确提示 Memory 已追平到相应 boundary。
-5. Compaction 无法完成时必须 halt，但 halt 对主聊天的精确影响范围尚待确认（§25）。
-6. 无论最终选择哪种 halt 范围，用户都必须知道对应记忆类别已暂停且可能滞后。
-7. resume/rebuild 等恢复入口不能因 target halt 而不可访问；同一 target 的普通 proposal 仍按顺序等待，不能绕过 halt。管理员直接修改语义 state 的权限和路径尚未确认。
+5. Compaction 无法完成时必须 halt 该 user/preset 的 Memory 处理和主聊天。
+6. Halt 时用户必须知道对应记忆类别已暂停、原因以及需要人工恢复，不得只写后台日志。
+7. resume/rebuild 等服务器维护脚本不受聊天 halt 限制；在 resume 完成前，普通 proposal 和主聊天都不得绕过 halt。
 
 ## 16. 自动恢复
 
@@ -328,11 +334,9 @@ Reducer 对 evidence 做以下纯代码校验：
 6. Renderer 和用户告警同时读取语义 memory_state 与 per-target status；删除 recovery 字段不能导致 degraded/rebuilding/halted 状态不可见。
 7. Crash recovery 分两条：语义 state 从 snapshot/events 恢复，运行恢复状态从 durable task/per-target status/ops log 恢复。
 
-### 16.2 旧 `meta.recovery` 迁移
+### 16.2 旧 `meta.recovery` 处理
 
-默认 cutover 路径物理删除旧 Memory 并从 raw messages 重建新 state，不继承旧错误计数、halt 或 context-expansion flag；新 generation 的 target status 从 healthy/0 初始化。
-
-如果开发期间存在已运行的 v2 state 且需要 in-place 移除 `meta.recovery`（而非清空重建），必须先在同一事务内将其恢复语义写入 durable task/per-target status/ops log，再删除 JSON 字段；迁移失败必须整体回滚。可确定定位的状态按 §4 的 target 映射（scene family → `scene`，todos → `todos`，standingAgreements → `agreements`，recentEpisodes/milestones → `episodes`）迁移；core 各 section 的映射随 §4 待确认的 cursor 方案一并定稿。无法定位 target 的旧全局错误/halt 应如何保守迁移列入 §25，不在本文中擅自规定为“halt 全部 target”。
+一次性迁移会物理删除旧 Memory，并从 raw messages 重建新 state，因此不实现旧 `meta.recovery` 的 in-place 迁移，也不继承旧错误计数、halt 或 context-expansion flag。新 generation 的 per-target status 从 healthy/0 初始化。
 
 至少包含以下恢复路径：
 
@@ -341,7 +345,7 @@ Reducer 对 evidence 做以下纯代码校验：
 3. Revision/cursor stale：丢弃旧执行结果，按 durable task/proposal 和当前 state 重新校验。
 4. Source dirty/generation 变化：启动 source rebuild。
 5. State/schema 损坏：优先从 snapshot 恢复；必要时从 raw messages rebuild。
-6. Compaction 失败：halt 对应 target，保留原 proposal，显式告警，等待 resume。
+6. Compaction 失败：保留原 proposal，halt 该 user/preset 的 Memory 处理和主聊天，显式告警并等待服务器维护脚本 resume。
 7. RAG/Recall projection 落后：保持 degraded/rebuilding，追平当前 generation 后恢复。
 
 ## 17. Source Generation 与 Rebuild
@@ -357,7 +361,7 @@ Reducer 对 evidence 做以下纯代码校验：
 
 普通追加 User/Assistant message 不增加 sourceGeneration，只唤醒 normal worker。
 
-管理员可因以下原因显式 rebuild：
+服务器维护脚本可因以下原因显式 rebuild：
 
 - state/schema 损坏；
 - 更换关键 Proposer prompt/model 后希望全量重新推导；
@@ -379,16 +383,16 @@ sourceGeneration + 1
 → 用户状态 rebuilding → healthy
 ```
 
-Raw source mutation、generation increment、dirty boundary、旧 task 取消和 Memory/RAG/Recall invalidation intent 必须原子持久化，禁止 controller 在 source 已提交后 best-effort 标 dirty。是否以 outbox 表实现列入 §25。
+Raw source mutation、generation increment、dirty boundary、旧 task 取消和 Memory/RAG/Recall invalidation intent 必须在同一数据库事务中持久化，禁止 controller 在 source 已提交后 best-effort 标 dirty。当前不引入通用 outbox；进程内 wake-up 只负责降低延迟，worker 启动/轮询时必须以数据库 dirty 状态为恢复依据。
 
-## 18. Flush 与 Cutover
+## 18. Force Drain 与一次性迁移
 
 1. 不引入独立 Flush 子系统、Flush task type、Flush 状态机或专用持久化表。
 2. 只保留 worker 内部的 `forceDrainTo(boundaryMessageId)` 能力，继续使用普通 durable tasks。
-3. force drain 仅用于 source rebuild、管理员排查和一次性迁移/cutover。
-4. Cutover 不是长期运行时子系统，只是一次性迁移流程。
-5. Cutover 必须覆盖：停止旧 worker/注入、物理删除旧 Memory、从 raw messages rebuild/force drain 到捕获边界、校验并在 ready 后才注入 v2。具体部署/删除顺序需结合可回滚的迁移步骤另行确认。
-6. Cutover 未追平或校验失败时保持 rebuilding/degraded，不能把 v2 标为 ready。
+3. force drain 仅用于 source rebuild、服务器维护脚本排查和一次性迁移。
+4. 一次性迁移不是长期运行时子系统，不新增 task type、状态机或持久化表。
+5. 迁移流程简化为：停止服务 → 更新 schema/代码 → 物理删除旧 Memory → 从 raw messages rebuild/force drain → 校验 → 启动服务。
+6. Rebuild 未追平或校验失败时不得启动对外聊天服务。
 
 ## 19. Forget、Correction 与物理删除
 
@@ -396,7 +400,8 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 2. Forget：从 active state 移除 item，并写 context-suppression tombstone，阻止相同 source 在 rebuild/RAG/Recall 中重新进入上下文。
 3. Privacy hard delete：跨 raw/event/snapshot/RAG/Recall/debug 派生存储执行物理清除。
 4. “把 text 改成已作废”不是 forget，Renderer 不应继续注入被忘记内容。
-5. Forget transaction 必须收集足以阻止被忘记内容通过 rebuild/RAG/Recall 回流的全部相关 source provenance，不能只看当前 revision；具体 event-chain 数据结构列入 §25。
+5. Active item 的 evidenceGroups 必须完整覆盖历史来源：update 只追加 evidenceGroup，merge 继承所有 source items 的 evidenceGroups 并保留 group 边界。
+6. Forget 直接从当前 item 的完整 evidenceGroups 收集 source messageId/hash 并生成 suppression tombstone，不新增 provenance graph，也不要求遍历完整 event chain。
 
 ## 20. RAG Suppression
 
@@ -405,7 +410,7 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 当前确定性方案：
 
 1. RAG chunk 必须能追踪其 source messageId/contentHash。
-2. Forget/correction transaction 从被移除或被替换 item 的全部相关 provenance 收集 evidence messageId/hash，并写 context-suppression tombstone；具体追踪结构尚未锁定。
+2. Forget/correction transaction 从被移除或被替换 item 的完整 evidenceGroups 收集 evidence messageId/hash，并写 context-suppression tombstone。
 3. 与 suppressed message 相交的现有 RAG chunks 全部失效/删除。
 4. RAG 重新分块和 embedding 时跳过 suppressed message；raw chat message 本身不修改。
 5. RAG 查询再做一次 source suppression 过滤，命中 suppressed message 的 chunk 不返回。
@@ -460,8 +465,8 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 - 每个 section 的 maxItems；
 - 每个 section 的 maxRenderedChars；
 - current.scene 过期时间；
-- expiredScenes 保留/容量；
-- overdue archive 时间；
+- expiredScenes maxItems（当前配置为 1）；
+- overdue maxRenderedItems/maxRenderedChars；
 - 每个 target 的 lagThreshold；
 - gapBridge raw 字符预算；
 - gapBridge 截断后保留的最近消息数；
@@ -473,19 +478,13 @@ Raw source mutation、generation increment、dirty boundary、旧 task 取消和
 
 Evidence quote 最大 200 Unicode code points 已确定；模糊匹配继承原设计的默认阈值 0.75，可通过集中配置调整。其余具体默认值尚未最终固定，应根据真实历史分布和 Provider 能力选择。
 
-## 25. 尚未确认的实现决策
+## 25. 明确延后的问题
 
-以下内容不是当前共识，不得在实现时默认采用：
+当前已明确延后、不进入本轮实现的问题统一记录在 [Memory Control v2 延后设计](memory-control-v2-deferred/readme.md)，包括：
 
-1. expiredScenes 和 overdue 超出容量时是否授权 compactionProposer 合并，以及它们的确定性 archive 细则。
-2. per-target status 的最终数据库 schema、精确状态枚举和告警防抖时序。本文 §15–§16 只规定必须持久化恢复能力并向用户显式告警的语义。
-3. state hash/canonical JSON、outbox 的具体表结构、snapshot/event/debug retention 的默认值。需保证已确认的原子性、可恢复性和 dirty rebuild，但实现形式尚未锁定。
-4. 旧 `meta.recovery` 无法定位 target 时的精确保守迁移策略；默认 cutover 从 raw messages 重建时不需要迁移旧运行错误状态。
-5. GapBridge 对“单条 raw message 本身已超预算”的精确取舍，以及 omitted 诊断字段的最终 schema。
-6. Forget/correction 沿 merge/duplicate event chain 追踪 source 的具体数据结构。要求仍是被忘记/纠正的内容不得通过 rebuild、RAG 或 Recall 重新注入。
-7. 管理员直接维护的精确绕行权限、物理删除前是否强制生成离线备份，以及 cutover 各阶段的最终顺序。
-8. Compaction 失败后的 halt 只停止对应 Memory target，还是阻断该 user/preset 的主聊天。已确认的是“必须 halt 且必须显式告警”，两种范围中的最终选择需再确认。
-9. coreProposer 联合处理多个 core path 时的 cursor 粒度；需在保留原 coreProposer 责任的前提下，解决共享调用与独立 cursor 不一致。
+1. LLM Suppression Proposer。
+2. Gap Compressor 及单条超大 gap message 的精细处理。
+3. expiredScenes/overdue 更精细的归档、压缩、检索和长期清理策略。
 
 ---
 
