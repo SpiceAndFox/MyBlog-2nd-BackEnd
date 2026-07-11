@@ -6,6 +6,8 @@
 
 Renderer 把结构化 `memory_state` 渲染为主聊天模型可读的稳定文本。Renderer 输出不是权威状态，不写入独立 DB 列。
 
+Context compiler 还必须与 `memory_state` 同时读取 `chat_memory_target_status`，作为独立 health sidecar；禁止为了渲染/告警方便把 halted/retry/rebuilding 写回 `memory_state.meta`。本批只保证该状态可被 Renderer/用户告警层访问，具体 healthy/degraded/rebuilding 映射和“该类记忆可能滞后”文案在第 8 批定义。
+
 Renderer 是纯代码模板，不调用 LLM。具体模板见第 5 节。
 
 Renderer 必须：
