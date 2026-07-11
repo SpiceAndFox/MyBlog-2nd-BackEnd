@@ -85,6 +85,8 @@ PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory aut
 
 协议层正式 section 固定为 `scene`、`todos`、`standingAgreements`、`recentEpisodes`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`。`core` 不作为 section；`current.previousScene` 与 todo 的 `status=overdue` 是 Reducer 维护的衍生状态，不进入 Proposer `sectionResults`，也不拥有 cursor。
 
+`current`、`working`、`longTerm` 和 `meta` 只是 `memory_state` 的物理存储容器，不是 section 或 target，不得出现在 patch/event/policy 的 `section`、`task.targetKey` 或 `sectionResults` key 中。
+
 user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。sessionId 只保留在消息中，不复制到 evidence、event 或 Recall provenance；这些结构通过 messageId / source messageIds 追溯来源。
 
 Renderer 输出不是权威状态，不落库为独立列。主聊天热路径读取 `memory_state` 后由纯代码实时渲染为上下文文本；改渲染连接词、标题或压缩格式只需要改 Renderer 代码，不需要回填数据库。
