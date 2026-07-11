@@ -111,11 +111,11 @@ pending
 → succeeded
 ```
 
-Compaction 无法完成时进入 halt，而不是推进 cursor：
+Compaction 无法完成时使对应 target 进入 halt，而不是推进 cursor：
 
 ```text
 compacting
-→ compaction_failed/halted
+→ compaction_failed/target_halted
 ```
 
 完整规则：
@@ -128,9 +128,10 @@ compacting
 6. Compaction 成功后，从数据库读取原 proposal，在当前 state 上重新做纯代码校验并确定性 replay；不得重新调用原 Proposer。
 7. Source generation 在此期间变化时，旧 proposal/compaction task stale，由 rebuild 处理，不能 apply 到新 generation。
 8. CompactionProposer 不得 merge/remove 原 proposal 正在引用的 itemId。
-9. Compaction 失败时 cursor 不推进，原 proposal 保留，并 halt 该 user/preset 的 Memory 处理与主聊天。
-10. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和恢复入口，不得只写后台日志。
-11. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，可 resume；resume 先重试 compaction，再 replay 原 proposal。
+9. Compaction 失败时只 halt 对应 Memory target：该 target 的 cursor 不推进，原 proposal 保留，后续 normal proposals 暂停。
+10. 其他 Memory targets 和主聊天继续运行；系统不设置由 Memory target halt 派生的全局 `chatBlocked` 或 user/preset 级 halt。
+11. Halt 时必须显式告知用户受影响的 Memory 类别、暂停原因和滞后边界，不得只写后台日志。
+12. 通过服务器维护脚本清理容量、调整配置、更换模型或修复问题后，只 resume 对应 target；resume 先重试 compaction，再 replay 原 proposal。
 
 ## 6. CompactionProposer 权限
 
@@ -274,7 +275,7 @@ Reducer 对 evidence 做以下纯代码校验：
 | --- | --- | --- |
 | `healthy` | `healthy` | 该 target 正常运行 |
 | `retry_wait` | `degraded` | 瞬时错误退避重试中，记忆可能滞后 |
-| `halted` | `degraded` | compaction 无法完成，该 user/preset 主聊天已阻断，需服务器维护脚本 resume |
+| `halted` | `degraded` | compaction 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
 | `rebuilding` | `rebuilding` | source rebuild 进行中 |
 
 任一 target 非 healthy 即整体显示对应 degraded/rebuilding 告警；所有 target 恢复 healthy 后整体回到 healthy。
@@ -285,9 +286,11 @@ Reducer 对 evidence 做以下纯代码校验：
 2. 内部仍保存精确 reason、taskId、target、generation、attempt 等诊断信息，但不要求用户理解大量错误枚举。
 3. 告警应持续到恢复完成，而不是只弹一次短暂提示。
 4. 恢复后应明确提示 Memory 已追平到相应 boundary。
-5. Compaction 无法完成时必须 halt 该 user/preset 的 Memory 处理和主聊天。
-6. Halt 时用户必须知道对应记忆类别已暂停、原因以及需要人工恢复，不得只写后台日志。
-7. resume/rebuild 等服务器维护脚本不受聊天 halt 限制；在 resume 完成前，普通 proposal 和主聊天都不得绕过 halt。
+5. Compaction 无法完成时必须 halt 对应 Memory target；其他 targets 和主聊天继续运行。
+6. Halt 时用户必须知道对应记忆类别已暂停、原因、cursor/处理边界和需要人工恢复，不得只写后台日志。
+7. Renderer 继续渲染 halted target 最后一次成功提交的稳定 state，但必须在 Memory context 中明确标记“该类记忆可能滞后”；recent window 和该 target 的 GapBridge 仍可提供未写入 Memory 的 raw-message 覆盖。
+8. resume/rebuild 等服务器维护脚本不受 target halt 限制；在 resume 完成前，只有该 target 的普通 proposal 不得绕过 halt。
+9. 对应 target 成功完成 compaction 并 replay 原 proposal 后恢复 `healthy`；不要求其他 targets 同步 resume。
 
 ## 16. 自动恢复
 
@@ -345,7 +348,7 @@ Reducer 对 evidence 做以下纯代码校验：
 3. Revision/cursor stale：丢弃旧执行结果，按 durable task/proposal 和当前 state 重新校验。
 4. Source dirty/generation 变化：启动 source rebuild。
 5. State/schema 损坏：优先从 snapshot 恢复；必要时从 raw messages rebuild。
-6. Compaction 失败：保留原 proposal，halt 该 user/preset 的 Memory 处理和主聊天，显式告警并等待服务器维护脚本 resume。
+6. Compaction 失败：保留原 proposal，只 halt 对应 target，显式告警并等待服务器维护脚本 resume；其他 targets 和主聊天继续运行。
 7. RAG/Recall projection 落后：保持 degraded/rebuilding，追平当前 generation 后恢复。
 
 ## 17. Source Generation 与 Rebuild
