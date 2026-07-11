@@ -28,6 +28,7 @@ schema 作者注意：
 - `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：只有 `scene.setField`/`scene.clearField` 要求 `path`；`updateItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。所有 item section 由 `sectionResults` key 直接寻址，不使用 `path`。
 - `todos` 的 `addItem`/`updateItem` 的 `value` 可选包含 `expiresAt`，schema 用 `oneOf` 表达 `{ "mode": "absolute", "date": "date" }` 与 `{ "mode": "relative", "days"?: int, "months"?: int, "years"?: int }` 两种形态（见 [state-contract.md](state-contract.md) §4）。relative 模式下 `days`/`months`/`years` 至少出现一个，schema 用 `anyOf: [{required: [days]}, {required: [months]}, {required: [years]}]` 表达。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
+- 普通 patch 的 `evidenceRefs[].quote` schema 设置 `maxLength: 200`；Reducer 仍按 Unicode code points 复核长度、信息量和匹配，不把 Provider schema 当作最终证据校验。
 
 ### 2.2 Prompt 设计原则
 
@@ -43,7 +44,7 @@ schema 作者注意：
    - noop：已理解对话内容，确认无变更需要。
    - unable_to_decide：现有信息不足以判断是否有变更（如关键消息不在观察窗口内、指代不明无法确认对象）。
    - 不要把"看不懂"伪装成"没变化"。
-4. patch 必须附 evidenceKind；除 mergeItems 外，patch 必须附 evidenceRefs。evidenceRefs 的 quote 必须是 observedMessages 中的原始消息短片段（<=80字），不要改写。
+4. patch 必须附 evidenceKind；除 mergeItems 外，patch 必须附 evidenceRefs。quote 应复制 observedMessages 中能够支持该 patch 的最短连续原文，不要改写，最多 200 个 Unicode code points；不要依赖自己精确计数，Reducer 以 [state-contract.md](state-contract.md) §7 的统一长度与模糊匹配规则作最终裁决。
 5. 普通写入 patch 的 evidenceRefs 必须来自 observedMessages；readOnlyContext 只能用于理解背景，不能作为证据，也不能被当作完整世界状态来推断缺失事实。
 6. readOnlyContext 中的 item 不含 id 字段。itemId/itemIds 必须来自 writableState 中对应 section 的 item。
 7. 如果现有背景不足以判断，输出 unable_to_decide，不要把背景猜成事实。
@@ -61,6 +62,7 @@ schema 作者注意：
      }
    }
    ```
+10. Memory 业务层没有 proposal/envelope 总字符预算；不要为了猜测总字符上限而丢弃必要 patch。每个 `value.text` 仍应遵守高密度句法，最终 section 容量由 Reducer 按 `maxItems + maxRenderedChars` 校验。
 
 #### 高密度句法
 
@@ -129,6 +131,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 #### profileRelationshipProposer（userProfile, assistantProfile, relationship）
 
 - `userProfile`、`assistantProfile`、`relationship` 接受长期事实（含 assistant 设定人格和行为推断的人格特征），临时剧情、一次性情绪不要写入。
+- User 与 Assistant 的真实消息都可以用 `long_term_fact` 支持三个 section 的新增；不要按 role 把任一方限制为只能维护 userProfile 或 assistantProfile。
 - 三个正式 section 分别输出自己的 `sectionResults`，patch 不使用 `path`。
 - 已有 item 的改写接受 user_correction 或 assistant_correction，两者权限相同。
 - 行为推断使用 long_term_fact，只在窗口内有清晰、显著的行为模式时才输出，一次性动作不构成 trait。
@@ -136,6 +139,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 #### worldFactProposer（worldFacts）
 
 - worldFacts 只记录世界设定事实（如"这个世界有魔法"），临时剧情、一次性情绪不要写入。
+- User 与 Assistant 的真实消息都可以用 `long_term_fact` 新增 worldFacts。
 - `worldFacts` 是独立正式 section，patch 不使用 `path`。
 - 已有 worldFacts item 的改写接受 user_correction 或 assistant_correction，两者权限相同。
 
@@ -214,6 +218,8 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `relationship` 确定。
 
+三个 section 的 `addItem + long_term_fact` 都可由 User 或 Assistant 的真实消息支持；`updateItem` 使用与真实发言方一致的 `user_correction` / `assistant_correction`。
+
 ### worldFactProposer（worldFacts）
 
 | op           | path   | itemId | itemIds | value      | evidenceRefs |
@@ -221,6 +227,8 @@ patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `re
 | `addItem`    | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
 | `updateItem` | 不需要 | 必填   | 不需要  | 必填       | 必填         |
 | `mergeItems` | 不需要 | 不需要 | 必填    | 必填(text) | 不输出       |
+
+`worldFacts.addItem + long_term_fact` 可由 User 或 Assistant 的真实消息支持；`updateItem` 使用与真实发言方一致的 `user_correction` / `assistant_correction`。
 
 ### compactionProposer（维护模式）
 
