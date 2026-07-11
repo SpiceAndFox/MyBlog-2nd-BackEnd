@@ -2,6 +2,178 @@
 
 本文汇总截至 2026-07-11 已达成的设计共识，作为后续正式修订 Memory Control 文档和实现的基线。讨论中已被推翻的早期方案不再具有约束力。
 
+## 0. 应用顺序
+
+修复意见按依赖关系分 12 批应用。每批是一个可独立审阅的内聚修改单元；批内修改紧密耦合，批末必须做跨文档一致性检查。依赖总序：State → Proposer/Cursor → Evidence/Capacity → Persistence/Recovery → Compaction → Domain Lifecycle → Context → Health → Rebuild/Projection → Forget/Suppression → Cross-cutting → Overview。
+
+---
+
+### 第 1 批：State 语义结构与权威状态（tmp.md §2、§3）
+
+- **tmp.md 章节**：§2 权威状态与作用域、§3 State 结构
+- **目标文档**：state-contract.md §1 §2、overview.md §5、scene-snapshot-recall.md §2.2 §5 §6.3
+- **关键变更**：
+  - 确立 PostgreSQL `memory_state` 是唯一当前 Memory authority，旧 rolling/core 不再作为 v2 authority 或同时注入。
+  - 新增 `working.overdue`、`working.expiredScenes`，保留 current/working/longTerm 原层级；本批只确定语义 sections，`meta` 依次由第 2 批落 `targetCursors`、第 4 批落 `revision` 并移除 `halted/recovery`、第 9 批落 `sourceGeneration`。
+  - current.scene 与 session 完全解耦；sessionId 只保留 provenance，不 key scene、不触发 scene reset。
+  - 声明 userProfile/assistantProfile/worldFacts/relationship 允许 User 和 Assistant 双方维护；add/update policy 在第 3 批落地，forget 的 tombstone/suppression 语义在第 10 批同批落地。
+  - 本批不定义 snapshot 事务、Recovery 替代机制或一次性迁移，分别留给第 4、9 批。
+- **依赖**：无，首批。
+
+### 第 2 批：Proposer 重组与 Target Cursor（tmp.md §4、§4.1）
+
+- **tmp.md 章节**：§4 Target、Proposer 与 Cursor、§4.1 新 Proposer 的 readOnlyContext
+- **目标文档**：state-contract.md §1 §3.1 §5.3、write-protocol.md §1.2 §2 §3、proposer-prompt.md §1 §2.3 §3 §4、overview.md §5 §8、harness.md §3.3 §3.5
+- **关键变更**：
+  - `coreProposer` 拆分为 `profileRelationshipProposer`（userProfile + assistantProfile + relationship）和 `worldFactProposer`（worldFacts）；normal Proposer 从 5 增至 6。
+  - 用 `targetCursors` 替换 per-section cursor：todos / agreements / episodes / profileRelationship / worldFacts / scene。
+  - 联合处理的 sections 共享一个 cursor；compaction task 不拥有 raw-message cursor。
+  - 更新六个 Proposer 的 writable target、evidenceKind 派生枚举、envelope 和 readOnlyContext 固定范围。
+- **依赖**：第 1 批的 section 结构。
+
+### 第 3 批：Evidence、Quote 与基础容量规则（tmp.md §8、§9）
+
+- **tmp.md 章节**：§8 Evidence 与 Quote、§9 Memory 容量与长度预算
+- **目标文档**：state-contract.md §3 §4 §6 §7 §8、proposer-prompt.md §2.2 §3、harness.md §3.1 §3.2 §3.4
+- **关键变更**：
+  - 将双方对 userProfile/assistantProfile/worldFacts/relationship 的 add/update 权限落到 evidenceKind 和 section+op policy table；forget policy 留给第 10 批与 suppression 事务一起定义。
+  - quote 上限改为 200 Unicode code points；归一化后至少 3 个信息字符；所有 quote 统一使用默认阈值 0.75 的 Levenshtein 模糊匹配。
+  - 明确模糊匹配不能修复否定翻转等低编辑距离高语义影响，不引入否定词专项规则/NLI。
+  - 基础容量统一为 `maxItems + maxRenderedChars`，只计 Renderer 可输出的语义文本；不设 Memory 业务层 proposal/envelope 总字符上限。
+  - 本批只定义“超容量需维护”的基础语义；recentEpisodes、expiredScenes、overdue 的确定性例外在第 6 批完成。
+- **依赖**：第 1 批的 sections、第 2 批的 Proposer/target 映射。
+
+### 第 4 批：Snapshot、Event、Durable Task 与 per-target Recovery 基础（tmp.md §7、§16）
+
+- **tmp.md 章节**：§7 Snapshot、Event 与恢复、§16 自动恢复
+- **目标文档**：state-contract.md §1 §9、write-protocol.md §1.3 §3 §3.1 §8、harness.md §3.5 §3.10
+- **关键变更**：
+  - 在 `memory_state.meta` 落地单调 `revision`；snapshot/checkpoint 统一为每个成功 revision 的完整 post-state snapshot，与 state/events/cursor/task 终态同事务提交；不额外复制 pre-state snapshot。
+  - 建立通用 revision/event group、durable task、ops log 和 per-target status，并定义通用 system cleanup event 机制。
+  - 在替代机制同批落地时删除 `memory_state.meta.halted/recovery`；Recovery authority 迁到 durable task/per-target status/ops log。
+  - Crash recovery 分为 snapshot/events 恢复语义 state，durable task/per-target status/ops log 恢复运行状态。
+  - 本批不提前写 compaction/replay 的专用 revision 规则，也不列举 scene/todo 具体 cleanup event，分别留给第 5、6 批。
+- **依赖**：第 1 批的 state，第 2 批的 target keys，第 3 批的 event/policy 字段语义。
+
+### 第 5 批：Compaction 状态机与权限（tmp.md §5、§6）
+
+- **tmp.md 章节**：§5 Proposal 持久化与 Compaction 状态机、§6 CompactionProposer 权限
+- **目标文档**：write-protocol.md §2.1 §3 §3.1、state-contract.md §4 §6 §8 §9、proposer-prompt.md §2.3 §2.4 §3 §4、harness.md §3.5 §3.6
+- **关键变更**：
+  - 完整落地 proposal_persisted → capacity_blocked → compacting → compaction_applied/failed → replaying_original_proposal → succeeded/replay_failed 状态机。
+  - 禁止 accepted + deferred 非原子混合提交；compaction 后从数据库确定性 replay 原 proposal，不重新调原 Proposer。
+  - compaction apply 和成功 replay 各自形成 revision+snapshot；replay_failed 只更新 task/status/ops log，不写语义 revision。
+  - `mergeItems` 只允许 compactionProposer；normal Proposer 删除主动去重权限；compactionProposer 只能同 section merge。
+  - Merge ID 由 Reducer 生成，evidenceGroups 从 source items 继承，pending proposal 引用的 itemIds 受硬保护。
+  - compaction/replay 无法完成时只 halt 对应 target，保留 proposal/cursor，其他 targets 和主聊天继续。
+- **依赖**：第 2 批的 targets，第 3 批的 capacity/policy，第 4 批的 durable task/snapshot/per-target status。
+
+### 第 6 批：Scene 与 Todo/Overdue 领域生命周期（tmp.md §10、§11）
+
+- **tmp.md 章节**：§10 Scene 生命周期、§11 Todo、Overdue 与时间
+- **目标文档**：state-contract.md §1 §2 §4 §6 §8、write-protocol.md §1.3 §5、proposer-prompt.md §2.3 §3 §4、rendering-and-context.md §1 §5、scene-snapshot-recall.md §2 §3 §5 §6、harness.md §3.6 §3.8
+- **关键变更**：
+  - Scene 到期移入 expiredScenes，写 `scene_expired`；expiredScenes 保留最新 1 条，替换时写 `expired_scene_evicted`，不使用 compaction。
+  - Renderer 将 expiredScenes 标记为过期/上次已知场景，housekeeping 未持久化时使用 effective view。
+  - Todo 新增 actor/requester；dueAt 以 evidence message createdAt 为相对时间 anchor；`updateTodo.dueChange` 必须显式 keep/clear/set。
+  - 到期 todo 确定性迁入 overdue，保留 provenance 并写 `todo_became_overdue`；overdue 可 complete/cancel，当前不 archive/compaction。
+  - recentEpisodes 滑动窗口滚出、scene 和 todo 自动变化全部使用第 4 批的 system cleanup event 机制。
+  - 完成 recentEpisodes、expiredScenes、overdue 对第 3 批基础容量规则的确定性例外。
+- **依赖**：第 1 批的 sections，第 3 批的 capacity，第 4 批的 events，第 5 批的 compaction 边界。
+
+### 第 7 批：上下文接入——needsMemory、LagThreshold、GapBridge（tmp.md §12、§13、§14）
+
+- **tmp.md 章节**：§12 needsMemory 与 Recent Window、§13 LagThreshold 与尾批、§14 GapBridge
+- **目标文档**：write-protocol.md §1.1 §2 §3、rendering-and-context.md §2、overview.md §6
+- **关键变更**：
+  - Memory Observer 不使用 user-boundary 裁剪，按 target cursor 读取完整 source。
+  - `needsMemory` 采用简单 Unicode 字符阈值，不堆叠 message count/tokenizer/context 百分比。
+  - recent window 可跨 session；消息保留 sessionId provenance 但不注入 session boundary 控制标记。
+  - 尾部不足 lagThreshold 非 correctness bug；不引入 idle flush 或 session rollover flush。
+  - 极长新消息挤出未处理尾批时由 per-target gapBridge 补齐。
+  - GapBridge 按 target cursor 查询有效 gap（C < messageId < R），独立逻辑字符预算。
+  - Gap 超预算时不调用 LLM 压缩，按 messageId 倒序选最近 N 条完整 raw messages 再恢复升序注入。
+  - 截断必须持久化记录，进入 degraded 并向用户告警；单条超预算计入 omitted 并告警。
+  - Source rebuild 必须忽略 lagThreshold，force drain 到 captured boundary。
+- **依赖**：第 2 批的 target cursor，第 6 批的 Renderer/effective-view 领域规则。
+
+### 第 8 批：Memory 健康状态与用户告警（tmp.md §15）
+
+- **tmp.md 章节**：§15 Memory 健康状态与用户告警
+- **目标文档**：write-protocol.md §3.1 §8、rendering-and-context.md §1 §5、overview.md §8、harness.md §3.7
+- **关键变更**：
+  - 用户侧统一三档状态：healthy / degraded / rebuilding。
+  - per-target status 到用户侧状态映射表。
+  - 任一 target 非 healthy 即整体显示对应告警；所有 target 恢复 healthy 后整体回到 healthy。
+  - 告警必须持续到恢复完成，不只弹一次；恢复后明确提示 Memory 已追平。
+  - Compaction/replay 无法完成时只 halt 对应 target，不设全局 chatBlocked 或 user/preset 级 halt（推翻原设计 halt 后聊天接口拒绝新消息）。
+  - Renderer 继续渲染 halted target 最后一次成功提交的稳定 state，但标记"该类记忆可能滞后"。
+  - resume/rebuild 等服务器维护脚本不受 target halt 限制。
+- **依赖**：第 4 批的 per-target status，第 5 批的 compaction/replay halt 语义，第 7 批的 Renderer/GapBridge 接入。
+
+### 第 9 批：Source Generation、Rebuild 与 Force Drain（tmp.md §17、§18）
+
+- **tmp.md 章节**：§17 Source Generation 与 Rebuild、§18 Force Drain 与一次性迁移
+- **目标文档**：write-protocol.md §7 §8、state-contract.md §1 §9、rendering-and-context.md §3、scene-snapshot-recall.md §3.5 §6.4、overview.md §8、harness.md §3.10
+- **关键变更**：
+  - 自动 source rebuild 触发条件：编辑历史、regenerate 截断、删除、session trash/restore、preset 归属变化、排序语义变化。普通追加不增 sourceGeneration。
+  - 在 `memory_state.meta` 落地单调 `sourceGeneration`，并将它作为 Memory/RAG/Recall source invalidation 的共享权威世代。
+  - Rebuild 流程：generation+1 → 设置 dirty → 取消旧 tasks → 初始化新 state+snapshot → 从 raw messages 重放 → force drain → 校验 → 清 dirty → healthy。
+  - Raw source mutation、generation increment、dirty boundary、旧 task 取消必须同事务；不引入通用 outbox。
+  - RAG/Recall 各自持久化独立 projection checkpoint（processedGeneration + processedBoundaryMessageId）；不因 Memory target 追平就推定 RAG/Recall 追平。
+  - 不引入独立 Flush 子系统/task type/状态机/持久化表；只保留 worker 内部 `forceDrainTo(boundaryMessageId)`。
+  - 一次性迁移简化为：停服 → 更新 schema/代码 → 物理删除旧 Memory → rebuild/force drain → 校验 → 启服。
+  - Rebuild 未追平或校验失败时不得启动对外聊天服务。
+- **依赖**：第 1 批的 authority/state，第 2 批的 target cursors，第 4 批的 snapshot/recovery，第 8 批的 degraded/rebuilding 告警语义。
+
+### 第 10 批：Forget、Correction 与 RAG Suppression（tmp.md §19、§20）
+
+- **tmp.md 章节**：§19 Forget、Correction 与物理删除、§20 RAG Suppression
+- **目标文档**：state-contract.md §4、write-protocol.md §5、rendering-and-context.md §3、scene-snapshot-recall.md §4 §6.4、overview.md §8、harness.md
+- **关键变更**：
+  - Correction：新 revision 更新错误 item，active state 只渲染新值，event history 保留旧 revision。
+  - Forget：从 active state 移除 item + 写 context-suppression tombstone，阻止相同 source 在 rebuild/RAG/Recall 重新进入上下文。
+  - 在本批完整落地 User 和 Assistant 双方对 userProfile/assistantProfile/worldFacts/relationship 的 forget policy，不在早期批次先定义一个没有 tombstone 语义的删除 op。
+  - Privacy hard delete：跨 raw/event/snapshot/RAG/Recall/debug 物理清除。
+  - "把 text 改成已作废"不是 forget；Renderer 不应继续注入被忘记内容。
+  - Active item evidenceGroups 必须完整覆盖历史来源：update 只追加 evidenceGroup，merge 继承所有 source items 的 evidenceGroups。
+  - Forget 直接从当前 item 完整 evidenceGroups 收集 source messageId/hash 生成 suppression tombstone，不新增 provenance graph。
+  - RAG chunk 必须追踪 source messageId/contentHash；forget/correction 写 tombstone 后相交 RAG chunks 失效/删除；RAG 重新分块跳过 suppressed message；RAG 查询再做 source suppression 过滤。
+  - 不引入 suppressionProposer；保守排除同一消息中其他无关事实是当前接受的副作用。
+- **依赖**：第 3 批的 evidence/policy，第 5 批的 mergeItems/evidenceGroups 继承，第 9 批的 rebuild/projection drain。
+
+### 第 11 批：Provider Adapter、串行幂等、指标、配置、延后清单（tmp.md §21、§22、§23、§24、§25）
+
+- **tmp.md 章节**：§21 Provider Adapter、§22 单实例串行与幂等、§23 运营与指标、§24 配置原则、§25 明确延后的问题
+- **目标文档**：state-contract.md §10、write-protocol.md §3 §8、overview.md §3 §8、harness.md §3.7
+- **关键变更**：
+  - Adapter 必须区分：正常输出、网络失败、refusal/safety block、max-output truncation、schema invalid（新增 truncation 区分）。
+  - 不支持 structured output 的 Provider/model 不能配置为 Memory Proposer。
+  - Provider 物理上限由 Adapter 处理，不转化为 Memory section 容量规则。
+  - Durable task 使用稳定 task identity/dedupe key；Reducer 提交前校验 generation、cursorBefore、当前 revision。
+  - 相同 task/patchId 重复恢复只产生一组 events 和一个 state revision。
+  - 指标清单：calls/message、tokens、latency、费用、schema failure、safety/refusal、unable rate、quote 分布、compaction success/failure、replay_failed、target halt rate、deferred proposal age、queue age、revision/cursor stale、gapBridge raw/truncated/omitted、rebuild duration、RAG/Recall projection lag、degraded/rebuilding 持续时间。
+  - normal Proposer 从 5 增至 6，分 target 监控；如拆分导致成本/延迟不可接受再根据真实指标调整。
+  - 集中配置变量清单；quote 200 code points 已确定，模糊匹配阈值 0.75 可配置，其余默认值待真实分布确定。
+  - 延后清单：LLM Suppression Proposer、Gap Compressor、expiredScenes/overdue 精细归档/压缩/检索/清理。
+- **依赖**：第 2 批的 Proposer 数量，第 3 批的 quote/capacity 配置，第 5 批的 compaction/replay 指标，第 7 批的 gapBridge 指标，第 9 批的 rebuild/projection 指标。
+
+### 第 12 批：总体原则与 overview 收尾（tmp.md §1、§1.1）
+
+- **tmp.md 章节**：§1 设计方法与总体原则、§1.1 原设计继承原则
+- **目标文档**：overview.md（全局）、所有子文档（一致性检查）
+- **关键变更**：
+  - overview.md 反映瀑布式设计方法：设计阶段一次性覆盖 deferred/compaction/snapshot/replay/overdue/expired scene/gapBridge/用户告警/forget/RAG suppression 完整能力。
+  - 实现按依赖顺序分层推进，但已确定功能不延期。
+  - LLM 负责语义判断和候选变更；Reducer 负责纯代码可验证的结构/作用域/权限/证据/容量/并发/事务约束。
+  - 接受 LLM 语义判断偏差；Reducer 不宣称能证明 text 被 evidence 蕴含，不要求 LLM 判断"高风险事实"。
+  - 可恢复性目标：避免静默丢失/重复应用、崩溃恢复、追踪错误记忆来源、forget 后不被自动重建、区分模型/Reducer/事务错误。
+  - 原设计继承原则：未明确修改的契约继续有效；省略不代表删除；讨论稿实现细节非已定规范。
+  - 全文档一致性检查：确保 overview §8 决策清单、§3 非目标、§9 成功标准与各子文档修订一致。
+- **依赖**：第 1-11 批全部完成。
+
+---
+
 ## 1. 设计方法与总体原则
 
 1. 本次重构采用偏瀑布式设计：设计阶段一次性覆盖 deferred、compaction、snapshot、replay、overdue、expired scene、gapBridge、用户告警、forget/RAG suppression 等完整能力，不以“首版先删除、以后再补”为默认策略。
@@ -74,14 +246,14 @@
 
 一个 Proposer 联合处理的多个 section 必须共享一个 target cursor，禁止“共享 Proposer + 独立 section cursor”。
 
-| targetKey            | Proposer                    | 可写 section                                                   | cursor                |
-| -------------------- | --------------------------- | -------------------------------------------------------------- | --------------------- |
-| `scene`              | currentStateProposer        | current.scene                                                  | `scene`               |
-| `todos`              | todoProposer                | working.todos；overdue 为 Reducer 维护的同族状态           | `todos`               |
-| `agreements`         | agreementProposer           | working.standingAgreements                                     | `agreements`          |
-| `episodes`           | episodeProposer             | working.recentEpisodes、longTerm.milestones                   | `episodes`            |
-| `profileRelationship` | profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship       | `profileRelationship` |
-| `worldFacts`         | worldFactProposer           | longTerm.worldFacts                                            | `worldFacts`          |
+| targetKey             | Proposer                    | 可写 section                                         | cursor                |
+| --------------------- | --------------------------- | ---------------------------------------------------- | --------------------- |
+| `scene`               | currentStateProposer        | current.scene                                        | `scene`               |
+| `todos`               | todoProposer                | working.todos；overdue 为 Reducer 维护的同族状态     | `todos`               |
+| `agreements`          | agreementProposer           | working.standingAgreements                           | `agreements`          |
+| `episodes`            | episodeProposer             | working.recentEpisodes、longTerm.milestones          | `episodes`            |
+| `profileRelationship` | profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship | `profileRelationship` |
+| `worldFacts`          | worldFactProposer           | longTerm.worldFacts                                  | `worldFacts`          |
 
 约束：
 
@@ -97,10 +269,10 @@
 
 ### 4.1 新 Proposer 的 readOnlyContext
 
-| Proposer | writableState | readOnlyContext |
-| --- | --- | --- |
-| profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.worldFacts |
-| worldFactProposer | longTerm.worldFacts | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.userProfile、assistantProfile、relationship |
+| Proposer                    | writableState                                        | readOnlyContext                                                                                                                              |
+| --------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| profileRelationshipProposer | longTerm.userProfile、assistantProfile、relationship | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.worldFacts                                  |
+| worldFactProposer           | longTerm.worldFacts                                  | current.scene、working.recentEpisodes、working.standingAgreements、longTerm.milestones、longTerm.userProfile、assistantProfile、relationship |
 
 两者继承原 envelope 边界：writableState item 可保留 ID 以供 update/forget；readOnlyContext item 不暴露 ID 或 evidenceGroups，只作语义背景，不能单独证明新事实或作为 evidenceRefs 来源。
 
@@ -203,8 +375,7 @@ Reducer 对 evidence 做以下纯代码校验：
 
 ```js
 {
-  maxItems,
-  maxRenderedChars
+  (maxItems, maxRenderedChars);
 }
 ```
 
@@ -286,12 +457,12 @@ Reducer 对 evidence 做以下纯代码校验：
 
 下表是 per-target status（§16.1）到用户侧状态的概念映射，用于说明语义，不锁定最终数据库枚举或 schema：
 
-| per-target status | 用户侧状态 | 说明 |
-| --- | --- | --- |
-| `healthy` | `healthy` | 该 target 正常运行 |
-| `retry_wait` | `degraded` | 瞬时错误退避重试中，记忆可能滞后 |
-| `halted` | `degraded` | compaction/replay 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
-| `rebuilding` | `rebuilding` | source rebuild 进行中 |
+| per-target status | 用户侧状态   | 说明                                                                            |
+| ----------------- | ------------ | ------------------------------------------------------------------------------- |
+| `healthy`         | `healthy`    | 该 target 正常运行                                                              |
+| `retry_wait`      | `degraded`   | 瞬时错误退避重试中，记忆可能滞后                                                |
+| `halted`          | `degraded`   | compaction/replay 无法完成，该 target 已暂停且可能滞后，需服务器维护脚本 resume |
+| `rebuilding`      | `rebuilding` | source rebuild 进行中                                                           |
 
 任一 target 非 healthy 即整体显示对应 degraded/rebuilding 告警；所有 target 恢复 healthy 后整体回到 healthy。
 
@@ -315,15 +486,15 @@ Reducer 对 evidence 做以下纯代码校验：
 
 字段归属：
 
-| 旧 recovery 字段/语义 | 新持久化位置 |
-| --- | --- |
-| `consecutiveErrors` | per-target status |
-| `awaitingContextExpansion` | 当前 durable task/proposal 的 `contextExpansionAttempt` |
-| `lastErrorReason` | per-target status，同时写 ops log |
-| `lastErrorTickId` | ops log 的 taskId/attempt；per-target status 保存 lastTaskId |
-| halt 状态与原因 | per-target status |
-| retry attempt/notBefore | durable task |
-| 完整错误历史 | ops log |
+| 旧 recovery 字段/语义      | 新持久化位置                                                 |
+| -------------------------- | ------------------------------------------------------------ |
+| `consecutiveErrors`        | per-target status                                            |
+| `awaitingContextExpansion` | 当前 durable task/proposal 的 `contextExpansionAttempt`      |
+| `lastErrorReason`          | per-target status，同时写 ops log                            |
+| `lastErrorTickId`          | ops log 的 taskId/attempt；per-target status 保存 lastTaskId |
+| halt 状态与原因            | per-target status                                            |
+| retry attempt/notBefore    | durable task                                                 |
+| 完整错误历史               | ops log                                                      |
 
 建议的 per-target status 概念结构：
 
