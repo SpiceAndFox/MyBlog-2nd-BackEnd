@@ -167,7 +167,7 @@
 
 Fixture 不应保存长篇聊天全文。证据 quote 保持短片段，长对话可用最小复现场景。
 
-Fixture runner 用 `initialState` 自动写 revision 0 完整 snapshot；测试不得只在内存中构造 state 而跳过初始 snapshot。`initialTargetStatuses` 独立于 `memory_state` 初始化。
+Fixture runner 用 `initialState` 自动写 revision 0 完整 snapshot；测试不得只在内存中构造 state 而跳过初始 snapshot。`initialTargetStatuses` 独立于 `memory_state` 初始化，且必须为全部六个 normal target 各提供一行初始 status。`initialState.meta.targetCursors` 只需列出本 fixture 涉及的 target key；未列出的 target cursor 默认为 0，表示该 target 尚未处理任何消息。
 
 ### Fixture 断言匹配规则
 

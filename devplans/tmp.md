@@ -11,7 +11,7 @@
 ### 第 1 批：State 语义结构与权威状态（tmp.md §2、§3）
 
 - **tmp.md 章节**：§2 权威状态与作用域、§3 State 结构
-- **目标文档**：state-contract.md §1 §2、overview.md §5、scene-snapshot-recall.md §2.2 §5 §6.3
+- **目标文档**：state-contract.md §1 §2、overview.md §5、`memory-control-v2-deferred/scene-snapshot-recall.md` §2.2 §5 §6.3（该文档已 defer，仍单向同步本批变更以保持一致性，但不影响当前实现）
 - **关键变更**：
   - 确立 PostgreSQL `memory_state` 是唯一当前 Memory authority，旧 rolling/core 不再作为 v2 authority 或同时注入。
   - 正式 section 固定为 `scene`、`todos`、`standingAgreements`、`recentEpisodes`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`；不保留协议层 `core`。Todo overdue 使用同一 item 的 status，scene 历史使用单值 `current.previousScene`，两者均不是 section。
@@ -71,7 +71,7 @@
 ### 第 6 批：Scene 与 Todo/Overdue 领域生命周期（tmp.md §10、§11）
 
 - **tmp.md 章节**：§10 Scene 生命周期、§11 Todo、Overdue 与时间
-- **目标文档**：state-contract.md §1 §2 §4 §6 §8、write-protocol.md §1.3 §5、proposer-prompt.md §2.3 §3 §4、rendering-and-context.md §1 §5、scene-snapshot-recall.md §2 §3 §5 §6、harness.md §3.6 §3.8
+- **目标文档**：state-contract.md §1 §2 §4 §6 §8、write-protocol.md §1.3 §5、proposer-prompt.md §2.3 §3 §4、rendering-and-context.md §1 §5、harness.md §3.6 §3.8、`memory-control-v2-deferred/scene-snapshot-recall.md` §2 §3 §5 §6（该文档已 defer，仍单向同步本批变更以保持一致性，但不影响当前实现）
 - **关键变更**：
   - Scene 到期写入单值 `current.previousScene` 并写 `scene_expired`；替换旧 previousScene 时写 `expired_scene_evicted`，不使用 compaction。
   - Renderer 将 previousScene 标记为过期/上次已知场景，housekeeping 未持久化时使用 effective view。
@@ -114,7 +114,7 @@
 ### 第 9 批：Source Generation、Rebuild 与 Force Drain（tmp.md §17、§18）
 
 - **tmp.md 章节**：§17 Source Generation 与 Rebuild、§18 Force Drain 与一次性迁移
-- **目标文档**：write-protocol.md §7 §8、state-contract.md §1 §9、rendering-and-context.md §3、scene-snapshot-recall.md §3.5 §6.4、overview.md §8、harness.md §3.10
+- **目标文档**：write-protocol.md §7 §8、state-contract.md §1 §9、rendering-and-context.md §3、overview.md §8、harness.md §3.10、`memory-control-v2-deferred/scene-snapshot-recall.md` §3.5 §6.4（该文档已 defer，仍单向同步本批变更以保持一致性，但不影响当前实现）
 - **关键变更**：
   - 自动 source rebuild 触发条件：编辑历史、regenerate 截断、删除、session trash/restore、preset 归属变化、排序语义变化。普通追加不增 sourceGeneration。
   - 在 `memory_state.meta` 落地单调 `sourceGeneration`，并将它作为 Memory/RAG/Recall source invalidation 的共享权威世代。
@@ -129,7 +129,7 @@
 ### 第 10 批：Forget、Correction 与 RAG Suppression（tmp.md §19、§20）
 
 - **tmp.md 章节**：§19 Forget、Correction 与物理删除、§20 RAG Suppression
-- **目标文档**：state-contract.md §4、write-protocol.md §5、rendering-and-context.md §3、scene-snapshot-recall.md §4 §6.4、overview.md §8、harness.md
+- **目标文档**：state-contract.md §4、write-protocol.md §5、rendering-and-context.md §3、overview.md §8、harness.md、`memory-control-v2-deferred/scene-snapshot-recall.md` §4 §6.4（该文档已 defer，仍单向同步本批变更以保持一致性，但不影响当前实现）
 - **关键变更**：
   - Correction：新 revision 更新错误 item，active state 只渲染新值，event history 保留旧 revision。
   - Forget：从 active state 移除 item + 写 context-suppression tombstone，阻止相同 source 在 rebuild/RAG/Recall 重新进入上下文。
@@ -341,13 +341,13 @@ compacting
 3. 一个 task bundle 即使包含多个 patch，也只产生一个 revision 和一份 snapshot。
 4. 因为 revision N 已有 post-state snapshot N，所以 revision N+1 修改前天然已有“修改前 snapshot”，不需要额外复制一份 pre-state snapshot。
 5. Compaction apply 和原 proposal replay 各自形成明确 revision，并各自同步 snapshot。
-6. Source generation seed 必须同步写完整 snapshot。
+6. sourceGeneration 初始化或递增时必须同事务写完整 snapshot。
 7. State、events、snapshot、cursor、task 终态和 target health 必须在同一事务提交。
 8. Snapshot 包含全部语义 section、全部 target cursors、revision 和 sourceGeneration；不包含 task retry/错误计数等运行恢复状态。这些状态必须在专用表中持久化，并非只保存在进程内。
 9. Event replay 不重新调用 LLM，只使用 event 中的 normalized applied operation、result item ID 和确定性字段。
 10. Add event 的 result item ID 不能为 null。
 11. 为解决 eventId/itemId/provenance 的循环依赖，Reducer 在事务中预留 event IDs、生成 item IDs、构造最终 state，再插入完整 events。
-12. 自动 overdue 状态更新、scene expiry、recentEpisodes 滑动窗口滚出、archive 等持久化变化必须记录 system cleanup event，禁止 silent delete。
+12. 自动 overdue 状态更新、scene expiry、recentEpisodes 滑动窗口滚出等持久化变化必须记录 system cleanup event，禁止 silent delete。
 13. Event/snapshot replay 必须校验 schema、revision 连续性、cursor 连续性和 group task/target 一致性。当前不引入 state hash。
 
 ## 8. Evidence 与 Quote
