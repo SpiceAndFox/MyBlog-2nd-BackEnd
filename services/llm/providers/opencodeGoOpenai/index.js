@@ -9,6 +9,7 @@ const MODELS = [
     supportsThinking: true,
     reasoningEfforts: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
     supportsWebSearch: true,
+    webSearchFormat: "glm",
     defaults: { temperature: 0.75, topP: 0.95 },
   },
   {
@@ -16,6 +17,7 @@ const MODELS = [
     name: "GLM-5.1",
     supportsThinking: true,
     supportsWebSearch: true,
+    webSearchFormat: "glm",
   },
   {
     id: "deepseek-v4-pro",
@@ -35,10 +37,21 @@ const MODELS = [
   {
     id: "mimo-v2.5-pro",
     name: "MiMo-V2.5-Pro",
+    supportsThinking: true,
+    // MiMo 启用思考时强制 temperature=1.0 / top_p=0.95，采样参数被忽略（同 DeepSeek）。
+    // 屏蔽采样参数以发送干净请求，避免发送会被忽略的值。
+    blocksSamplingWhenThinking: true,
+    // 不声明 reasoningEfforts：MiMo 原生不支持 reasoning_effort 参数。
+    supportsWebSearch: true,
+    // MiMo 原生 web search 为扁平格式（max_keyword/force_search/limit），
+    // 与 GLM 嵌套格式不兼容；通过 webSearchFormat 让 builder 按模型分发正确格式。
+    webSearchFormat: "mimo",
   },
   {
     id: "mimo-v2.5",
     name: "MiMo-V2.5",
+    supportsWebSearch: true,
+    webSearchFormat: "mimo",
   },
 ];
 
@@ -94,6 +107,18 @@ function modelSupportsWebSearch(modelId) {
   return Boolean(getModel(modelId)?.supportsWebSearch);
 }
 
+function getModelWebSearchFormat(modelId) {
+  return String(getModel(modelId)?.webSearchFormat || "").trim() || null;
+}
+
+function modelUsesGlmWebSearchFormat(modelId) {
+  return getModelWebSearchFormat(modelId) === "glm";
+}
+
+function modelUsesMimoWebSearchFormat(modelId) {
+  return getModelWebSearchFormat(modelId) === "mimo";
+}
+
 function modelBlocksSamplingWhenThinking(modelId) {
   return Boolean(getModel(modelId)?.blocksSamplingWhenThinking);
 }
@@ -124,7 +149,7 @@ function normalizeWebSearchRecency(settings) {
   return WEB_SEARCH_RECENCY_OPTIONS.some((option) => option.value === raw) ? raw : "noLimit";
 }
 
-function buildWebSearchTool({ settings } = {}) {
+function buildGlmWebSearchTool({ settings } = {}) {
   const count = Number(settings?.webSearchMaxResults);
   const normalizedCount = Number.isFinite(count) ? Math.min(50, Math.max(1, Math.trunc(count))) : 5;
 
@@ -141,6 +166,29 @@ function buildWebSearchTool({ settings } = {}) {
   };
 }
 
+function buildMiMoWebSearchTool({ settings } = {}) {
+  const limit = Number(settings?.webSearchMaxResults);
+  const normalizedLimit = Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 5;
+
+  const maxKeyword = Number(settings?.webSearchMaxKeyword);
+  const normalizedMaxKeyword = Number.isFinite(maxKeyword)
+    ? Math.min(10, Math.max(1, Math.trunc(maxKeyword)))
+    : 3;
+
+  return {
+    type: "web_search",
+    max_keyword: normalizedMaxKeyword,
+    force_search: Boolean(settings?.webSearchForceSearch),
+    limit: normalizedLimit,
+  };
+}
+
+function buildWebSearchTool({ model, settings } = {}) {
+  const modelId = normalizeModelId(model);
+  if (modelUsesMimoWebSearchFormat(modelId)) return buildMiMoWebSearchTool({ settings });
+  return buildGlmWebSearchTool({ settings });
+}
+
 function buildBodyExtensions({ model, settings } = {}) {
   const body = {};
   const modelId = normalizeModelId(model);
@@ -155,7 +203,7 @@ function buildBodyExtensions({ model, settings } = {}) {
   }
 
   if (settings?.enableWebSearch && modelSupportsWebSearch(modelId)) {
-    body.tools = [buildWebSearchTool({ settings })];
+    body.tools = [buildWebSearchTool({ model: modelId, settings })];
   }
 
   return body;
@@ -165,6 +213,10 @@ function buildBodyExtensions({ model, settings } = {}) {
 const THINKING_MODE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsThinking(id));
 const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
 const WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsWebSearch(id));
+// webSearchRecency 为 GLM 专属（search_recency_filter），对非 GLM 格式模型隐藏。
+const GLM_WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelUsesGlmWebSearchFormat(id));
+// MiMo 专属旋钮（force_search / max_keyword）仅对 MiMo 格式模型可见。
+const MIMO_WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelUsesMimoWebSearchFormat(id));
 
 module.exports = {
   id: "opencode-go-openai",
@@ -233,7 +285,7 @@ module.exports = {
     },
     {
       key: "enableWebSearch",
-      label: "Web Search (Z.AI)",
+      label: "Web Search",
       type: "toggle",
       capability: "webSearch",
       modelBlocklist: WEB_SEARCH_BLOCKLIST,
@@ -256,7 +308,26 @@ module.exports = {
       options: WEB_SEARCH_RECENCY_OPTIONS,
       default: "noLimit",
       capability: "webSearch",
-      modelBlocklist: WEB_SEARCH_BLOCKLIST,
+      modelBlocklist: GLM_WEB_SEARCH_BLOCKLIST,
+    },
+    {
+      key: "webSearchForceSearch",
+      label: "Web Search: Force Search",
+      type: "toggle",
+      default: false,
+      capability: "webSearch",
+      modelBlocklist: MIMO_WEB_SEARCH_BLOCKLIST,
+    },
+    {
+      key: "webSearchMaxKeyword",
+      label: "Web Search: Max Keywords",
+      type: "number",
+      min: 1,
+      max: 10,
+      step: 1,
+      default: 3,
+      capability: "webSearch",
+      modelBlocklist: MIMO_WEB_SEARCH_BLOCKLIST,
     },
   ],
   models: MODELS,
