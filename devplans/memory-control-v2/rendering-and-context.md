@@ -68,6 +68,10 @@ Memory v2 和 RAG 不互相替代。
 
 只在某次旧对话中重要、但不应持续影响当前关系状态的事实，应留在 RAG，不进入长期 sections。
 
+RAG 与 Recall 各自维护独立 projection checkpoint，至少记录 `processedGeneration` 和 `processedBoundaryMessageId`，并以 `memory_state.meta.sourceGeneration` 为共享 raw-source invalidation 世代。Memory target cursor 追平不能推定任一 projection 已追平；普通追加未改变 generation 时，各 projection 仍按自己的 boundary 增量推进。
+
+Context compiler 只能把与当前 `sourceGeneration` 一致且已追平其 captured boundary 的 projection 当作当前结果。实际参与本次 context compile 的 RAG/Recall projection 若 generation 不一致或尚未追平，必须保持 `degraded/rebuilding` 告警，不得把旧 projection 无提示注入或声称为当前状态。Projection worker 在提交 checkpoint 前必须重校 generation；进程内 wake-up 只降低延迟，启动与周期轮询时的 generation/boundary 比较才提供不依赖 outbox 的 correctness 保证。完整 drain 规则见 [write-protocol.md](write-protocol.md) §7.1。
+
 ## 4. Proposer 输入与 Gist 边界
 
 Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。本节只补充与上下文接入相关的边界：

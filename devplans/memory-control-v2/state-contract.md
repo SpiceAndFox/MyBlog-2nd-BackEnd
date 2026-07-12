@@ -47,13 +47,14 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
     relationship: []            // item 数组
   },
   meta: {
-    revision: 0,               // 单调 Memory revision；每个成功 revision 都有同号完整 post-state snapshot
+    revision: 0,               // 全局单调 Memory revision；每个成功 revision 都有同号完整 post-state snapshot
+    sourceGeneration: 0,       // 单调 source 世代；raw source 失效重建时 +1，普通追加不变
     targetCursors: {}          // { targetKey: coveredUntilMessageId }，targetKey 见 §2，联合处理的 section 共享一个 cursor
   }
 }
 ```
 
-`memory_state.meta` 只保存权威 Memory state 自身需要的 revision/cursor 元数据，不保存 `halted`、错误计数、retry 或 context-expansion 等运行恢复状态。运行状态的 authority 是 §9 的 durable task、per-target status 和 ops log；`sourceGeneration` 在第 9 批引入后再加入 meta 与 snapshot 契约。
+`memory_state.meta.sourceGeneration` 是 Memory、RAG 与 Recall 判断 raw source 是否仍有效的共享权威世代。它只在已被 Memory 观察的 source 被编辑、删除、恢复、改变归属/可见性或排序语义时单调 `+1`；普通追加 User/Assistant message 不改变 generation。`memory_state.meta` 不保存 `halted`、错误计数、retry 或 context-expansion 等运行恢复状态；这些状态的 authority 是 §9 的 durable task、per-target status 和 ops log。
 
 每个可追踪 item 结构：
 
@@ -231,6 +232,7 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
     "userId": 1,
     "presetId": "default",
     "schemaVersion": 2,
+    "sourceGeneration": 0,
     "baseRevision": 0,
     "targetKey": "episodes",
     "cursorBefore": 118,
@@ -340,7 +342,7 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
 
 字段说明：
 
-- `task`：携带 durable `taskId`、创建时的 `baseRevision`、本次 `targetKey`、该 target 的 `cursorBefore`、proposer、mode、target sections、observed message ids、`trigger` 和 `now`。一个 normal task 恰好对应一个 target，因此只有一个 `cursorBefore`、一个 new batch 和一个 `targetMessageId`；正常 apply 前必须重新校验 `baseRevision === memory_state.meta.revision` 且 `cursorBefore === meta.targetCursors[targetKey]`，stale 结果不得直接 apply。compaction 后 replay 原 proposal 时，task 的 `baseRevision` 只用于审计；replay 的 stale 判定见 [write-protocol.md](write-protocol.md) §2.1 步骤 7，replay group 的 `base_revision` 取 replay 事务开始时的最新全局 revision（见 §9.2）。
+- `task`：携带 durable `taskId`、创建时的 `sourceGeneration/baseRevision`、本次 `targetKey`、该 target 的 `cursorBefore`、proposer、mode、target sections、observed message ids、`trigger` 和 `now`。一个 normal task 恰好对应一个 target，因此只有一个 `cursorBefore`、一个 new batch 和一个 `targetMessageId`；正常 apply 前必须重新校验 generation、revision 与 target cursor，任一不匹配都不得直接 apply。compaction 后 replay 原 proposal 时，`baseRevision` 只用于审计，但 `sourceGeneration` 仍必须匹配；其余 stale 判定见 [write-protocol.md](write-protocol.md) §2.1 步骤 7。
 - `writableState`：本次允许写入的目标 sections 当前状态。item 使用 §5 的 writableState redacted view（含 id）；无值字段显式传 null。
 - `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。item 使用 §5 的 readOnlyContext redacted view（不含 id），固定范围见 §5.3。
 - `observedMessages`：普通模式下 LLM 可见的原始消息观察窗口，与 `observedMessageIds` 一一对应。每项携带真实 `role`、`createdAt` 和 `contentHash`；`contentHash` 固定为 raw `content` 的 UTF-8 SHA-256，格式为 `sha256:` 加 64 位小写十六进制。这些 proposal-time 字段写入 §9.3 durable task 的 immutable `task_payload`，Reducer apply 时与数据库当前行重新核对。普通写入 patch 的 `evidenceRefs.messageId` 必须来自 `observedMessages`。窗口组装规则见 [write-protocol.md](write-protocol.md) §2。
@@ -643,6 +645,7 @@ CREATE TABLE chat_memory_snapshots (
   id              BIGSERIAL PRIMARY KEY,
   user_id         BIGINT NOT NULL,
   preset_id       TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
   revision        BIGINT NOT NULL,
   schema_version  INTEGER NOT NULL,
   state           JSONB NOT NULL,
@@ -653,16 +656,18 @@ CREATE TABLE chat_memory_snapshots (
 
 规则：
 
-1. `memory_state.meta.revision` 从 0 开始单调递增；初始化 state 时必须同步写 revision 0 完整 snapshot。revision N 的 snapshot 是 revision N 提交完成后的完整 post-state，snapshot 内的 `meta.revision` 必须等于 N。
+1. `memory_state.meta.revision` 从首次初始化的 0 开始跨 generation 单调递增；首次 state 同步写 revision 0 完整 snapshot。自动 rebuild 初始化新 generation 时使用前一 revision `+1`，不得重置 revision；snapshot 内的 generation/revision 必须与行值一致。
 2. 一个 task bundle 即使包含多个 patch/event，也最多形成一个新 revision 和一份 snapshot；该事务中的所有 accepted operation 与 cursor 终态共同属于同一个 event group。
 3. revision N 的 post-state snapshot 已天然构成 revision N+1 的 pre-state；禁止为每次提交再复制一份 pre-state snapshot。
-4. accepted patch、system cleanup 或 cursor 推进导致 `memory_state` 变化时形成 revision。纯 Provider/schema 失败、retry_wait、halt、只写 ops log 等不改变 state/cursor 的运行状态更新不形成 revision 或 snapshot。
-5. snapshot 包含全部语义 section、`meta.revision` 和全部 target cursors；不包含 task retry、错误计数、halt、nextRetryAt 等运行状态。第 9 批引入 `sourceGeneration` 后，snapshot 同步包含它。
+4. accepted patch、system cleanup、cursor 推进或 source generation 初始化导致 `memory_state` 变化时形成 revision。纯 Provider/schema 失败、retry_wait、halt、只写 ops log 等不改变 state/cursor 的运行状态更新不形成 revision 或 snapshot。
+5. snapshot 包含全部语义 section、`meta.sourceGeneration`、`meta.revision` 和全部 target cursors；不包含 task retry、错误计数、halt、nextRetryAt 等运行状态。
 6. checkpoint 与 snapshot 是同一个概念，不再建立 per-section 或文本 checkpoint。
 
 ### 9.2 Revision event group 与 events
 
 一个 task bundle 的决策先归入 event group；`result_revision` 非 null 表示该 group 提交了新 state，null 表示只有 deferred 等审计结果而没有 state/cursor revision。一个经历 capacity-blocked 的多阶段 normal task 允许拥有两个 event group：`result_revision=null` 的"capacity-blocked 审计 group"（只为触发容量阻塞的 patch 写 `deferred`）和 `result_revision` 非 null 的"最终 replay group"（为全部 patch 写最终 `accepted/rejected/noop`）。maintenance task 的 compaction apply 各自形成独立 event group。
+
+Source generation 初始化是唯一不创建 semantic event group 的 state revision：raw-source mutation 事务直接写新 generation 的空 state 与完整 snapshot，并以 generation/revision 明确形成恢复边界。事件 replay 从该 snapshot 开始且禁止跨 generation，因此不伪造某个正式 section/target 的 cleanup event。
 
 ```sql
 CREATE TABLE chat_memory_event_groups (
@@ -671,8 +676,9 @@ CREATE TABLE chat_memory_event_groups (
   preset_id       TEXT NOT NULL,
   task_id         UUID NOT NULL,
   target_key      TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
   schema_version  INTEGER NOT NULL,
-  base_revision   BIGINT NOT NULL,            -- 该 group 实际事务开始时的最新全局 revision；不等同于 task 创建时的 base_revision
+  base_revision   BIGINT NOT NULL,            -- group 实际事务开始时的最新全局 revision；不等同于 task 创建时的 base_revision
   result_revision BIGINT,
   cursor_before   BIGINT,
   cursor_after    BIGINT,
@@ -682,7 +688,7 @@ CREATE TABLE chat_memory_event_groups (
 );
 ```
 
-`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 的 `base_revision` 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已让全局 revision 涨过 task 创建时的值。对所有 `result_revision IS NOT NULL` 的 event group，必须满足 `result_revision = base_revision + 1`；`result_revision IS NULL` 的审计 group（如 capacity-blocked 审计 group）不形成 revision，但其 `base_revision` 仍记录该无 revision 事务开始时的最新全局 revision，供审计追溯。`chat_memory_tasks.base_revision` 在 task 创建后不变，只作输入审计和普通首次提交的 stale 校验。
+`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已推进 revision。对所有 `result_revision IS NOT NULL` 的 event group，必须满足 `result_revision = base_revision + 1`；`result_revision IS NULL` 的审计 group 仍记录事务开始时的最新 revision。`source_generation` 必须匹配当前 state；任何 group/task 都不得跨 generation 关联或 replay。
 
 每个 patch 产生一行 event；`noop` 产生一行占位。Reducer 自行改变持久化 state 时必须产生 `system_cleanup` event，禁止 silent mutation。
 
@@ -749,7 +755,7 @@ Replay 与 ID 规则：
 1. 只有 `accepted` 和 `system_cleanup` event 携带可 apply 的完整 `normalized_operation`；event replay 不重新调用 LLM。
 2. add event 的 `result_item_id` 不得为 null。Reducer 在事务中先预留 event IDs、生成最终 item IDs、构造 state，再插入 events，解决 eventId/itemId/provenance 的循环依赖。
 3. 语义 replay 只消费 `result_revision IS NOT NULL` 的 groups，按 `event_index` replay normalized operations，再校验并应用 `cursor_after`；`result_revision IS NULL` 的 groups 只用于审计/运行恢复，不占 revision 序列。必须验证 schema version、revision 连续性、cursor 连续性以及 group/task/target 一致性。
-4. compaction/replay 的专用 revision 阶段在 [write-protocol.md](write-protocol.md) §2.1 定义：compaction apply 和原 proposal replay 各自形成明确 revision，并各自同步 snapshot；capacity-blocked 审计 group 的 `result_revision` 为 null，最终 replay group 的 `result_revision` 基于执行时最新全局 revision。本批不引入 state hash。
+4. compaction/replay 的专用 revision 阶段在 [write-protocol.md](write-protocol.md) §2.1 定义：compaction apply 和原 proposal replay 在同一 source generation 内各自形成明确 revision，并各自同步 snapshot；capacity-blocked 审计 group 的 `result_revision` 为 null，最终 replay group 基于执行时最新全局 revision。本批不引入 state hash。
 
 target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` 时均不推进。只有 proposal 的所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进（见 [write-protocol.md](write-protocol.md) §3）。不能只凭某一 section 的 accepted event 推进联合 target。容量超限不产生 patch 级 `rejected`，而是由 `deferred`（审计 group）和 task 级 `compaction_failed` / `replay_failed` 表达（见 [write-protocol.md](write-protocol.md) §2.1、§3.1）。
 
@@ -775,6 +781,7 @@ CREATE TABLE chat_memory_tasks (
   user_id                    BIGINT NOT NULL,
   preset_id                  TEXT NOT NULL,
   target_key                 TEXT NOT NULL,
+  source_generation          BIGINT NOT NULL,
   task_type                  TEXT NOT NULL,     -- normal | maintenance | system_cleanup
   parent_task_id             UUID,              -- maintenance task 指向来源 normal task（如有）
   status                     TEXT NOT NULL,     -- queued | running | retry_wait | succeeded | failed | cancelled
@@ -802,7 +809,7 @@ CREATE INDEX idx_memory_tasks_recovery
 1. task 行是运行阶段、attempt、notBefore 和 proposal/window 局部恢复状态的 authority；进程内队列或计数器不是 authority。
 2. `context_expansion_attempt` 取代旧 `awaitingContextExpansion`，属于当前 proposal/window，不写入长期 target status。
 3. 进程启动和周期轮询读取 `queued/running/retry_wait` 等非终态 task，从最后一个持久化 stage 继续；单实例串行约束沿用，本批不引入多实例 lease。
-4. worker 恢复 task 前重新校验当前 revision、cursorBefore 和 target status。stale 执行结果不得直接提交。compaction/replay 的 stale 判定和 replay 流程见 [write-protocol.md](write-protocol.md) §2.1 步骤 7：replay 的 stale 判定只看 target cursor、proposal 活动性、引用 item 存在性和 schema/source 兼容性，不看全局 revision；原始 `baseRevision` 只用于审计。
+4. worker 恢复 task 前重新校验 `source_generation`、当前 revision、cursorBefore 和 target status。task generation 与 `memory_state.meta.sourceGeneration` 不同即 stale，必须取消且不得 replay/apply。generation 相同时，compaction/replay 的其余 stale 判定见 [write-protocol.md](write-protocol.md) §2.1 步骤 7；其他 target 导致的 revision 增长仍不单独构成 stale。
 5. `stage` 枚举按 `task_type` 区分：normal task 使用 `pending | proposing | proposal_persisted | capacity_blocked | replaying_original_proposal | succeeded | replay_failed`；maintenance task 使用 `pending | compacting | compaction_applied | compaction_failed`。`target_halted` 不是 task stage，只是 per-target status。maintenance task 的 `parent_task_id` 必须指向来源 normal task；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`（完整原 proposal，供 replay 读取）和 `maintenanceTaskId`（当前关联的 maintenance task ID）。`task_payload` 在 task 创建时固化 Proposer 输入后不可变，Proposer 运行时输出的 proposal 不写入 `task_payload`，只写入可变的 `stage_payload`。
 6. Observer 可以一次发现多个 eligible targets，但只能先排 intent；每个 durable task 必须在进入 user/preset 串行执行位时用最新 state 创建并固化 `base_revision/cursor_before/task_payload`，不能让正常的前序 target revision 把同 tick 后续 target 变成伪 stale。
 
@@ -813,6 +820,8 @@ CREATE TABLE chat_memory_target_status (
   user_id             BIGINT NOT NULL,
   preset_id           TEXT NOT NULL,
   target_key          TEXT NOT NULL,
+  source_generation   BIGINT NOT NULL,
+  rebuild_boundary_message_id BIGINT,
   status              TEXT NOT NULL,     -- healthy | retry_wait | capacity_blocked | halted | rebuilding
   consecutive_errors  INTEGER NOT NULL DEFAULT 0,
   last_error_reason   TEXT,
@@ -834,7 +843,9 @@ Recovery 字段归属固定为：
 | retry attempt / notBefore | durable task |
 | 完整错误历史 | ops log |
 
-每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting` 阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。resume 将 `halted` 变为 `capacity_blocked`，只有成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。用户侧 healthy/degraded/rebuilding 映射与 Renderer 告警在第 8 批定义；第 9 批引入 sourceGeneration 后，本表再增加对应 generation 约束。
+每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting` 阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。resume 将 `halted` 变为 `capacity_blocked`，只有成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
+
+`source_generation` 必须等于该 row 所属 state 的当前 generation。Source rebuild 开始时，六个 target 在 raw-source mutation 同一事务进入 `rebuilding`，保存同一个 captured `rebuild_boundary_message_id` 并清除旧 task/error 状态；任一 target 未 force-drain 到该边界前不得恢复 `healthy`。因此“Memory dirty”是由当前 generation 下仍存在 `rebuilding` target 确定性派生的运行状态，不再增加第二个全局 dirty flag。
 
 创建 v2 state 时必须为六个 normal target 各初始化一行 `healthy / consecutive_errors=0`。task 进入 retry_wait 时 task.not_before 与 target.next_retry_at 必须表达同一重试边界；当前 task 是细粒度 authority，target row 是调度/健康汇总，二者在同一事务更新。
 
@@ -845,6 +856,7 @@ CREATE TABLE chat_memory_ops_log (
   id              BIGSERIAL PRIMARY KEY,
   user_id         BIGINT NOT NULL,
   preset_id       TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
   task_id         UUID NOT NULL,
   tick_id         BIGINT,
   target_key      TEXT NOT NULL,
@@ -869,14 +881,35 @@ CREATE INDEX idx_memory_ops_log_outcome
 
 ### 9.6 原子提交与 Crash Recovery
 
-1. **Revision 事务**：每个 event group 的 `result_revision` 必须等于该 group 的 `base_revision + 1`，其中 `base_revision` 是该 group 实际事务开始时的最新全局 revision（见 §9.2 `base_revision` 语义）。正常 proposal apply 时 group 的 `base_revision` 等于 task 创建时的 `base_revision`；compaction apply 和 replay 各自取事务开始时的最新全局 revision。`memory_state` post-state、`meta.revision`、完整 snapshot、event group/events、cursor、task 终态和对应 target status 必须同事务提交。成功后错误计数归零、status 恢复 healthy 也在该事务完成。
-2. **无 revision 事务**：Provider/schema 等运行失败只原子更新 durable task、per-target status 和 ops log；`result_revision=null` 的 deferred 等 decision group 还必须把 event group/events、原 task stage 与派生 maintenance task 一并原子提交。两者都不增加 revision、不写 snapshot。
-3. **语义恢复**：优先读取最新 schema-valid snapshot，再按 result_revision 连续 replay 后续 event groups；校验 revision/cursor/group/task/target 连续性。snapshot 缺失或 state/schema 损坏时的 raw-message rebuild 在第 9 批细化。
-4. **运行恢复**：从非终态 durable task、per-target status 与 ops log 恢复 retry/halt/context-expansion，不从 snapshot 推断运行状态。
-5. 一次性迁移不 in-place 搬运旧 `meta.recovery`/halt/error count；第 9 批的物理删除旧 Memory + raw rebuild 会初始化新 target status。
-6. source dirty/sourceGeneration 变化的恢复入口保留为 rebuild dispatch；字段、触发事务和 force-drain 流程在第 9 批引入，当前不得用普通 retry 假装已处理 generation 失配。
+1. **Revision 事务**：每个 event group 的 `source_generation` 必须等于提交后 state generation，且 `result_revision = base_revision + 1`；`base_revision` 是事务开始时的最新全局 revision（见 §9.2）。正常 proposal apply 时它等于 task 创建时的 `base_revision`；compaction apply 和 replay 各自取执行时最新 revision。`memory_state` post-state、generation/revision、完整 snapshot、event group/events、cursor、task 终态和对应 target status 必须同事务提交。普通运行成功后错误计数归零、status 恢复 healthy；rebuild force-drain 是例外，在 target 到达并校验 `rebuild_boundary_message_id` 前 status 必须保持 `rebuilding`。
+2. **Generation 初始化事务**：这是第 1 条 event-group 规则的唯一例外。Raw source mutation、`sourceGeneration + 1`、全局 `revision + 1`、空 state/cursors、完整 snapshot、旧 task 取消和六个 rebuilding target rows 同事务提交，不创建虚假的 section event group。
+3. **无 revision 事务**：Provider/schema 等运行失败只原子更新 durable task、per-target status 和 ops log；`result_revision=null` 的 deferred 等 decision group 还必须把 event group/events、原 task stage 与派生 maintenance task 一并原子提交。两者都不增加 revision、不写 snapshot。
+4. **语义恢复**：只在当前 `sourceGeneration` 内读取最新 schema-valid snapshot，再按 result_revision 连续 replay 后续 event groups；校验 generation/revision/cursor/group/task/target 连续性。不得跨 generation replay；snapshot 缺失或 state/schema 损坏时按 [write-protocol.md](write-protocol.md) §7 从 raw messages rebuild。
+5. **运行恢复**：从非终态 durable task、per-target status 与 ops log 恢复 retry/halt/context-expansion，不从 snapshot 推断运行状态。
+6. 一次性迁移不 in-place 搬运旧 `meta.recovery`/halt/error count；物理删除旧 Memory 后从 raw messages 初始化 generation 0 state、revision 0 snapshot 和六个 target status。
+7. source generation 变化必须走 [write-protocol.md](write-protocol.md) §7 的 rebuild/force-drain；普通 retry 不得把 generation 失配伪装成已处理。
 
 详细调试信息（完整 patch、完整 state diff、prompt 内容等）用 `logger` 输出到应用日志，不进表。
+
+### 9.7 RAG/Recall Projection Checkpoint
+
+RAG 与 Recall 是独立派生 projection，各自持久化 checkpoint；不得从 Memory target cursor 推定其处理进度：
+
+```sql
+CREATE TABLE chat_context_projection_checkpoints (
+  user_id                      BIGINT NOT NULL,
+  preset_id                    TEXT NOT NULL,
+  projection_key               TEXT NOT NULL,  -- rag | recall
+  processed_generation         BIGINT NOT NULL,
+  processed_boundary_message_id BIGINT,
+  status                       TEXT NOT NULL,  -- healthy | degraded | rebuilding
+  last_error_reason            TEXT,
+  updated_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, preset_id, projection_key)
+);
+```
+
+`processed_generation` 必须与 `memory_state.meta.sourceGeneration` 比较。generation 不同时，projection 先进入 `rebuilding` 并失效旧派生数据；generation 相同的普通追加按 `processed_boundary_message_id` 增量追平。每轮 drain 捕获 generation/boundary，提交前重校 generation，只有仍一致且追平 captured boundary 后才能原子更新 checkpoint 并恢复 `healthy`。完整流程见 [write-protocol.md](write-protocol.md) §7.1。
 
 ## 10. Provider Adapter 契约
 
