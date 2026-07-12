@@ -127,6 +127,8 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 - todos 只记录明确、可完成、可取消或可过期的请求/承诺。模糊愿望和持续互动约定不要写入 todos。
 - 新增时必须设置 actor/requester；有明确期限时设置 dueAt（见 §2.2）。更新时必须设置 dueChange。
 - `status` 与 `becameOverdueAt` 由 Reducer 管理，Proposer 不得输出或修改；todoProposer 的 writableState 可包含 active/overdue items，以便两者都能 complete/cancel。
+- overdue todo 可通过 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时变回 active；Proposer 看到用户重新安排已过期待办的时间时应输出此类 updateItem。
+- todoProposer 的 writableState 中 overdue todo 只包含最近 N 条（N 与 Renderer 的 overdue 渲染窗口一致，从集中配置读取），非全部历史 overdue items。
 
 #### agreementProposer（standingAgreements）
 
@@ -334,16 +336,31 @@ assistant 修正场景时间。
 
 ### 4.2 todoProposer
 
-**✅ addItem + user_request（用户请求系统稍后做）**
+**✅ addItem + user_commitment（用户承诺稍后做某事）**
 
 ```json
 {
   "op": "addItem",
   "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
-  "evidenceKind": "user_request",
+  "evidenceKind": "user_commitment",
   "evidenceRefs": [{ "messageId": 121, "quote": "明天提醒我把橡皮还给她" }]
 }
 ```
+
+用户承诺自己归还橡皮，actor=user，requester=user。
+
+**✅ addItem + user_request（用户请求 assistant 稍后做某事）**
+
+```json
+{
+  "op": "addItem",
+  "value": { "text": "提醒吃药", "actor": "assistant", "requester": "user" },
+  "evidenceKind": "user_request",
+  "evidenceRefs": [{ "messageId": 121, "quote": "明天记得提醒我吃药" }]
+}
+```
+
+用户请求 assistant 提醒自己，actor=assistant（assistant 执行提醒），requester=user（用户发起请求）。
 
 **✅ addItem + user_commitment + dueAt（用户承诺，带 deadline）**
 
@@ -369,7 +386,7 @@ LLM 只提取“两周”= 14 天。Reducer 以 message 130 的数据库 `create
 }
 ```
 
-LLM 提取明确日期；Reducer 将该日期结束后的首个日界线持久化为 `dueAt`。`dueAt` 是 deadline，不是删除时间。
+LLM 提取明确日期；Reducer 将该日期在用户时区下结束后的首个日界线持久化为 `dueAt`。`dueAt` 是 deadline，不是删除时间。
 
 **✅ addItem + assistant_request（assistant 请求用户做某事）**
 
