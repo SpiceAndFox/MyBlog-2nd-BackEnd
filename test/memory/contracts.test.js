@@ -29,13 +29,18 @@ test("todo add schema requires actor and requester", () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.map((entry) => entry.path).join(" "), /actor/);
 });
+test("todo due date rejects impossible calendar dates", () => {
+  const result = validatePatch({ op: "addItem", value: { text: "赴约", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-02-31" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "月底去赴约" }] }, "todos");
+  assert.equal(result.ok, false);
+  assert.match(result.errors.map((entry) => entry.message).join(" "), /valid YYYY-MM-DD/);
+});
 test("output must exactly cover target sections", () => {
   const task = { tickId: 1, targetKey: "episodes", targetSections: ["recentEpisodes", "milestones"], mode: "normal" };
   const result = validateProposerOutput({ tickId: 1, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" } } }, task);
   assert.equal(result.ok, false);
   assert.match(result.errors.map((entry) => entry.path).join(" "), /milestones/);
 });
-test("phase 1 fixtures load through the harness runner", () => {
+test("memory fixtures load through the harness runner", () => {
   const fixtures = loadFixtures(path.join(__dirname, "../../modules/memory/harness/fixtures"));
-  assert.equal(fixtures.length, 1);
+  assert.ok(fixtures.length >= 2);
 });

@@ -1,0 +1,34 @@
+{
+  "name": "todo-add-with-valid-evidence",
+  "initialState": {
+    "version": 2,
+    "current": { "scene": {
+      "location": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
+      "time": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
+      "mood": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
+      "note": { "value": null, "evidenceRef": null, "updatedAtMessageId": null }
+    }, "previousScene": null },
+    "working": { "todos": [], "standingAgreements": [], "recentEpisodes": [] },
+    "longTerm": { "milestones": [], "worldFacts": [], "userProfile": [], "assistantProfile": [], "relationship": [] },
+    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": { "todos": 120 } }
+  },
+  "initialTargetStatuses": {
+    "scene": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "todos": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "standingAgreements": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "episodes": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "profileRelationship": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "worldFacts": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 }
+  },
+  "ticks": [{
+    "input": {
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112", "tickId": 2, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 0, "targetKey": "todos", "cursorBefore": 120, "targetMessageId": 121, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [121], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:30:00Z" },
+      "writableState": { "working": { "todos": [] } },
+      "readOnlyContext": {},
+      "observedMessages": [{ "id": 121, "role": "user", "createdAt": "2026-07-06T22:30:00Z", "contentKind": "raw", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }]
+    },
+    "databaseMessages": [{ "id": 121, "userId": 1, "presetId": "default", "role": "user", "createdAt": "2026-07-06T22:30:00Z", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }],
+    "adapterMock": { "status": "ok", "output": { "tickId": 2, "proposer": "todoProposer", "sectionResults": { "todos": { "status": "patches", "patches": [{ "op": "addItem", "value": { "text": "归还橡皮", "actor": "user", "requester": "user" }, "evidenceKind": "user_commitment", "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }] }] } } } },
+    "expected": { "outcome": "committable", "decision": "accepted", "stateText": "归还橡皮", "cursorAfter": 121 }
+  }]
+}

@@ -35,12 +35,18 @@ function exactObject(value, keys, path, errors) {
 }
 function positiveText(value) { return typeof value === "string" && value.trim().length > 0; }
 function nonNegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0; }
+function validCalendarDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
 
 function validateDueAt(value, path, errors) {
   if (!isPlainObject(value) || !["absolute", "relative"].includes(value.mode)) { add(errors, path, "must be an absolute or relative due expression"); return; }
   if (value.mode === "absolute") {
     if (!exactObject(value, ["mode", "date"], path, errors)) return;
-    if (typeof value.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.date)) add(errors, `${path}.date`, "must be YYYY-MM-DD");
+    if (!validCalendarDate(value.date)) add(errors, `${path}.date`, "must be a valid YYYY-MM-DD calendar date");
     return;
   }
   const allowed = ["mode", "days", "months", "years"];

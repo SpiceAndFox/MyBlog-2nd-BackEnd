@@ -2,4 +2,4 @@
 
 **本文件LLM不要阅读**
 
-1）services\chat\memory-v2\repositories中的文件为什么有sql语句？这种数据库直接的访问不是应该放到models文件夹下吗？是出于什么考虑吗？
+1）话说你怎么测试llm返回值？我可以让你用deepseek v4 flash，这个成本很低，能支持你大量测试。

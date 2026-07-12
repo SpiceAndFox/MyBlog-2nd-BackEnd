@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { assertMemoryState, TARGET_KEYS, validateTaskEnvelope, validateProposerOutput } = require("../contracts");
+const { reduceProposal } = require("../domain/reducer");
 
 function listFixtureFiles(rootDir) {
   if (!fs.existsSync(rootDir)) return [];
@@ -44,4 +45,15 @@ function loadFixtures(rootDir) {
   return listFixtureFiles(rootDir).map((filePath) => ({ filePath, fixture: validateFixture(JSON.parse(fs.readFileSync(filePath, "utf8")), filePath) }));
 }
 
-module.exports = { listFixtureFiles, validateFixture, loadFixtures };
+function executeReducerTick(fixture, tick, options) {
+  return reduceProposal({
+    state: fixture.initialState,
+    task: tick.input.task,
+    proposal: tick.adapterMock.output,
+    observedMessages: tick.input.observedMessages,
+    databaseMessages: tick.databaseMessages || [],
+    ...options,
+  });
+}
+
+module.exports = { listFixtureFiles, validateFixture, loadFixtures, executeReducerTick };
