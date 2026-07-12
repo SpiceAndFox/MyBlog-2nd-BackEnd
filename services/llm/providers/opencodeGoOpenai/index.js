@@ -46,12 +46,16 @@ const MODELS = [
     // MiMo 原生 web search 为扁平格式（max_keyword/force_search/limit），
     // 与 GLM 嵌套格式不兼容；通过 webSearchFormat 让 builder 按模型分发正确格式。
     webSearchFormat: "mimo",
+    // 官方建议采样参数：temperature=1.0、top_p=0.95。
+    // 思考开启时上游会强制这两个值；此处设为默认值，思考关闭时也用官方建议值起步。
+    defaults: { temperature: 1.0, topP: 0.95 },
   },
   {
     id: "mimo-v2.5",
     name: "MiMo-V2.5",
     supportsWebSearch: true,
     webSearchFormat: "mimo",
+    defaults: { temperature: 1.0, topP: 0.95 },
   },
 ];
 
