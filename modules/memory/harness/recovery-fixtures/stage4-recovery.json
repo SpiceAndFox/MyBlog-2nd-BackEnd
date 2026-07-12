@@ -1,0 +1,14 @@
+{
+  "name": "stage-4-recovery",
+  "providerErrors": [
+    { "reason": "llm_call_failed", "expectedStatus": "retry_wait", "expectedDelayMs": 1000, "expectedConsecutiveErrors": 1 },
+    { "reason": "max_output_truncated", "expectedStatus": "retry_wait", "expectedDelayMs": 2000, "expectedConsecutiveErrors": 2 },
+    { "reason": "safety_policy_blocked", "expectedStatus": "halted", "expectedDelayMs": null, "expectedConsecutiveErrors": 3 }
+  ],
+  "unableToDecide": {
+    "firstStatus": "context_expansion_required",
+    "secondStatus": "committed",
+    "cursorAfter": 1,
+    "revisionAfter": 1
+  }
+}

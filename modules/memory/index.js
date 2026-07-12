@@ -3,6 +3,8 @@ const domain = require("./domain");
 const { loadMemoryV2Config } = require("./config/loadConfig");
 const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
+const { createMemoryRecovery } = require("./application/recovery");
+const { createMemoryHousekeeping } = require("./application/housekeeping");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createOpenAiStructuredTransport } = require("./infrastructure/providers/openAiStructuredTransport");
 const { loadProposerPrompt } = require("./prompts");
@@ -15,6 +17,8 @@ module.exports = Object.freeze({
   loadMemoryV2Config,
   createObserver,
   createNormalWritePipeline,
+  createMemoryRecovery,
+  createMemoryHousekeeping,
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
   createOpenAiStructuredTransport,

@@ -63,4 +63,11 @@ async function writeState(userId, presetId, state, { client } = {}) {
   return state;
 }
 
-module.exports = { getState, initializeRevisionZero, writeState };
+async function listInitializedScopes({ client } = {}) {
+  const { rows } = await executor(client).query(
+    `SELECT user_id,preset_id FROM chat_preset_memory WHERE memory_state IS NOT NULL ORDER BY user_id,preset_id`,
+  );
+  return rows.map((row) => ({ userId: Number(row.user_id), presetId: row.preset_id }));
+}
+
+module.exports = { getState, initializeRevisionZero, writeState, listInitializedScopes };

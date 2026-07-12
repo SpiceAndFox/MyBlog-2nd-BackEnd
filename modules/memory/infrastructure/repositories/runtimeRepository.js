@@ -29,6 +29,18 @@ async function listRecoverableTasks({ now = new Date(), client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE status IN ('queued','running','retry_wait') AND (not_before IS NULL OR not_before <= $1) ORDER BY updated_at,created_at`, [now]);
   return rows;
 }
+async function getTargetStatus(userId, presetId, targetKey, { client, forUpdate = false } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!TARGET_KEYS.includes(targetKey)) throw new Error("Invalid target key");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_target_status WHERE user_id=$1 AND preset_id=$2 AND target_key=$3${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId, targetKey]);
+  return rows[0] || null;
+}
+async function listTasksForTarget(userId, presetId, targetKey, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!TARGET_KEYS.includes(targetKey)) throw new Error("Invalid target key");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE user_id=$1 AND preset_id=$2 AND target_key=$3 ORDER BY updated_at DESC,created_at DESC`, [scope.userId, scope.presetId, targetKey]);
+  return rows;
+}
 async function getTargetStatuses(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_target_status WHERE user_id=$1 AND preset_id=$2 ORDER BY target_key`, [scope.userId, scope.presetId]);
@@ -46,4 +58,4 @@ async function appendOpsLog(entry, { client } = {}) {
   const { rows } = await executor(client).query(`INSERT INTO chat_memory_ops_log (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) RETURNING *`, values);
   return rows[0];
 }
-module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, getTargetStatuses, upsertTargetStatus, appendOpsLog };
+module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, appendOpsLog };

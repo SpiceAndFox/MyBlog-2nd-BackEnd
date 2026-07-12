@@ -12,12 +12,19 @@ function executor(client) { return client && typeof client.query === "function" 
 
 async function withTransaction(work) {
   const client = await db.getClient();
+  let committing = false;
   try {
     await client.query("BEGIN");
     const result = await work(client);
+    committing = true;
     await client.query("COMMIT");
     return result;
   } catch (error) {
+    const connectionLost = committing && (
+      error?.connectionLost === true ||
+      ["ECONNRESET", "ECONNREFUSED", "EPIPE", "57P01", "57P02", "57P03", "08000", "08003", "08006", "08007", "08P01"].includes(error?.code)
+    );
+    if (connectionLost) error.commitOutcomeUnknown = true;
     try { await client.query("ROLLBACK"); } catch {}
     throw error;
   } finally { client.release(); }

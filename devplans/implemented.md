@@ -37,6 +37,19 @@
 - 增加阶段 3 pipeline fixture，以及 Observer/envelope、prompt、Adapter、原子提交和重复 delivery 测试。
 - 本机 `deepseek-v4-flash` smoke 已尝试；当前端点明确返回 `This response_format type is unavailable now`，不支持设计要求的原生 `json_schema`，因此未降级为裸 JSON 解析，真实 API golden 延后到可用 structured-output 端点。
 
+## 2026-07-13：Memory Control v2 阶段 4
+
+- 实现 Provider 可重试错误的有限指数退避：task attempt/notBefore 与 target consecutiveErrors/nextRetryAt 分别持久化，连续错误达到阈值时只 halt 对应 target。
+- 实现 `output_schema_invalid` 直接 halt、首次 `unable_to_decide` 扩展尝试，以及二次 unable 的零 semantic event cursor-only revision。
+- 实现 generation/cursor stale 的持久化丢弃，以及 revision mismatch 时旧 task 取消、新 baseRevision successor task 原子创建并重新调用 Proposer。
+- 为 normal/cursor-only/system-cleanup phase 建立稳定 identity；重复 delivery 与 COMMIT outcome unknown 均先查询既有 event group，避免重复 revision、event、snapshot 或 cursor 推进。
+- 区分并记录 `reducer_failed`、`transaction_failed`、`commit_outcome_unknown`；明确回滚后保留可恢复 task，未知提交结果先 reconcile。
+- 实现启动恢复扫描：从 queued/running/到期 retry_wait durable task 的 immutable task payload 恢复，可接入 per-user/preset 串行队列。
+- 实现 target 级手动 resume use case：retry_wait 复用原 task；Provider/schema halt 保留旧 task 并原子创建新的 normal task。容量类 resume 等待阶段 5 maintenance/compaction 链路，不伪造不可执行 child task。
+- 实现后台 housekeeping use case：scene/todos/recentEpisodes 分 target 幂等执行，与 effective view 共用 lifecycle 规则，变化时原子写 system-cleanup task、event group/events、完整 snapshot；无变化不创建空 revision。
+- 增加阶段 4 recovery fixture，以及 retry/halt、unable、successor、重启恢复、COMMIT outcome unknown、resume、逐写入点事务故障和 housekeeping 幂等测试。
+- `npm run test:memory-v2` 与 `npm test` 全部通过。
+
 ## 尚未执行
 
-- 尚未开始 roadmap 阶段 4。
+- 尚未开始 roadmap 阶段 5。
