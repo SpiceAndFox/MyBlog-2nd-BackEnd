@@ -1,5 +1,34 @@
 # Memory Control v2 开发顺序
 
+## 架构前置决策
+
+Memory Control v2 从开发开始即作为**模块化单体**中的独立 Memory 模块建设，不继续沿用项目早期面向个人 Blog 的全局 `controllers / services / models / routes` 横向分层。该决策只改变代码组织与依赖边界，不改变当前单体部署形态，也不引入微服务、ORM、重量级依赖注入框架或为迁移而迁移的兼容层。
+
+Memory 模块按职责组织，允许按阶段逐步补齐目录，不要求为空层创建占位文件：
+
+```text
+modules/memory/
+  contracts/          # schema、枚举与静态协议
+  domain/             # Reducer、policy、lifecycle、Renderer 等纯代码规则
+  application/        # Observer、task orchestration 与 use cases
+  infrastructure/
+    repositories/     # SQL、事务边界与数据库行映射
+    providers/        # Memory Provider Adapter
+  config/             # Memory 集中配置入口
+  prompts/            # Memory worker prompts
+  harness/            # runner、fixture 与 golden
+  index.js            # 模块对外公开接口
+```
+
+当前开发必须遵守以下边界：
+
+- SQL 只能出现在 `modules/memory/infrastructure/repositories`；Memory 的领域与应用代码不得直接调用全局 `db`。
+- `domain` 不依赖 Express、PostgreSQL、Provider SDK 或运行环境配置；时间、ID、配置和外部数据通过明确输入传入。
+- 模块外代码只能通过 `modules/memory/index.js` 的公开接口使用 Memory；禁止跨模块引用其内部文件。
+- Memory 与 Chat Context、RAG/Recall、LLM Provider 之间通过显式接口协作，不共享可变内部状态，不以循环依赖换取调用便利。
+- v1 Memory 最终切换时直接下线并删除，不为统一目录而迁移到新结构。
+- 旧 Blog/Chat 代码不在本计划中做一次性重排；其渐进迁移另见 [旧架构渐进迁移计划](deferred/architecture-migration.md)。
+
 ## 原则
 
 每阶段先补 Harness fixture，再实现；未通过本阶段验收，不进入下一阶段。真实 LLM 最后接入，前期全部使用固定 proposal。
