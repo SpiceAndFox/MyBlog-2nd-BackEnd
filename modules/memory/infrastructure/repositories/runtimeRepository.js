@@ -12,6 +12,19 @@ async function getTaskForUpdate(taskId, { client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE task_id=$1 FOR UPDATE`, [taskId]);
   return rows[0] || null;
 }
+async function getTask(taskId, { client } = {}) {
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE task_id=$1`, [taskId]);
+  return rows[0] || null;
+}
+async function updateTask(taskId, changes, { client } = {}) {
+  const allowed = ["status", "stage", "stage_payload", "attempt", "context_expansion_attempt", "not_before", "last_error_reason", "result_revision"];
+  const fields = Object.keys(changes);
+  if (!fields.length || fields.some((field) => !allowed.includes(field))) throw new Error("Invalid Memory task update fields");
+  const assignments = fields.map((field, index) => `${field}=$${index + 2}`).join(",");
+  const { rows } = await executor(client).query(`UPDATE chat_memory_tasks SET ${assignments},updated_at=NOW() WHERE task_id=$1 RETURNING *`, [taskId, ...fields.map((field) => changes[field])]);
+  if (!rows[0]) throw new Error("Memory task not found");
+  return rows[0];
+}
 async function listRecoverableTasks({ now = new Date(), client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE status IN ('queued','running','retry_wait') AND (not_before IS NULL OR not_before <= $1) ORDER BY updated_at,created_at`, [now]);
   return rows;
@@ -33,4 +46,4 @@ async function appendOpsLog(entry, { client } = {}) {
   const { rows } = await executor(client).query(`INSERT INTO chat_memory_ops_log (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) RETURNING *`, values);
   return rows[0];
 }
-module.exports = { createTask, getTaskForUpdate, listRecoverableTasks, getTargetStatuses, upsertTargetStatus, appendOpsLog };
+module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, getTargetStatuses, upsertTargetStatus, appendOpsLog };

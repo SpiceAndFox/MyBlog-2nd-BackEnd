@@ -25,7 +25,7 @@ function eventBase(section, patch, decision, patchId) {
     eventKind: "proposal_decision", section, targetKey: SECTION_TARGETS[section], decision,
     patchId, op: patch.op, evidenceKind: patch.evidenceKind,
     itemId: patch.itemId || null, mergedFromItemIds: patch.op === "mergeItems" ? patch.itemIds.slice() : null,
-    resultItemId: null, rejectReason: null, normalizedOperation: null,
+    resultItemId: null, rejectReason: null, patchSummary: structuredClone(patch), normalizedOperation: null,
   };
 }
 function rejected(section, patch, patchId, reason) {
@@ -178,7 +178,7 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
   for (const section of task.targetSections) {
     const result = proposal.sectionResults[section];
     if (result.status === "noop") {
-      events.push({ eventKind: "proposal_decision", section, targetKey: task.targetKey, decision: "noop", patchId: null, op: null, evidenceKind: null, itemId: null, mergedFromItemIds: null, resultItemId: null, rejectReason: null, normalizedOperation: null });
+      events.push({ eventKind: "proposal_decision", section, targetKey: task.targetKey, decision: "noop", patchId: null, op: null, evidenceKind: null, itemId: null, mergedFromItemIds: null, resultItemId: null, rejectReason: null, patchSummary: null, normalizedOperation: null });
       continue;
     }
     for (const patch of result.patches) {

@@ -27,6 +27,16 @@
 - 增加阶段 2 reducer fixture、Renderer 完整 golden，以及 evidence、policy、lifecycle、calendar、Reducer、compaction、effective view 和 Renderer 测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
+## 2026-07-12：Memory Control v2 阶段 3
+
+- 实现 Normal Observer：按六个 target 独立 lag/status 门控，跨 session 读取有效 user/assistant raw source，并按 `newBatch + overlap` 组装观察窗口。
+- 实现严格的 Normal task envelope：writable/read-only state 按 Proposer 固定范围裁剪，移除 evidenceGroups，并限制 read-only item ID 暴露。
+- 增加六个独立 Proposer prompt、per-Proposer 原生 JSON Schema，以及本地 output/envelope 二次契约校验。
+- 实现 Memory Provider Adapter、mock Adapter 与 OpenAI-compatible native structured-output transport，区分调用失败、安全拒绝、最大输出截断和 schema invalid。
+- 实现 durable normal task 的稳定 dedupe key，以及 state/event group/events/snapshot/cursor/task/target status/tombstone 的单事务成功提交；重复 phase delivery 返回既有 revision。
+- 增加阶段 3 pipeline fixture，以及 Observer/envelope、prompt、Adapter、原子提交和重复 delivery 测试。
+- 本机 `deepseek-v4-flash` smoke 已尝试；当前端点明确返回 `This response_format type is unavailable now`，不支持设计要求的原生 `json_schema`，因此未降级为裸 JSON 解析，真实 API golden 延后到可用 structured-output 端点。
+
 ## 尚未执行
 
-- 尚未开始 roadmap 阶段 3。
+- 尚未开始 roadmap 阶段 4。

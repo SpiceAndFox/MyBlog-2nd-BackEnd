@@ -16,6 +16,10 @@ async function insertEventGroup(group, { client } = {}) {
   const { rows } = await executor(client).query(`INSERT INTO chat_memory_event_groups (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) RETURNING *`, values);
   return rows[0];
 }
+async function getEventGroup(eventGroupId, { client } = {}) {
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_event_groups WHERE event_group_id=$1`, [eventGroupId]);
+  return rows[0] || null;
+}
 async function insertEvents(events, { client } = {}) {
   const result = [];
   for (const event of events) {
@@ -26,4 +30,4 @@ async function insertEvents(events, { client } = {}) {
   }
   return result;
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, insertEvents };
+module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents };

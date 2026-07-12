@@ -1,0 +1,70 @@
+const { TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS } = require("../../contracts");
+
+const refSchema = { type: "object", additionalProperties: false, required: ["messageId", "quote"], properties: { messageId: { type: "integer", minimum: 0 }, quote: { type: "string", minLength: 1, maxLength: 200 } } };
+const textValue = { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", minLength: 1 } } };
+const dueAt = { oneOf: [
+  { type: "object", additionalProperties: false, required: ["mode", "date"], properties: { mode: { const: "absolute" }, date: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" } } },
+  { type: "object", additionalProperties: false, required: ["mode"], anyOf: [{ required: ["days"] }, { required: ["months"] }, { required: ["years"] }], properties: { mode: { const: "relative" }, days: { type: "integer", minimum: 0 }, months: { type: "integer", minimum: 0 }, years: { type: "integer", minimum: 0 } } },
+] };
+const dueChange = { oneOf: [
+  { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "keep" } } },
+  { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "clear" } } },
+  { type: "object", additionalProperties: false, required: ["mode", "dueAt"], properties: { mode: { const: "set" }, dueAt } },
+] };
+
+const OPS = Object.freeze({
+  currentStateProposer: { scene: ["setField", "clearField"] },
+  todoProposer: { todos: ["addItem", "updateItem", "completeTodo", "cancelTodo", "expireTodo"] },
+  agreementProposer: { standingAgreements: ["addItem", "updateItem", "cancelAgreement"] },
+  episodeProposer: { recentEpisodes: ["addItem", "updateItem"], milestones: ["addItem", "updateItem"] },
+  profileRelationshipProposer: { userProfile: ["addItem", "updateItem", "forgetItem"], assistantProfile: ["addItem", "updateItem", "forgetItem"], relationship: ["addItem", "updateItem", "forgetItem"] },
+  worldFactProposer: { worldFacts: ["addItem", "updateItem", "forgetItem"] },
+});
+
+function patchSchema(proposer, section, op) {
+  const properties = { op: { const: op }, evidenceKind: { enum: PROPOSER_EVIDENCE_KINDS[proposer] }, evidenceRefs: { type: "array", minItems: 1, items: refSchema } };
+  const required = ["op", "evidenceKind", "evidenceRefs"];
+  if (["setField", "clearField"].includes(op)) { properties.path = { enum: SCENE_FIELDS }; required.push("path"); }
+  if (["updateItem", "forgetItem", "completeTodo", "cancelTodo", "expireTodo", "cancelAgreement"].includes(op)) { properties.itemId = { type: "string", minLength: 1 }; required.push("itemId"); }
+  if (["setField", "addItem", "updateItem"].includes(op)) {
+    if (op === "setField") properties.value = { type: "string", minLength: 1 };
+    else if (section === "todos" && op === "addItem") properties.value = { type: "object", additionalProperties: false, required: ["text", "actor", "requester"], properties: { text: { type: "string", minLength: 1 }, actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] }, dueAt } };
+    else if (section === "todos") properties.value = { type: "object", additionalProperties: false, required: ["dueChange"], properties: { text: { type: "string", minLength: 1 }, actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] }, dueChange } };
+    else properties.value = textValue;
+    required.push("value");
+  }
+  return { type: "object", additionalProperties: false, required, properties };
+}
+function buildOutputSchema(proposer) {
+  const target = Object.values(TARGETS).find((entry) => entry.proposer === proposer);
+  if (!target || !OPS[proposer]) throw new Error(`Unknown normal Memory proposer: ${proposer}`);
+  const sectionProperties = {};
+  for (const section of target.sections) {
+    sectionProperties[section] = { oneOf: [
+      { type: "object", additionalProperties: false, required: ["status", "patches"], properties: { status: { const: "patches" }, patches: { type: "array", minItems: 1, items: { oneOf: OPS[proposer][section].map((op) => patchSchema(proposer, section, op)) } } } },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "noop" } } },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "unable_to_decide" } } },
+    ] };
+  }
+  return {
+    name: `memory_${proposer}`,
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["tickId", "proposer", "sectionResults"],
+      properties: {
+        tickId: { type: "integer" },
+        proposer: { const: proposer },
+        sectionResults: {
+          type: "object",
+          additionalProperties: false,
+          required: target.sections,
+          properties: sectionProperties,
+        },
+      },
+    },
+  };
+}
+
+module.exports = { buildOutputSchema, OPS };
