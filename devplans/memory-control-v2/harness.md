@@ -221,7 +221,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 ### 3.3 Proposer 输入 envelope
 
 - 普通模式必须使用 `task.trigger.type = "lagThreshold"`；维护模式必须使用 `task.trigger.type = "lengthBudget"`，并带 `dimension=maxItems|maxRenderedChars` 与对应配置 `limit`。
-- normal task 必须携带 durable UUID `taskId` 与创建时 `baseRevision`；提交前二者关联的 task row 必须存在，并重新校验 `baseRevision === meta.revision`。若 revision 不匹配（且 `sourceGeneration` 仍匹配），不直接 apply，而是按 [state-contract.md](state-contract.md) §9.3 规则 8 创建 successor task 并重新调用 Proposer。`task.targetKey` 只能是六个合法 targetKey；每个 task 只有一个 `cursorBefore`、new batch 和 `targetMessageId`。
+- normal task 必须携带 durable UUID `taskId` 与创建时 `baseRevision`；提交前二者关联的 task row 必须存在，并重新校验 `baseRevision === meta.revision`。若 revision 不匹配（且 `sourceGeneration` 仍匹配），不直接 apply，而是按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task 并重新调用 Proposer。`task.targetKey` 只能是六个合法 targetKey；每个 task 只有一个 `cursorBefore`、new batch 和一个 `targetMessageId`。
 - maintenance task 不携带 `cursorBefore`；其 `targetMessageId` 必须等于来源 normal proposal 的 `targetMessageId`，只用于关联、幂等和后续 replay，不得用于读取 raw messages 或推进 cursor。
 - maintenance task 的 `parent_task_id` 必须指向来源 normal task，并持久化 `resume_epoch`；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`、`maintenanceTaskId` 和 `resumeEpoch`。
 - normal/maintenance task 的 proposal-time envelope 与 evidence metadata 必须写入 immutable `task_payload`；retry/restart 不得从变化后的 recent window 临时重组同一个 task input。Proposer 返回后经 schema 校验并分配 patchId 的完整 proposal 写入可变的 `stage_payload.persistedProposal`，不写入 `task_payload`。
@@ -318,7 +318,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - provider 明确因最大输出长度停止时归类 `max_output_truncated`，不得落为 `output_schema_invalid`，即使响应残片可解析也不交 Reducer；它按有界 retry/backoff 处理并单独计数，且不得因此缩小 section 容量。
 - `output_schema_invalid` 是持续性错误：task failed、对应 target halted，不重试同输入。
 - 任一 target halted 时，其他 target 仍可创建/提交 task；halted target 的最后稳定 state 保留。全局 `memory_state.meta.halted` 不得重新出现。
-- resume 指定 target：对于 `retry_wait` target，重置为 `healthy`、清 error count/nextRetryAt 并重新排队可恢复 task；对于 `halted` target（compaction/replay 失败），重置为 `capacity_blocked`（不立即设 `healthy`），创建新 maintenance child task 重新进入 compaction（见 [state-contract.md](state-contract.md) §9.3 规则 9）；对于 `output_schema_invalid` 导致的 halted target，resume 前必须先更换 model/prompt 配置，然后重置为 `healthy` 并重新创建 normal task。不修改 state/revision/snapshot，也不重置其他 targets。只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。
+- resume 指定 target：对于 `retry_wait` target，重置为 `healthy`、清 error count/nextRetryAt 并重新排队可恢复 task；对于容量/compaction/replay 失败导致的 `halted` target，重置为 `capacity_blocked`（不立即设 `healthy`），按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §6 创建新 maintenance child task 重新进入 compaction；对于 `output_schema_invalid` 导致的 halted target，修复 model/prompt/schema/adapter 根因后重置为 `healthy` 并创建新 normal task；对于 Provider 可重试错误连续达到阈值导致的 halted target，排除故障后重置为 `healthy` 并创建新 normal task。旧 task 保留审计，不修改 state/revision/snapshot，也不重置其他 targets。容量类 halt 只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。
 - 任一成功 revision 在同事务将对应 target 恢复 healthy、错误计数归零并终结 task。
 - Reducer 永远只收到 `status: "ok"` 且 section 为 `patches`/`noop` 的 output，不处理空输出、Provider error、unable 或伪造输出。
 - 健康聚合表驱动覆盖全部 per-target status：全 healthy → `healthy`；任一 retry_wait/capacity_blocked/halted → `degraded`；任一 rebuilding → `rebuilding`，且 rebuilding 与 degraded 同时存在时整体仍为 `rebuilding`。
@@ -327,7 +327,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 任一 target halted 不产生全局 `chatBlocked` 或 user/preset 级 halt；主聊天和其他 targets 的任务继续。resume/rebuild 维护入口可操作 halted target，普通 Observer 不可绕过。
 - halted target 的 Renderer golden 继续包含最后稳定 state：相邻的同 target sections 可在组前只出现一次“该类记忆可能滞后”，不相邻的 sections 必须分别出现。`episodes` 的 milestones 与 recentEpisodes 不相邻，因此两处各出现一次且文案状态一致；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
-- 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [state-contract.md](state-contract.md) §9.3 规则 8 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
+- 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls/message、eligible、tokens/latency/cost，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration 使用稳定标签且不含原始消息正文等高基数字段。
 - 配置测试证明 capacity、scene/overdue、lagThreshold、GapBridge、quote threshold、retry/backoff、compaction/halt、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 

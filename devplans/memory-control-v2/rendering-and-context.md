@@ -23,39 +23,15 @@ Renderer 必须：
 
 ### 1.1 请求时 Effective View
 
-Context compiler 捕获一次 `requestNow`，并按 current.scene 最大 `updatedAtMessageId` 读取对应消息 `createdAt` 作为 `sceneAnchorCreatedAt`，再调用纯代码 `buildEffectiveMemoryView(memoryState, lifecycleAnchors, requestNow, config)`；该函数只复制并转换运行时 view，不直接写数据库：
-
-1. scene 已达到配置化 TTL 时，在 view 中把完整 current.scene（含 provenance）移到单值 previousScene、令 `expiredAt=sceneAnchorCreatedAt+TTL` 并清空 current.scene；因此本次请求不得继续把它称为当前状态。已有 previousScene 在 effective view 中被替换。
-2. active todo 满足 `requestNow >= dueAt` 时，在 view 中原位显示为 overdue，并令 `becameOverdueAt=dueAt`；不得继续出现在 active 列表。
-3. 发现上述未持久化变化时，幂等唤醒 housekeeping。housekeeping 依 [state-contract.md](state-contract.md) §9.2 提交 revision/snapshot/events；effective view 不是新的 authority，也不能替代持久化。
-
-Scene TTL 基于 scene 四个非 null 字段中最大的 `updatedAtMessageId` 所对应消息的数据库 `createdAt` 加配置 TTL 计算；scene 全空时不读取 anchor、不产生过期动作。该规则与 housekeeping 共用同一纯代码函数，避免读写两套过期判断。
+请求时 effective view 与 housekeeping 必须调用同一纯代码生命周期函数；完整的 scene TTL、Todo overdue/revive、cleanup event 与幂等规则见 [领域生命周期算法](algorithms/domain-lifecycle.md)。Renderer 只消费转换后的运行时 view，不把它持久化为第二份 authority。
 
 ## 2. Context 接入
 
-首版采用实时 render 路径。Context compiler 先从该 user/preset 的有效 user/assistant raw messages 构造跨 session 候选历史，再以集中配置的 Unicode code point 阈值计算 `needsMemory`。只使用这一项逻辑门控，不再同时叠加 message count、tokenizer 估算或 provider context 百分比：
-
-1. **`needsMemory` 门控**：候选历史的 raw content Unicode code point 总数不超过阈值时，recent window 保留全部消息，`needsMemory=false`，不注入 `memory`。超过阈值时，recent window 从最新消息向前选择不超过同一字符阈值的完整消息，再应用既有 user-boundary 裁剪，令 `needsMemory=true`；最新一条消息即使单独超过逻辑阈值也必须完整保留。不得截断单条 raw message 来伪装成完整消息；provider 的物理 context 上限是另一层能力边界。
-2. **状态门控**：`needsMemory=true` 后，`chat_preset_memory.memory_state` 存在且 schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本。`memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入。
-
-recent window 可以跨 session，session 只保留为消息元数据；不得插入会改变 Proposer 或主聊天语义处理的 session boundary 控制标记。主聊天 recent window 保留 user-boundary 裁剪，Memory Observer 则按 [write-protocol.md](write-protocol.md) §1.1 读取完整 source，两者不能复用同一个裁剪结果。
-
-除 `needsMemory=false` 外，跳过注入时必须记录原因（state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查（见 [harness.md](harness.md) §3.9）。不得静默跳过。
-
-是否存在旧格式、是否需要迁移或回放，是迁移层的问题，不由 context segment 耦合历史版本名称。
+首版采用实时 render 路径。Recent window、`needsMemory`、状态门控、user-boundary 裁剪、跳过原因和 GapBridge 的顺序敏感规则统一由 [Context Coverage 算法](algorithms/context-coverage.md) 定义。本文件只负责说明 Renderer 如何把最终 effective view 与 health sidecar 组装为 context segment。
 
 ### 2.1 Per-target GapBridge
 
-`needsMemory=true` 时，recent window 可能已经移除某个 target 尚未处理的尾批。Context compiler 必须用每个 normal target 的 cursor 补齐这段 raw-message coverage，不依赖 legacy `summarizedUntilMessageId`：
-
-1. 令 `R` 为 user-boundary 裁剪后 recent window 第一条消息的 messageId，`C` 为该 target 的 `coveredUntilMessageId`。按该 target 的完整有效 source 查询满足 `C < messageId < R` 的消息；这组消息是该 target 的有效 gap。没有 recent window 或 `C >= R` 时该 target 没有 gap。
-2. GapBridge 使用独立于 Memory Renderer section 容量的逻辑 Unicode code point 预算。所有未超预算的 gap 消息以完整 raw message 注入单一 `gapBridge` context segment；多个 target 引用同一消息时只注入一次，同时保留该消息覆盖的 target keys。
-3. 合并去重后的 gap 超预算时，不调用 LLM 压缩。先按 messageId 倒序选择同时满足集中配置的最近 N 条上限与字符预算的完整消息，再恢复为 messageId 升序注入。不能只截取消息正文的一部分。
-4. 单条消息本身超过预算时，该消息计入 omitted，不注入截断版本；使用 LLM 压缩或其他精细处理留给 [Gap Compressor 延后设计](../memory-control-v2-deferred/gap-compressor.md)。
-5. 任何 omitted 都必须按受影响 target 写入 context-assembly 的持久化诊断记录（表结构见 [state-contract.md](state-contract.md) §9.9 `chat_context_quality_diagnostics`），至少保存 requestId、userId/presetId、targetKey、cursor、R、原 gap 条数/字符数、保留边界、保留条数和 omitted 条数，并明确 `truncated=true`。该记录不属于 `memory_state`、semantic event 或 Memory ops log；完整 gap 不需要写持久化成功记录。记录保持 active，直到该 target cursor 覆盖其 omitted 上界，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap，再标记 resolved，不能只因请求结束而清除。
-6. 截断不阻断主聊天，但受影响 target 必须一直视为上下文覆盖不完整：用户侧进入 degraded 并持续告警“部分早期对话未在上下文中”，注入的旧 target state 标记为“可能滞后”。只有第 5 条的 active 诊断满足 resolved 条件（该 target cursor 覆盖其 `omitted_upper_message_id`，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap）后才清除告警，并明确通知 Memory 已追平到相应 boundary。
-
-GapBridge 的逻辑预算只限制该 segment，自身不占用或改变任何 Memory section 的 `maxItems/maxRenderedChars`；其最终文本仍计入主模型不可突破的物理 context 上限。GapBridge 只补主聊天上下文，不推进 target cursor、不写 patch，也不替代后续正常 Memory task。
+GapBridge 是 context assembly 的覆盖补偿层，不推进 target cursor、不写 patch，也不替代正常 Memory task。其 gap 计算、完整消息选择、omitted 诊断、持续告警与恢复条件见 [Context Coverage 算法](algorithms/context-coverage.md) §2。
 
 ## 3. RAG 边界
 
@@ -68,36 +44,14 @@ Memory v2 和 RAG 不互相替代。
 
 只在某次旧对话中重要、但不应持续影响当前关系状态的事实，应留在 RAG，不进入长期 sections。
 
-RAG 与 Recall 各自维护独立 projection checkpoint，至少记录 `processedGeneration` 和 `processedBoundaryMessageId`，并以 `memory_state.meta.sourceGeneration` 为共享 raw-source invalidation 世代。Memory target cursor 追平不能推定任一 projection 已追平；普通追加未改变 generation 时，各 projection 仍按自己的 boundary 增量推进。
-
-RAG/Recall 查询截止点与 projection 告警边界使用以下三个术语：
-
-- `sourceBoundary`：当前 `sourceGeneration` 下最新有效 source messageId。
-- `requiredBoundary`：本次主聊天查询需要 RAG/Recall 覆盖到的历史截止点，定义为 `recentWindowStartMessageId - 1`（因为 `messageId >= recentWindowStartMessageId` 的消息已由 recent window 完整覆盖，RAG/Recall 不再需要）。
-- `processedBoundary`：projection checkpoint 中实际已处理到的 `processedBoundaryMessageId`。
-
-RAG/Recall 查询时，有效检索上界为 `min(processedBoundary, requiredBoundary)`。六个 Memory target cursor 与 RAG/Recall cutoff 相互独立：Memory cursor 追平不代表 RAG/Recall 追平，反之亦然。
-
-Projection 告警条件：
-
-- `processedGeneration != sourceGeneration` → 该 projection 为 `rebuilding`；
-- `processedGeneration == sourceGeneration AND processedBoundary < requiredBoundary` → 该 projection 为 `degraded`，告警"部分早期对话未在上下文中"；
-- `processedGeneration == sourceGeneration AND processedBoundary >= requiredBoundary` → 该 projection 为 `healthy`，即使 `processedBoundary < sourceBoundary`（projection 未追平最新消息，但落后范围全部在 recent window 内，不影响本次查询）。
-
-Projection 只部分覆盖 `requiredBoundary` 时（`processedBoundary > 0` 但 `< requiredBoundary`），仍注入已处理部分的结果，并在注入时明确标记检索范围不完整。不因部分落后而完全跳过 projection 注入。
-
-Context compiler 只能把 `processedGeneration == sourceGeneration AND processedBoundary >= requiredBoundary` 的 projection 当作完整当前结果。未满足此条件的 projection 必须保持 `degraded/rebuilding` 告警，不得把旧 projection 无提示注入或声称为当前状态。Projection worker 在提交 checkpoint 前必须重校 generation；进程内 wake-up 只降低延迟，启动与周期轮询时的 generation/boundary 比较才提供不依赖 outbox 的 correctness 保证。完整 drain 规则见 [write-protocol.md](write-protocol.md) §7.1。
-
-Context compiler 还必须读取 [write-protocol.md](write-protocol.md) §5 的 context-suppression tombstones。RAG chunk 保存其全部 source `messageId + contentHash`，任一 source 命中 tombstone 时既不能返回，也不能注入；重新分块时跳过整条匹配消息。Recall 的候选 evidence ref、raw window 与最终文本应用同一过滤。Projection 的异步删除尚未完成时，查询末端过滤仍是不可绕过的 correctness gate。
-
-Correction 后只渲染当前 revision 中 item 的新值，不渲染旧 event/snapshot 内容；forgetItem accepted 后该 item 已从 active state 移除，Renderer 不得以“已作废”等占位文本继续注入。Privacy hard delete 进行中沿用 `rebuilding` 门控，在全存储清除和剩余 source rebuild 校验完成前不得注入旧 projection。
+Projection checkpoint 的推进与 rebuild 见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)；请求时 `requiredBoundary`、有效检索上界、partial coverage 与健康判断见 [Context Coverage 算法](algorithms/context-coverage.md) §3；correction/forget 后的 tombstone 查询过滤和 privacy hard delete 门控见 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md)。
 
 ## 4. Proposer 输入与 Gist 边界
 
 Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。本节只补充与上下文接入相关的边界：
 
 - 普通模式的 `observedMessages` 统一来自原始 `chat_messages`，user 与 assistant 消息都使用 raw content。Observer 传入时必须标注 `contentKind: "raw"`。
-- 普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验（校验策略见 [state-contract.md](state-contract.md) §7）；read-only memory context 不参与 quote 校验。
+- 普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验（校验策略见 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)）；read-only memory context 不参与 quote 校验。
 - 维护模式不向 Proposer 暴露 raw messages、既有 evidenceGroups 或 quote。
 - assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRefs 来源。
 

@@ -44,7 +44,7 @@ schema 作者注意：
    - noop：已理解对话内容，确认无变更需要。
    - unable_to_decide：现有信息不足以判断是否有变更（如关键消息不在观察窗口内、指代不明无法确认对象）。
    - 不要把"看不懂"伪装成"没变化"。
-4. patch 必须附 evidenceKind；除 mergeItems 外，patch 必须附 evidenceRefs。quote 应复制 observedMessages 中能够支持该 patch 的最短连续原文，不要改写，最多 200 个 Unicode code points；不要依赖自己精确计数，Reducer 以 [state-contract.md](state-contract.md) §7 的统一长度与模糊匹配规则作最终裁决。
+4. patch 必须附 evidenceKind；除 mergeItems 外，patch 必须附 evidenceRefs。quote 应复制 observedMessages 中能够支持该 patch 的最短连续原文，不要改写，最多 200 个 Unicode code points；不要依赖自己精确计数，Reducer 以 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)的统一长度与模糊匹配规则作最终裁决。
 5. 普通写入 patch 的 evidenceRefs 必须来自 observedMessages；readOnlyContext 只能用于理解背景，不能作为证据，也不能被当作完整世界状态来推断缺失事实。
 6. readOnlyContext 中的 item 不含 id 字段。itemId/itemIds 必须来自 writableState 中对应 section 的 item。
 7. 如果现有背景不足以判断，输出 unable_to_decide，不要把背景猜成事实。

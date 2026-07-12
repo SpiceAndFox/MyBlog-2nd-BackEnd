@@ -1,5 +1,7 @@
 # Memory Control 重构最终共识清单
 
+> **归档说明（2026-07-12）**：本文是 12 批修订的历史执行清单，不再是当前设计的算法权威来源。静态契约以 `memory-control-v2/state-contract.md` 为准，算法与状态机以 `memory-control-v2/algorithms/README.md` 所列文档为准；后续不再把算法改动反向同步到本文。
+
 本文汇总截至 2026-07-11 已达成的设计共识，作为后续正式修订 Memory Control 文档和实现的基线。讨论中已被推翻的早期方案不再具有约束力。
 
 ## 0. 应用顺序
