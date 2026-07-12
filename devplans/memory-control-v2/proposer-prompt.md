@@ -343,24 +343,24 @@ assistant 修正场景时间。
   "op": "addItem",
   "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
   "evidenceKind": "user_commitment",
-  "evidenceRefs": [{ "messageId": 121, "quote": "明天提醒我把橡皮还给她" }]
+  "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }]
 }
 ```
 
-用户承诺自己归还橡皮，actor=user，requester=user。
+用户承诺自己归还橡皮，actor=user，requester=user。quote 是用户原话，明确表达承诺。
 
 **✅ addItem + user_request（用户请求 assistant 稍后做某事）**
 
 ```json
 {
   "op": "addItem",
-  "value": { "text": "提醒吃药", "actor": "assistant", "requester": "user" },
+  "value": { "text": "提醒归还橡皮", "actor": "assistant", "requester": "user" },
   "evidenceKind": "user_request",
-  "evidenceRefs": [{ "messageId": 121, "quote": "明天记得提醒我吃药" }]
+  "evidenceRefs": [{ "messageId": 121, "quote": "明天记得提醒我把橡皮还给她" }]
 }
 ```
 
-用户请求 assistant 提醒自己，actor=assistant（assistant 执行提醒），requester=user（用户发起请求）。
+用户请求 assistant 提醒自己，actor=assistant（assistant 执行提醒），requester=user（用户发起请求），待办内容是"提醒"而非归还本身。一句话同时包含承诺和提醒请求时允许生成两个 todo。
 
 **✅ addItem + user_commitment + dueAt（用户承诺，带 deadline）**
 

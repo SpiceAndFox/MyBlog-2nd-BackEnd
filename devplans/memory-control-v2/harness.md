@@ -36,12 +36,12 @@
     "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": { "todos": 120 } }
   },
   "initialTargetStatuses": {
-    "scene": { "status": "healthy", "consecutiveErrors": 0 },
-    "todos": { "status": "healthy", "consecutiveErrors": 0 },
-    "standingAgreements": { "status": "healthy", "consecutiveErrors": 0 },
-    "episodes": { "status": "healthy", "consecutiveErrors": 0 },
-    "profileRelationship": { "status": "healthy", "consecutiveErrors": 0 },
-    "worldFacts": { "status": "healthy", "consecutiveErrors": 0 }
+    "scene": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "todos": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "standingAgreements": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "episodes": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "profileRelationship": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
+    "worldFacts": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 }
   },
   "ticks": [
     {
@@ -84,8 +84,8 @@
             "role": "user",
             "createdAt": "2026-07-06T22:30:00Z",
             "contentKind": "raw",
-            "content": "明天提醒我把橡皮还给她",
-            "contentHash": "sha256:1b94b37c16d073e89d406a0ff36da228029f998f21ca1894d533a222062396c1"
+            "content": "我明天会把橡皮还给她",
+            "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9"
           }
         ]
       },
@@ -102,7 +102,7 @@
                   "op": "addItem",
                   "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
                   "evidenceKind": "user_commitment",
-                  "evidenceRefs": [{ "messageId": 121, "quote": "明天提醒我把橡皮还给她" }]
+                  "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }]
                 }
               ]
             }
@@ -146,7 +146,7 @@
                 "evidenceGroups": [
                   {
                     "evidenceKind": "user_commitment",
-                    "refs": [{ "messageId": 121, "contentHash": "sha256:1b94b37c16d073e89d406a0ff36da228029f998f21ca1894d533a222062396c1", "quote": "明天提醒我把橡皮还给她" }]
+                    "refs": [{ "messageId": 121, "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9", "quote": "我明天会把橡皮还给她" }]
                   }
                 ]
               }
@@ -160,7 +160,7 @@
           "status": "succeeded",
           "result_revision": 1
         },
-        "targetStatus": { "target_key": "todos", "status": "healthy", "consecutive_errors": 0 },
+        "targetStatus": { "target_key": "todos", "source_generation": 0, "status": "healthy", "consecutive_errors": 0 },
         "opsLog": [],
         "meta": { "revision": 1 },
         "renderEquals": null,
@@ -323,9 +323,9 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - Reducer 永远只收到 `status: "ok"` 且 section 为 `patches`/`noop` 的 output，不处理空输出、Provider error、unable 或伪造输出。
 - 健康聚合表驱动覆盖全部 per-target status：全 healthy → `healthy`；任一 retry_wait/capacity_blocked/halted → `degraded`；任一 rebuilding → `rebuilding`，且 rebuilding 与 degraded 同时存在时整体仍为 `rebuilding`。
 - active GapBridge omitted 或其他非 target context-quality 诊断也使整体进入 `degraded`/`rebuilding`；只有全部 target healthy 且无 active 诊断时才能恢复 `healthy`。
-- 非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义；恢复事务完成后 active 告警消失，并恰好产生一次包含已追平 boundary 的恢复通知。
+- 非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义；恢复事务完成后 active 告警消失，并为该恢复事件恰好创建一行包含已追平 boundary 的 notification。正常路径只投递一次；fixture 还必须允许“响应已包含通知、`delivered` 更新提交前崩溃”后再次投递，不能把 best-effort once 误测为 exactly-once delivery。target、projection、system 三类恢复分别断言正确的 `subject_kind/subject_key`。
 - 任一 target halted 不产生全局 `chatBlocked` 或 user/preset 级 halt；主聊天和其他 targets 的任务继续。resume/rebuild 维护入口可操作 halted target，普通 Observer 不可绕过。
-- halted target 的 Renderer golden 继续包含最后稳定 state，并在该 target 固定 section 组前只出现一次“该类记忆可能滞后”；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
+- halted target 的 Renderer golden 继续包含最后稳定 state：相邻的同 target sections 可在组前只出现一次“该类记忆可能滞后”，不相邻的 sections 必须分别出现。`episodes` 的 milestones 与 recentEpisodes 不相邻，因此两处各出现一次且文案状态一致；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [state-contract.md](state-contract.md) §9.3 规则 8 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls/message、eligible、tokens/latency/cost，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration 使用稳定标签且不含原始消息正文等高基数字段。
@@ -348,7 +348,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `needsMemory=true` 但 `memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入，debug payload 记录明确原因，不得静默跳过。
 - recent window 可跨 session 且保留 user-boundary 裁剪；Memory Observer fixture 必须证明 Assistant 开头的 source 未被同一规则裁掉，且不注入 session boundary 控制标记。
 - 对每个 target 构造 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 的 gap；预算内完整 raw 注入，重复消息去重但保留 target keys。超预算只保留最近 N 条完整消息并恢复升序，单条超预算计入 omitted，不得截断或调用 LLM 压缩。
-- GapBridge omitted 必须产生 active 的持久化诊断记录并触发 degraded/“可能滞后”标记；cursor 覆盖 omitted 上界后才能 resolved。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
+- GapBridge omitted 必须产生 active 的持久化诊断记录（`subject_kind=target`、`subject_key` 为对应 targetKey），携带 `target_cursor` 与 `omitted_upper_message_id` 并触发 degraded；`target_cursor >= omitted_upper_message_id` 后才能 resolved。Projection lag 使用 `subject_kind=projection`、`subject_key=rag|recall` 和独立的 `processed_boundary_message_id`，不得复用 target cursor 字段。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
 - RAG context 与 `memory` segment 并列存在，不互相覆盖。
 - RAG chunk 保存全部 source `messageId + contentHash`；任一 source 命中 tombstone 时，已有 chunk 即使尚未异步删除也被查询末端过滤，重新分块跳过整条消息。多事实消息被整条排除的保守副作用应有固定 fixture。
 - Recall 候选 refs、raw window 和最终文本分别覆盖 suppression 过滤；全部 refs 被过滤的 group 不注入，suppressed raw message 不因落在相邻窗口而泄漏。
@@ -363,9 +363,9 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 二次 unable 的 cursor-only event group 可以没有 semantic event，原因只记 ops log；不得伪造 noop/accepted。noop 与普通 rejected 仍保留各自 proposal-decision event。
 - deferred 的 `result_revision` 为 null；其 event group/events、原 task stage、派生 maintenance task 和 target status 必须同事务提交，不能只留下 deferred event 而没有可恢复 task。
 - 注入事务故障点覆盖 state、event group/events、snapshot、cursor、task 终态、target status 的每个写入位置；任一点失败都整体 rollback，不得出现半提交。
-- system cleanup 修改持久化 state 时必须写 `decision=system_cleanup`、具体 cleanup_type 和完整 normalized operation；覆盖 `scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`recent_episode_evicted` 四类。Proposal post-state 触发的 cleanup 与 proposal decisions 同 group/revision；独立后台 housekeeping 才断言 `group_kind=system_cleanup`。
+- system cleanup 修改持久化 state 时必须写 `decision=system_cleanup`、具体 cleanup_type 和完整 normalized operation；覆盖 `scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`todo_revived_from_overdue`、`recent_episode_evicted` 五类。Proposal post-state 触发的 cleanup 与 proposal decisions 同 group/revision；独立后台 housekeeping 才断言 `group_kind=system_cleanup`。
 - 从当前 generation 最新合法 snapshot replay 后续 event groups 可恢复相同 state/cursors；replay 不调用 LLM，并拒绝 generation/revision 断层、cursor 不连续、schema 不兼容或 task/target 不一致的 event group。
-- Retention 清理必须保证 [state-contract.md](state-contract.md) §9.11 的不变量：每个活跃 generation 至少保留一个 anchor snapshot；从 anchor snapshot 起保留连续 `result_revision IS NOT NULL` 的 event groups，不得出现 revision 断层；终态 task 清理不得影响 event group 的 `task_id` 引用完整性。
+- Retention 清理必须保证 [state-contract.md](state-contract.md) §9.11 的不变量：每个活跃 generation 至少保留一个 schema-valid 完整 anchor snapshot；覆盖“校验新 snapshot → 原子提升 anchor → 清理旧 snapshot/events”的成功与逐故障点 rollback。只要求保留 `result_revision > anchor.revision` 的连续 event groups；从新 anchor replay后续 groups 必须恢复相同 state/cursors。终态 task 清理不得删除 active task 或 retained event groups 仍引用的 predecessor/parent/task。
 - snapshot/state 损坏时优先恢复当前 generation 最新合法 snapshot；必要时从 raw messages rebuild。
 - 进程重启会从数据库读取 queued/running/retry_wait task 并从持久化 stage 继续；进程内队列、计数器或 flag 丢失不影响恢复。
 - stale generation/revision/cursor 执行结果写 `stale_result` ops log 并丢弃，不得覆盖新 state；replay 必须先匹配 generation，再检查 target cursor、proposal 活动性、引用 item 与 schema/source hashes；同 generation 的其他 target revision 增长不单独构成 stale。
@@ -376,7 +376,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - generation 变化后，旧 normal/maintenance/compaction/replay 结果一律 stale 且不能提交；同 generation 内其他 target 导致的 revision 增长仍不单独使 replay stale。
 - rebuild 从当前有效 raw messages 重放，`forceDrainTo(capturedBoundaryMessageId)` 忽略 lagThreshold 并只使用既有 durable normal tasks；六个 cursor 与 state/snapshot/events 校验完成前保持 rebuilding，未追平不得宣告 healthy。
 - rebuild 期间再次改变 source 时，旧 rebuild 结果不得推进新 generation 的 state、cursor 或 status；worker 转而处理最新 generation/boundary。
-- RAG 与 Recall checkpoint 独立断言 `processedGeneration + processedBoundaryMessageId`；Memory targets 追平不代表 projection 追平。generation 提交前重校失败时 projection 结果 stale，实际参与 context compile 的未追平 projection 持续触发告警。
+- RAG 与 Recall checkpoint 独立断言 `processedGeneration + processedBoundaryMessageId`；Memory targets 追平不代表 projection 追平。告警条件只基于 `requiredBoundary`（= `recentWindowStartMessageId - 1`）：`processedGeneration != sourceGeneration` → rebuilding；`processedBoundary < requiredBoundary` → degraded；`processedBoundary >= requiredBoundary` 且 generation 一致 → healthy（落后范围在 recent window 内不告警）。projection 只部分覆盖 requiredBoundary 时仍注入已处理部分并标记不完整，不因部分落后完全跳过。
 - 一次性迁移 smoke 按“停服 → 更新 → 删除旧 Memory → raw rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
 - context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
 - privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics（§9.9）、recovery notifications（§9.10）、RAG/Recall 与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。

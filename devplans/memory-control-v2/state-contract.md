@@ -65,7 +65,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
   evidenceGroups: [
     {
       evidenceKind: "user_commitment",
-      refs: [{ messageId: 121, contentHash: "sha256:...", quote: "明天提醒我把橡皮还给她" }]
+      refs: [{ messageId: 121, contentHash: "sha256:...", quote: "我明天会把橡皮还给她" }]
     }
   ],
   createdAtMessageId: 121,
@@ -800,6 +800,7 @@ CREATE TABLE chat_memory_tasks (
   task_type                  TEXT NOT NULL,     -- normal | maintenance | system_cleanup
   parent_task_id             UUID,              -- maintenance task 指向来源 normal task（如有）
   predecessor_task_id        UUID,              -- successor task 指向被取消的旧 task（如有，见规则 8）
+  resume_epoch               INTEGER NOT NULL DEFAULT 0,  -- maintenance task 的 resume 轮次；normal/system_cleanup 固定 0，每次人工 resume 创建新 child 时 +1（见规则 9）
   status                     TEXT NOT NULL,     -- queued | running | retry_wait | succeeded | failed | cancelled
   stage                      TEXT NOT NULL,
   cursor_before              BIGINT,
@@ -884,7 +885,7 @@ CREATE TABLE chat_memory_ops_log (
   target_key      TEXT NOT NULL,
   section         TEXT,
   proposer        TEXT,
-  outcome         TEXT NOT NULL,           -- llm_call_failed | safety_policy_blocked | output_schema_invalid | unable_to_decide | unable_to_compact | stale_result
+  outcome         TEXT NOT NULL,           -- llm_call_failed | safety_policy_blocked | max_output_truncated | output_schema_invalid | unable_to_decide | unable_to_compact | stale_result | reducer_failed | transaction_failed | commit_outcome_unknown
   attempt         INTEGER NOT NULL,
   detail          JSONB,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -899,7 +900,17 @@ CREATE INDEX idx_memory_ops_log_outcome
 
 `target_key` 和 `task_id` 是 ops log 的必填归属。`section` 只在 outcome 能明确归属某个正式 section 时填写；task 级 outcome 填 `NULL`，禁止用 targetKey 代填。ops log 保存完整错误历史但不单独决定当前 status；当前运行状态以 task/target status 为准。
 
-通用 outcome 至少包括 `llm_call_failed`、`safety_policy_blocked`、`output_schema_invalid`、`unable_to_decide`、`unable_to_compact` 和 `stale_result`。前三者是 Provider/schema 失败；`unable_to_decide` 的扩窗口 attempt 属于 task；`unable_to_compact` 使对应 maintenance task/target 进入失败或 halt；`stale_result` 表示 revision/cursor 校验失败后丢弃旧执行结果。后续批次可增加专用 outcome，但不得复用这些值表达不同语义。
+通用 outcome 至少包括：
+
+- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 `output_schema_invalid` 分开统计，即使残片可解析也不作为完整 proposal。前三者可重试，`output_schema_invalid` 是持续性错误；
+- `unable_to_decide`：Proposer 自认信息不足，扩窗口 attempt 属于 task；
+- `unable_to_compact`：compactionProposer 判定无安全合并空间，对应 maintenance task/target 进入失败或 halt；
+- `stale_result`：revision/cursor/generation 校验失败后丢弃旧执行结果；
+- `reducer_failed`：Reducer 执行过程中发生纯代码异常（非业务拒绝），如内存错误、数据结构不兼容等；不增加 revision/snapshot；
+- `transaction_failed`：数据库事务提交失败（非业务逻辑拒绝），如死锁、连接断开、序列化异常等；必须在回滚后按 task phase identity 重新校验状态；
+- `commit_outcome_unknown`：数据库连接在 COMMIT 发送后断开，无法确认提交结果。worker 必须先按 event group 的 phase identity 查询是否已持久化（`result_revision` 是否存在），不能直接重试写入；若已提交则返回既有结果，未提交则在当前最新 revision 基础上重试。
+
+后续批次可增加专用 outcome，但不得复用这些值表达不同语义。
 
 ### 9.6 原子提交与 Crash Recovery
 
@@ -967,16 +978,20 @@ CREATE TABLE chat_context_quality_diagnostics (
   id              BIGSERIAL PRIMARY KEY,
   user_id         BIGINT NOT NULL,
   preset_id       TEXT NOT NULL,
-  target_key      TEXT NOT NULL,
+  subject_kind    TEXT NOT NULL,           -- target | projection
+  subject_key     TEXT NOT NULL,           -- target 的 targetKey（todos 等）或 projection 的 projectionKey（rag | recall）
   diagnostic_type TEXT NOT NULL,           -- gap_bridge_omitted | projection_lag | ...
   request_id      TEXT,
-  cursor          BIGINT,
-  recent_window_start BIGINT,
+  target_cursor   BIGINT,                  -- target 的 coveredUntilMessageId（仅 gap_bridge_omitted 使用）
+  processed_boundary_message_id BIGINT,    -- projection 的 processedBoundary（仅 projection_lag 使用）
+  omitted_upper_message_id BIGINT,         -- GapBridge 的省略上界 messageId，用于确定 resolved 条件
+  recent_window_start BIGINT,              -- 当时的 recent window 起点 messageId
   original_gap_count INTEGER,
   original_gap_chars INTEGER,
   retained_boundary BIGINT,
   retained_count  INTEGER,
   omitted_count   INTEGER,
+  omitted_chars   INTEGER,
   truncated       BOOLEAN NOT NULL DEFAULT FALSE,
   resolved        BOOLEAN NOT NULL DEFAULT FALSE,
   resolved_at     TIMESTAMPTZ,
@@ -985,44 +1000,56 @@ CREATE TABLE chat_context_quality_diagnostics (
 );
 
 CREATE INDEX idx_context_diagnostics_active
-  ON chat_context_quality_diagnostics(user_id, preset_id, target_key, resolved, created_at DESC);
+  ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, resolved, created_at DESC);
 ```
 
-诊断记录保持 active（`resolved=FALSE`），直到满足明确 resolved 条件（如该 target cursor 覆盖其 omitted 上界，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap）。不能只因请求结束而清除。active 诊断参与用户侧健康聚合（见 [write-protocol.md](write-protocol.md) §8.1）。
+字段说明：
+
+- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag 诊断。
+- `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
+- `target_cursor`、`omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`processed_boundary_message_id` 仅用于 `projection_lag`。两类诊断都保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
+
+诊断记录保持 active（`resolved=FALSE`），直到满足明确 resolved 条件（如该 target cursor 覆盖其 `omitted_upper_message_id`，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap）。不能只因请求结束而清除。
 
 ### 9.10 Recovery notification
 
-恢复通知记录"Memory 已追平到相应 boundary"的 delivery/ack 状态，保证恰好一次通知（语义见 [write-protocol.md](write-protocol.md) §8.1 规则 3）：
+恢复通知记录"Memory 已追平到相应 boundary"的 delivery 状态，提供 best-effort once 通知语义（语义见 [write-protocol.md](write-protocol.md) §8.1 规则 3）：
 
 ```sql
 CREATE TABLE chat_memory_recovery_notifications (
   id              BIGSERIAL PRIMARY KEY,
   user_id         BIGINT NOT NULL,
   preset_id       TEXT NOT NULL,
-  target_key      TEXT NOT NULL,
+  subject_kind    TEXT NOT NULL,           -- target | projection | system
+  subject_key     TEXT NOT NULL,           -- targetKey、projectionKey，或 system 诊断键
   notification_type TEXT NOT NULL,         -- recovered
-  boundary_message_id BIGINT,
+  boundary_message_id BIGINT NOT NULL DEFAULT 0,  -- 0 表示无具体 boundary（如全量恢复）
   source_generation BIGINT NOT NULL,
   delivered       BOOLEAN NOT NULL DEFAULT FALSE,
   delivered_at    TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, target_key, notification_type, source_generation, boundary_message_id)
+  UNIQUE (user_id, preset_id, subject_kind, subject_key, notification_type, source_generation, boundary_message_id)
 );
 
 CREATE INDEX idx_recovery_notifications_pending
   ON chat_memory_recovery_notifications(user_id, preset_id, delivered, created_at DESC);
 ```
 
-恢复事务提交时同事务写入 notification 行（`delivered=FALSE`）。context compiler 在下次响应中检测到 `delivered=FALSE` 的 notification 时返回恢复通知文案并将 `delivered` 置 `TRUE`。`UNIQUE` 约束保证同一 target/generation/boundary 不会产生重复通知。Privacy hard delete 时 notification 行也必须清除。
+`boundary_message_id` 使用 `NOT NULL DEFAULT 0` 而非 nullable，确保 PostgreSQL `UNIQUE` 约束对无具体 boundary 的通知也能正确去重（PostgreSQL 中多个 NULL 不被视为相等）。
+
+恢复事务提交时同事务写入 notification 行（`delivered=FALSE`）。context compiler 在下次响应中读取未投递 notification 并把 notification ID/文案放入响应 payload；响应传输成功后，由响应层 best-effort 将对应行更新为 `delivered=TRUE, delivered_at=NOW()`。数据库事务不跨越网络响应边界。
+
+`subject_kind/subject_key` 与健康来源一致：Memory target 使用 `target + targetKey`，RAG/Recall 使用 `projection + rag|recall`，无法归属前两者的全局恢复使用 `system + <diagnosticKey>`。通知语义为 **best-effort once**：系统保证同一恢复事件只创建一行 notification（`UNIQUE` 约束）；存在下一次成功响应时至少尝试投递一次。不保证恰好一次 delivery——并发响应可能同时读到未投递行，或响应已成功但 `delivered` 更新前进程崩溃，因而允许重复投递。这是当前为降低复杂度明确接受的语义；如需恰好一次，需要另行引入客户端 ACK/幂等消费。Privacy hard delete 时 notification 行也必须清除。
 
 ### 9.11 Retention 不变量
 
 Snapshot/event/task/ops log 的 retention 清理必须保证以下不变量，否则文档承诺的 replay 恢复会被 retention 自己破坏：
 
-1. **当前 generation anchor snapshot**：每个 `sourceGeneration` 必须至少保留一个 anchor snapshot（generation 初始化时写入的完整空 state snapshot）。该 snapshot 是该 generation 语义 replay 的起点，不得在 generation 仍活跃时删除。
-2. **连续 event groups**：从 anchor snapshot 开始，必须保留连续的 `result_revision IS NOT NULL` 的 event groups，不得出现 revision 断层。`result_revision IS NULL` 的审计 group 可按 retention 策略清理，不影响 replay。
-3. **旧 generation 清理**：只有当某 generation 的所有 target 已进入更新 generation 的 `rebuilding` 或 `healthy`，且旧 generation 的 snapshot/events 不再需要用于审计或 privacy hard delete 时，才可清理旧 generation 的 snapshot/events。
-4. **task/ops log retention**：durable task 和 ops log 可按时间窗口清理，但必须保留所有非终态 task 和当前 generation 的完整错误历史。终态 task 清理不得影响 event group 的 task_id 引用完整性。
+1. **当前 generation anchor snapshot**：每个活跃 `sourceGeneration` 必须至少保留一个 schema-valid 的完整 snapshot 作为 replay anchor。generation 初始化 snapshot 是初始 anchor，但不是永久固定 anchor。
+2. **Anchor 提升**：retention 可以把同 generation 内较新的完整 snapshot 提升为新 anchor。提升前必须验证该 snapshot 的 generation/revision 与 state 内容合法，并确认它等于从旧 anchor 连续 replay 到该 revision 的结果。新 anchor 与清理旧 anchor/旧 events 必须在同一维护事务中完成；事务失败时继续保留旧 anchor 链。
+3. **连续 event groups**：只需保留 `result_revision > anchor.revision` 的连续 event groups，且不得出现 revision 断层；`result_revision <= anchor.revision` 的 groups 已被完整 snapshot 吸收，可按审计策略清理。`result_revision IS NULL` 的审计 group 不参与语义 replay，可独立按 retention 清理。
+4. **旧 generation 清理**：只有当前 generation 已完成 rebuild 校验、相关 targets/projections 已不再读取旧 generation，且旧数据不再因审计或 privacy hard delete 策略要求保留时，才可清理旧 generation 的 snapshot/events。
+5. **task/ops log retention**：durable task 和 ops log 可按时间窗口清理，但必须保留所有非终态 task、被当前 active task 引用的 predecessor/parent task，以及当前 replay anchor 之后 retained event groups 所引用的 task。终态 task 清理不得破坏 retained event group 的审计关联。
 
 ## 10. Provider Adapter 契约
 
