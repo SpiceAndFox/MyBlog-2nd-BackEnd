@@ -1142,6 +1142,9 @@ const logConfig = {
   debugCoreEnabled: readBoolEnv("LOG_DEBUG_CORE_ENABLED", true),
 };
 
+const { loadMemoryV2Config } = require("./memoryV2");
+const memoryV2Config = loadMemoryV2Config();
+
 const articleConfig = {
   tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), {
     name: "ARTICLE_TEMP_IMAGE_TTL_MS",
@@ -1160,4 +1163,5 @@ module.exports = {
   llmConfig,
   logConfig,
   articleConfig,
+  memoryV2Config,
 };
