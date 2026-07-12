@@ -1,4 +1,4 @@
-const { createInitialMemoryState, assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../contracts");
+const { createInitialMemoryState, assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../../contracts");
 const { normalizeScope, executor, withTransaction } = require("./helpers");
 const { isDeepStrictEqual } = require("node:util");
 

@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { assertMemoryState, TARGET_KEYS, validateTaskEnvelope, validateProposerOutput } = require("../../../services/chat/memory-v2/contracts");
+const { assertMemoryState, TARGET_KEYS, validateTaskEnvelope, validateProposerOutput } = require("../contracts");
 
 function listFixtureFiles(rootDir) {
   if (!fs.existsSync(rootDir)) return [];

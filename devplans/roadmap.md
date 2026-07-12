@@ -22,7 +22,7 @@ modules/memory/
 
 当前开发必须遵守以下边界：
 
-- SQL 只能出现在 `modules/memory/infrastructure/repositories`；Memory 的领域与应用代码不得直接调用全局 `db`。
+- 运行时查询 SQL 只能出现在 `modules/memory/infrastructure/repositories`，DDL 只放在顶层 `migrations/memory`；Memory 的领域与应用代码不得直接调用全局 `db`。
 - `domain` 不依赖 Express、PostgreSQL、Provider SDK 或运行环境配置；时间、ID、配置和外部数据通过明确输入传入。
 - 模块外代码只能通过 `modules/memory/index.js` 的公开接口使用 Memory；禁止跨模块引用其内部文件。
 - Memory 与 Chat Context、RAG/Recall、LLM Provider 之间通过显式接口协作，不共享可变内部状态，不以循环依赖换取调用便利。

@@ -1142,7 +1142,7 @@ const logConfig = {
   debugCoreEnabled: readBoolEnv("LOG_DEBUG_CORE_ENABLED", true),
 };
 
-const { loadMemoryV2Config } = require("./memoryV2");
+const { loadMemoryV2Config } = require("../modules/memory/config/loadConfig");
 const memoryV2Config = loadMemoryV2Config();
 
 const articleConfig = {

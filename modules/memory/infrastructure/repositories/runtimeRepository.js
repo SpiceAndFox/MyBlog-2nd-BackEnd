@@ -1,4 +1,4 @@
-const { TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES } = require("../contracts");
+const { TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES } = require("../../contracts");
 const { normalizeScope, executor } = require("./helpers");
 
 async function createTask(task, { client } = {}) {

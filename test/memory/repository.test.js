@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../../db");
-const { initializeRevisionZero } = require("../../services/chat/memory-v2/repositories/stateRepository");
+const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
   const originalGetClient = db.getClient;

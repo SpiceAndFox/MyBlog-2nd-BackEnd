@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/**/*.test.js",
-    "test:memory-v2": "node --test test/memory-v2/*.test.js",
+    "test:memory-v2": "node --test test/memory/*.test.js",
     "migrate:memory-v2": "node scripts/migrate-memory-v2.js",
     "start": "node --use-env-proxy app.js",
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",

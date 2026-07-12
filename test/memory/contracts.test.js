@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { createInitialMemoryState, validateMemoryState, validatePatch, validateProposerOutput } = require("../../services/chat/memory-v2/contracts");
-const { loadFixtures } = require("./harness/runner");
+const { createInitialMemoryState, validateMemoryState, validatePatch, validateProposerOutput } = require("../../modules/memory/contracts");
+const { loadFixtures } = require("../../modules/memory/harness/runner");
 
 test("revision zero state satisfies the strict v2 schema", () => {
   const state = createInitialMemoryState();
@@ -36,6 +36,6 @@ test("output must exactly cover target sections", () => {
   assert.match(result.errors.map((entry) => entry.path).join(" "), /milestones/);
 });
 test("phase 1 fixtures load through the harness runner", () => {
-  const fixtures = loadFixtures(path.join(__dirname, "fixtures"));
+  const fixtures = loadFixtures(path.join(__dirname, "../../modules/memory/harness/fixtures"));
   assert.equal(fixtures.length, 1);
 });

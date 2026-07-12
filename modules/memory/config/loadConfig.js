@@ -1,4 +1,4 @@
-const { TARGET_KEYS, ITEM_SECTIONS } = require("../services/chat/memory-v2/contracts/constants");
+const { TARGET_KEYS, ITEM_SECTIONS } = require("../contracts/constants");
 
 function parseBool(env, name, fallback) {
   const raw = env[name];
