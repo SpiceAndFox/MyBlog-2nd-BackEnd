@@ -1,6 +1,17 @@
 # Memory Control v2 开发顺序
 
-原则：每阶段先补 Harness fixture，再实现；未通过本阶段验收，不进入下一阶段。真实 LLM 最后接入，前期全部使用固定 proposal。
+## 原则
+
+每阶段先补 Harness fixture，再实现；未通过本阶段验收，不进入下一阶段。真实 LLM 最后接入，前期全部使用固定 proposal。
+
+## 代码规范
+
+- 禁止硬编码，配置项应在配置文件中暴露出来。
+- 禁止防御性编程，缺失配置时应当报错而不是在代码中用默认值绕开，不然随着配置的改动，代码将变得难以维护。
+- 遵循软件工程规范，保证不同模块间低耦合，模块内高内聚
+- 保证代码的可修改性、可维护性
+
+## 开发阶段
 
 1. **状态与存储骨架**：实现 v2 schema/校验器、配置入口、全部 DDL/repository、revision 0 初始化；建立 Harness runner 与 fixture 目录。
 2. **纯代码核心**：依次实现 evidence/quote matcher、policy gate、生命周期、Reducer、Renderer；覆盖 accepted/rejected/noop、event/snapshot、effective view 的单元与 golden 测试。
@@ -11,4 +22,6 @@
 7. **重建与抑制**：实现 source mutation/generation、force-drain（中间批次保持 rebuilding）、RAG/Recall checkpoints、correction/forget tombstone、查询末端过滤、retention 与 privacy hard delete。
 8. **迁移与切换**：用生产历史副本做全量 rebuild 演练、容量/耗时测量和端到端 smoke；停服后删除旧 Memory、正式 rebuild/校验，再启用 v2 并移除 v1 worker/注入路径。
 
-完成标准：`harness.md` 全部用例通过；迁移演练可重复；任一 Provider、Reducer、事务、重启或 source mutation 故障均不会产生静默丢失、重复写入、旧 source 泄漏或全局聊天阻断。
+## 完成标准
+
+`harness.md` 全部用例通过；迁移演练可重复；任一 Provider、Reducer、事务、重启或 source mutation 故障均不会产生静默丢失、重复写入、旧 source 泄漏或全局聊天阻断。
