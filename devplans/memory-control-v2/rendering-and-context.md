@@ -72,6 +72,10 @@ RAG 与 Recall 各自维护独立 projection checkpoint，至少记录 `processe
 
 Context compiler 只能把与当前 `sourceGeneration` 一致且已追平其 captured boundary 的 projection 当作当前结果。实际参与本次 context compile 的 RAG/Recall projection 若 generation 不一致或尚未追平，必须保持 `degraded/rebuilding` 告警，不得把旧 projection 无提示注入或声称为当前状态。Projection worker 在提交 checkpoint 前必须重校 generation；进程内 wake-up 只降低延迟，启动与周期轮询时的 generation/boundary 比较才提供不依赖 outbox 的 correctness 保证。完整 drain 规则见 [write-protocol.md](write-protocol.md) §7.1。
 
+Context compiler 还必须读取 [write-protocol.md](write-protocol.md) §5 的 context-suppression tombstones。RAG chunk 保存其全部 source `messageId + contentHash`，任一 source 命中 tombstone 时既不能返回，也不能注入；重新分块时跳过整条匹配消息。Recall 的候选 evidence ref、raw window 与最终文本应用同一过滤。Projection 的异步删除尚未完成时，查询末端过滤仍是不可绕过的 correctness gate。
+
+Correction 后只渲染当前 revision 中 item 的新值，不渲染旧 event/snapshot 内容；forgetItem accepted 后该 item 已从 active state 移除，Renderer 不得以“已作废”等占位文本继续注入。Privacy hard delete 进行中沿用 `rebuilding` 门控，在全存储清除和剩余 source rebuild 校验完成前不得注入旧 projection。
+
 ## 4. Proposer 输入与 Gist 边界
 
 Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。本节只补充与上下文接入相关的边界：

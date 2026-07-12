@@ -190,7 +190,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 ### 3.1 Schema 与 patch op
 
-- 合法 `setField` / `clearField` / `addItem` / `updateItem` / `mergeItems` / `completeTodo` / `cancelTodo` / `expireTodo` / `cancelAgreement` 被接受。
+- 合法 `setField` / `clearField` / `addItem` / `updateItem` / `forgetItem` / `mergeItems` / `completeTodo` / `cancelTodo` / `expireTodo` / `cancelAgreement` 被接受。
 - normal Proposer 输出 `mergeItems` 时拒绝（`mergeItems` 只允许 `compactionProposer`）；`compactionProposer` 输出 `addItem`/`updateItem` 等非 `mergeItems` op 时拒绝。
 - 缺少该 op 按 [state-contract.md](state-contract.md) §4 应必填的字段时拒绝。
 - 非法 section + op 组合拒绝。
@@ -213,7 +213,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 否定词删除、数字/姓名替换不走专项规则或 NLI；是否接受只由统一相似度阈值决定，测试和文档不得宣称已解决否定翻转。
 - provider/LLM 输出伪造 messageId 时不推进错误写入。
 - 普通写入 patch 引用 `readOnlyContext` 中 item 的历史 messageId，但该 messageId 不在 `observedMessages` 中时拒绝。
-- 普通写入 patch accepted 后，Reducer 将该 patch 的 `evidenceRefs` 连同 `patch.evidenceKind` 包装为一个 `evidenceGroup`（携带 `evidenceKind` + `refs`）。
+- 普通 add/update patch accepted 后，Reducer 为 `evidenceRefs` 补入数据库复核的 `contentHash`，再连同 `patch.evidenceKind` 包装为一个 `evidenceGroup`（携带 `evidenceKind` + `refs`）；forget evidence 不追加到已移除 item。
 - 普通写入 patch 带多个 `evidenceRefs` 时，`updatedAtMessageId` 取该 group 内最大的 `messageId`。
 - read-only context 可以影响 noop/patch 判断，但不能单独支撑新增事实。
 
@@ -247,8 +247,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 上述四个 section 的 `addItem + long_term_fact` 接受；行为推断只在 profile/relationship 中允许。
 - 上述四个 section 的 `updateItem + long_term_fact` 拒绝。
 - 上述四个 section 的 `updateItem + user_correction/assistant_correction` 接受。
+- 上述四个 section 的 `forgetItem + user_forget/assistant_forget` 接受；其他 section 的 forgetItem、通用 removeItem、`forgetItem + correction` 均拒绝。
 - 对 `worldFacts`/`userProfile`/`assistantProfile`/`relationship` 分别覆盖 User 与 Assistant 消息支持 `addItem + long_term_fact` 的接受用例；不得按 role 把任一方限制为只能维护 userProfile 或 assistantProfile。
 - 上述四个 section 分别覆盖 user 消息支持 `updateItem + user_correction`、assistant 消息支持 `updateItem + assistant_correction`；evidenceKind 与数据库真实 role 不符时 `rejected: evidence_role_mismatch`。
+- 上述四个 section 分别覆盖 user 消息支持 `forgetItem + user_forget`、assistant 消息支持 `forgetItem + assistant_forget`；两种 forget kind 与真实 role 不符时同样 `rejected: evidence_role_mismatch`。
 
 ### 3.5 Cursor 推进
 
@@ -274,6 +276,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 - 同一 itemId 的合法局部更新只改目标字段。
 - 指向不存在 itemId 的操作拒绝。
+- 普通 patch accepted 后，持久化 evidence ref 包含数据库复核后的 `messageId + contentHash + quote`；Proposer 伪造 contentHash 无法写入 state。
+- correction fixture 断言 active item 保留 itemId、只渲染新 value、追加新的 correction evidenceGroup，旧 event/snapshot 不变；pre-update item 全部 evidenceGroups 的 source keys 均写 tombstone，新 correction message 不被 suppress。
+- forget fixture 先经过多次 update 和 merge，再断言 Reducer 只读取当前 item 的完整 evidenceGroups 即可收齐全部 `messageId + contentHash`；item 移除、accepted event、snapshot 与 tombstones 同事务，逐故障点均整体 rollback。
+- 同一 source tombstone 重复提交幂等；rebuild 候选只要含 suppressed source 就在清 dirty 前移除，除非同时含 messageId 更晚且未 suppressed 的 correction evidenceGroup。该例外保留修正后 item 及完整 provenance；不得为此新增 provenance graph 或遍历完整 event chain。
 - 每个 item section 都从测试注入的集中配置读取 `maxItems` 与 `maxRenderedChars`，不得使用散落硬编码值。
 - `maxItems` 未超但 apply 后 `maxRenderedChars` 超限，以及 `maxRenderedChars` 未超但 `maxItems` 超限，均进入 `deferred` 并触发 maintenance task；maintenance trigger 分别记录正确的 `dimension` 和 `limit`。
 - `updateItem` 等非 add patch 扩大语义文本并导致 `maxRenderedChars` 超限时同样经过容量门，不得只在 `addItem` 上检查。
@@ -301,11 +307,13 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 ### 3.7 Provider Adapter 与 per-target recovery
 
+- 配置加载覆盖支持/不支持 structured output 的 Provider/model：不支持者必须启动失败，不能回退到裸文本 + `JSON.parse`；支持者使用原生 schema/tool/function 并对返回值再做本地 schema 校验。
 - mock adapter 返回合法 `status: "ok"` → output 交 Reducer；成功提交时 task/status/events/state/snapshot 同事务完成。
 - proposer/tickId 不匹配、`sectionResults` 残缺或非法 → task failed、对应 target halted、ops log=`output_schema_invalid`；不交 Reducer，不推进 cursor，不增加 revision/snapshot。
 - `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，不修改 target 长期错误计数；二次仍 unable 才以 cursor-only revision 终结。
 - compactionProposer 返回 `unable_to_compact` → maintenance task failed、对应 target halted、写 ops log；不增加 revision/snapshot。
 - `safety_policy_blocked` / `llm_call_failed` → task `retry_wait`、attempt 递增、写 notBefore，target status=`retry_wait` 且 `consecutive_errors + 1`；第三次只 halt 对应 target。
+- provider 明确因最大输出长度停止时归类 `max_output_truncated`，不得落为 `output_schema_invalid`，即使响应残片可解析也不交 Reducer；它按有界 retry/backoff 处理并单独计数，且不得因此缩小 section 容量。
 - `output_schema_invalid` 是持续性错误：task failed、对应 target halted，不重试同输入。
 - 任一 target halted 时，其他 target 仍可创建/提交 task；halted target 的最后稳定 state 保留。全局 `memory_state.meta.halted` 不得重新出现。
 - resume 指定 target：对于 `retry_wait` target，重置为 `healthy`、清 error count/nextRetryAt 并重新排队可恢复 task；对于 `halted` target（compaction/replay 失败），重置为 `capacity_blocked`（不立即设 `healthy`），复用原 maintenance task 重新进入 compaction；不修改 state/revision/snapshot，也不重置其他 targets。只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。
@@ -316,6 +324,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义；恢复事务完成后 active 告警消失，并恰好产生一次包含已追平 boundary 的恢复通知。
 - 任一 target halted 不产生全局 `chatBlocked` 或 user/preset 级 halt；主聊天和其他 targets 的任务继续。resume/rebuild 维护入口可操作 halted target，普通 Observer 不可绕过。
 - halted target 的 Renderer golden 继续包含最后稳定 state，并在该 target 固定 section 组前只出现一次“该类记忆可能滞后”；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
+- 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
+- 提交前分别制造 generation、cursorBefore、当前 revision 失配：普通 proposal 不得 apply；compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
+- 指标断言至少验证 per-target calls/message、eligible、tokens/latency/cost，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration 使用稳定标签且不含原始消息正文等高基数字段。
+- 配置测试证明 capacity、scene/overdue、lagThreshold、GapBridge、quote threshold、retry/backoff、compaction/halt、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 
 ### 3.8 Renderer 稳定性（渲染回归基线）
 
@@ -336,6 +348,9 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 对每个 target 构造 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 的 gap；预算内完整 raw 注入，重复消息去重但保留 target keys。超预算只保留最近 N 条完整消息并恢复升序，单条超预算计入 omitted，不得截断或调用 LLM 压缩。
 - GapBridge omitted 必须产生 active 的持久化诊断记录并触发 degraded/“可能滞后”标记；cursor 覆盖 omitted 上界后才能 resolved。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
 - RAG context 与 `memory` segment 并列存在，不互相覆盖。
+- RAG chunk 保存全部 source `messageId + contentHash`；任一 source 命中 tombstone 时，已有 chunk 即使尚未异步删除也被查询末端过滤，重新分块跳过整条消息。多事实消息被整条排除的保守副作用应有固定 fixture。
+- Recall 候选 refs、raw window 和最终文本分别覆盖 suppression 过滤；全部 refs 被过滤的 group 不注入，suppressed raw message 不因落在相邻窗口而泄漏。
+- correction 后 Renderer 只出现新值；forget 后既不出现原 item，也不出现“已作废”占位文本。
 
 ### 3.10 迁移与恢复
 
@@ -360,6 +375,8 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - rebuild 期间再次改变 source 时，旧 rebuild 结果不得推进新 generation 的 state、cursor 或 status；worker 转而处理最新 generation/boundary。
 - RAG 与 Recall checkpoint 独立断言 `processedGeneration + processedBoundaryMessageId`；Memory targets 追平不代表 projection 追平。generation 提交前重校失败时 projection 结果 stale，实际参与 context compile 的未追平 projection 持续触发告警。
 - 一次性迁移 smoke 按“停服 → 更新 → 删除旧 Memory → raw rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
+- context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
+- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones、RAG/Recall 与 ops/debug 派生存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。
 
 ## 4. 端到端 smoke
 
@@ -373,6 +390,8 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 明确长期事实 -> 对应长期 section 新增；临时情绪 -> 不进入长期 sections。
 - 行为推断的长期特征 -> profile/relationship 新增（`long_term_fact`）；一次性动作不写入，worldFacts 不使用行为 trait 推断。
 - assistant 修正已有长期 item -> `updateItem + assistant_correction` 接受（四个长期 sections 均可）。
+- 多次更新/合并后的长期 item -> 明确 forget -> active state 原子移除并按完整 evidenceGroups suppress；随后 rebuild/RAG/Recall 均不恢复旧 source。
+- 长期 item correction -> active state 只显示新值，旧 source 从 RAG/Recall 排除，新 correction message 可正常召回。
 - `userProfile` 达到上限 -> 新增被 deferred -> compaction 在同一 section 合并重复项 -> replay 原 proposal 成功，cursor 推进。
 - compaction 无安全合并项 -> 返回 unable_to_compact -> `compaction_failed`，halt 对应 target；resume 指定 target 后复用原 maintenance task 重新尝试，成功 replay 后恢复 healthy。
 - `todos` 达到上限 -> deferred -> compaction 合并重复待办 -> replay 原 proposal 成功，cursor 推进。
