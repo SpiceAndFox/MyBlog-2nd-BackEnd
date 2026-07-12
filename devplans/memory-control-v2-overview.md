@@ -97,7 +97,9 @@ LLM 只负责观察对话并提出结构化 patch。不同记忆族使用不同 
 
 ## 6. 上下文接入边界
 
-上下文装配使用单一 `memory` segment：当最近消息窗口溢出（历史超过 `CHAT_RECENT_WINDOW_MAX_MESSAGES`）且 `memory_state` 存在、schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本。窗口未溢出，或 `memory_state` 不存在、版本不支持、schema 校验失败时，该 segment 不注入。注入门控细节见 [渲染与上下文接入](memory-control-v2/rendering-and-context.md) §2。
+上下文装配以集中配置的 Unicode 字符阈值计算 `needsMemory`，不叠加 message count、tokenizer 估算或 context 百分比。`needsMemory=true` 且 `memory_state` 存在、schema 校验通过时，单一 `memory` segment 读取结构化状态并调用 Renderer 实时生成完整 memory 文本；否则按明确原因跳过。主聊天 recent window 可跨 session 并保留 user-boundary 裁剪，Memory Observer 则按 target cursor 读取不经该裁剪的完整 raw source。
+
+普通 lagThreshold 下未达阈值的尾批允许等待后续消息；若尾批已被极长新消息挤出 recent window，per-target GapBridge 按 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 补入完整 raw messages。GapBridge 使用独立字符预算；超预算时只保留最近 N 条完整消息并持久化 omitted/保留边界，继续聊天但显式降级告警，不能静默截断或调用 LLM 临时压缩。Source rebuild 必须忽略 lagThreshold 并 force drain 到捕获边界。注入门控与 GapBridge 细节见 [渲染与上下文接入](memory-control-v2/rendering-and-context.md) §2，调度语义见 [写入协议](memory-control-v2/write-protocol.md) §2。
 
 RAG 不替代 memory control。RAG 负责从历史中找相关原文片段，Memory Control 负责维护当前稳定状态和长期档案；两者在 context compiler 层并列注入。
 
