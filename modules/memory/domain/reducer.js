@@ -53,7 +53,7 @@ function resolvePatchDueAt(patch, refs, messagesById, timeZone) {
   return resolveDueAt(expression, messagesById.get(anchorId).createdAt, timeZone);
 }
 
-function applyPatch(state, section, patch, refs, context) {
+function applyPatch(state, section, patch, refs, context, identityKey) {
   const normalized = structuredClone(patch);
   if (patch.op === "setField") {
     const ref = refs[0];
@@ -69,7 +69,8 @@ function applyPatch(state, section, patch, refs, context) {
 
   const items = sectionItems(state, section);
   if (patch.op === "addItem") {
-    const itemId = `${SECTION_PREFIX[section]}:${context.idFactory()}`;
+    const itemId = context.itemIds[identityKey] || `${SECTION_PREFIX[section]}:${context.idFactory()}`;
+    context.itemIds[identityKey] = itemId;
     const first = Math.min(...refs.map((ref) => ref.messageId));
     const last = newestMessageId(refs);
     const item = { id: itemId, text: patch.value.text, evidenceGroups: [evidenceGroup(patch, refs)], createdAtMessageId: first, updatedAtMessageId: last };
@@ -88,7 +89,8 @@ function applyPatch(state, section, patch, refs, context) {
     if (section === "todos" && sources.some((item) => item.status !== "active" || item.actor !== sources[0].actor || item.requester !== sources[0].requester || item.dueAt !== sources[0].dueAt)) {
       return { rejectReason: "invalid_state_transition" };
     }
-    const itemId = `${SECTION_PREFIX[section]}:${context.idFactory()}`;
+    const itemId = context.itemIds[identityKey] || `${SECTION_PREFIX[section]}:${context.idFactory()}`;
+    context.itemIds[identityKey] = itemId;
     const messageIds = allEvidenceMessageIds(sources);
     const item = {
       id: itemId, text: patch.value.text,
@@ -164,7 +166,7 @@ function conflictKey(section, patch) {
   return null;
 }
 
-function reduceProposal({ state, task, proposal, observedMessages, databaseMessages, now = task.now, timeZone = "UTC", config, lifecycleAnchors = {}, idFactory = () => crypto.randomUUID() }) {
+function reduceProposal({ state, task, proposal, observedMessages, databaseMessages, now = task.now, timeZone = "UTC", config, lifecycleAnchors = {}, idFactory = () => crypto.randomUUID(), identities = {}, protectedItemIds = [] }) {
   assertMemoryState(state);
   const original = structuredClone(state);
   const working = structuredClone(state);
@@ -173,7 +175,10 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
   const cleanupEvents = [];
   const seen = new Set();
   const messagesById = new Map(databaseMessages.map((message) => [message.id, message]));
-  const context = { idFactory, messagesById, timeZone, cleanupEvents, nowMs: new Date(now).getTime() };
+  const patchIds = structuredClone(identities.patchIds || {});
+  const itemIds = structuredClone(identities.itemIds || {});
+  const protectedIds = new Set(protectedItemIds);
+  const context = { idFactory, itemIds, messagesById, timeZone, cleanupEvents, nowMs: new Date(now).getTime() };
 
   for (const section of task.targetSections) {
     const result = proposal.sectionResults[section];
@@ -181,8 +186,10 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
       events.push({ eventKind: "proposal_decision", section, targetKey: task.targetKey, decision: "noop", patchId: null, op: null, evidenceKind: null, itemId: null, mergedFromItemIds: null, resultItemId: null, rejectReason: null, patchSummary: null, normalizedOperation: null });
       continue;
     }
-    for (const patch of result.patches) {
-      const patchId = idFactory();
+    for (const [patchIndex, patch] of result.patches.entries()) {
+      const identityKey = `${section}:${patchIndex}`;
+      const patchId = patchIds[identityKey] || idFactory();
+      patchIds[identityKey] = patchId;
       const schema = validatePatch(patch, section, { maintenance: task.mode === "maintenance", proposer: task.proposer });
       if (!schema.ok) {
         const reason = schema.errors.some((error) => error.path.endsWith(".quote") && error.message.includes("200")) ? "quote_too_long" : "schema_invalid";
@@ -196,9 +203,13 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
         refs = evidence.refs;
       }
       if (!isPolicyAllowed(section, patch.op, patch.evidenceKind)) { events.push(rejected(section, patch, patchId, "policy_not_allowed")); continue; }
+      if (patch.op === "mergeItems" && patch.itemIds.some((itemId) => protectedIds.has(itemId))) {
+        events.push(rejected(section, patch, patchId, "item_protected_by_pending_proposal"));
+        continue;
+      }
       const keys = [].concat(conflictKey(section, patch) || []);
       if (keys.some((key) => seen.has(key))) { events.push(rejected(section, patch, patchId, "invalid_state_transition")); continue; }
-      const applied = applyPatch(working, section, patch, refs, context);
+      const applied = applyPatch(working, section, patch, refs, context, identityKey);
       if (applied.rejectReason) { events.push(rejected(section, patch, patchId, applied.rejectReason)); continue; }
       keys.forEach((key) => seen.add(key));
       if (applied.tombstones) tombstones.push(...applied.tombstones);
@@ -215,6 +226,7 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
     return {
       outcome: "deferred", state: original, tombstones: [], cleanupEvents: [], capacityViolation: violation,
       events: [{ ...trigger, decision: "deferred", resultItemId: null, normalizedOperation: null }], snapshot: null,
+      identities: { patchIds, itemIds },
     };
   }
 
@@ -230,7 +242,7 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
     seenTombstones.add(key);
     return [{ ...entry, userId: task.userId, presetId: task.presetId, createdRevision: finalState.meta.revision }];
   });
-  return { outcome: "committable", state: finalState, events: allEvents, tombstones: committedTombstones, cleanupEvents: [...cleanupEvents, ...lifecycle.events], capacityViolation: null, snapshot: structuredClone(finalState) };
+  return { outcome: "committable", state: finalState, events: allEvents, tombstones: committedTombstones, cleanupEvents: [...cleanupEvents, ...lifecycle.events], capacityViolation: null, snapshot: structuredClone(finalState), identities: { patchIds, itemIds } };
 }
 
 module.exports = { reduceProposal, sectionItems, SECTION_TARGETS };

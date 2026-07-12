@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const { SCHEMA_VERSION, validateProposerOutput } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
 const { buildNormalEnvelope, normalDedupeKey } = require("./envelope");
+const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
@@ -24,7 +25,7 @@ function taskRow(envelope, overrides = {}) {
     not_before: null, last_error_reason: null, result_revision: null, ...overrides,
   };
 }
-function rowValue(row, snake, camel) { return row[snake] ?? row[camel]; }
+function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function numberValue(row, snake, camel, fallback = 0) { return Number(rowValue(row, snake, camel) ?? fallback); }
 function mapEvent(event, envelope, eventGroupId, index) {
   const task = envelope.task;
@@ -41,6 +42,7 @@ function mapEvent(event, envelope, eventGroupId, index) {
 
 function createNormalWritePipeline({ observer, providerAdapter, repositories, config, now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
+  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError });
 
   async function createTask(userId, presetId, intent, options = {}) {
     const create = async (client) => {
@@ -85,7 +87,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const consecutiveErrors = numberValue(target, "consecutive_errors", "consecutiveErrors") + 1;
       const retryable = RETRYABLE_ADAPTER_ERRORS.has(adapterResult.reason);
       const haltAfter = config.providerRecovery.haltAfterConsecutiveErrors;
-      const halted = !retryable || consecutiveErrors >= haltAfter;
+      const maintenanceLimitReached = envelope.task.mode === "maintenance"
+        && attempt > config.compaction.retryMax;
+      const halted = !retryable || maintenanceLimitReached
+        || (envelope.task.mode !== "maintenance" && consecutiveErrors >= haltAfter);
       const delay = retryable && !halted
         ? Math.min(config.providerRecovery.backoffMaxMs, config.providerRecovery.backoffBaseMs * (2 ** Math.max(0, attempt - 1)))
         : null;
@@ -176,7 +181,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         error.memoryOutcome = "reducer_failed";
         throw error;
       }
-      if (reduction.outcome === "deferred") return { status: "capacity_deferred", taskId: envelope.task.taskId, reduction };
+      if (reduction.outcome === "deferred") return capacity.deferNormal({ parentEnvelope: envelope, state, proposal: output, reduction, client });
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: envelope.task.cursorBefore, cursor_after: envelope.task.targetMessageId, group_kind: "proposal" }, { client });
       await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
@@ -236,6 +241,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         const identity = phaseId(envelope.task.taskId, unable ? "unable_cursor_commit" : "normal_commit");
         const existing = await repositories.audit.getEventGroup(identity);
         if (existing) return { status: "committed", taskId: envelope.task.taskId, revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
+        const capacityGroup = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "capacity_blocked"));
+        if (capacityGroup) return { status: "capacity_deferred", taskId: envelope.task.taskId, duplicate: true, reconciledCommitOutcome: true };
         return recordExecutionFailure(envelope, "commit_outcome_unknown", error);
       }
       return recordExecutionFailure(envelope, error?.memoryOutcome === "reducer_failed" ? "reducer_failed" : "transaction_failed", error);
@@ -243,6 +250,13 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   }
 
   async function processEnvelope(envelope) {
+    if (envelope.task.mode === "maintenance") return capacity.processMaintenanceEnvelope(envelope);
+    const persistedTask = repositories.runtime.getTask ? await repositories.runtime.getTask(envelope.task.taskId) : null;
+    if (TERMINAL_TASK_STATUSES.has(rowValue(persistedTask, "status", "status"))) {
+      const status = rowValue(persistedTask, "status", "status");
+      return { status: status === "succeeded" ? "committed" : status, taskId: envelope.task.taskId, revision: Number(rowValue(persistedTask, "result_revision", "resultRevision")) || null, duplicate: true };
+    }
+    if (["capacity_blocked", "replaying_original_proposal"].includes(rowValue(persistedTask, "stage", "stage"))) return capacity.resumeParent(envelope);
     const group = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId))
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
@@ -254,6 +268,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       return processEnvelope(successor);
     }
     if (result.status === "stale") result = await recordStale(envelope, result.reason);
+    if (result.maintenanceEnvelope) return capacity.processMaintenanceEnvelope(result.maintenanceEnvelope);
+    if (result.status === "capacity_deferred") return capacity.resumeParent(envelope);
     return result;
   }
 
@@ -264,7 +280,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     for (const intent of observation.eligibleTasks) results.push(await processIntent(userId, presetId, intent));
     return results;
   }
-  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, recordAdapterError });
+  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, recordAdapterError, capacity });
 }
 
 module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent };

@@ -50,6 +50,18 @@
 - 增加阶段 4 recovery fixture，以及 retry/halt、unable、successor、重启恢复、COMMIT outcome unknown、resume、逐写入点事务故障和 housekeeping 幂等测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
+## 2026-07-13：Memory Control v2 阶段 5
+
+- 实现容量阻塞原子事务：完整 normal proposal、稳定 patch/item identity 与阻塞维度持久化到 task stage payload；写入 `result_revision=null` 的 deferred 审计 group，并同事务创建带 `parent_task_id` 的 maintenance child task、更新 target 为 `capacity_blocked`，cursor 保持不动。
+- 实现 maintenance envelope、稳定 dedupe key、`compactionProposer` prompt 与原生 structured-output schema；维护输入只暴露单个 writable section，不携带 raw messages、evidenceGroups 或 cursor。
+- 实现 compaction apply：只接受同 section `mergeItems + memory_compaction`，继承 source evidenceGroups，独立提交 revision/event group/完整 snapshot，且不推进 raw-message cursor。
+- 实现 pending proposal item 保护：compaction 与所有未终结容量 proposal 引用的 itemId 相交时以 `item_protected_by_pending_proposal` 拒绝；全部 patch 无法应用时 halt 对应 target。
+- 实现原 proposal 确定性 replay：不重新调用 normal Proposer，在执行时最新 revision 上重新校验 generation、cursor、活动 proposal、evidence/source 与容量，复用首次冻结的 patch/item identity，成功后原子推进 cursor 并恢复 target healthy。
+- 实现联合 target 多 section 的顺序维护、同 section 有界尝试、`unable_to_compact` / `capacity_still_exceeded` halt、compaction 独立 retry 上限，以及容量类人工 resume 创建递增 `resume_epoch` 的新 child task。
+- 重启与重复 delivery 会从 durable stage 恢复 maintenance/replay；已完成 replay 不重复调用 Provider，不重复创建 revision/event/snapshot/cursor。
+- 增加阶段 5 recovery fixture，以及 deferred → compaction → replay、pending-item 保护、unable/halt/resume、稳定 identity、Provider schema/prompt 与重复 delivery 测试。
+- `npm run test:memory-v2` 与 `npm test` 全部通过。
+
 ## 尚未执行
 
-- 尚未开始 roadmap 阶段 5。
+- 尚未开始 roadmap 阶段 6。

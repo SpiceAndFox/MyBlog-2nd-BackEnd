@@ -81,4 +81,38 @@ function normalDedupeKey(task) {
   return ["normal", task.sourceGeneration, task.targetKey, task.cursorBefore, task.targetMessageId].join(":");
 }
 
-module.exports = { READ_ONLY, buildStateViews, buildNormalEnvelope, normalDedupeKey, redactItem, redactScene };
+function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
+  const path = sectionPath(section);
+  const writableState = {};
+  putPath(writableState, path, readPath(state, path, true, config.overdueTodos.maxRenderedItems));
+  return {
+    task: {
+      taskId,
+      tickId,
+      userId: parentEnvelope.task.userId,
+      presetId: parentEnvelope.task.presetId,
+      schemaVersion: SCHEMA_VERSION,
+      sourceGeneration: parentEnvelope.task.sourceGeneration,
+      baseRevision: state.meta.revision,
+      targetKey: parentEnvelope.task.targetKey,
+      targetMessageId: parentEnvelope.task.targetMessageId,
+      proposer: "compactionProposer",
+      mode: "maintenance",
+      targetSections: [section],
+      observedMessageIds: [],
+      trigger: { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit },
+      now: new Date(parentEnvelope.task.now).toISOString(),
+      parentTaskId: parentEnvelope.task.taskId,
+      resumeEpoch,
+    },
+    writableState,
+    readOnlyContext: {},
+    observedMessages: [],
+  };
+}
+
+function maintenanceDedupeKey(task) {
+  return ["maintenance", task.sourceGeneration, task.parentTaskId, task.targetSections[0], task.resumeEpoch].join(":");
+}
+
+module.exports = { READ_ONLY, buildStateViews, buildNormalEnvelope, buildMaintenanceEnvelope, normalDedupeKey, maintenanceDedupeKey, redactItem, redactScene };

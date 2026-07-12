@@ -35,7 +35,43 @@ function patchSchema(proposer, section, op) {
   }
   return { type: "object", additionalProperties: false, required, properties };
 }
-function buildOutputSchema(proposer) {
+function compactionPatchSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["op", "itemIds", "value", "evidenceKind"],
+    properties: {
+      op: { const: "mergeItems" },
+      itemIds: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string", minLength: 1 } },
+      value: textValue,
+      evidenceKind: { const: "memory_compaction" },
+    },
+  };
+}
+
+function buildOutputSchema(proposer, targetSections) {
+  if (proposer === "compactionProposer") {
+    if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");
+    const [section] = targetSections;
+    return {
+      name: `memory_compaction_${section}`,
+      strict: true,
+      schema: {
+        type: "object", additionalProperties: false, required: ["tickId", "proposer", "sectionResults"],
+        properties: {
+          tickId: { type: "integer" }, proposer: { const: "compactionProposer" },
+          sectionResults: {
+            type: "object", additionalProperties: false, required: [section], properties: {
+              [section]: { oneOf: [
+                { type: "object", additionalProperties: false, required: ["status", "patches"], properties: { status: { const: "patches" }, patches: { type: "array", minItems: 1, items: compactionPatchSchema() } } },
+                { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "unable_to_compact" } } },
+              ] },
+            },
+          },
+        },
+      },
+    };
+  }
   const target = Object.values(TARGETS).find((entry) => entry.proposer === proposer);
   if (!target || !OPS[proposer]) throw new Error(`Unknown normal Memory proposer: ${proposer}`);
   const sectionProperties = {};

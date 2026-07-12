@@ -11,7 +11,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       const envelopeResult = validateTaskEnvelope(envelope);
       if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
       const { task } = envelope;
-      const schema = buildOutputSchema(task.proposer);
+      const schema = buildOutputSchema(task.proposer, task.targetSections);
       let response;
       try {
         response = await invokeStructured({

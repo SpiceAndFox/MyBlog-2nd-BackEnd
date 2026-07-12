@@ -21,6 +21,14 @@ test("output schema is target-specific and requires every joint section", () => 
   assert.equal(schema.properties.sectionResults.additionalProperties, false);
 });
 
+test("compaction output schema is maintenance-only and section-specific", () => {
+  const schema = buildOutputSchema("compactionProposer", ["todos"]).schema;
+  assert.deepEqual(schema.properties.sectionResults.required, ["todos"]);
+  const resultVariants = schema.properties.sectionResults.properties.todos.oneOf;
+  assert.equal(resultVariants[0].properties.patches.items.properties.op.const, "mergeItems");
+  assert.equal(resultVariants[1].properties.status.const, "unable_to_compact");
+});
+
 test("Provider Adapter accepts valid native structured output", async () => {
   let request;
   const adapter = createMemoryProviderAdapter({

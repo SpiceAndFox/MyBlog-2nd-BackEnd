@@ -8,6 +8,7 @@ const FILES = Object.freeze({
   episodeProposer: "episode-proposer.md",
   profileRelationshipProposer: "profile-relationship-proposer.md",
   worldFactProposer: "world-fact-proposer.md",
+  compactionProposer: "compaction-proposer.md",
 });
 async function loadProposerPrompt(proposer) {
   const file = FILES[proposer];

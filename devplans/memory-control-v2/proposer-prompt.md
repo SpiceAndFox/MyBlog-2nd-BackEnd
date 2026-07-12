@@ -8,13 +8,13 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 
 首版至少拆出以下 prompt：
 
-- `prompts/memory/current-state-proposer.md`
-- `prompts/memory/todo-proposer.md`
-- `prompts/memory/agreement-proposer.md`
-- `prompts/memory/episode-proposer.md`
-- `prompts/memory/profile-relationship-proposer.md`
-- `prompts/memory/world-fact-proposer.md`
-- `prompts/memory/compaction-proposer.md`
+- `current-state-proposer.md`
+- `todo-proposer.md`
+- `agreement-proposer.md`
+- `episode-proposer.md`
+- `profile-relationship-proposer.md`
+- `world-fact-proposer.md`
+- `compaction-proposer.md`
 
 ## 2. Proposer Prompt 设计
 
@@ -192,38 +192,38 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 ### todoProposer（todos）
 
-| op             | path   | itemId | itemIds | value      | evidenceRefs |
-| -------------- | ------ | ------ | ------- | ---------- | ------------ |
-| `addItem`      | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
-| `updateItem`   | 不需要 | 必填   | 不需要  | 必填       | 必填         |
-| `completeTodo` | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
-| `cancelTodo`   | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
-| `expireTodo`   | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
+| op             | path   | itemId | itemIds | value  | evidenceRefs |
+| -------------- | ------ | ------ | ------- | ------ | ------------ |
+| `addItem`      | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
+| `updateItem`   | 不需要 | 必填   | 不需要  | 必填   | 必填         |
+| `completeTodo` | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
+| `cancelTodo`   | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
+| `expireTodo`   | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
 
 > `expireTodo` 是 Proposer 观察到用户澄清“不再需要”时输出的终止 patch（evidenceKind: `todo_expiration`），需要 evidenceRefs。Wall-clock 到达 `dueAt` 不调用 `expireTodo`、也不删除 item；Reducer 原位设置 `status=overdue` 并写 `system_cleanup: todo_became_overdue`。
 
 ### agreementProposer（standingAgreements）
 
-| op                | path   | itemId | itemIds | value      | evidenceRefs |
-| ----------------- | ------ | ------ | ------- | ---------- | ------------ |
-| `addItem`         | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
-| `updateItem`      | 不需要 | 必填   | 不需要  | 必填       | 必填         |
-| `cancelAgreement` | 不需要 | 必填   | 不需要  | 不需要     | 必填         |
+| op                | path   | itemId | itemIds | value  | evidenceRefs |
+| ----------------- | ------ | ------ | ------- | ------ | ------------ |
+| `addItem`         | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
+| `updateItem`      | 不需要 | 必填   | 不需要  | 必填   | 必填         |
+| `cancelAgreement` | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
 
 ### episodeProposer（recentEpisodes, milestones）
 
-| op           | path   | itemId | itemIds | value      | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ---------- | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填       | 必填         |
+| op           | path   | itemId | itemIds | value | evidenceRefs |
+| ------------ | ------ | ------ | ------- | ----- | ------------ |
+| `addItem`    | 不需要 | 不需要 | 不需要  | 必填  | 必填         |
+| `updateItem` | 不需要 | 必填   | 不需要  | 必填  | 必填         |
 
 ### profileRelationshipProposer（userProfile, assistantProfile, relationship）
 
-| op           | path   | itemId | itemIds | value      | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ---------- | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填       | 必填         |
-| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出     | 必填         |
+| op           | path   | itemId | itemIds | value  | evidenceRefs |
+| ------------ | ------ | ------ | ------- | ------ | ------------ |
+| `addItem`    | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
+| `updateItem` | 不需要 | 必填   | 不需要  | 必填   | 必填         |
+| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出 | 必填         |
 
 patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `relationship` 确定。
 
@@ -231,19 +231,19 @@ patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `re
 
 ### worldFactProposer（worldFacts）
 
-| op           | path   | itemId | itemIds | value      | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ---------- | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填       | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填       | 必填         |
-| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出     | 必填         |
+| op           | path   | itemId | itemIds | value  | evidenceRefs |
+| ------------ | ------ | ------ | ------- | ------ | ------------ |
+| `addItem`    | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
+| `updateItem` | 不需要 | 必填   | 不需要  | 必填   | 必填         |
+| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出 | 必填         |
 
 `worldFacts.addItem + long_term_fact` 可由 User 或 Assistant 的真实消息支持；`updateItem` 使用与真实发言方一致的 `user_correction` / `assistant_correction`，`forgetItem` 使用与真实发言方一致的 `user_forget` / `assistant_forget`。
 
 ### compactionProposer（维护模式）
 
-| op           | path          | itemId | itemIds | value      | evidenceRefs |
-| ------------ | ------------- | ------ | ------- | ---------- | ------------ |
-| `mergeItems` | 不需要       | 不需要 | 必填    | 必填(text) | 不输出       |
+| op           | path   | itemId | itemIds | value      | evidenceRefs |
+| ------------ | ------ | ------ | ------- | ---------- | ------------ |
+| `mergeItems` | 不需要 | 不需要 | 必填    | 必填(text) | 不输出       |
 
 `evidenceKind` 只能是 `memory_compaction`。compactionProposer 输出状态为 `patches | unable_to_compact`。Reducer 根据 itemIds 从 source items 继承 evidenceGroups。
 
@@ -380,7 +380,12 @@ LLM 只提取“两周”= 14 天。Reducer 以 message 130 的数据库 `create
 ```json
 {
   "op": "addItem",
-  "value": { "text": "去玩", "actor": "both", "requester": "user", "dueAt": { "mode": "absolute", "date": "2026-07-10" } },
+  "value": {
+    "text": "去玩",
+    "actor": "both",
+    "requester": "user",
+    "dueAt": { "mode": "absolute", "date": "2026-07-10" }
+  },
   "evidenceKind": "user_commitment",
   "evidenceRefs": [{ "messageId": 133, "quote": "我们十号去玩吧" }]
 }
