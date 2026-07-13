@@ -43,15 +43,15 @@ function proposalItemIds(proposal) {
   return Object.values(proposal.sectionResults).flatMap((result) => (result.patches || []).flatMap((patch) => [patch.itemId, ...(patch.itemIds || [])].filter(Boolean)));
 }
 
-function createCapacityMaintenance({ repositories, providerAdapter, config, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry } = {}) {
+function createCapacityMaintenance({ repositories, providerAdapter, config, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages } = {}) {
   if (!repositories?.withTransaction || !repositories.runtime || !providerAdapter) throw new Error("Capacity maintenance dependencies are required");
 
-  async function appendOps(envelope, outcome, detail, client) {
+  async function appendOps(envelope, outcome, attempt, detail, client) {
     return repositories.runtime.appendOpsLog({
       user_id: envelope.task.userId, preset_id: envelope.task.presetId,
       source_generation: envelope.task.sourceGeneration, task_id: envelope.task.taskId,
       tick_id: envelope.task.tickId, target_key: envelope.task.targetKey, section: envelope.task.targetSections[0],
-      proposer: envelope.task.proposer, outcome, attempt: 0, detail: detail ?? null,
+      proposer: envelope.task.proposer, outcome, attempt, detail: detail ?? null,
     }, { client });
   }
 
@@ -66,7 +66,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
         status: "capacity_blocked", consecutiveErrors: 0, lastErrorReason: stage,
         lastTaskId: taskId, nextRetryAt: null,
       }, { client });
-      await appendOps(envelope, stage, { message: String(error?.message || stage).slice(0, 500) }, client);
+      await appendOps(envelope, stage, attempt, { message: String(error?.message || stage).slice(0, 500) }, client);
       return { status: "queued", outcome: stage, taskId };
     });
   }
@@ -82,7 +82,11 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     const existing = await repositories.audit.getEventGroup(groupId, { client });
     if (existing) {
       const task = await repositories.runtime.getTaskForUpdate(parentEnvelope.task.taskId, { client });
-      return { status: "capacity_deferred", taskId: parentEnvelope.task.taskId, duplicate: true, maintenanceTaskId: rowValue(task, "stage_payload", "stagePayload")?.maintenanceTaskId };
+      const payload = rowValue(task, "stage_payload", "stagePayload");
+      if (!payload?.maintenanceTaskId || !payload?.blockingViolation || !payload?.identities) {
+        throw new Error("Capacity-blocked audit phase is missing its durable maintenance chain");
+      }
+      return { status: "capacity_deferred", taskId: parentEnvelope.task.taskId, duplicate: true, maintenanceTaskId: payload.maintenanceTaskId };
     }
     const child = await createChild(parentEnvelope, state, reduction.capacityViolation, 0, client);
     const maintenanceTaskId = child.task.taskId;
@@ -110,13 +114,17 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
   async function halt(envelope, reason, { parent = false } = {}) {
     return repositories.withTransaction(async (client) => {
       const taskId = parent ? envelope.task.parentTaskId : envelope.task.taskId;
-      if (parent) await repositories.runtime.updateTask(taskId, { status: "failed", stage: "replay_failed", last_error_reason: reason }, { client });
-      else await repositories.runtime.updateTask(taskId, { status: "failed", stage: "compaction_failed", last_error_reason: reason }, { client });
+      const task = await repositories.runtime.getTaskForUpdate(taskId, { client });
+      if (!task) throw new Error("Memory task not found while halting capacity workflow");
+      const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
+      if (parent) await repositories.runtime.updateTask(taskId, { status: "failed", stage: "replay_failed", attempt, last_error_reason: reason }, { client });
+      else await repositories.runtime.updateTask(taskId, { status: "failed", stage: "compaction_failed", attempt, last_error_reason: reason }, { client });
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
         targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted",
         consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: taskId, nextRetryAt: null,
       }, { client });
-      await appendOps(envelope, reason, { parentTaskId: envelope.task.parentTaskId }, client);
+      const opsEnvelope = parent ? rowValue(task, "task_payload", "taskPayload") : envelope;
+      await appendOps(opsEnvelope, reason, attempt, { parentTaskId: envelope.task.parentTaskId }, client);
       return { status: "halted", reason, taskId };
     });
   }
@@ -137,7 +145,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       if (task && !TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) await repositories.runtime.updateTask(envelope.task.taskId, { status: "cancelled", stage: "stale", last_error_reason: reason }, { client });
       const parent = await repositories.runtime.getTaskForUpdate(envelope.task.parentTaskId, { client });
       if (parent && !TERMINAL_STATUSES.has(rowValue(parent, "status", "status"))) await repositories.runtime.updateTask(envelope.task.parentTaskId, { status: "cancelled", stage: "stale", last_error_reason: reason }, { client });
-      await appendOps(envelope, "stale_result", { reason }, client);
+      await appendOps(envelope, "stale_result", Number(rowValue(task, "attempt", "attempt") ?? 0), { reason }, client);
       return { status: "stale", reason, taskId: envelope.task.taskId };
     });
   }
@@ -146,9 +154,10 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: rowValue(task, "status", "status"), duplicate: true, taskId: envelope.task.taskId };
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { persistedProposal: { unableToCompact: true } }, last_error_reason: "unable_to_compact" }, { client });
+      const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
+      await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { persistedProposal: { unableToCompact: true } }, attempt, last_error_reason: "unable_to_compact" }, { client });
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted", consecutiveErrors: 0, lastErrorReason: "unable_to_compact", lastTaskId: envelope.task.taskId, nextRetryAt: null }, { client });
-      await appendOps(envelope, "unable_to_compact", { parentTaskId: envelope.task.parentTaskId }, client);
+      await appendOps(envelope, "unable_to_compact", attempt, { parentTaskId: envelope.task.parentTaskId }, client);
       return { status: "halted", reason: "unable_to_compact", taskId: envelope.task.taskId };
     });
   }
@@ -156,11 +165,21 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
   async function commitCompaction(envelope, output) {
     return repositories.withTransaction(async (client) => {
       const groupId = stablePhaseId(envelope.task.taskId, "compaction_commit");
-      const existing = await repositories.audit.getEventGroup(groupId, { client });
-      if (existing) return { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true };
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       const parent = await repositories.runtime.getTaskForUpdate(envelope.task.parentTaskId, { client });
       if (!task || !parent) throw new Error("Compaction task chain is incomplete");
+      const existing = await repositories.audit.getEventGroup(groupId, { client });
+      if (existing) {
+        if (existing.result_revision !== null && existing.result_revision !== undefined) {
+          return { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true };
+        }
+        return {
+          status: "halted",
+          reason: rowValue(task, "last_error_reason", "lastErrorReason") || "compaction_failed",
+          taskId: envelope.task.taskId,
+          duplicate: true,
+        };
+      }
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: rowValue(task, "stage", "stage"), duplicate: true };
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
@@ -169,7 +188,21 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "compacting", stage_payload: { persistedProposal: output } }, { client });
       const reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: [], databaseMessages: [], now: envelope.task.now, config, idFactory, protectedItemIds: await pendingProtectedIds(envelope, client) });
       const accepted = reduction.events.filter((event) => event.decision === "accepted");
-      if (!accepted.length) return { status: "compaction_rejected", allProtected: reduction.events.length > 0 && reduction.events.every((event) => event.rejectReason === "item_protected_by_pending_proposal"), events: reduction.events };
+      if (!accepted.length) {
+        const allProtected = reduction.events.length > 0 && reduction.events.every((event) => event.rejectReason === "item_protected_by_pending_proposal");
+        const reason = allProtected ? "unable_to_compact" : "compaction_failed";
+        const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
+        await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: null, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
+        await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
+        await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { persistedProposal: output }, attempt, last_error_reason: reason }, { client });
+        await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
+          targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration,
+          status: "halted", consecutiveErrors: 0, lastErrorReason: reason,
+          lastTaskId: envelope.task.taskId, nextRetryAt: null,
+        }, { client });
+        await appendOps(envelope, reason, attempt, { parentTaskId: envelope.task.parentTaskId }, client);
+        return { status: "halted", reason, taskId: envelope.task.taskId, events: reduction.events };
+      }
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
       await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
@@ -195,7 +228,9 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       const state = await repositories.state.getState(parentEnvelope.task.userId, parentEnvelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== parentEnvelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
       if ((state.meta.targetCursors[parentEnvelope.task.targetKey] ?? 0) !== parentEnvelope.task.cursorBefore) return { status: "stale", reason: "cursor_mismatch" };
-      const databaseMessages = await repositories.source.getByIds(parentEnvelope.task.userId, parentEnvelope.task.presetId, parentEnvelope.task.observedMessageIds, { client });
+      const databaseMessages = loadEvidenceMessages
+        ? await loadEvidenceMessages(parentEnvelope, client)
+        : await repositories.source.getByIds(parentEnvelope.task.userId, parentEnvelope.task.presetId, parentEnvelope.task.observedMessageIds, { client });
       const reduction = reduceProposal({ state, task: parentEnvelope.task, proposal: payload.persistedProposal, observedMessages: parentEnvelope.observedMessages, databaseMessages, now: parentEnvelope.task.now, config, idFactory, identities: payload.identities });
       if (reduction.outcome === "deferred") {
         if ((payload.attemptedSections || []).includes(reduction.capacityViolation.section)) return { status: "replay_failed", reason: "capacity_still_exceeded" };
@@ -237,12 +272,23 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     } catch (error) {
       if (error?.commitOutcomeUnknown) {
         const existing = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "compaction_commit"));
-        if (existing) result = { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
+        if (existing?.result_revision !== null && existing?.result_revision !== undefined) {
+          result = { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
+        } else if (existing) {
+          const task = await repositories.runtime.getTask(envelope.task.taskId);
+          result = {
+            status: "halted",
+            reason: rowValue(task, "last_error_reason", "lastErrorReason") || "compaction_failed",
+            taskId: envelope.task.taskId,
+            duplicate: true,
+            reconciledCommitOutcome: true,
+          };
+        }
         else return recordTransactionFailure(envelope, envelope.task.taskId, "commit_outcome_unknown", error);
       } else return recordTransactionFailure(envelope, envelope.task.taskId, "transaction_failed", error);
     }
     if (result.status === "stale") return markStale(envelope, result.reason);
-    if (result.status === "compaction_rejected") return halt(envelope, result.allProtected ? "unable_to_compact" : "compaction_failed");
+    if (result.status === "halted") return result;
     const parent = await repositories.runtime.getTask(envelope.task.parentTaskId);
     let advanced;
     try {

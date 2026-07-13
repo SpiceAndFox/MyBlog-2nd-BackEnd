@@ -136,6 +136,8 @@ Resume 不改 `memory_state`，不产生 revision/snapshot，不重置其他 tar
 
 每个 task phase 使用稳定的 event group identity。同一 phase/task/patchId 的重复 delivery、进程恢复或提交结果不确定时，先读取既有终态：已提交则返回原结果，未提交才继续；不得产生第二组 events、第二个 state revision、重复 snapshot 或重复 cursor 推进。
 
+Normal commit 以 durable task 行锁作为 phase 幂等入口：事务必须先锁 task，再查询 normal-commit 与 capacity-blocked 的稳定 event group identity。若 capacity-blocked 审计 group 已存在，只能读取并返回既有 `maintenanceTaskId/blockingViolation/identities`，禁止先把 task 改回 `reducing` 或覆盖 `stage_payload`。发现 task 已处于 capacity stage 但缺少对应稳定 group/维护链时视为内部不变量损坏，不得猜测重建。
+
 运行失败 outcome：
 
 - `reducer_failed`：Reducer 执行过程中发生纯代码异常；不增加 revision/snapshot。

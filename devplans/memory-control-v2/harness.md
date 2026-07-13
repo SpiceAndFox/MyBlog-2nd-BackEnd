@@ -383,7 +383,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - cutover 必须要求显式停服确认；若 v1 派生数据尚有 residue，还必须显式确认并执行独立清理。v1 已提前清除时重复清理应幂等。后续 rebuild/校验失败必须返回 `canStartService=false`，不得因 v1 已退役而放宽启服门。
 - 迁移最终校验逐 scope 覆盖：raw boundary 未变化、六个 target 均为同 generation 的 healthy 且 cursor 追平、authority state 与当前 revision snapshot 完全一致、generation 内 event/snapshot revision chain 连续并到达 authority revision、RAG/Recall checkpoint 均为同 generation 且追平 captured boundary。任一失败都必须返回失败报告并保持 `canStartService=false`。
 - context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
-- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics（§9.9）、recovery notifications（§9.10）、RAG/Recall 与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
+- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics 及其 projection checkpoint（§9.9）、recovery notifications（§9.10）、RAG/Recall 与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
 
 ## 4. 端到端 smoke
 

@@ -50,7 +50,13 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
     legacy: { checkpointTable: false, columns: [] },
   };
   for (const column of base.columns) {
+    if (column.table_name === "chat_context_quality_diagnostics" && column.column_name === "detail") {
+      column.data_type = "jsonb"; column.is_nullable = "NO"; column.column_default = "'{}'::jsonb";
+    }
     if (column.table_name === "chat_memory_recovery_notifications" && column.column_name === "boundary_message_id") {
+      column.is_nullable = "NO"; column.column_default = "0";
+    }
+    if (column.table_name === "chat_memory_diagnostic_projection_checkpoints" && column.column_name === "processed_event_id") {
       column.is_nullable = "NO"; column.column_default = "0";
     }
     if (column.table_name === "chat_context_quality_diagnostics" && ["truncated", "resolved"].includes(column.column_name)) column.is_nullable = "NO";
@@ -110,6 +116,13 @@ test("User time-zone migration backfills non-terminal immutable task payloads", 
   assert.match(sql, /ADD COLUMN IF NOT EXISTS time_zone TEXT NOT NULL DEFAULT 'UTC'/i);
   assert.match(sql, /jsonb_set\(task\.task_payload, '\{task,userTimeZone\}'/i);
   assert.match(sql, /task\.status IN \('queued', 'running', 'retry_wait'\)/i);
+});
+
+test("diagnostic projection migration adds generic detail and a durable event checkpoint", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../migrations/memory/004-add-diagnostic-projection-checkpoints.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS detail JSONB NOT NULL/i);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_memory_diagnostic_projection_checkpoints/i);
+  assert.match(sql, /processed_event_id BIGINT NOT NULL DEFAULT 0/i);
 });
 
 test("fresh RAG schema includes the embedding text required by the v2 projection adapter", () => {

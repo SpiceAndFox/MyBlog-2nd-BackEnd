@@ -10,6 +10,7 @@ const { createMemoryContextAssembly } = require("./application/contextAssembly")
 const { createMemorySourceRebuild } = require("./application/sourceRebuild");
 const { createMemoryStateRecovery } = require("./application/stateRecovery");
 const { createProjectionDrain } = require("./application/projectionDrain");
+const { createDiagnosticProjection } = require("./application/diagnosticProjection");
 const { createMemoryRetention } = require("./application/retention");
 const { createPrivacyHardDelete } = require("./application/privacyHardDelete");
 const { createMemoryMigration } = require("./application/migration");
@@ -40,6 +41,7 @@ module.exports = Object.freeze({
   createMemorySourceRebuild,
   createMemoryStateRecovery,
   createProjectionDrain,
+  createDiagnosticProjection,
   createDefaultProjectionDrain(projectionKey, adapter) {
     return createProjectionDrain({ repositories, projectionKey, adapter });
   },

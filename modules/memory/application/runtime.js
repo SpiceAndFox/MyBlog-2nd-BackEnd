@@ -9,6 +9,7 @@ const { createStructuredTransport } = require("../infrastructure/providers/struc
 const { runStructuredOutputPreflight } = require("../infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("../prompts");
 const { createMemoryMetrics } = require("./metrics");
+const { createDiagnosticProjection } = require("./diagnosticProjection");
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -79,6 +80,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
   const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError: onBackgroundError });
   const housekeeping = createMemoryHousekeeping({ repositories, config, enqueueByKey });
+  const diagnosticProjection = repositories.diagnosticProjection
+    ? createDiagnosticProjection({ repositories })
+    : null;
   let projectionPollTimer = null;
   let projectionPollRunning = false;
   let taskPollTimer = null;
@@ -104,6 +108,17 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function drainProjectionsNow(userId, presetId) {
     const results = {};
+    if (diagnosticProjection) {
+      const startedAt = performance.now();
+      try {
+        results.diagnostics = await diagnosticProjection.syncScope(userId, presetId);
+        metrics.observe("memory_projection_duration_ms", { projectionKey: "diagnostics", status: results.diagnostics.status }, performance.now() - startedAt);
+      } catch (error) {
+        results.diagnostics = { status: "failed", reason: String(error?.code || error?.name || "projection_failed").slice(0, 200) };
+        onBackgroundError?.(error);
+        metrics.observe("memory_projection_duration_ms", { projectionKey: "diagnostics", status: "failed" }, performance.now() - startedAt);
+      }
+    }
     for (const projectionKey of ["rag", "recall"]) {
       const drain = projectionDrains[projectionKey];
       if (!drain?.drain) continue;

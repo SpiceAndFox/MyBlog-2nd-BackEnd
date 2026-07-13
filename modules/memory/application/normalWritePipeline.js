@@ -7,6 +7,10 @@ const { sourceKey } = require("../domain/suppression");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
+const NORMAL_REDUCTION_STAGES = new Set([
+  "proposing", "proposal_persisted", "provider_error", "schema_invalid_retry",
+  "context_expansion", "resumed", "transaction_failed", "commit_outcome_unknown",
+]);
 
 function phaseId(taskId, phase = "normal_commit") {
   const hex = crypto.createHash("sha256").update(`${taskId}:${phase}`).digest("hex").slice(0, 32).split("");
@@ -50,7 +54,28 @@ function mapEvent(event, envelope, eventGroupId, index) {
 
 function createNormalWritePipeline({ observer, providerAdapter, repositories, config, metrics, monotonicNow = () => performance.now(), now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
-  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError, proposeWithSchemaRetry });
+
+  async function loadEvidenceMessages(envelope, client) {
+    const databaseMessages = await repositories.source.getByIds(
+      envelope.task.userId,
+      envelope.task.presetId,
+      envelope.task.observedMessageIds,
+      { client },
+    );
+    const tombstones = repositories.sidecars?.listTombstones
+      ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, {
+        messageIds: envelope.task.observedMessageIds,
+        client,
+      })
+      : [];
+    const suppressedKeys = new Set(tombstones.map((row) => sourceKey(
+      row.message_id ?? row.messageId,
+      row.content_hash ?? row.contentHash,
+    )));
+    return databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
+  }
+
+  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages });
 
   async function createTask(userId, presetId, intent, options = {}) {
     const create = async (client) => {
@@ -249,22 +274,42 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     if (Object.values(output.sectionResults).some((result) => result.status === "unable_to_decide")) return handleUnableToDecide(envelope, output);
     return repositories.withTransaction(async (client) => {
       const groupId = phaseId(envelope.task.taskId);
-      const existing = await repositories.audit.getEventGroup(groupId, { client });
-      if (existing) return { status: "committed", taskId: envelope.task.taskId, revision: Number(existing.result_revision), duplicate: true };
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found during commit");
+      const existing = await repositories.audit.getEventGroup(groupId, { client });
+      if (existing) return { status: "committed", taskId: envelope.task.taskId, revision: Number(existing.result_revision), duplicate: true };
+      const capacityGroup = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "capacity_blocked"), { client });
+      if (capacityGroup) {
+        const stagePayload = rowValue(task, "stage_payload", "stagePayload");
+        if (!stagePayload?.maintenanceTaskId || !stagePayload?.blockingViolation || !stagePayload?.identities) {
+          const error = new Error("Capacity-blocked task is missing its durable maintenance chain");
+          error.memoryOutcome = "reducer_failed";
+          throw error;
+        }
+        return {
+          status: "capacity_deferred",
+          taskId: envelope.task.taskId,
+          maintenanceTaskId: stagePayload.maintenanceTaskId,
+          duplicate: true,
+        };
+      }
       if (TERMINAL_TASK_STATUSES.has(task.status)) return { status: task.status, taskId: envelope.task.taskId, revision: task.result_revision ? Number(task.result_revision) : null, duplicate: true };
+      if (["capacity_blocked", "replaying_original_proposal"].includes(rowValue(task, "stage", "stage"))) {
+        const error = new Error("Capacity task stage exists without its stable audit phase");
+        error.memoryOutcome = "reducer_failed";
+        throw error;
+      }
+      if (!NORMAL_REDUCTION_STAGES.has(rowValue(task, "stage", "stage"))) {
+        const error = new Error(`Normal task cannot reduce from stage ${rowValue(task, "stage", "stage")}`);
+        error.memoryOutcome = "reducer_failed";
+        throw error;
+      }
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch", taskId: envelope.task.taskId };
       if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== envelope.task.cursorBefore) return { status: "stale", reason: "cursor_mismatch", taskId: envelope.task.taskId };
       if (state.meta.revision !== envelope.task.baseRevision) return { status: "successor_required", taskId: envelope.task.taskId, currentRevision: state.meta.revision };
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "reducing", stage_payload: { persistedProposal: output } }, { client });
-      const databaseMessages = await repositories.source.getByIds(envelope.task.userId, envelope.task.presetId, envelope.task.observedMessageIds, { client });
-      const tombstones = repositories.sidecars?.listTombstones
-        ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, { messageIds: envelope.task.observedMessageIds, client })
-        : [];
-      const suppressedKeys = new Set(tombstones.map((row) => sourceKey(row.message_id ?? row.messageId, row.content_hash ?? row.contentHash)));
-      const effectiveDatabaseMessages = databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
+      const effectiveDatabaseMessages = await loadEvidenceMessages(envelope, client);
       let reduction;
       try {
         reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: envelope.observedMessages, databaseMessages: effectiveDatabaseMessages, now: envelope.task.now, timeZone: envelope.task.userTimeZone, config, metrics, idFactory });

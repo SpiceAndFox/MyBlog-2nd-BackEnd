@@ -185,9 +185,9 @@ Evidence role 使用数据库真实消息校验：带 `user_` / `assistant_` 发
   - `todos.addItem`：`value` 必须包含 `text`、`actor`、`requester`；可选 `dueAt` 表达式，缺省时持久化为 `null`。
   - `todos.updateItem`：`value` 至少包含 `dueChange`，并可包含 `text`、`actor`、`requester`。`dueChange` 是显式判别 union：`{ "mode": "keep" }`、`{ "mode": "clear" }` 或 `{ "mode": "set", "dueAt": <表达式> }`；禁止用字段省略同时表达“不修改”和“清空”。
   - `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或 `{ "mode": "relative", "days"?: N, "months"?: N, "years"?: N }`。relative 的三个时长字段至少出现一个，计算顺序为 `years → months → days`。
-  - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按该固化时区做日历运算。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
+  - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按该固化时区做日历运算。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。日历运算保留 anchor 的本地时、分、秒和毫秒；结果落入 DST overlap 时选择较早 instant，落入 DST gap 时按 transition gap 向后顺延（Temporal `compatible` 语义）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
 - `evidenceRefs`：除 `mergeItems` 外，Proposer patch 至少包含一个 `{ messageId, quote }`。Reducer 自行触发的 todo/scene lifecycle 变化不是 Proposer patch，使用 system cleanup event。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `observedMessages`（见 §5）。对会写入 item 的普通 patch，Reducer 将该数组连同 `patch.evidenceKind` 包装成一个新的 `evidenceGroup`，并为持久化 refs 补入已校验的数据库 `contentHash`。`forgetItem` 的 evidenceRefs 证明本次 forget 指令；被 suppress 的 source 则从目标 item 的既有完整 `evidenceGroups` 收集，不能由 Proposer 自报。
-- `scene.setField`/`scene.clearField` 的 `evidenceRefs` 必须恰好 1 条。Reducer 将其写入目标字段的 `evidenceRef`。
+- `scene.setField`/`scene.clearField` 的 `evidenceRefs` 必须恰好 1 条。`setField` 将已校验 ref 写入目标字段的 `evidenceRef`；`clearField` 将当前字段重置为 `{ value:null, evidenceRef:null, updatedAtMessageId:null }`，clear 指令证据保留在 accepted event 的 `patch_summary/normalized_operation` 中，不作为“当前空值”的 provenance。
 - `quote`：必须是能够支持 patch 的最短连续原文片段，最多 200 个 Unicode code points；Reducer 不自动裁剪，完整校验见 §7。
 - `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。Proposer 不输出 `evidenceRefs`；Reducer 根据 `itemIds` 从权威 state 读取 source items 的既有 `evidenceGroups` 并写入 merged item。
 
@@ -587,7 +587,7 @@ Evidence source 校验、quote 归一化、信息量判断和统一 Levenshtein 
 1. `maxItems` 统计该 section 受基础容量门约束的当前 items 数量。
 2. `maxRenderedChars` 按 Unicode code points 统计 Renderer 可能输出的语义文本：普通 item section 计 `item.text`；todo 还计 actor/requester 及非 null dueAt 的渲染值；scene 计非 null 的 field `value`。Renderer 的标题、字段标签、连接词、模板标点不计。
 3. quote、evidenceGroups、hash、ID、provenance、event、task/proposal、compaction audit 等不会作为 Memory 语义文本渲染的内容不计。
-4. proposal apply 后任一维度超过配置上限即视为超容量；普通 item section 进入 deferred/compaction 流程，maintenance trigger 用 `dimension=maxItems|maxRenderedChars` 标明阻塞维度。
+4. proposal apply 后任一维度超过配置上限即视为超容量；普通 item section 进入 deferred/compaction 流程，maintenance trigger 用 `dimension=maxItems|maxRenderedChars` 标明阻塞维度。`scene` 不可 compaction；Reducer 按 patch 顺序模拟字段操作，若某个 `setField` 会令 scene values 总字符数超过 `scene.maxRenderedChars`，只拒绝该 patch（reason=`capacity_exceeded`）并恢复该字段的 pre-patch 值，同 bundle 中其它合法 patch 仍可独立 accepted/rejected。
 5. Memory 业务层不设置 proposal 或 envelope 总字符上限，也不要求 LLM 精确控制 proposal 总字符数。Provider 的 context/output 物理上限属于 Adapter/Provider 能力边界，不得转化成 Memory section 容量。
 6. 所有 item section 的 `maxItems` / `maxRenderedChars` 以及 scene 的 `maxRenderedChars` 都从集中配置读取，禁止散落硬编码。除 quote 最大 200 已确定外，本批不确定具体容量默认值；默认值需结合真实历史分布后写入配置文档。
 
@@ -637,7 +637,7 @@ CREATE TABLE chat_memory_snapshots (
 
 ### 9.2 Revision event group 与 events
 
-一个 task bundle 的决策先归入 event group；`result_revision` 非 null 表示该 group 提交了新 state，null 表示只有 deferred 等审计结果而没有 state/cursor revision。一个经历 capacity-blocked 的多阶段 normal task 允许拥有两个 event group：`result_revision=null` 的"capacity-blocked 审计 group"（只为触发容量阻塞的 patch 写 `deferred`）和 `result_revision` 非 null 的"最终 replay group"（为全部 patch 写最终 `accepted/rejected/noop`）。maintenance task 的 compaction apply 各自形成独立 event group。
+一个 task bundle 的决策先归入 event group；`result_revision` 非 null 表示该 group 提交了新 state，null 表示只有 deferred/rejected 等审计结果而没有 state/cursor revision。一个经历 capacity-blocked 的多阶段 normal task 允许拥有两个 event group：`result_revision=null` 的"capacity-blocked 审计 group"（只为触发容量阻塞的 patch 写 `deferred`）和 `result_revision` 非 null 的"最终 replay group"（为全部 patch 写最终 `accepted/rejected/noop`）。maintenance task 的 compaction apply 各自形成独立 event group；若 maintenance patches 全部 rejected，必须以 `result_revision=null` 持久化 maintenance 审计 group/events，并与 task/target 失败终态及 ops log 同事务提交。
 
 Source generation 初始化是唯一不创建 semantic event group 的 state revision：raw-source mutation 事务直接写新 generation 的空 state 与完整 snapshot，并以 generation/revision 明确形成恢复边界。事件 replay 从该 snapshot 开始且禁止跨 generation，因此不伪造某个正式 section/target 的 cleanup event。
 
@@ -751,6 +751,7 @@ target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal prop
 - `invalid_state_transition`：section + op + evidenceKind 本身合法，但目标 item 当前 lifecycle 状态不允许该操作（例如 overdue todo 执行 `expireTodo`，或以 keep/clear/已过期 dueAt 执行 `updateItem`）。
 - `item_not_found`：itemId 指向不存在的 item。
 - `item_protected_by_pending_proposal`：compaction patch 的 itemIds 与该 target 的 pending proposal 引用的 itemId 集合相交（见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) §2）。
+- `capacity_exceeded`：仅用于不可 compaction 的 `scene`；该字段 patch 会令 scene values 的语义文本超过集中配置的 `maxRenderedChars`，因此拒绝且不创建 maintenance task。
 `item_id` 列：对单 item 操作（`updateItem`/`forgetItem`/`completeTodo`/`cancelTodo`/`expireTodo`）存目标 item id；对 `mergeItems` 存 null（source item IDs 由 `merged_from_item_ids` 列存储）；对 `addItem`/`setField`/`clearField`/`noop` 存 null。完整信息在 `patch_summary` JSONB 中。`merged_from_item_ids` 列：仅 `mergeItems` event 使用，存储持久化 patch 中的稳定顺序 source item ID 数组；其他 event 为 null。
 
 ### 9.3 Durable task
@@ -943,6 +944,7 @@ CREATE TABLE chat_context_quality_diagnostics (
   omitted_count   INTEGER,
   omitted_chars   INTEGER,
   truncated       BOOLEAN NOT NULL DEFAULT FALSE,
+  detail          JSONB NOT NULL DEFAULT '{}'::jsonb, -- 诊断类型专用的结构化开发/运维信息
   resolved        BOOLEAN NOT NULL DEFAULT FALSE,
   resolved_at     TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -958,8 +960,25 @@ CREATE INDEX idx_context_diagnostics_active
 - `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag 诊断。
 - `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
 - `target_cursor`、`omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`processed_boundary_message_id` 仅用于 `projection_lag`。两类诊断都保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
+- `diagnostic_type = scene_capacity_exceeded` 表示最近有一个或多个 scene 字段 patch 因长度预算被拒绝；`detail.rejectedPaths` 保存仍待成功写入的字段，`detail.sourceEventGroupId/sourceGeneration/sourceRevision` 保存最近来源。它由[异常诊断投影](algorithms/diagnostic-projection.md)从已提交 event 派生，不由 Reducer 或 capacity maintenance 事务直接写入。
 
 诊断记录保持 active（`resolved=FALSE`），直到满足明确 resolved 条件（如该 target cursor 覆盖其 `omitted_upper_message_id`，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap）。不能只因请求结束而清除。
+
+异常投影拥有独立持久化 checkpoint：
+
+```sql
+CREATE TABLE chat_memory_diagnostic_projection_checkpoints (
+  user_id           BIGINT NOT NULL,
+  preset_id         TEXT NOT NULL,
+  projection_key    TEXT NOT NULL,          -- scene_capacity_diagnostics
+  processed_event_id BIGINT NOT NULL DEFAULT 0,
+  last_error_reason TEXT,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, preset_id, projection_key)
+);
+```
+
+checkpoint、diagnostic 更新/恢复和 recovery notification 必须在同一投影事务中提交。投影失败不得影响已提交的 Memory task，且不得推进 `processed_event_id`；runtime poll、启动 reconciliation 和 context assembly 均可按 checkpoint 幂等重试。
 
 ### 9.10 Recovery notification
 

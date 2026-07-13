@@ -3,6 +3,7 @@ function partsAt(instant, timeZone) {
     timeZone,
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
+    fractionalSecondDigits: 3,
     hourCycle: "h23",
   }).formatToParts(new Date(instant));
   return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
@@ -13,24 +14,45 @@ function assertTimeZone(timeZone) {
   catch (error) { throw new Error(`Invalid time zone: ${timeZone}`, { cause: error }); }
 }
 
-// Resolve a local wall-clock time to an instant. The bounded search also handles
-// non-hour offsets and daylight-saving transitions without process TZ mutation.
+function representedUtc(parts) {
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour || 0,
+    parts.minute || 0,
+    parts.second || 0,
+    parts.fractionalSecond || 0,
+  );
+}
+
+function sameLocalTime(left, right) {
+  return ["year", "month", "day", "hour", "minute", "second", "fractionalSecond"]
+    .every((key) => (left[key] || 0) === (right[key] || 0));
+}
+
+// Temporal-compatible disambiguation without mutating process TZ: choose the
+// earlier instant for overlaps and move forward by the transition gap for holes.
 function localPartsToInstant(parts, timeZone) {
   assertTimeZone(timeZone);
-  const target = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, parts.second || 0);
-  let guess = target;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const actual = partsAt(guess, timeZone);
-    const represented = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
-    const next = guess + target - represented;
-    if (next === guess) return new Date(guess).toISOString();
-    guess = next;
+  const target = representedUtc(parts);
+  const offsets = new Set();
+  for (const hours of [-48, -24, -12, 0, 12, 24, 48]) {
+    const instant = target + hours * 60 * 60 * 1000;
+    offsets.add(representedUtc(partsAt(instant, timeZone)) - instant);
   }
-  const final = partsAt(guess, timeZone);
-  if (["year", "month", "day", "hour", "minute", "second"].every((key) => final[key] === (parts[key] || 0))) {
-    return new Date(guess).toISOString();
-  }
-  throw new Error("Local deadline falls in an invalid time-zone transition");
+  const candidates = [...offsets].map((offset) => {
+    const instant = target - offset;
+    const actual = partsAt(instant, timeZone);
+    return { instant, actual, represented: representedUtc(actual) };
+  });
+  const exact = candidates.filter(({ actual }) => sameLocalTime(actual, parts)).sort((left, right) => left.instant - right.instant);
+  if (exact.length) return new Date(exact[0].instant).toISOString();
+  const afterGap = candidates.filter(({ represented }) => represented > target).sort((left, right) => (
+    left.represented - right.represented || left.instant - right.instant
+  ));
+  if (afterGap.length) return new Date(afterGap[0].instant).toISOString();
+  throw new Error("Local deadline cannot be resolved in the requested time zone");
 }
 
 function daysInMonth(year, month) { return new Date(Date.UTC(year, month, 0)).getUTCDate(); }
@@ -50,7 +72,7 @@ function addCalendarDuration(anchor, duration, timeZone = "UTC") {
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return localPartsToInstant({
     year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(),
-    hour: local.hour, minute: local.minute, second: local.second,
+    hour: local.hour, minute: local.minute, second: local.second, fractionalSecond: local.fractionalSecond,
   }, timeZone);
 }
 

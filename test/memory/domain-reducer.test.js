@@ -69,6 +69,28 @@ test("role mismatches are rejected before policy application", () => {
   assert.equal(result.state.longTerm.worldFacts.length, 1);
 });
 
+test("scene patches that exceed the semantic character budget are rejected without maintenance", () => {
+  const database = message(2, "user", "我们现在位于非常非常遥远的屋顶");
+  const state = createInitialMemoryState();
+  const tight = { ...config, scene: { ...config.scene, maxRenderedChars: 4 } };
+  const result = reduceProposal({
+    state,
+    task: task("scene"),
+    observedMessages: [observed(database)],
+    databaseMessages: [database],
+    config: tight,
+    proposal: { sectionResults: { scene: { status: "patches", patches: [
+      { op: "setField", path: "location", value: "非常遥远的屋顶", evidenceKind: "scene_change", evidenceRefs: [{ messageId: 2, quote: "非常非常遥远的屋顶" }] },
+    ] } } },
+    idFactory: sequence("patch"),
+  });
+  assert.equal(result.outcome, "committable");
+  assert.equal(result.events[0].decision, "rejected");
+  assert.equal(result.events[0].rejectReason, "capacity_exceeded");
+  assert.equal(result.state.current.scene.location.value, null);
+  assert.equal(result.state.meta.targetCursors.scene, 2);
+});
+
 test("correction preserves item identity, appends evidence, and suppresses replaced sources", () => {
   const database = message(2, "user", "更正一下，我住在上海");
   const state = createInitialMemoryState();

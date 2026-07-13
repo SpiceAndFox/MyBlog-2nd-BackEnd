@@ -33,7 +33,7 @@ function compactionOutput(envelope) {
 function store() {
   let state = createInitialMemoryState();
   state.working.todos.push(todo("todo:1", "归还图书", 1), todo("todo:2", "把借来的书还回去", 2));
-  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = [];
+  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = []; const tombstones = [];
   const statuses = new Map([["todos", { target_key: "todos", source_generation: 0, status: "healthy", consecutive_errors: 0 }]]);
   const repositories = {
     withTransaction: async (work) => work({ query: async () => ({ rows: [] }) }),
@@ -50,9 +50,12 @@ function store() {
       appendOpsLog: async (entry) => ops.push(structuredClone(entry)),
     },
     audit: { getEventGroup: async (id) => groups.get(id) || null, insertEventGroup: async (group) => groups.set(group.event_group_id, structuredClone(group)), insertEvents: async (rows) => events.push(...structuredClone(rows)), insertSnapshot: async (_u, _p, value) => snapshots.push(structuredClone(value)) },
-    sidecars: { insertTombstone: async () => {} },
+    sidecars: {
+      insertTombstone: async (_u, _p, entry) => tombstones.push(structuredClone(entry)),
+      listTombstones: async (_u, _p, { messageIds } = {}) => tombstones.filter((entry) => !messageIds || messageIds.includes(entry.message_id ?? entry.messageId)),
+    },
   };
-  return { repositories, inspect: { tasks, groups, events, snapshots, ops, statuses, get state() { return state; } } };
+  return { repositories, inspect: { tasks, groups, events, snapshots, ops, statuses, tombstones, get state() { return state; } } };
 }
 
 test("capacity block persists deferred audit, compacts, and replays the original proposal", async () => {
@@ -103,6 +106,77 @@ test("maintenance proposer shares the single durable schema-invalid retry", asyn
   assert.equal(result.status, "committed");
   assert.equal(maintenanceCalls, 2);
   assert.equal(data.inspect.ops.some((entry) => entry.outcome === "output_schema_invalid_retry"), true);
+});
+
+test("repeated capacity commit preserves the durable maintenance chain", async () => {
+  const data = store();
+  const ids = ["normal-patch", "normal-item"];
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config,
+    idFactory: () => ids.shift() || "unused",
+    providerAdapter: { propose: async () => { throw new Error("provider should not be called"); } },
+  });
+  const envelope = await pipeline.createTask(1, "default", intent);
+  const output = normalOutput(envelope);
+  const first = await pipeline.commit(envelope, output);
+  const parent = data.inspect.tasks.get(envelope.task.taskId);
+  const durablePayload = structuredClone(parent.stage_payload);
+  const second = await pipeline.commit(envelope, output);
+  assert.equal(first.status, "capacity_deferred");
+  assert.equal(second.status, "capacity_deferred");
+  assert.equal(second.duplicate, true);
+  assert.deepEqual(parent.stage_payload, durablePayload);
+  assert.equal([...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance").length, 1);
+  assert.equal(data.inspect.events.filter((event) => event.decision === "deferred").length, 1);
+});
+
+test("replay re-applies suppression and rejects evidence tombstoned after deferral", async () => {
+  const data = store();
+  const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config,
+    idFactory: () => ids.shift() || "unused",
+    providerAdapter: { propose: async (envelope) => {
+      if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+      data.inspect.tombstones.push({ message_id: message.id, content_hash: message.contentHash, reason: "correction" });
+      return { status: "ok", output: compactionOutput(envelope) };
+    } },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  const replayEvent = data.inspect.events.findLast((event) => event.task_id === result.taskId && event.decision === "rejected");
+  assert.equal(result.status, "committed");
+  assert.equal(replayEvent.reject_reason, "message_id_not_found");
+  assert.equal(data.inspect.state.working.todos.length, 1, "suppressed add must not re-enter state during replay");
+});
+
+test("fully rejected maintenance persists a null-revision audit group and accurate attempt", async () => {
+  const data = store();
+  const ids = ["normal-patch", "normal-item", "compact-patch"];
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config,
+    idFactory: () => ids.shift() || "unused",
+    providerAdapter: { propose: async (envelope) => ({
+      status: "ok",
+      output: envelope.task.mode === "normal" ? normalOutput(envelope) : {
+        tickId: envelope.task.tickId,
+        proposer: "compactionProposer",
+        sectionResults: { todos: { status: "patches", patches: [
+          { op: "mergeItems", itemIds: ["todo:missing", "todo:2"], value: { text: "无法合并" }, evidenceKind: "memory_compaction" },
+        ] } },
+      },
+    }) },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  const maintenance = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  const auditGroup = [...data.inspect.groups.values()].find((group) => group.task_id === maintenance.task_id);
+  const rejected = data.inspect.events.find((event) => event.task_id === maintenance.task_id);
+  const failure = data.inspect.ops.find((entry) => entry.task_id === maintenance.task_id && entry.outcome === "compaction_failed");
+  assert.equal(result.status, "halted");
+  assert.equal(auditGroup.result_revision, null);
+  assert.equal(rejected.decision, "rejected");
+  assert.equal(rejected.reject_reason, "item_not_found");
+  assert.equal(failure.attempt, 1);
+  assert.equal(maintenance.attempt, 1);
 });
 
 test("compaction reducer rejects pending item intersections without changing state", () => {

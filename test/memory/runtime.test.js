@@ -145,7 +145,13 @@ test("one projection failure does not starve the other projection during reconci
     source: { async countAfter() { return 0; } },
     runtime: { async getTargetStatuses() { return []; }, async listRecoverableTasks() { return []; } },
     audit: {},
-    sidecars: {},
+    diagnosticProjection: {
+      async lockCheckpoint() { return { processed_event_id: 0 }; },
+      async listCommittedEventsAfter() { throw Object.assign(new Error("diagnostics failed"), { code: "DIAGNOSTICS_FAILED" }); },
+      async advanceCheckpoint() {},
+      async recordProjectionError() {},
+    },
+    sidecars: { async listActiveDiagnostics() { return []; } },
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
@@ -167,10 +173,11 @@ test("one projection failure does not starve the other projection during reconci
 
   const results = await runtime.reconcileProjections();
   assert.deepEqual(results["1:default"], {
+    diagnostics: { status: "failed", reason: "DIAGNOSTICS_FAILED" },
     rag: { status: "failed", reason: "RAG_FAILED" },
     recall: { status: "healthy" },
   });
-  assert.deepEqual(errors, ["RAG_FAILED"]);
+  assert.deepEqual(errors, ["DIAGNOSTICS_FAILED", "RAG_FAILED"]);
 });
 
 test("durable task polling continuously scans queued and due retry tasks", async () => {

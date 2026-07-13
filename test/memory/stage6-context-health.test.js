@@ -138,6 +138,20 @@ test("projection lag diagnostic persists until the query boundary is covered", a
   assert.equal(recovered.notifications.some((row) => row.subjectKind === "projection" && row.subjectKey === "rag"), true);
 });
 
+test("scene capacity rejection diagnostic is user-visible until the rejected field later recovers", async () => {
+  const data = makeData();
+  data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
+  data.diagnostics.push({
+    id: data.nextId++, subjectKind: "target", subjectKey: "scene", diagnosticType: "scene_capacity_exceeded",
+    targetCursor: 3, detail: { rejectedPaths: ["note"] }, resolved: false,
+  });
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "scene-capacity" });
+  assert.equal(result.health.status, "degraded");
+  assert.match(result.health.alerts.find((alert) => alert.subjectKey === "scene").message, /长度超限未写入/);
+  assert.match(result.memorySegment, /\[该类记忆可能滞后\]\n\[当前状态\]/);
+});
+
 test("effective-view cleanup requests one idempotent housekeeping wake-up", async () => {
   const data = makeData();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));

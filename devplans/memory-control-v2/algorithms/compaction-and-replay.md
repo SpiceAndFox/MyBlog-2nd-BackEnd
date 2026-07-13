@@ -39,7 +39,7 @@ pending → compacting
    - 当前 target cursor 仍等于原 `cursorBefore`；
    - proposal 仍是该 target 的活动 proposal（normal task 非终局）；
    - 引用 item 仍存在并通过当前 state 的纯代码预检；
-   - schema/source hashes 仍兼容。
+   - schema/source hashes 仍兼容，且 replay 前重新应用与首次 commit 相同的 context-suppression tombstone gate；已被 suppression 的 source 不得因 replay 绕过首次提交边界。
 
    generation 相同时，其他 target 导致的 revision 增长不使 proposal stale；原始 `baseRevision` 只用于审计。
 8. 如果 compactionProposer 返回 `unable_to_compact`（无安全合并空间），maintenance task 进入 `compaction_failed`，per-target status 进入 `halted`。如果 compaction `accepted` 但 replay 预检仍因容量不足而失败，normal task 进入 `replay_failed`（reason=`capacity_still_exceeded`），per-target status 进入 `halted`。replay 的其他非 stale 确定性失败同样进入 `replay_failed`，并记录精确 reason。如果 compaction 发生技术性失败（LLM 调用/schema/provider），按 [Task 执行、Cursor 与幂等](task-execution-and-idempotency.md) 的 error 恢复策略处理。
@@ -60,4 +60,3 @@ maintenance task 有界执行：尝试上限按 `(parentTaskId, section)` 计算
 ## 5. Harness
 
 验收用例见 [Harness 验收契约](../harness.md) §3.5、§3.6、§4。
-

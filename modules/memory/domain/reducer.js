@@ -6,7 +6,7 @@ const { validateEvidenceRefs } = require("./evidence");
 const { isPolicyAllowed } = require("./policy");
 const { resolveDueAt } = require("./calendar");
 const { normalizeLifecycle } = require("./lifecycle");
-const { findCapacityViolation } = require("./capacity");
+const { findCapacityViolation, measureSection } = require("./capacity");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target]))
@@ -213,8 +213,14 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
       }
       const keys = [].concat(conflictKey(section, patch) || []);
       if (keys.some((key) => seen.has(key))) { events.push(rejected(section, patch, patchId, "invalid_state_transition")); continue; }
+      const previousSceneField = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
       const applied = applyPatch(working, section, patch, refs, context, identityKey);
       if (applied.rejectReason) { events.push(rejected(section, patch, patchId, applied.rejectReason)); continue; }
+      if (section === "scene" && measureSection(working, "scene").renderedChars > config.scene.maxRenderedChars) {
+        working.current.scene[patch.path] = previousSceneField;
+        events.push(rejected(section, patch, patchId, "capacity_exceeded"));
+        continue;
+      }
       keys.forEach((key) => seen.add(key));
       if (applied.tombstones) tombstones.push(...applied.tombstones);
       events.push({ ...eventBase(section, patch, "accepted", patchId), resultItemId: applied.resultItemId || null, normalizedOperation: applied.normalized });

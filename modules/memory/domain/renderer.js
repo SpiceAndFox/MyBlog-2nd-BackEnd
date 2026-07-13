@@ -10,14 +10,20 @@ function healthStatus(targetStatuses, targetKey) {
   return targetStatuses?.[targetKey]?.status || targetStatuses?.[targetKey] || "healthy";
 }
 
-function hasOmittedDiagnostic(diagnostics, targetKey) {
-  return diagnostics.some((entry) => entry.subjectKind === "target" && entry.subjectKey === targetKey && entry.diagnosticType === "gap_bridge_omitted" && entry.resolved !== true);
+function hasLagDiagnostic(diagnostics, targetKey) {
+  const lagTypes = new Set(["gap_bridge_omitted", "scene_capacity_exceeded"]);
+  return diagnostics.some((entry) => (
+    (entry.subjectKind ?? entry.subject_kind) === "target"
+    && (entry.subjectKey ?? entry.subject_key) === targetKey
+    && lagTypes.has(entry.diagnosticType ?? entry.diagnostic_type)
+    && entry.resolved !== true
+  ));
 }
 
 function renderTargetHealthMarker(targetKey, targetStatuses = {}, diagnostics = []) {
   const status = healthStatus(targetStatuses, targetKey);
   if (status === "rebuilding") return "[该类记忆正在重建]";
-  if (["retry_wait", "capacity_blocked", "halted"].includes(status) || hasOmittedDiagnostic(diagnostics, targetKey)) return "[该类记忆可能滞后]";
+  if (["retry_wait", "capacity_blocked", "halted"].includes(status) || hasLagDiagnostic(diagnostics, targetKey)) return "[该类记忆可能滞后]";
   return "";
 }
 

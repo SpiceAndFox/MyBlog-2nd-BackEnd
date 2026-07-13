@@ -34,11 +34,15 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     if (debounced(diagnostic)) continue;
     const kind = rowValue(diagnostic, "subjectKind", "subject_kind");
     const key = rowValue(diagnostic, "subjectKey", "subject_key");
+    const diagnosticType = rowValue(diagnostic, "diagnosticType", "diagnostic_type");
     if (kind === "projection" && queryProjectionKeys.has(key)) continue;
     const rebuilding = rowValue(diagnostic, "healthStatus", "health_status") === "rebuilding";
     if (rebuilding) status = "rebuilding";
     else if (status === "healthy") status = "degraded";
-    alerts.push({ subjectKind: kind, subjectKey: key, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${key} 上下文正在重建` : kind === "target" ? `${TARGET_LABELS[key] || key}：部分早期对话未在上下文中` : `${key}：部分早期对话未在上下文中` });
+    const degradedMessage = diagnosticType === "scene_capacity_exceeded"
+      ? "当前状态：最近一次更新因长度超限未写入，记忆可能滞后"
+      : kind === "target" ? `${TARGET_LABELS[key] || key}：部分早期对话未在上下文中` : `${key}：部分早期对话未在上下文中`;
+    alerts.push({ subjectKind: kind, subjectKey: key, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${key} 上下文正在重建` : degradedMessage });
   }
   for (const projection of projectionHealth) {
     if (!projection || projection.queryHealth === "healthy") continue;

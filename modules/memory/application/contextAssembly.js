@@ -3,6 +3,7 @@ const { TARGET_KEYS } = require("../contracts/constants");
 const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage } = require("../domain/contextCoverage");
 const { aggregateMemoryHealth } = require("../domain/health");
 const { renderMemory } = require("../domain/renderer");
+const { createDiagnosticProjection } = require("./diagnosticProjection");
 
 function camelDiagnostic(row) {
   return {
@@ -14,6 +15,7 @@ function camelDiagnostic(row) {
     processedBoundaryMessageId: row.processedBoundaryMessageId ?? (row.processed_boundary_message_id == null ? null : Number(row.processed_boundary_message_id)),
     omittedUpperMessageId: row.omittedUpperMessageId ?? (row.omitted_upper_message_id == null ? null : Number(row.omitted_upper_message_id)),
     recentWindowStart: row.recentWindowStart ?? (row.recent_window_start == null ? null : Number(row.recent_window_start)),
+    detail: row.detail ?? {},
     resolved: row.resolved === true,
     createdAt: row.createdAt ?? row.created_at ?? null,
     updatedAt: row.updatedAt ?? row.updated_at ?? row.createdAt ?? row.created_at ?? null,
@@ -35,6 +37,9 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
   if (!repositories?.source || !repositories?.state || !repositories?.runtime || !repositories?.sidecars) throw new Error("Memory context repositories are required");
   if (!config?.enabled) throw new Error("Memory v2 config must be enabled");
   if (!Number.isSafeInteger(recentWindowMaxChars) || recentWindowMaxChars <= 0) throw new Error("recentWindowMaxChars is required");
+  const diagnosticProjection = repositories.diagnosticProjection
+    ? createDiagnosticProjection({ repositories })
+    : null;
 
   async function resolveRecoveredDiagnostics(userId, presetId, state, sourceMessages, active) {
     const resolved = [];
@@ -103,6 +108,13 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     }
 
     const targetStatuses = state ? await repositories.runtime.getTargetStatuses(userId, presetId) : [];
+    if (diagnosticProjection) {
+      try { await diagnosticProjection.syncScope(userId, presetId); }
+      catch (error) {
+        debug.diagnosticProjectionError = String(error?.code || error?.message || "diagnostic_projection_failed");
+        onBackgroundError?.(error);
+      }
+    }
     let activeDiagnostics = (await repositories.sidecars.listActiveDiagnostics(userId, presetId)).map(camelDiagnostic);
     const stateDiagnosticTypes = new Set(["state_missing", "state_read_failed", "state_schema_invalid", "version_unsupported"]);
     if (!state && debug.memorySkipReason && stateDiagnosticTypes.has(debug.memorySkipReason)) {

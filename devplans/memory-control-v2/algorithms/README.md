@@ -22,6 +22,7 @@
 - [Compaction 与 Proposal Replay](compaction-and-replay.md)
 - [Source Rebuild 与 Projection](source-rebuild-and-projection.md)
 - [Context Coverage](context-coverage.md)
+- [异常诊断投影](diagnostic-projection.md)
 - [Suppression、Hard Delete 与 Retention](suppression-and-retention.md)
 
 ## 算法文档统一结构
@@ -36,4 +37,3 @@
 6. 使用的集中配置；
 7. 产生的 event、ops log 或 diagnostic；
 8. Harness 覆盖入口。
-

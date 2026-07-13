@@ -13,6 +13,8 @@ const item = (id, text, messageId) => ({ id, text, evidenceGroups: [{ evidenceKi
 test("dueAt calendar arithmetic honors user time zone and month-end clamping", () => {
   assert.equal(resolveDueAt({ mode: "absolute", date: "2026-07-07" }, null, "Asia/Shanghai"), "2026-07-07T16:00:00.000Z");
   assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-01-31T04:00:00.000Z", "Asia/Shanghai"), "2026-02-28T04:00:00.000Z");
+  assert.equal(resolveDueAt({ mode: "relative", days: 1 }, "2026-02-07T07:30:00.500Z", "America/New_York"), "2026-02-08T07:30:00.500Z");
+  assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-02-08T07:30:00.000Z", "America/New_York"), "2026-03-08T07:30:00.000Z");
 });
 
 test("scene expiration preserves provenance, evicts previous scene, and is idempotent", () => {
