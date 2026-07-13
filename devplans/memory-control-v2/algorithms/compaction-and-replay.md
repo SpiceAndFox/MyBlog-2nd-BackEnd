@@ -48,7 +48,7 @@ pending → compacting
 
 maintenance task 有界执行：尝试上限按 `(parentTaskId, section)` 计算，同一 section 对同一阻塞窗口最多尝试 1 次。resume 创建新 maintenance child task 重新进入 compaction，不复用已终态的旧 maintenance task；新 child task 的 `resume_epoch` = 前一个 + 1，`dedupe_key` 包含新 `resume_epoch`，因此不会命中旧 task 的幂等终态。resume 将 per-target status 从 `halted` 变为 `capacity_blocked`，不立即设 healthy，只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。
 
-当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略，见 [容量降级策略（延后）](../../memory-control-v2-deferred/capacity-degradation.md)。
+当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略，见 [容量降级策略（延后）](../../deferred/memory-control-v2/capacity-degradation.md)。
 
 ## 4. 遗忘边界
 

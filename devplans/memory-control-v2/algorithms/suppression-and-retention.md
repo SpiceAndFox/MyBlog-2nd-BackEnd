@@ -41,7 +41,7 @@ Recall 在选择 evidenceGroup、拉 raw window和拼合 context 三处应用相
 - suppressed raw message 不能出现在 recall 文本；
 - 一个 group 的 refs 全被过滤后跳过该 group。
 
-该 message-level 方案可能连带排除同一消息中的其他无关事实，这是当前为降低复杂度明确接受的保守副作用。片段级方案见 [Suppression Proposer（延后）](../../memory-control-v2-deferred/suppression-proposer.md)。
+该 message-level 方案可能连带排除同一消息中的其他无关事实，这是当前为降低复杂度明确接受的保守副作用。片段级方案见 [Suppression Proposer（延后）](../../deferred/memory-control-v2/suppression-proposer.md)。
 
 ## 5. Privacy Hard Delete
 

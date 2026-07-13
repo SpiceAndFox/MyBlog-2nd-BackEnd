@@ -591,7 +591,7 @@ Evidence source 校验、quote 归一化、信息量判断和统一 Levenshtein 
 2. `current.previousScene` 是单值字段，新 scene 到期时直接替换旧值；不参与 scene 的 `maxRenderedChars` 容量门，也不触发 compactionProposer。
 3. `todos.maxItems/maxRenderedChars` 只统计并约束 `status=active` 的 items。overdue items 不占 active 容量、不触发 compaction；Renderer 对 overdue 子集使用独立的 `maxRenderedItems + maxRenderedChars` 配置。
 
-> **容量 halt 策略说明**：当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略（见 [容量降级策略（延后）](../memory-control-v2-deferred/capacity-degradation.md)）。
+> **容量 halt 策略说明**：当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略（见 [容量降级策略（延后）](../deferred/memory-control-v2/capacity-degradation.md)）。
 
 ## 9. Revision、Snapshot、Event 与运行恢复状态
 

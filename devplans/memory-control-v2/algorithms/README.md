@@ -9,7 +9,7 @@
 - 本目录：负责算法步骤、状态转移、失败分支、幂等规则和运行不变量。
 - [Proposer Prompt 契约](../proposer-prompt.md)：负责 LLM 输出行为约束，不重新定义 Reducer 算法。
 - [Harness 验收契约](../harness.md)：负责测试覆盖，不重新定义算法；断言应引用本目录中的权威规则。
-- [延后设计](../../memory-control-v2-deferred/readme.md)：只记录当前未采用的方案，不重新定义当前算法。
+- [延后设计](../../deferred/memory-control-v2/readme.md)：只记录当前未采用的方案，不重新定义当前算法。
 
 当其他文档需要说明算法时，只保留必要的编排摘要并链接本目录；不得复制另一份可独立解释的状态转移表、伪代码或失败规则。
 
