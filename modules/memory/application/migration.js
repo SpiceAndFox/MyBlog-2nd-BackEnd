@@ -17,8 +17,10 @@ function codePointLength(value) {
 }
 
 function summarizeCapacity(state) {
+  const sceneValues = Object.values(state.current.scene)
+    .map((field) => field?.value)
+    .filter((value) => typeof value === "string" && value.length > 0);
   const sections = {
-    scene: state.current.scene ? [state.current.scene] : [],
     todos: state.working.todos,
     standingAgreements: state.working.standingAgreements,
     recentEpisodes: state.working.recentEpisodes,
@@ -28,10 +30,16 @@ function summarizeCapacity(state) {
     assistantProfile: state.longTerm.assistantProfile,
     relationship: state.longTerm.relationship,
   };
-  return Object.fromEntries(Object.entries(sections).map(([section, items]) => [section, {
-    itemCount: items.length,
-    textChars: items.reduce((sum, item) => sum + codePointLength(item?.text), 0),
-  }]));
+  return {
+    scene: {
+      itemCount: sceneValues.length > 0 ? 1 : 0,
+      textChars: sceneValues.reduce((sum, value) => sum + codePointLength(value), 0),
+    },
+    ...Object.fromEntries(Object.entries(sections).map(([section, items]) => [section, {
+      itemCount: items.length,
+      textChars: items.reduce((sum, item) => sum + codePointLength(item?.text), 0),
+    }])),
+  };
 }
 
 function createMemoryMigration({

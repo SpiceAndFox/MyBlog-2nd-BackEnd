@@ -1,5 +1,30 @@
 const DROPPED_KEYWORDS = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 
+function literalType(value) {
+  if (value === null) return "null";
+  if (Number.isInteger(value)) return "integer";
+  if (typeof value === "number") return "number";
+  if (["string", "boolean"].includes(typeof value)) return typeof value;
+  return null;
+}
+
+function enumType(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const types = new Set(values.map(literalType));
+  return types.size === 1 ? [...types][0] : null;
+}
+
+function compileUnion(values) {
+  return values.flatMap((value) => {
+    const compiled = compileDeepSeekSchema(value);
+    // DeepSeek requires each direct anyOf branch to declare a type (or $ref).
+    // Flatten schema-only nested unions produced when an object with optional
+    // properties is itself one branch of a business union.
+    if (compiled && Object.keys(compiled).length === 1 && Array.isArray(compiled.anyOf)) return compiled.anyOf;
+    return [compiled];
+  });
+}
+
 function subsets(values) {
   if (values.length > 8) throw new Error("DeepSeek strict schema has too many optional properties to expand safely");
   const result = [];
@@ -45,11 +70,11 @@ function compileDeepSeekSchema(schema) {
       continue;
     }
     if (key === "oneOf") {
-      compiled.anyOf = value.map(compileDeepSeekSchema);
+      compiled.anyOf = compileUnion(value);
       continue;
     }
     if (key === "anyOf") {
-      compiled.anyOf = value.map(compileDeepSeekSchema);
+      compiled.anyOf = compileUnion(value);
       continue;
     }
     if (key === "items") {
@@ -57,6 +82,14 @@ function compileDeepSeekSchema(schema) {
       continue;
     }
     compiled[key] = value;
+  }
+  // DeepSeek strict tools reject enum-only schema nodes. JSON Schema permits
+  // both `const` and `enum` without an explicit type, so add the type when all
+  // literals share one representable primitive type.
+  if (!compiled.type && compiled.enum) {
+    const type = enumType(compiled.enum);
+    if (!type) throw new Error("DeepSeek strict schema enum values must share one primitive type");
+    compiled.type = type;
   }
   return compiled;
 }

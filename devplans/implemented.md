@@ -102,5 +102,6 @@
 
 ## 尚未执行
 
-- roadmap 阶段 8 尚未完成。已开始实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、v1 数据物理清除、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门。
-- 原 `response_format=json_schema` preflight 已确认不受 DeepSeek 正式端点支持；现已改用 `deepseek-strict-tools` adapter。尚需为独立的 `CHAT_MEMORY_V2_PROVIDER_*` 配置 Beta 端点/凭据并完成真实 preflight 与生产历史 golden；通过前不执行生产历史全量演练、正式删除/切换或 v1 worker/注入代码移除。
+- roadmap 阶段 8 尚未完成。已实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、v1 数据物理清除、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门；测试覆盖重复 rehearsal 及 raw boundary、target health、authority snapshot、event chain、projection checkpoint 的失败门控。
+- 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-v4-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
+- 尚需提供生产历史数据库副本与真实 RAG/Recall projection adapter 的 migration 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。通过前不执行正式删除/切换或 v1 worker/注入代码移除。
