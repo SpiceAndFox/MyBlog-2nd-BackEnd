@@ -36,6 +36,28 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     });
   }
 
+  async function initializeRecoveryGeneration(userId, presetId, { reason = "state_schema_invalid" } = {}) {
+    return repositories.withTransaction(async (client) => {
+      const raw = await repositories.state.getRawState(userId, presetId, { client, forUpdate: true });
+      if (raw === null) throw new Error("Memory authority row is missing during recovery");
+      const head = await repositories.audit.getRecoveryHead(userId, presetId, { client });
+      const rawRevision = Number.isSafeInteger(raw?.meta?.revision) && raw.meta.revision >= 0 ? raw.meta.revision : 0;
+      const rawGeneration = Number.isSafeInteger(raw?.meta?.sourceGeneration) && raw.meta.sourceGeneration >= 0 ? raw.meta.sourceGeneration : 0;
+      const boundary = await repositories.source.getBoundary(userId, presetId, { client });
+      const next = createInitialMemoryState();
+      next.meta.revision = Math.max(rawRevision, head.revision) + 1;
+      next.meta.sourceGeneration = Math.max(rawGeneration, head.sourceGeneration) + 1;
+      await repositories.runtime.cancelNonTerminalTasks(userId, presetId, next.meta.sourceGeneration, reason, { client });
+      await repositories.state.writeState(userId, presetId, next, { client });
+      await repositories.audit.insertSnapshot(userId, presetId, { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, schemaVersion: SCHEMA_VERSION, state: next }, { client });
+      for (const targetKey of TARGET_KEYS) {
+        await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: next.meta.sourceGeneration, rebuildBoundaryMessageId: boundary, status: "rebuilding", consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: null, nextRetryAt: null }, { client });
+      }
+      if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, next.meta.sourceGeneration, { client });
+      return { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, recoveredFromRaw: true };
+    });
+  }
+
   async function validateTarget(userId, presetId, targetKey, sourceGeneration, boundaryMessageId) {
     return repositories.withTransaction(async (client) => {
       const state = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
@@ -162,7 +184,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     });
   }
 
-  return Object.freeze({ initializeGeneration, forceDrainTo, validateTarget, mutateAndRebuild });
+  return Object.freeze({ initializeGeneration, initializeRecoveryGeneration, forceDrainTo, validateTarget, mutateAndRebuild });
 }
 
 module.exports = { createMemorySourceRebuild };

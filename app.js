@@ -66,6 +66,7 @@ const server = app.listen(PORT, HOST);
 
 if (memoryRuntime.enabled) {
   void memoryRuntime.recoverPending();
+  memoryRuntime.startTaskPolling();
   memoryRuntime.startProjectionPolling();
 }
 

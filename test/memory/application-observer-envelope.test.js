@@ -17,6 +17,8 @@ test("Observer only emits lag-eligible and schedulable target intents", async ()
     config,
     stateRepository: { getState: async () => state },
     runtimeRepository: { getTargetStatuses: async () => [
+      { target_key: "scene", status: "healthy" },
+      { target_key: "todos", status: "healthy" },
       { target_key: "episodes", status: "halted" },
       { target_key: "standingAgreements", status: "halted" },
       { target_key: "profileRelationship", status: "capacity_blocked" },
@@ -34,6 +36,7 @@ test("retry_wait is schedulable only after nextRetryAt", () => {
   assert.equal(canScheduleNormal({ status: "retry_wait", nextRetryAt: "2026-07-11T00:00:00Z" }, now), true);
   assert.equal(canScheduleNormal({ status: "retry_wait", nextRetryAt: "2026-07-13T00:00:00Z" }, now), false);
   assert.equal(canScheduleNormal({ status: "halted" }, now), false);
+  assert.equal(canScheduleNormal(null, now), false);
 });
 
 test("envelope redacts evidence and ids outside writable sections", () => {

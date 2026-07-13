@@ -6,7 +6,7 @@
 
 Todo 的 `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或 `{ "mode": "relative", "days"?: N, "months"?: N, "years"?: N }`。relative 的三个时长字段至少出现一个，计算顺序为 `years → months → days`。
 
-- absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区从 preset 配置读取，默认 UTC。
+- absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区从 User 字段读取并在 task 创建时固化，默认 UTC。
 - relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按用户时区做日历运算。
 - relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。
 - 禁止使用 task/worker 执行时间作 anchor。
@@ -90,4 +90,3 @@ Context compiler 捕获一次 `requestNow`，并按 current.scene 最大 `update
 ## 7. Harness
 
 验收用例见 [Harness 验收契约](../harness.md) §3.6、§3.8、§4。
-

@@ -6,5 +6,6 @@ module.exports = {
   sidecars: require("./sidecarRepository"),
   privacy: require("./privacyRepository"),
   migration: require("./migrationRepository"),
+  users: require("./userRepository"),
   withTransaction: require("./helpers").withTransaction,
 };

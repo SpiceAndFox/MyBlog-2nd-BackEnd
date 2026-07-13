@@ -8,11 +8,13 @@ const { createMemoryRecovery } = require("./application/recovery");
 const { createMemoryHousekeeping } = require("./application/housekeeping");
 const { createMemoryContextAssembly } = require("./application/contextAssembly");
 const { createMemorySourceRebuild } = require("./application/sourceRebuild");
+const { createMemoryStateRecovery } = require("./application/stateRecovery");
 const { createProjectionDrain } = require("./application/projectionDrain");
 const { createMemoryRetention } = require("./application/retention");
 const { createPrivacyHardDelete } = require("./application/privacyHardDelete");
 const { createMemoryMigration } = require("./application/migration");
 const { createMemoryRuntime } = require("./application/runtime");
+const { createMemoryMetrics } = require("./application/metrics");
 const repositories = require("./infrastructure/repositories");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createOpenAiStructuredTransport } = require("./infrastructure/providers/openAiStructuredTransport");
@@ -36,6 +38,7 @@ module.exports = Object.freeze({
   createMemoryHousekeeping,
   createMemoryContextAssembly,
   createMemorySourceRebuild,
+  createMemoryStateRecovery,
   createProjectionDrain,
   createDefaultProjectionDrain(projectionKey, adapter) {
     return createProjectionDrain({ repositories, projectionKey, adapter });
@@ -60,25 +63,21 @@ module.exports = Object.freeze({
     return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now, monotonicNow });
   },
   createMemoryRuntime,
+  createMemoryMetrics,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
     return defaultMemoryRuntime;
   },
   createDefaultMemoryContextAssembly(options) {
-    const lanes = new Map();
-    const enqueueByKey = (key, work) => {
-      const previous = lanes.get(key) || Promise.resolve();
-      const current = previous.catch(() => {}).then(work);
-      lanes.set(key, current);
-      const release = () => { if (lanes.get(key) === current) lanes.delete(key); };
-      void current.then(release, release);
-      return current;
-    };
-    const housekeeping = createMemoryHousekeeping({ repositories, config: options?.config, enqueueByKey });
+    if (options?.config?.enabled && !defaultMemoryRuntime) {
+      throw new Error("Default Memory runtime must be initialized before context assembly");
+    }
     return createMemoryContextAssembly({
       ...options,
       repositories,
-      scheduleHousekeeping: options?.scheduleHousekeeping || (({ userId, presetId }) => housekeeping.runScope(userId, presetId)),
+      scheduleHousekeeping: options?.scheduleHousekeeping || defaultMemoryRuntime?.scheduleHousekeeping,
+      scheduleStateRecovery: options?.scheduleStateRecovery || defaultMemoryRuntime?.scheduleStateRecovery,
+      metrics: options?.metrics || defaultMemoryRuntime?.metrics,
     });
   },
   markRecoveryNotificationsDelivered(ids) {

@@ -81,6 +81,13 @@ test("the v1 schema removal migration drops only obsolete Memory storage", () =>
   assert.doesNotMatch(sql, /(?:DELETE FROM|UPDATE|DROP TABLE(?: IF EXISTS)?)\s+chat_messages\b/i);
 });
 
+test("User time-zone migration backfills non-terminal immutable task payloads", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../migrations/memory/003-add-user-time-zone.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS time_zone TEXT NOT NULL DEFAULT 'UTC'/i);
+  assert.match(sql, /jsonb_set\(task\.task_payload, '\{task,userTimeZone\}'/i);
+  assert.match(sql, /task\.status IN \('queued', 'running', 'retry_wait'\)/i);
+});
+
 test("fresh RAG schema includes the embedding text required by the v2 projection adapter", () => {
   const sql = fs.readFileSync(path.join(__dirname, "../../models/tableCreate/chat_rag_chunks.sql"), "utf8");
   assert.match(sql, /embedding_text\s+TEXT\s+NOT NULL/i);

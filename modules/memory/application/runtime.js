@@ -1,10 +1,13 @@
 const { createObserver } = require("./observer");
 const { createNormalWritePipeline } = require("./normalWritePipeline");
 const { createMemoryRecovery } = require("./recovery");
+const { createMemoryHousekeeping } = require("./housekeeping");
 const { createMemorySourceRebuild } = require("./sourceRebuild");
+const { createMemoryStateRecovery } = require("./stateRecovery");
 const { createMemoryProviderAdapter } = require("../infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("../infrastructure/providers/structuredTransportFactory");
 const { loadProposerPrompt } = require("../prompts");
+const { createMemoryMetrics } = require("./metrics");
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -21,6 +24,7 @@ function createKeyedExecutor() {
 function createDisabledRuntime(repositories) {
   const disabled = async () => ({ status: "disabled" });
   const stopProjectionPolling = () => {};
+  const stopTaskPolling = () => {};
   async function mutateSourceAndRebuild(_userId, _presetId, { mutateSource } = {}) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
     const mutationResult = repositories?.withTransaction
@@ -37,11 +41,16 @@ function createDisabledRuntime(repositories) {
     reconcileProjections: async () => ({}),
     startProjectionPolling: () => stopProjectionPolling,
     stopProjectionPolling,
+    startTaskPolling: () => stopTaskPolling,
+    stopTaskPolling,
+    scheduleHousekeeping: disabled,
+    scheduleStateRecovery: disabled,
+    resumeTarget: disabled,
     recoverPending: async () => [],
   });
 }
 
-function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, onBackgroundError } = {}) {
+function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, metrics = createMemoryMetrics(), onBackgroundError } = {}) {
   if (!config?.enabled) return createDisabledRuntime(repositories);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
@@ -56,17 +65,28 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     sourceRepository: repositories.source,
     stateRepository: repositories.state,
     runtimeRepository: repositories.runtime,
-    config,
+    config, metrics,
   });
-  const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config });
+  const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
   const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
-  const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey });
+  const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
+  const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError: onBackgroundError });
+  const housekeeping = createMemoryHousekeeping({ repositories, config, enqueueByKey });
   let projectionPollTimer = null;
   let projectionPollRunning = false;
+  let taskPollTimer = null;
+  let taskPollRunning = false;
 
   async function ensureState(userId, presetId) {
-    return (await repositories.state.getState(userId, presetId))
-      || repositories.state.initializeRevisionZero(userId, presetId);
+    try {
+      return (await repositories.state.getState(userId, presetId))
+        || repositories.state.initializeRevisionZero(userId, presetId);
+    } catch (error) {
+      if (error?.code !== "MEMORY_V2_STATE_INVALID" || !repositories.state.getRawState || !repositories.audit.getRecoveryHead || !repositories.audit.listSnapshotsForRecovery) throw error;
+      const recovered = await stateRecovery.recoverScope(userId, presetId);
+      if (!["healthy", "snapshot_restored", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
+      return recovered.state ?? repositories.state.getState(userId, presetId);
+    }
   }
 
   function runInBackground(work) {
@@ -80,14 +100,17 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     for (const projectionKey of ["rag", "recall"]) {
       const drain = projectionDrains[projectionKey];
       if (!drain?.drain) continue;
+      const startedAt = performance.now();
       try {
         results[projectionKey] = await drain.drain(userId, presetId);
+        metrics.observe("memory_projection_duration_ms", { projectionKey, status: results[projectionKey]?.status ?? "unknown" }, performance.now() - startedAt);
       } catch (error) {
         results[projectionKey] = {
           status: "failed",
           reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
         };
         onBackgroundError?.(error);
+        metrics.observe("memory_projection_duration_ms", { projectionKey, status: "failed" }, performance.now() - startedAt);
       }
     }
     return results;
@@ -135,6 +158,28 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return stopProjectionPolling;
   }
 
+  function stopTaskPolling() {
+    if (!taskPollTimer) return;
+    clearInterval(taskPollTimer);
+    taskPollTimer = null;
+  }
+
+  function startTaskPolling() {
+    if (taskPollTimer) return stopTaskPolling;
+    const intervalMs = Number(config?.tasks?.pollIntervalMs ?? 1000);
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 250) {
+      throw new Error("Memory task pollIntervalMs must be a safe integer >= 250");
+    }
+    const tick = () => {
+      if (taskPollRunning) return;
+      taskPollRunning = true;
+      runInBackground(() => recovery.recoverPending()).finally(() => { taskPollRunning = false; });
+    };
+    taskPollTimer = setInterval(tick, intervalMs);
+    taskPollTimer.unref?.();
+    return stopTaskPolling;
+  }
+
   function processScope(userId, presetId) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
       await ensureState(userId, presetId);
@@ -146,9 +191,11 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   function rebuildScope(userId, presetId, { reason = "source_mutation" } = {}) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
+      const startedAt = performance.now();
       await ensureState(userId, presetId);
       const initialized = await sourceRebuild.initializeGeneration(userId, presetId, { reason });
       const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
+      metrics.observe("memory_rebuild_duration_ms", { reason, status: drained.status }, performance.now() - startedAt);
       const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
       return { ...initialized, ...drained, projections };
     }));
@@ -169,9 +216,33 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   async function recoverPending() {
+    if (typeof repositories.state.listInitializedScopes === "function") {
+      const scopes = await repositories.state.listInitializedScopes();
+      for (const scope of scopes) {
+        await enqueueByKey(`${scope.userId}:${scope.presetId}`, () => ensureState(scope.userId, scope.presetId));
+      }
+    }
     const recovered = await recovery.recoverPending();
     await reconcileProjections();
     return recovered;
+  }
+
+  function scheduleHousekeeping({ userId, presetId, requestNow } = {}) {
+    return runInBackground(() => housekeeping.runScope(userId, presetId, { requestNow }));
+  }
+
+  function scheduleStateRecovery({ userId, presetId } = {}) {
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => stateRecovery.recoverScope(userId, presetId)));
+  }
+
+  async function resumeTarget(userId, presetId, targetKey) {
+    const result = await enqueueByKey(`${userId}:${presetId}`, () => (
+      recovery.resumeTarget(userId, presetId, targetKey, { run: false })
+    ));
+    // The resumed task must run after the preparation transaction releases the
+    // scope lane. Dispatching it from inside that lane would self-deadlock.
+    const recovered = await recovery.recoverPending();
+    return { ...result, recovered };
   }
 
   return Object.freeze({
@@ -183,6 +254,13 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     reconcileProjections,
     startProjectionPolling,
     stopProjectionPolling,
+    startTaskPolling,
+    stopTaskPolling,
+    scheduleHousekeeping,
+    scheduleStateRecovery,
+    resumeTarget,
+    metrics,
+    getMetricsSnapshot: () => metrics.snapshot(),
     recoverPending: () => runInBackground(recoverPending),
   });
 }

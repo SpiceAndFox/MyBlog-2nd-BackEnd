@@ -4,7 +4,7 @@ const CAPACITY_REASONS = new Set(["capacity_still_exceeded", "unable_to_compact"
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 
-function createMemoryRecovery({ repositories, pipeline, enqueueByKey, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date() } = {}) {
+function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date() } = {}) {
   if (!repositories?.runtime || !repositories.withTransaction || !pipeline?.processEnvelope) throw new Error("Memory recovery dependencies are required");
 
   async function dispatch(envelope) {
@@ -14,11 +14,22 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, buildKey =
 
   async function recoverPending() {
     const tasks = await repositories.runtime.listRecoverableTasks({ now: now() });
+    metrics?.observe("memory_task_backlog", {}, tasks.length);
     const results = [];
     for (const task of tasks) {
+      const status = rowValue(task, "status", "status") ?? "unknown";
+      metrics?.increment("memory_task_recovery_dispatch_total", { status, targetKey: rowValue(task, "target_key", "targetKey") ?? "unknown" });
+      const createdAt = rowValue(task, "created_at", "createdAt");
+      if (createdAt) metrics?.observe("memory_task_queue_age_ms", { status }, Math.max(0, now().getTime() - new Date(createdAt).getTime()));
       const envelope = rowValue(task, "task_payload", "taskPayload");
       if (!envelope?.task) throw new Error(`Recoverable Memory task ${task.task_id ?? task.taskId} has no immutable payload`);
-      results.push(await dispatch(envelope));
+      try {
+        results.push(await dispatch(envelope));
+      } catch (error) {
+        metrics?.increment("memory_task_recovery_dispatch_errors_total", { status, targetKey: envelope.task.targetKey });
+        onDispatchError?.(error, envelope.task);
+        results.push({ status: "dispatch_failed", taskId: envelope.task.taskId, error });
+      }
     }
     return results;
   }
@@ -37,8 +48,8 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, buildKey =
       const retryTask = tasks.find((task) => rowValue(task, "status", "status") === "retry_wait");
       if (!retryTask) throw new Error("retry_wait target has no recoverable task");
       await repositories.withTransaction(async (client) => {
-        await repositories.runtime.updateTask(rowValue(retryTask, "task_id", "taskId"), { status: "queued", stage: "resumed", not_before: null, last_error_reason: null }, { client });
-        await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: Number(rowValue(target, "source_generation", "sourceGeneration")), status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: rowValue(retryTask, "task_id", "taskId"), nextRetryAt: null }, { client });
+        await repositories.runtime.updateTask(rowValue(retryTask, "task_id", "taskId"), { status: "queued", stage: "resumed", not_before: null, last_error_reason: reason }, { client });
+        await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: Number(rowValue(target, "source_generation", "sourceGeneration")), status: "retry_wait", consecutiveErrors: Number(rowValue(target, "consecutive_errors", "consecutiveErrors") ?? 0), lastErrorReason: reason, lastTaskId: rowValue(retryTask, "task_id", "taskId"), nextRetryAt: null }, { client });
       });
       const envelope = rowValue(retryTask, "task_payload", "taskPayload");
       return run ? dispatch(envelope) : { status: "queued", taskId: envelope.task.taskId, resumed: true };
@@ -69,7 +80,6 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, buildKey =
 
     const definition = TARGETS[targetKey];
     const envelope = await repositories.withTransaction(async (client) => {
-      await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: Number(rowValue(target, "source_generation", "sourceGeneration")), status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: rowValue(latest, "task_id", "taskId"), nextRetryAt: null }, { client });
       return pipeline.createTask(userId, presetId, { targetKey, proposer: definition.proposer, targetSections: definition.sections, trigger: { type: "lagThreshold" } }, { client, dedupeSuffix: `resume:${rowValue(latest, "task_id", "taskId")}` });
     });
     return run ? dispatch(envelope) : { status: "queued", taskId: envelope.task.taskId, resumed: true };

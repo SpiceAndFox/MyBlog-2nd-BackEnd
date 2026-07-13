@@ -60,7 +60,7 @@ function buildStateViews(state, proposer, targetSections, config) {
   }
   return { writableState, readOnlyContext };
 }
-function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, taskId = crypto.randomUUID(), tickId = Date.now(), config }) {
+function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, userTimeZone = "UTC", taskId = crypto.randomUUID(), tickId = Date.now(), config }) {
   if (!messages.length) throw new Error("A normal Memory task requires a non-empty new batch");
   const observedMessageIds = messages.map((message) => message.id);
   const targetMessageId = Math.max(...messages.filter((message) => message.id > intent.cursorBefore).map((message) => message.id));
@@ -72,7 +72,7 @@ function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, t
       sourceGeneration: state.meta.sourceGeneration, baseRevision: state.meta.revision,
       targetKey: intent.targetKey, cursorBefore: intent.cursorBefore, targetMessageId,
       proposer: intent.proposer, mode: "normal", targetSections: intent.targetSections.slice(),
-      observedMessageIds, trigger: { type: "lagThreshold" }, now: new Date(now).toISOString(),
+      observedMessageIds, trigger: { type: "lagThreshold" }, now: new Date(now).toISOString(), userTimeZone,
     },
     writableState, readOnlyContext, observedMessages: messages,
   };
@@ -102,6 +102,7 @@ function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, t
       observedMessageIds: [],
       trigger: { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit },
       now: new Date(parentEnvelope.task.now).toISOString(),
+      userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
       parentTaskId: parentEnvelope.task.taskId,
       resumeEpoch,
     },

@@ -2,6 +2,7 @@ const userModel = require("@models/userModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { logger, withRequestContext } = require("../logger");
+const { normalizeIanaTimeZone } = require("../utils/timeZone");
 
 const authController = {
   async me(req, res) {
@@ -17,12 +18,29 @@ const authController = {
           id: user.id,
           username: user.username,
           avatar_url: user.avatar_url || null,
+          time_zone: user.time_zone,
           created_at: user.created_at,
         },
       });
     } catch (error) {
       logger.error("auth_me_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async updateTimeZone(req, res) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      let timeZone;
+      try { timeZone = normalizeIanaTimeZone(req.body?.time_zone); }
+      catch { return res.status(400).json({ error: "time_zone must be a valid IANA time zone" }); }
+      const user = await userModel.updateTimeZone(userId, timeZone);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      return res.status(200).json({ user: { id: user.id, username: user.username, avatar_url: user.avatar_url || null, time_zone: user.time_zone, created_at: user.created_at } });
+    } catch (error) {
+      logger.error("auth_time_zone_update_failed", withRequestContext(req, { error }));
+      return res.status(500).json({ error: "Internal Server Error" });
     }
   },
 

@@ -9,5 +9,6 @@ router.post("/login", authController.login);
 
 // GET /api/auth/me
 router.get("/me", authMiddleware, authController.me);
+router.patch("/me/time-zone", authMiddleware, authController.updateTimeZone);
 
 module.exports = router;

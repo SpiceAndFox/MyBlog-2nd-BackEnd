@@ -66,7 +66,7 @@ function expectedRole(evidenceKind) {
   return null;
 }
 
-function validateEvidenceRefs({ patch, task, observedMessages, databaseMessages, quoteConfig }) {
+function validateEvidenceRefs({ patch, task, observedMessages, databaseMessages, quoteConfig, onQuoteValidated }) {
   const observedById = new Map(observedMessages.map((message) => [message.id, message]));
   const databaseById = new Map(databaseMessages.map((message) => [message.id, message]));
   const validated = [];
@@ -90,6 +90,7 @@ function validateEvidenceRefs({ patch, task, observedMessages, databaseMessages,
   const persistedRefs = [];
   for (const { ref, database } of validated) {
     const quoteResult = validateQuote(ref.quote, database.content, quoteConfig);
+    onQuoteValidated?.(quoteResult);
     if (!quoteResult.ok) return quoteResult;
     persistedRefs.push({ messageId: ref.messageId, contentHash: database.contentHash, quote: ref.quote });
   }

@@ -75,6 +75,17 @@ test("stage 4 fixture applies bounded retry backoff and halts only the failing t
   assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), fixture.providerErrors.map((entry) => entry.reason));
 });
 
+test("provider retryMax halts even before the broader consecutive-error circuit breaker", async () => {
+  const data = store();
+  const strictConfig = { ...config, providerRecovery: { ...config.providerRecovery, retryMax: 0, haltAfterConsecutiveErrors: 3 } };
+  const pipeline = createNormalWritePipeline({ observer: {}, providerAdapter: {}, repositories: data.repositories, config: strictConfig, now: () => fixedNow });
+  const envelope = await pipeline.createTask(1, "default", intent);
+  const result = await pipeline.recordAdapterError(envelope, { status: "error", reason: "llm_call_failed" });
+  assert.equal(result.halted, true);
+  assert.equal(result.consecutiveErrors, 1);
+  assert.equal(data.inspect.statuses.get("todos").status, "halted");
+});
+
 test("output schema invalid retries once durably and commits a valid second result", async () => {
   const data = store();
   let calls = 0;
@@ -184,6 +195,30 @@ test("revision mismatch cancels the old task and reproposes through a successor"
   assert.equal(data.inspect.state.meta.targetCursors.todos, 1);
 });
 
+test("second unable_to_decide cannot advance a cursor from a stale base revision", async () => {
+  const data = store();
+  let calls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, now: () => fixedNow,
+    providerAdapter: { propose: async (envelope) => {
+      calls += 1;
+      return { status: "ok", output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: calls < 3 ? "unable_to_decide" : "noop" } } } };
+    } },
+  });
+  const first = await pipeline.processIntent(1, "default", intent);
+  assert.equal(first.status, "context_expansion_required");
+  data.bumpRevision();
+  const original = [...data.inspect.tasks.values()][0].task_payload;
+  const result = await pipeline.processEnvelope(original);
+  const tasks = [...data.inspect.tasks.values()];
+  assert.equal(result.status, "committed");
+  assert.equal(calls, 3);
+  assert.equal(tasks.length, 2);
+  assert.equal(tasks[0].status, "cancelled");
+  assert.equal(data.inspect.state.meta.revision, 2);
+  assert.equal(data.inspect.state.meta.targetCursors.todos, 1);
+});
+
 test("restart recovery reuses immutable payload and committed phase identity", async () => {
   const data = store();
   let calls = 0;
@@ -199,6 +234,19 @@ test("restart recovery reuses immutable payload and committed phase identity", a
   assert.equal(calls, 1);
   assert.equal(data.inspect.groups.size, 1);
   assert.equal(data.inspect.snapshots.length, 1);
+});
+
+test("one broken durable task does not starve later recoverable tasks", async () => {
+  const envelopes = ["first", "second"].map((taskId) => ({ task: { taskId, userId: 1, presetId: "default", targetKey: "todos" } }));
+  const repositories = {
+    runtime: { async listRecoverableTasks() { return envelopes.map((task_payload) => ({ status: "queued", target_key: "todos", task_payload })); } },
+    async withTransaction(work) { return work({}); },
+  };
+  const pipeline = { async processEnvelope(envelope) { if (envelope.task.taskId === "first") throw new Error("broken task"); return { status: "committed", taskId: "second" }; } };
+  const recovery = createMemoryRecovery({ repositories, pipeline });
+  const results = await recovery.recoverPending();
+  assert.equal(results[0].status, "dispatch_failed");
+  assert.deepEqual(results[1], { status: "committed", taskId: "second" });
 });
 
 test("unknown COMMIT outcome reconciles the stable phase before any retry write", async () => {
@@ -239,7 +287,7 @@ test("manual resume requeues the existing retry task without changing semantic s
   assert.equal(result.status, "queued");
   assert.equal(task.status, "queued");
   assert.equal(task.not_before, null);
-  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
+  assert.equal(data.inspect.statuses.get("todos").status, "retry_wait");
   assert.equal(data.inspect.state.meta.revision, 0);
   assert.equal(data.inspect.snapshots.length, 0);
 });

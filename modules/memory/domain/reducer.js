@@ -167,7 +167,7 @@ function conflictKey(section, patch) {
   return null;
 }
 
-function reduceProposal({ state, task, proposal, observedMessages, databaseMessages, now = task.now, timeZone = "UTC", config, lifecycleAnchors = {}, idFactory = () => crypto.randomUUID(), identities = {}, protectedItemIds = [] }) {
+function reduceProposal({ state, task, proposal, observedMessages, databaseMessages, now = task.now, timeZone = task.userTimeZone ?? "UTC", config, metrics, lifecycleAnchors = {}, idFactory = () => crypto.randomUUID(), identities = {}, protectedItemIds = [] }) {
   assertMemoryState(state);
   const original = structuredClone(state);
   const working = structuredClone(state);
@@ -199,7 +199,10 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
       }
       let refs = [];
       if (patch.op !== "mergeItems") {
-        const evidence = validateEvidenceRefs({ patch, task, observedMessages, databaseMessages, quoteConfig: config.quote });
+        const evidence = validateEvidenceRefs({ patch, task, observedMessages, databaseMessages, quoteConfig: config.quote, onQuoteValidated: (quote) => {
+          metrics?.observe("memory_quote_similarity", { targetKey: task.targetKey, result: quote.ok ? "accepted" : quote.reason }, quote.similarity);
+          metrics?.increment("memory_quote_validation_total", { targetKey: task.targetKey, result: quote.ok ? "accepted" : quote.reason });
+        } });
         if (!evidence.ok) { events.push(rejected(section, patch, patchId, evidence.reason)); continue; }
         refs = evidence.refs;
       }

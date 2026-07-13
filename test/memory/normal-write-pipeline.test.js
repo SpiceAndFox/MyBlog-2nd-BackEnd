@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { createNormalWritePipeline } = require("../../modules/memory/application/normalWritePipeline");
+const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
 
 function budgets() {
   return Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: 20, maxRenderedChars: 2000 }]));
@@ -70,6 +71,24 @@ test("normal task atomically persists state, event group, snapshot, task and tar
   assert.equal(store.inspect.snapshots.length, 1);
   assert.equal([...store.inspect.tasks.values()][0].status, "succeeded");
   assert.equal(store.inspect.statuses.at(-1).status, "healthy");
+});
+
+test("task envelope freezes the User time zone and Reducer resolves calendar dates with it", async () => {
+  const store = fakes();
+  store.repositories.users = { getTimeZone: async () => "Asia/Shanghai" };
+  const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0 };
+  const metrics = createMemoryMetrics();
+  const pipeline = createNormalWritePipeline({
+    observer: {}, config, repositories: store.repositories, metrics,
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
+    now: () => new Date("2026-07-12T00:01:00Z"), idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  const envelope = [...store.inspect.tasks.values()][0].task_payload;
+  assert.equal(result.status, "committed");
+  assert.equal(envelope.task.userTimeZone, "Asia/Shanghai");
+  assert.equal(store.inspect.state.working.todos[0].dueAt, "2026-07-13T16:00:00.000Z");
+  assert.equal(metrics.snapshot().counters["memory_quote_validation_total{result=accepted,targetKey=todos}"], 1);
 });
 
 test("repeated commit phase returns the existing revision without duplicate writes", async () => {

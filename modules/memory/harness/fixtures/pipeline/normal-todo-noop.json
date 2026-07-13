@@ -41,7 +41,8 @@
         "targetSections": ["todos"],
         "observedMessageIds": [1],
         "trigger": { "type": "lagThreshold" },
-        "now": "2026-07-12T00:00:00.000Z"
+        "now": "2026-07-12T00:00:00.000Z",
+        "userTimeZone": "UTC"
       },
       "writableState": { "working": { "todos": [] } },
       "readOnlyContext": {

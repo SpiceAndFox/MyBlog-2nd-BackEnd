@@ -11,6 +11,7 @@ const {
   COMPACTION_RESULT_STATUSES,
   QUOTE_MAX_CODE_POINTS,
 } = require("./constants");
+const { isValidIanaTimeZone } = require("../../../utils/timeZone");
 const { isPlainObject } = require("./state");
 
 const OP_FIELDS = Object.freeze({
@@ -186,6 +187,7 @@ function validateTaskEnvelope(envelope) {
     if (!["normal", "maintenance"].includes(task.mode)) add(errors, "$.task.mode", "is invalid");
     if (!nonNegativeInteger(task.baseRevision)) add(errors, "$.task.baseRevision", "must be a non-negative safe integer");
     if (!nonNegativeInteger(task.sourceGeneration)) add(errors, "$.task.sourceGeneration", "must be a non-negative safe integer");
+    if (!isValidIanaTimeZone(task.userTimeZone)) add(errors, "$.task.userTimeZone", "must be a valid IANA time zone");
     if (!Array.isArray(task.targetSections) || task.targetSections.some((section) => !SECTIONS.includes(section))) add(errors, "$.task.targetSections", "is invalid");
     if (task.mode === "normal") {
       if (!nonNegativeInteger(task.cursorBefore)) add(errors, "$.task.cursorBefore", "is required for normal mode");

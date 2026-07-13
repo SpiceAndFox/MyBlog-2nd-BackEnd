@@ -5,13 +5,14 @@ function statusByTarget(rows) {
 }
 
 function canScheduleNormal(status, now) {
-  if (!status || status.status === "healthy") return true;
+  if (!status) return false;
+  if (status.status === "healthy") return true;
   if (status.status !== "retry_wait") return false;
   const nextRetryAt = status.next_retry_at ?? status.nextRetryAt;
   return nextRetryAt !== null && nextRetryAt !== undefined && new Date(nextRetryAt).getTime() <= now.getTime();
 }
 
-function createObserver({ sourceRepository, stateRepository, runtimeRepository, config, now = () => new Date() } = {}) {
+function createObserver({ sourceRepository, stateRepository, runtimeRepository, config, metrics, now = () => new Date() } = {}) {
   if (!sourceRepository || !stateRepository || !runtimeRepository) throw new Error("Observer repositories are required");
   if (!config?.targets) throw new Error("Memory target config is required");
 
@@ -29,7 +30,9 @@ function createObserver({ sourceRepository, stateRepository, runtimeRepository, 
       const cursorBefore = state.meta.targetCursors[targetKey] ?? 0;
       const targetConfig = config.targets[targetKey];
       const lag = await sourceRepository.countAfter(userId, presetId, cursorBefore);
+      metrics?.observe("memory_target_lag_messages", { targetKey }, lag);
       if (lag < targetConfig.lagThreshold) continue;
+      metrics?.increment("memory_target_eligible_total", { targetKey });
       eligibleTasks.push({
         targetKey,
         proposer: TARGETS[targetKey].proposer,

@@ -185,7 +185,7 @@ Evidence role 使用数据库真实消息校验：带 `user_` / `assistant_` 发
   - `todos.addItem`：`value` 必须包含 `text`、`actor`、`requester`；可选 `dueAt` 表达式，缺省时持久化为 `null`。
   - `todos.updateItem`：`value` 至少包含 `dueChange`，并可包含 `text`、`actor`、`requester`。`dueChange` 是显式判别 union：`{ "mode": "keep" }`、`{ "mode": "clear" }` 或 `{ "mode": "set", "dueAt": <表达式> }`；禁止用字段省略同时表达“不修改”和“清空”。
   - `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或 `{ "mode": "relative", "days"?: N, "months"?: N, "years"?: N }`。relative 的三个时长字段至少出现一个，计算顺序为 `years → months → days`。
-  - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区从 preset 配置读取，默认 UTC。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按用户时区做日历运算。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
+  - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按该固化时区做日历运算。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
 - `evidenceRefs`：除 `mergeItems` 外，Proposer patch 至少包含一个 `{ messageId, quote }`。Reducer 自行触发的 todo/scene lifecycle 变化不是 Proposer patch，使用 system cleanup event。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `observedMessages`（见 §5）。对会写入 item 的普通 patch，Reducer 将该数组连同 `patch.evidenceKind` 包装成一个新的 `evidenceGroup`，并为持久化 refs 补入已校验的数据库 `contentHash`。`forgetItem` 的 evidenceRefs 证明本次 forget 指令；被 suppress 的 source 则从目标 item 的既有完整 `evidenceGroups` 收集，不能由 Proposer 自报。
 - `scene.setField`/`scene.clearField` 的 `evidenceRefs` 必须恰好 1 条。Reducer 将其写入目标字段的 `evidenceRef`。
 - `quote`：必须是能够支持 patch 的最短连续原文片段，最多 200 个 Unicode code points；Reducer 不自动裁剪，完整校验见 §7。
@@ -245,7 +245,8 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
     "targetSections": ["recentEpisodes", "milestones"],
     "observedMessageIds": [119, 120, 121, 122, 123, 124],
     "trigger": { "type": "lagThreshold" },
-    "now": "2026-07-06T22:30:00Z"
+    "now": "2026-07-06T22:30:00Z",
+    "userTimeZone": "Asia/Shanghai"
   },
   "writableState": {
     "working": {
@@ -813,7 +814,7 @@ Recovery 字段归属固定为：
 | retry attempt / notBefore | durable task |
 | 完整错误历史 | ops log |
 
-每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting` 阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。容量/compaction/replay 导致的 halted 在 resume 时变为 `capacity_blocked`，只有成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`；`output_schema_invalid` 或 Provider 连续失败达到阈值导致的 halted，在根因排除后变为 `healthy` 并创建新的 normal task，旧 task 保留审计。恢复算法见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5；用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
+每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting` 阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。容量/compaction/replay 导致的 halted 在 resume 时变为 `capacity_blocked`；`output_schema_invalid` 或 Provider 重试/连续失败达到阈值导致的 halted，在根因排除后仍保持 `halted` 并创建新的 normal task。所有分支都只有恢复 task 成功、cursor 推进并提交 snapshot 后才恢复 `healthy`，旧 task 保留审计。恢复算法见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5；用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
 
 `source_generation` 必须等于该 row 所属 state 的当前 generation。Source rebuild 开始时，六个 target 在 raw-source mutation 同一事务进入 `rebuilding`，保存同一个 captured `rebuild_boundary_message_id` 并清除旧 task/error 状态；任一 target 未 force-drain 到该边界前不得恢复 `healthy`。因此“Memory dirty”是由当前 generation 下仍存在 `rebuilding` target 确定性派生的运行状态，不再增加第二个全局 dirty flag。
 

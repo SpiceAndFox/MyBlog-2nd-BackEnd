@@ -48,7 +48,7 @@ function mapEvent(event, envelope, eventGroupId, index) {
   };
 }
 
-function createNormalWritePipeline({ observer, providerAdapter, repositories, config, now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
+function createNormalWritePipeline({ observer, providerAdapter, repositories, config, metrics, monotonicNow = () => performance.now(), now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
   const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError, proposeWithSchemaRetry });
 
@@ -58,13 +58,16 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (!state) throw new Error("Memory state must be initialized before creating normal tasks");
       const cursorBefore = state.meta.targetCursors[intent.targetKey] ?? 0;
       const targetConfig = config.targets[intent.targetKey];
+      const userTimeZone = repositories.users?.getTimeZone
+        ? await repositories.users.getTimeZone(userId, { client })
+        : "UTC";
       const messages = options.messages ?? await repositories.source.getObservedWindow(userId, presetId, cursorBefore, {
         newBatchSize: targetConfig.lagThreshold,
         contextWindow: targetConfig.contextWindow,
       }, { client });
       const envelope = buildNormalEnvelope({
         userId, presetId, state, intent: { ...intent, cursorBefore }, messages, now: now(),
-        taskId: options.taskId, tickId: options.tickId, config,
+        taskId: options.taskId, tickId: options.tickId, userTimeZone, config,
       });
       const overrides = {};
       if (options.predecessorTaskId) {
@@ -78,6 +81,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   }
 
   async function appendOps(envelope, outcome, attempt, detail, client) {
+    metrics?.increment("memory_ops_outcomes_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, outcome });
     return repositories.runtime.appendOpsLog({
       user_id: envelope.task.userId, preset_id: envelope.task.presetId, source_generation: envelope.task.sourceGeneration,
       task_id: envelope.task.taskId, tick_id: envelope.task.tickId, target_key: envelope.task.targetKey,
@@ -97,7 +101,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const haltAfter = config.providerRecovery.haltAfterConsecutiveErrors;
       const maintenanceLimitReached = envelope.task.mode === "maintenance"
         && attempt > config.compaction.retryMax;
+      const normalLimitReached = envelope.task.mode !== "maintenance"
+        && attempt > config.providerRecovery.retryMax;
       const halted = !retryable || maintenanceLimitReached
+        || normalLimitReached
         || (envelope.task.mode !== "maintenance" && consecutiveErrors >= haltAfter);
       const delay = retryable && !halted
         ? Math.min(config.providerRecovery.backoffMaxMs, config.providerRecovery.backoffBaseMs * (2 ** Math.max(0, attempt - 1)))
@@ -139,7 +146,15 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
 
   async function proposeWithSchemaRetry(envelope) {
     while (true) {
-      let result = await providerAdapter.propose(envelope);
+      const startedAt = monotonicNow();
+      let result;
+      try { result = await providerAdapter.propose(envelope); }
+      finally { metrics?.observe("memory_provider_latency_ms", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, monotonicNow() - startedAt); }
+      metrics?.increment("memory_provider_calls_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, status: result.status });
+      const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
+      const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
+      if (Number.isFinite(inputTokens)) metrics?.observe("memory_provider_input_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, inputTokens);
+      if (Number.isFinite(outputTokens)) metrics?.observe("memory_provider_output_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, outputTokens);
       if (result.status !== "error") {
         const validation = validateProposerOutput(result.output, envelope.task);
         if (!validation.ok) result = { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validation.errors } };
@@ -207,6 +222,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       const cursor = state.meta.targetCursors[envelope.task.targetKey] ?? 0;
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration || cursor !== envelope.task.cursorBefore) return { status: "stale", reason: state.meta.sourceGeneration !== envelope.task.sourceGeneration ? "generation_mismatch" : "cursor_mismatch", taskId: envelope.task.taskId };
+      if (state.meta.revision !== envelope.task.baseRevision) {
+        return { status: "successor_required", taskId: envelope.task.taskId, currentRevision: state.meta.revision };
+      }
       const nextState = structuredClone(state);
       nextState.meta.revision += 1;
       nextState.meta.targetCursors[envelope.task.targetKey] = envelope.task.targetMessageId;
@@ -249,7 +267,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const effectiveDatabaseMessages = databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
       let reduction;
       try {
-        reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: envelope.observedMessages, databaseMessages: effectiveDatabaseMessages, now: envelope.task.now, config, idFactory });
+        reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: envelope.observedMessages, databaseMessages: effectiveDatabaseMessages, now: envelope.task.now, timeZone: envelope.task.userTimeZone, config, metrics, idFactory });
       } catch (error) {
         error.memoryOutcome = "reducer_failed";
         throw error;
@@ -344,6 +362,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     if (result.status === "stale") result = await recordStale(attemptEnvelope, result.reason);
     if (result.maintenanceEnvelope) return capacity.processMaintenanceEnvelope(result.maintenanceEnvelope);
     if (result.status === "capacity_deferred") return capacity.resumeParent(envelope);
+    metrics?.increment("memory_task_outcomes_total", { targetKey: envelope.task.targetKey, status: result.status, mode: envelope.task.mode });
     return result;
   }
 

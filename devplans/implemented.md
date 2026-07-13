@@ -1,5 +1,14 @@
 # 已完成开发
 
+## 2026-07-13：Memory Control v2 写协议审查修复
+
+- 增加 durable task 持续轮询 worker 与 `CHAT_MEMORY_V2_TASK_POLL_INTERVAL_MS`，启动扫描之后仍会自动消费 queued/running/到期 retry_wait；task、housekeeping、source mutation/rebuild 和 projection 工作共用 runtime 的 user/preset 串行 lane。
+- `unable_to_decide` 第二次提交补齐 baseRevision stale 校验并走 successor；Provider 普通重试真正受 `retryMax` 限制；Observer 缺失 target status 时不再按 healthy 放行。
+- target resume 在新 task 成功前保持 degraded，新增 `npm run resume:memory-v2` 维护入口。
+- 增加 User `time_zone` 字段、认证更新接口与迁移；task 创建时将 IANA 时区固化到 envelope，Reducer 用其做确定性日历运算。
+- 增加 authority state 的最新完整快照恢复与无法证明完整时的 raw-source 新 generation rebuild，并从上下文降级路径经统一 lane 自动触发。
+- 接入告警防抖/恢复稳定配置和有界内存指标采集（eligible/lag、Provider 调用/延迟/tokens、task outcome、quote similarity/reject reason）。
+
 ## 2026-07-12：Memory Control v2 阶段 1
 
 - 建立严格的 v2 state、patch、task envelope、Proposer output、枚举与 revision 0 校验契约。

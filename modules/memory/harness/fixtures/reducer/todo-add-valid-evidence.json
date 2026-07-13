@@ -22,7 +22,7 @@
   },
   "ticks": [{
     "input": {
-      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112", "tickId": 2, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 0, "targetKey": "todos", "cursorBefore": 120, "targetMessageId": 121, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [121], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:30:00Z" },
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112", "tickId": 2, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 0, "targetKey": "todos", "cursorBefore": 120, "targetMessageId": 121, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [121], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:30:00Z", "userTimeZone": "UTC" },
       "writableState": { "working": { "todos": [] } },
       "readOnlyContext": {},
       "observedMessages": [{ "id": 121, "role": "user", "createdAt": "2026-07-06T22:30:00Z", "contentKind": "raw", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }]

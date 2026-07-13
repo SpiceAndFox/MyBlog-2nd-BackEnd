@@ -35,6 +35,16 @@ async function listSnapshots(userId, presetId, sourceGeneration, { client } = {}
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 ORDER BY revision`, [scope.userId, scope.presetId, sourceGeneration]);
   return rows;
 }
+async function listSnapshotsForRecovery(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 ORDER BY revision DESC`, [scope.userId, scope.presetId]);
+  return rows;
+}
+async function getRecoveryHead(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT GREATEST(COALESCE((SELECT MAX(revision) FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2),0),COALESCE((SELECT MAX(result_revision) FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2),0)) AS revision,GREATEST(COALESCE((SELECT MAX(source_generation) FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2),0),COALESCE((SELECT MAX(source_generation) FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2),0)) AS source_generation`, [scope.userId, scope.presetId]);
+  return { revision: Number(rows[0]?.revision ?? 0), sourceGeneration: Number(rows[0]?.source_generation ?? 0) };
+}
 async function listRevisionGroups(userId, presetId, sourceGeneration, afterRevision = -1, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND result_revision>$4 ORDER BY result_revision`, [scope.userId, scope.presetId, sourceGeneration, afterRevision]);
@@ -69,4 +79,4 @@ async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBe
   if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
   return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listRevisionGroups, promoteAnchor, deleteExpiredAudit };
+module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, promoteAnchor, deleteExpiredAudit };

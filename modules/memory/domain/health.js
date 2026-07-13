@@ -4,10 +4,16 @@ const TARGET_LABELS = Object.freeze({ scene: "当前状态", todos: "待办", st
 
 function rowValue(row, camel, snake = camel) { return row?.[camel] ?? row?.[snake]; }
 
-function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projectionHealth = [] } = {}) {
+function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projectionHealth = [], now = new Date(), alertDebounceMs = 0 } = {}) {
   const alerts = [];
   let status = "healthy";
   const byTarget = new Map(targetStatuses.map((row) => [rowValue(row, "targetKey", "target_key"), row]));
+  const currentTimestamp = new Date(now).getTime();
+  const debounced = (row) => {
+    if (!(alertDebounceMs > 0)) return false;
+    const changedAt = rowValue(row, "createdAt", "created_at") ?? rowValue(row, "updatedAt", "updated_at");
+    return changedAt && currentTimestamp - new Date(changedAt).getTime() < alertDebounceMs;
+  };
   for (const targetKey of TARGET_KEYS) {
     const row = byTarget.get(targetKey);
     if (!row) {
@@ -18,12 +24,14 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     const hasRebuildBoundary = rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== null && rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== undefined;
     const internal = hasRebuildBoundary ? "rebuilding" : rowValue(row, "status");
     if (internal === "healthy") continue;
+    if (debounced(row)) continue;
     const rebuilding = internal === "rebuilding";
     status = rebuilding ? "rebuilding" : status === "healthy" ? "degraded" : status;
     alerts.push({ subjectKind: "target", subjectKey: targetKey, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${TARGET_LABELS[targetKey]}记忆正在重建` : `${TARGET_LABELS[targetKey]}记忆可能滞后${internal === "halted" ? "，需要服务器维护" : ""}` });
   }
   const queryProjectionKeys = new Set(projectionHealth.filter(Boolean).map((row) => row.projectionKey));
   for (const diagnostic of diagnostics.filter((row) => rowValue(row, "resolved") !== true)) {
+    if (debounced(diagnostic)) continue;
     const kind = rowValue(diagnostic, "subjectKind", "subject_kind");
     const key = rowValue(diagnostic, "subjectKey", "subject_key");
     if (kind === "projection" && queryProjectionKeys.has(key)) continue;

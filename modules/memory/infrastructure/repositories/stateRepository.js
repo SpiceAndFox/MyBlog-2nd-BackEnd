@@ -9,9 +9,9 @@ async function getState(userId, presetId, { client, forUpdate = false } = {}) {
   if (!rows[0] || rows[0].memory_state === null) return null;
   return assertMemoryState(rows[0].memory_state);
 }
-async function getRawState(userId, presetId, { client } = {}) {
+async function getRawState(userId, presetId, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const { rows } = await executor(client).query(`SELECT memory_state FROM chat_preset_memory WHERE user_id=$1 AND preset_id=$2`, [scope.userId, scope.presetId]);
+  const { rows } = await executor(client).query(`SELECT memory_state FROM chat_preset_memory WHERE user_id=$1 AND preset_id=$2${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId]);
   return rows[0]?.memory_state ?? null;
 }
 

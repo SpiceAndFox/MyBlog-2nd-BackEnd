@@ -67,6 +67,11 @@ async function inspect(url) {
       WHERE table_schema = current_schema() AND table_name = 'chat_preset_memory'
       ORDER BY ordinal_position
     `);
+    const userColumns = await pool.query(`
+      SELECT column_name, data_type, is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'time_zone'
+    `);
     const oldColumnNames = new Set([
       "rolling_summary", "rolling_summary_updated_at", "summarized_until_message_id",
       "dirty_since_message_id", "rebuild_required", "core_memory",
@@ -75,9 +80,10 @@ async function inspect(url) {
     const legacyCheckpointTable = tables.rows.some((row) => row.table_name === "chat_preset_memory_checkpoints");
     return {
       target: safeTarget(url),
-      clean: !legacyCheckpointTable && legacyColumns.length === 0,
+      clean: !legacyCheckpointTable && legacyColumns.length === 0 && userColumns.rows[0]?.data_type === "text" && userColumns.rows[0]?.is_nullable === "NO",
       tables: tables.rows.map((row) => row.table_name),
       memoryColumns: columns.rows,
+      userTimeZoneColumn: userColumns.rows[0] || null,
       legacy: { checkpointTable: legacyCheckpointTable, columns: legacyColumns },
     };
   } finally {
@@ -103,6 +109,7 @@ function inspectThroughWindowsPsql(url) {
     SELECT json_build_object(
       'tables', COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('chat_preset_memory','chat_preset_memory_checkpoints')), '[]'::json),
       'memoryColumns', COALESCE((SELECT json_agg(json_build_object('column_name',column_name,'data_type',data_type) ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='chat_preset_memory'), '[]'::json),
+      'userTimeZoneColumn', (SELECT json_build_object('column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='time_zone'),
       'legacyCheckpointTable', EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='chat_preset_memory_checkpoints'),
       'legacyColumns', COALESCE((SELECT json_agg(column_name ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='chat_preset_memory' AND column_name IN ('rolling_summary','rolling_summary_updated_at','summarized_until_message_id','dirty_since_message_id','rebuild_required','core_memory')), '[]'::json)
     )::text;
@@ -126,9 +133,10 @@ function inspectThroughWindowsPsql(url) {
   const parsed = JSON.parse(String(result.stdout || "").trim());
   return {
     target: `${host}:${port} (Windows psql.exe)`,
-    clean: !parsed.legacyCheckpointTable && parsed.legacyColumns.length === 0,
+    clean: !parsed.legacyCheckpointTable && parsed.legacyColumns.length === 0 && parsed.userTimeZoneColumn?.data_type === "text" && parsed.userTimeZoneColumn?.is_nullable === "NO",
     tables: parsed.tables,
     memoryColumns: parsed.memoryColumns,
+    userTimeZoneColumn: parsed.userTimeZoneColumn,
     legacy: { checkpointTable: parsed.legacyCheckpointTable, columns: parsed.legacyColumns },
   };
 }

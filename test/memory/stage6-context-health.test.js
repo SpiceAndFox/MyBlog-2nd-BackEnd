@@ -112,6 +112,17 @@ test("health aggregation gives rebuilding precedence and projection health is qu
   assert.equal(aggregateMemoryHealth({ targetStatuses: TARGETS.map((targetKey) => targetKey === "todos" ? { target_key: targetKey, status: "halted", rebuild_boundary_message_id: 42 } : { target_key: targetKey, status: "healthy", rebuild_boundary_message_id: null }) }).status, "rebuilding");
 });
 
+test("health alert debounce suppresses only newly changed persisted failures", () => {
+  const changedAt = "2026-07-13T00:00:00.000Z";
+  const statuses = TARGETS.map((targetKey) => targetKey === "todos"
+    ? { targetKey, status: "retry_wait", updatedAt: changedAt }
+    : { targetKey, status: "healthy", updatedAt: changedAt });
+  const duringDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:00.500Z"), alertDebounceMs: 1000 });
+  const afterDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:01.001Z"), alertDebounceMs: 1000 });
+  assert.equal(duringDebounce.status, "healthy");
+  assert.equal(afterDebounce.status, "degraded");
+});
+
 test("projection lag diagnostic persists until the query boundary is covered", async () => {
   const data = makeData();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
@@ -151,6 +162,23 @@ test("missing or invalid authority state skips only the memory segment with an e
   assert.equal(missing.memorySegment, "");
   assert.equal(missing.debug.memorySkipReason, "state_missing");
   assert.equal(missing.health.status, "degraded");
+  assert.equal(data.diagnostics.some((row) => row.subjectKey === "memory_state" && !row.resolved), true);
+
+  data.state = createInitialMemoryState();
+  data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 5]));
+  const recovered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.equal(recovered.notifications.some((row) => row.subjectKind === "system" && row.subjectKey === "memory_state"), true);
+});
+
+test("invalid authority schedules background state recovery without blocking context", async () => {
+  const data = makeData();
+  data.state = { version: 2, broken: true };
+  let recoveries = 0;
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars, scheduleStateRecovery() { recoveries += 1; } });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.equal(result.memorySegment, "");
+  assert.equal(result.debug.memorySkipReason, "state_schema_invalid");
+  assert.equal(recoveries, 1);
 });
 
 test("v2 memory is emitted as one context segment", () => {
