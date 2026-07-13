@@ -15,6 +15,11 @@ function requiredInt(env, name, { min = 0 } = {}) {
   return value;
 }
 
+function optionalInt(env, name, fallback, { min = 0 } = {}) {
+  if (env[name] === undefined || String(env[name]).trim() === "") return fallback;
+  return requiredInt(env, name, { min });
+}
+
 function loadMemoryProviderConfig(env = process.env) {
   const adapter = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_ADAPTER");
   if (!ADAPTER_IDS.includes(adapter)) {
@@ -27,11 +32,12 @@ function loadMemoryProviderConfig(env = process.env) {
     model: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_MODEL"),
     timeoutMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS", { min: 1 }),
     maxInputTokens: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS", { min: 1_000_000 }),
+    maxOutputTokens: optionalInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS", 8192, { min: 1 }),
   };
   if (adapter === "deepseek-strict-tools") {
     const thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
-    if (!["disabled", "enabled"].includes(thinkingMode)) {
-      throw new Error("Env CHAT_MEMORY_V2_PROVIDER_THINKING_MODE must be disabled or enabled");
+    if (thinkingMode !== "disabled") {
+      throw new Error("Env CHAT_MEMORY_V2_PROVIDER_THINKING_MODE must be disabled for Memory proposers");
     }
     config.thinkingMode = thinkingMode;
   }

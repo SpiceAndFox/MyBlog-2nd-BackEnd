@@ -3,6 +3,7 @@ const { TARGETS } = require("../../contracts");
 const { validateProposerOutput } = require("../../contracts/proposal");
 const { buildOutputSchema } = require("./outputSchema");
 const { normalizeProviderOutput } = require("./memoryProviderAdapter");
+const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
 function normalCase(targetKey, definition, tickId) {
   const task = {
@@ -56,8 +57,9 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
       userPayload: { expectedOutput: probe.output },
       responseSchema: probe.responseSchema,
     });
-    if (response?.refusal || response?.safetyBlocked) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
-    if (["length", "max_tokens", "max_output_tokens"].includes(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
+    if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
+    if (isTruncationSignal(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
+    if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
     const validation = validateProposerOutput(normalizeProviderOutput(response?.output, probe.task), probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);

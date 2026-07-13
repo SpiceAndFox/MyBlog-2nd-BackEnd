@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const {
   SCHEMA_VERSION,
   SECTIONS,
@@ -10,9 +11,14 @@ const {
   PROPOSER_RESULT_STATUSES,
   COMPACTION_RESULT_STATUSES,
   QUOTE_MAX_CODE_POINTS,
+  ITEM_SECTIONS,
+  READ_ONLY_CONTEXT_PATHS,
 } = require("./constants");
 const { isValidIanaTimeZone } = require("../../../utils/timeZone");
-const { isPlainObject } = require("./state");
+const { isPlainObject, isIsoTimestamp } = require("./state");
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const OP_FIELDS = Object.freeze({
   setField: ["op", "path", "value", "evidenceKind", "evidenceRefs"],
@@ -36,6 +42,7 @@ function exactObject(value, keys, path, errors) {
 }
 function positiveText(value) { return typeof value === "string" && value.trim().length > 0; }
 function nonNegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0; }
+function positiveInteger(value) { return Number.isSafeInteger(value) && value > 0; }
 function validCalendarDate(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split("-").map(Number);
@@ -144,8 +151,9 @@ function validateProposerOutput(output, task) {
   if (!isPlainObject(task) || !TARGET_KEYS.includes(task.targetKey)) return { ok: false, errors: [{ path: "$.task", message: "has invalid targetKey" }] };
   const maintenance = task.mode === "maintenance";
   const expectedProposer = maintenance ? "compactionProposer" : TARGETS[task.targetKey].proposer;
-  const expectedSections = Array.isArray(task.targetSections) ? task.targetSections : TARGETS[task.targetKey].sections;
+  const expectedSections = maintenance ? task.targetSections : TARGETS[task.targetKey].sections;
   if (!exactObject(output, ["tickId", "proposer", "sectionResults"], "$", errors)) return { ok: false, errors };
+  if (!nonNegativeInteger(output.tickId)) add(errors, "$.tickId", "must be a non-negative safe integer");
   if (output.tickId !== task.tickId) add(errors, "$.tickId", "does not match task");
   if (output.proposer !== expectedProposer) add(errors, "$.proposer", "does not match task");
   if (!isPlainObject(output.sectionResults)) add(errors, "$.sectionResults", "must be an object");
@@ -173,34 +181,148 @@ function validateProposerOutput(output, task) {
   return { ok: errors.length === 0, errors };
 }
 
+function expectedTree(paths) {
+  const tree = {};
+  for (const path of paths) {
+    const [container, section] = path.split(".");
+    tree[container] ||= [];
+    tree[container].push(section);
+  }
+  return tree;
+}
+
+function validateRedactedScene(scene, path, errors) {
+  if (!exactObject(scene, SCENE_FIELDS, path, errors)) return;
+  for (const fieldName of SCENE_FIELDS) {
+    const fieldPath = `${path}.${fieldName}`;
+    const field = scene[fieldName];
+    if (!exactObject(field, ["value", "updatedAtMessageId"], fieldPath, errors)) continue;
+    if (field.value !== null && typeof field.value !== "string") add(errors, `${fieldPath}.value`, "must be null or a string");
+    if (field.updatedAtMessageId !== null && !nonNegativeInteger(field.updatedAtMessageId)) add(errors, `${fieldPath}.updatedAtMessageId`, "must be null or a non-negative safe integer");
+    if ((field.value === null) !== (field.updatedAtMessageId === null)) add(errors, fieldPath, "value and updatedAtMessageId must both be null or both be populated");
+  }
+}
+
+function validateRedactedItem(item, section, writable, path, errors, { maintenance = false } = {}) {
+  const baseKeys = writable
+    ? ["text", "createdAtMessageId", "updatedAtMessageId", "id"]
+    : ["text", "createdAtMessageId", "updatedAtMessageId"];
+  const keys = section === "todos"
+    ? [...baseKeys, "actor", "requester", "status", "becameOverdueAt", "dueAt"]
+    : baseKeys;
+  if (!exactObject(item, keys, path, errors)) return;
+  if (writable && !positiveText(item.id)) add(errors, `${path}.id`, "must be a non-empty string");
+  if (!positiveText(item.text)) add(errors, `${path}.text`, "must be a non-empty string");
+  if (!nonNegativeInteger(item.createdAtMessageId)) add(errors, `${path}.createdAtMessageId`, "must be a non-negative safe integer");
+  if (!nonNegativeInteger(item.updatedAtMessageId)) add(errors, `${path}.updatedAtMessageId`, "must be a non-negative safe integer");
+  if (section !== "todos") return;
+  if (!["user", "assistant", "both"].includes(item.actor)) add(errors, `${path}.actor`, "is invalid");
+  if (!["user", "assistant"].includes(item.requester)) add(errors, `${path}.requester`, "is invalid");
+  if (!["active", "overdue"].includes(item.status)) add(errors, `${path}.status`, "is invalid");
+  if (item.dueAt !== null && !isIsoTimestamp(item.dueAt)) add(errors, `${path}.dueAt`, "must be null or an ISO 8601 timestamp");
+  if (item.becameOverdueAt !== null && !isIsoTimestamp(item.becameOverdueAt)) add(errors, `${path}.becameOverdueAt`, "must be null or an ISO 8601 timestamp");
+  if (item.status === "active" && item.becameOverdueAt !== null) add(errors, `${path}.becameOverdueAt`, "must be null for active todos");
+  if (item.status === "overdue" && (item.dueAt === null || item.becameOverdueAt === null)) add(errors, path, "overdue todos require dueAt and becameOverdueAt");
+  if (!writable && item.status !== "active") add(errors, `${path}.status`, "read-only todo context only permits active items");
+  if (maintenance && item.status !== "active") add(errors, `${path}.status`, "todo compaction only permits active items");
+}
+
+function validateStateView(view, paths, writable, path, errors, options = {}) {
+  const tree = expectedTree(paths);
+  if (!exactObject(view, Object.keys(tree), path, errors)) return;
+  for (const [container, sections] of Object.entries(tree)) {
+    const containerPath = `${path}.${container}`;
+    if (!exactObject(view[container], sections, containerPath, errors)) continue;
+    for (const section of sections) {
+      const sectionPath = `${containerPath}.${section}`;
+      const value = view[container][section];
+      if (section === "scene") validateRedactedScene(value, sectionPath, errors);
+      else if (!Array.isArray(value)) add(errors, sectionPath, "must be an array");
+      else value.forEach((item, index) => validateRedactedItem(item, section, writable, `${sectionPath}[${index}]`, errors, options));
+    }
+  }
+}
+
+function validateObservedMessage(message, path, errors) {
+  if (!exactObject(message, ["id", "role", "createdAt", "contentKind", "content", "contentHash"], path, errors)) return;
+  if (!positiveInteger(message.id)) add(errors, `${path}.id`, "must be a positive safe integer");
+  if (!["user", "assistant"].includes(message.role)) add(errors, `${path}.role`, "must be user or assistant");
+  if (!isIsoTimestamp(message.createdAt)) add(errors, `${path}.createdAt`, "must be an ISO 8601 timestamp");
+  if (message.contentKind !== "raw") add(errors, `${path}.contentKind`, "must be raw");
+  if (typeof message.content !== "string") add(errors, `${path}.content`, "must be a string");
+  if (!CONTENT_HASH_PATTERN.test(message.contentHash)) add(errors, `${path}.contentHash`, "must be a canonical sha256 content hash");
+  else if (typeof message.content === "string") {
+    const expected = `sha256:${crypto.createHash("sha256").update(message.content, "utf8").digest("hex")}`;
+    if (message.contentHash !== expected) add(errors, `${path}.contentHash`, "does not match raw content");
+  }
+}
+
 function validateTaskEnvelope(envelope) {
   const errors = [];
   if (!isPlainObject(envelope)) return { ok: false, errors: [{ path: "$", message: "must be an object" }] };
-  ["task", "writableState", "readOnlyContext", "observedMessages"].forEach((key) => {
-    if (!Object.prototype.hasOwnProperty.call(envelope, key)) add(errors, `$.${key}`, "is required");
-  });
+  exactObject(envelope, ["task", "writableState", "readOnlyContext", "observedMessages"], "$", errors);
   const task = envelope.task;
   if (!isPlainObject(task)) add(errors, "$.task", "must be an object");
   else {
+    const maintenance = task.mode === "maintenance";
+    const normalKeys = ["taskId", "tickId", "userId", "presetId", "schemaVersion", "sourceGeneration", "baseRevision", "targetKey", "cursorBefore", "targetMessageId", "proposer", "mode", "targetSections", "observedMessageIds", "trigger", "now", "userTimeZone"];
+    const maintenanceKeys = normalKeys.filter((key) => key !== "cursorBefore").concat(["parentTaskId", "resumeEpoch"]);
+    exactObject(task, maintenance ? maintenanceKeys : normalKeys, "$.task", errors);
+    if (!UUID_PATTERN.test(task.taskId)) add(errors, "$.task.taskId", "must be a UUID");
+    if (!nonNegativeInteger(task.tickId)) add(errors, "$.task.tickId", "must be a non-negative safe integer");
+    if (!positiveInteger(task.userId)) add(errors, "$.task.userId", "must be a positive safe integer");
+    if (!positiveText(task.presetId)) add(errors, "$.task.presetId", "must be a non-empty string");
     if (task.schemaVersion !== SCHEMA_VERSION) add(errors, "$.task.schemaVersion", `must equal ${SCHEMA_VERSION}`);
     if (!TARGET_KEYS.includes(task.targetKey)) add(errors, "$.task.targetKey", "is invalid");
     if (!["normal", "maintenance"].includes(task.mode)) add(errors, "$.task.mode", "is invalid");
     if (!nonNegativeInteger(task.baseRevision)) add(errors, "$.task.baseRevision", "must be a non-negative safe integer");
     if (!nonNegativeInteger(task.sourceGeneration)) add(errors, "$.task.sourceGeneration", "must be a non-negative safe integer");
     if (!isValidIanaTimeZone(task.userTimeZone)) add(errors, "$.task.userTimeZone", "must be a valid IANA time zone");
+    if (!isIsoTimestamp(task.now)) add(errors, "$.task.now", "must be an ISO 8601 timestamp");
+    if (!positiveInteger(task.targetMessageId)) add(errors, "$.task.targetMessageId", "must be a positive safe integer");
     if (!Array.isArray(task.targetSections) || task.targetSections.some((section) => !SECTIONS.includes(section))) add(errors, "$.task.targetSections", "is invalid");
+    if (!Array.isArray(task.observedMessageIds) || task.observedMessageIds.some((id) => !positiveInteger(id))) add(errors, "$.task.observedMessageIds", "must contain positive safe integers");
     if (task.mode === "normal") {
       if (!nonNegativeInteger(task.cursorBefore)) add(errors, "$.task.cursorBefore", "is required for normal mode");
+      if (isPlainObject(task.trigger)) exactObject(task.trigger, ["type"], "$.task.trigger", errors);
       if (task.trigger?.type !== "lagThreshold") add(errors, "$.task.trigger", "must be lagThreshold for normal mode");
+      const definition = TARGETS[task.targetKey];
+      if (definition && task.proposer !== definition.proposer) add(errors, "$.task.proposer", `must equal ${definition.proposer}`);
+      if (definition && JSON.stringify(task.targetSections) !== JSON.stringify(definition.sections)) add(errors, "$.task.targetSections", "must exactly match target sections");
+      if (nonNegativeInteger(task.cursorBefore) && positiveInteger(task.targetMessageId) && task.targetMessageId <= task.cursorBefore) add(errors, "$.task.targetMessageId", "must be greater than cursorBefore");
     } else {
-      if (task.cursorBefore !== undefined) add(errors, "$.task.cursorBefore", "is forbidden for maintenance mode");
+      if (task.proposer !== "compactionProposer") add(errors, "$.task.proposer", "must be compactionProposer for maintenance mode");
+      if (!UUID_PATTERN.test(task.parentTaskId)) add(errors, "$.task.parentTaskId", "must be a UUID");
+      if (!nonNegativeInteger(task.resumeEpoch)) add(errors, "$.task.resumeEpoch", "must be a non-negative safe integer");
+      if (!Array.isArray(task.targetSections) || task.targetSections.length !== 1 || !ITEM_SECTIONS.includes(task.targetSections[0]) || task.targetSections[0] === "recentEpisodes") add(errors, "$.task.targetSections", "maintenance requires one compactable item section");
+      if (TARGETS[task.targetKey] && !TARGETS[task.targetKey].sections.includes(task.targetSections?.[0])) add(errors, "$.task.targetSections", "must belong to targetKey");
       if (task.trigger?.type !== "lengthBudget" || !["maxItems", "maxRenderedChars"].includes(task.trigger?.dimension) || !Number.isSafeInteger(task.trigger?.limit) || task.trigger.limit <= 0) add(errors, "$.task.trigger", "must be a valid lengthBudget trigger");
+      else exactObject(task.trigger, ["type", "dimension", "limit"], "$.task.trigger", errors);
     }
   }
-  if (!isPlainObject(envelope.writableState)) add(errors, "$.writableState", "must be an object");
-  if (!isPlainObject(envelope.readOnlyContext)) add(errors, "$.readOnlyContext", "must be an object");
+  if (isPlainObject(task) && TARGET_KEYS.includes(task.targetKey) && Array.isArray(task.targetSections)) {
+    validateStateView(envelope.writableState, task.targetSections.map((section) => section === "scene" ? "current.scene" : (["todos", "standingAgreements", "recentEpisodes"].includes(section) ? `working.${section}` : `longTerm.${section}`)), true, "$.writableState", errors, { maintenance: task.mode === "maintenance" });
+    validateStateView(envelope.readOnlyContext, READ_ONLY_CONTEXT_PATHS[task.proposer] || [], false, "$.readOnlyContext", errors);
+  } else {
+    if (!isPlainObject(envelope.writableState)) add(errors, "$.writableState", "must be an object");
+    if (!isPlainObject(envelope.readOnlyContext)) add(errors, "$.readOnlyContext", "must be an object");
+  }
   if (!Array.isArray(envelope.observedMessages)) add(errors, "$.observedMessages", "must be an array");
-  else if (task?.mode === "maintenance" && envelope.observedMessages.length) add(errors, "$.observedMessages", "must be empty in maintenance mode");
+  else {
+    envelope.observedMessages.forEach((message, index) => validateObservedMessage(message, `$.observedMessages[${index}]`, errors));
+    if (task?.mode === "maintenance") {
+      if (envelope.observedMessages.length) add(errors, "$.observedMessages", "must be empty in maintenance mode");
+      if (Array.isArray(task.observedMessageIds) && task.observedMessageIds.length) add(errors, "$.task.observedMessageIds", "must be empty in maintenance mode");
+    } else if (task?.mode === "normal") {
+      if (!envelope.observedMessages.length) add(errors, "$.observedMessages", "must be non-empty in normal mode");
+      const ids = envelope.observedMessages.map((message) => message?.id);
+      if (JSON.stringify(ids) !== JSON.stringify(task.observedMessageIds)) add(errors, "$.task.observedMessageIds", "must exactly match observedMessages ids");
+      if (new Set(ids).size !== ids.length || ids.some((id, index) => index > 0 && id <= ids[index - 1])) add(errors, "$.observedMessages", "ids must be unique and strictly increasing");
+      if (!ids.includes(task.targetMessageId)) add(errors, "$.task.targetMessageId", "must be present in observedMessages");
+      if (ids.some((id) => id > task.targetMessageId)) add(errors, "$.observedMessages", "cannot contain messages after targetMessageId");
+      if (!ids.some((id) => id > task.cursorBefore)) add(errors, "$.observedMessages", "must contain a new batch after cursorBefore");
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 

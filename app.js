@@ -56,24 +56,26 @@ app.use("/api/admin/articles", adminArticlesRouter);
 
 app.use(errorHandler);
 
-startChatTrashCleanup({
-  retentionDays: chatConfig.trashRetentionDays,
-  intervalMs: chatConfig.trashCleanupIntervalMs,
-  batchSize: chatConfig.trashPurgeBatchSize,
-});
+async function startServer() {
+  if (memoryRuntime.enabled) await memoryRuntime.initialize();
 
-const server = app.listen(PORT, HOST);
+  startChatTrashCleanup({
+    retentionDays: chatConfig.trashRetentionDays,
+    intervalMs: chatConfig.trashCleanupIntervalMs,
+    batchSize: chatConfig.trashPurgeBatchSize,
+  });
 
-if (memoryRuntime.enabled) {
-  void memoryRuntime.recoverPending();
-  memoryRuntime.startTaskPolling();
-  memoryRuntime.startProjectionPolling();
+  const server = app.listen(PORT, HOST);
+  if (memoryRuntime.enabled) {
+    void memoryRuntime.recoverPending();
+    memoryRuntime.startTaskPolling();
+    memoryRuntime.startProjectionPolling();
+  }
+  server.on("listening", () => logger.info("server_started", { port: PORT, host: HOST }));
+  server.on("error", (error) => logger.error("server_listen_failed", { port: PORT, host: HOST, error }));
 }
 
-server.on("listening", () => {
-  logger.info("server_started", { port: PORT, host: HOST });
-});
-
-server.on("error", (error) => {
-  logger.error("server_listen_failed", { port: PORT, host: HOST, error });
+void startServer().catch((error) => {
+  logger.error("server_startup_failed", { port: PORT, host: HOST, error });
+  process.exitCode = 1;
 });

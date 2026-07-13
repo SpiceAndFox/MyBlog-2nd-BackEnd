@@ -34,17 +34,3 @@
 | 10. Source Generation 与 Projection      | §1 的 sourceGeneration、§9.4 rebuilding、§9.7：source mutation 原子初始化、六 target rebuild boundary、force-drain、RAG/Recall 独立 checkpoint、stale projection | `modules/memory/application/sourceRebuild.js`、`modules/memory/application/projectionDrain.js`                                                                                                    |
 | 11. Suppression、Retention 与隐私删除    | §9.8、§9.11、§9.6 日志限制：forget/correction tombstone 原子性、查询/rebuild gate、anchor 提升、引用保护、privacy hard delete、禁止持久日志泄漏正文              | `modules/memory/domain/suppression.js`、`modules/memory/application/retention.js`、`modules/memory/application/privacyHardDelete.js`                                                              |
 | 12. Diagnostics 与 Recovery Notification | §9.9–§9.10：诊断归属、omitted boundary、resolved 条件、健康聚合、通知唯一性、事务内创建、响应成功后 best-effort delivered                                        | `modules/memory/application/contextAssembly.js`、`modules/memory/domain/contextCoverage.js`、`modules/memory/domain/health.js`、`modules/memory/infrastructure/repositories/sidecarRepository.js` |
-
-## 每批固定交付格式
-
-每个批次建议都输出：
-
-1. `state-contract` 条款到代码和测试的追踪表。
-2. 按严重度排列的确定性问题，附文件和行号。
-3. 已符合但缺少回归测试的契约。
-4. 无法仅凭 `state-contract` 判断、需要引用算法子文档的项目。
-5. 针对性测试结果；每轮结束后再跑一次完整 `npm run test:memory-v2`。
-
-其中批次 7–11 的部分状态机规则被 `state-contract.md` 明确委托给算法文档。审查时应只补读它直接引用的算法章节，并明确区分“违反 state-contract”和“违反被引用的算法契约”。
-
-建议从批次 1 开始；它范围最稳定，也最容易尽早发现会使后续审查失效的基础问题。

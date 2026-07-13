@@ -72,6 +72,27 @@ const PROPOSER_EVIDENCE_KINDS = Object.freeze({
   compactionProposer: ["memory_compaction"],
 });
 
+const SECTION_EVIDENCE_KINDS = Object.freeze({
+  todos: ["user_request", "user_commitment", "assistant_request", "assistant_commitment", "user_correction", "assistant_correction"],
+  standingAgreements: ["standing_agreement", "user_correction", "assistant_correction"],
+  recentEpisodes: ["recent_episode", "user_correction", "assistant_correction"],
+  milestones: ["relationship_milestone", "user_correction", "assistant_correction"],
+  worldFacts: ["long_term_fact", "user_correction", "assistant_correction"],
+  userProfile: ["long_term_fact", "user_correction", "assistant_correction"],
+  assistantProfile: ["long_term_fact", "user_correction", "assistant_correction"],
+  relationship: ["long_term_fact", "user_correction", "assistant_correction"],
+});
+
+const READ_ONLY_CONTEXT_PATHS = Object.freeze({
+  currentStateProposer: ["working.recentEpisodes"],
+  todoProposer: ["current.scene", "working.standingAgreements", "working.recentEpisodes", "longTerm.userProfile", "longTerm.assistantProfile"],
+  agreementProposer: ["current.scene", "working.todos", "working.recentEpisodes", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
+  episodeProposer: ["current.scene", "working.todos", "working.standingAgreements", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
+  profileRelationshipProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.worldFacts"],
+  worldFactProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.userProfile", "longTerm.assistantProfile", "longTerm.relationship"],
+  compactionProposer: [],
+});
+
 const TARGET_STATUSES = Object.freeze(["healthy", "retry_wait", "capacity_blocked", "halted", "rebuilding"]);
 const TASK_STATUSES = Object.freeze(["queued", "running", "retry_wait", "succeeded", "failed", "cancelled"]);
 const TASK_TYPES = Object.freeze(["normal", "maintenance", "system_cleanup"]);
@@ -94,6 +115,8 @@ module.exports = {
   EVIDENCE_KINDS,
   PATCH_OPS,
   PROPOSER_EVIDENCE_KINDS,
+  SECTION_EVIDENCE_KINDS,
+  READ_ONLY_CONTEXT_PATHS,
   TARGET_STATUSES,
   TASK_STATUSES,
   TASK_TYPES,

@@ -6,7 +6,7 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
-function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
@@ -14,6 +14,7 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, fe
   const endpoint = new URL("chat/completions", normalizeBaseUrl(baseUrl)).toString();
 
   return async function invokeStructured({ systemPrompt, userPayload, responseSchema }) {
+    assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
     try {
@@ -23,6 +24,7 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, fe
         body: JSON.stringify({
           model,
           stream: false,
+          max_tokens: maxOutputTokens,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: JSON.stringify(userPayload) },
@@ -33,20 +35,24 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, fe
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
+        if (isSafetySignal(data?.error?.code, data?.error?.type, data?.error?.message)) {
+          return { safetyBlocked: true, finishReason: data?.error?.code ?? "input_rejected", model: data?.model ?? model, usage: data?.usage ?? null };
+        }
         const error = new Error(data?.error?.message || `Memory Provider HTTP ${response.status}`);
         error.status = response.status;
         throw error;
       }
       const choice = data?.choices?.[0];
       const message = choice?.message;
-      if (message?.refusal) return { refusal: true, finishReason: choice?.finish_reason, model: data?.model, usage: data?.usage };
+      const finishReason = choice?.finish_reason ?? choice?.stop_reason;
+      if (message?.refusal || isSafetySignal(finishReason)) return { refusal: true, finishReason, model: data?.model, usage: data?.usage };
       const content = message?.parsed ?? message?.content;
       let output = content;
       if (typeof content === "string") {
         try { output = JSON.parse(content); }
         catch { output = null; }
       }
-      return { output, finishReason: choice?.finish_reason, model: data?.model ?? model, usage: data?.usage ?? null };
+      return { output, finishReason, model: data?.model ?? model, usage: data?.usage ?? null };
     } finally {
       clearTimeout(timeout);
     }
@@ -54,3 +60,4 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, timeoutMs, fe
 }
 
 module.exports = { createOpenAiStructuredTransport };
+const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");

@@ -1,7 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { createInitialMemoryState, validateMemoryState, validatePatch, validateProposerOutput } = require("../../modules/memory/contracts");
+const crypto = require("node:crypto");
+const { createInitialMemoryState, validateMemoryState, validatePatch, validateProposerOutput, validateTaskEnvelope } = require("../../modules/memory/contracts");
 const { loadFixtures } = require("../../modules/memory/harness/runner");
 
 test("revision zero state satisfies the strict v2 schema", () => {
@@ -15,6 +16,36 @@ test("state validator rejects runtime recovery state in semantic meta", () => {
   const result = validateMemoryState(state);
   assert.equal(result.ok, false);
   assert.match(result.errors.map((entry) => entry.path).join(" "), /halted/);
+});
+test("state validator rejects malformed persisted provenance and todo lifecycle", () => {
+  const state = createInitialMemoryState();
+  state.working.todos.push({
+    id: "todo:1", text: "还书", actor: "user", requester: "user", status: "overdue",
+    dueAt: null, becameOverdueAt: "2026", createdAtMessageId: 1, updatedAtMessageId: 2,
+    evidenceGroups: [{ evidenceKind: "memory_compaction", refs: [{ messageId: 7, contentHash: "sha256:x", quote: "q".repeat(201) }] }],
+  });
+  const result = validateMemoryState(state);
+  assert.equal(result.ok, false);
+  const paths = result.errors.map((entry) => entry.path).join(" ");
+  assert.match(paths, /contentHash/);
+  assert.match(paths, /createdAtMessageId/);
+  assert.match(paths, /dueAt/);
+});
+test("task envelope validator rejects mismatched target mappings and observed hashes", () => {
+  const content = "你好";
+  const envelope = {
+    task: {
+      taskId: "00000000-0000-4000-8000-000000000001", tickId: 1, userId: 1, presetId: "default",
+      schemaVersion: 2, sourceGeneration: 0, baseRevision: 0, targetKey: "todos", cursorBefore: 0,
+      targetMessageId: 1, proposer: "currentStateProposer", mode: "normal", targetSections: ["scene"],
+      observedMessageIds: [1], trigger: { type: "lagThreshold" }, now: "2026-07-12T00:00:00Z", userTimeZone: "UTC",
+    },
+    writableState: {}, readOnlyContext: {},
+    observedMessages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00Z", contentKind: "raw", content, contentHash: `sha256:${crypto.createHash("sha256").update("different").digest("hex")}` }],
+  };
+  const result = validateTaskEnvelope(envelope);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.map((entry) => `${entry.path}:${entry.message}`).join(" "), /proposer|targetSections|contentHash/);
 });
 test("normal proposals cannot use maintenance mergeItems", () => {
   const result = validatePatch({ op: "mergeItems", itemIds: ["a", "b"], value: { text: "x" }, evidenceKind: "memory_compaction" }, "todos");

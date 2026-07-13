@@ -61,7 +61,7 @@
         "createdAt": "2026-07-12T00:00:00.000Z",
         "contentKind": "raw",
         "content": "今晚随便聊聊",
-        "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "contentHash": "sha256:5c4306be6a126bc961765d6b8af30de8eed8b660aa453640301b145b9ebd726d"
       }]
     },
     "adapterMock": {
@@ -75,7 +75,7 @@
       "role": "user",
       "createdAt": "2026-07-12T00:00:00.000Z",
       "content": "今晚随便聊聊",
-      "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "contentHash": "sha256:5c4306be6a126bc961765d6b8af30de8eed8b660aa453640301b145b9ebd726d"
     }],
     "expected": { "outcome": "committable", "revision": 1, "cursorAfter": 1, "decision": "noop" }
   }]

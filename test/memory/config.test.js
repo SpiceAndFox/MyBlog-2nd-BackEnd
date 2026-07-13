@@ -34,7 +34,7 @@ function validEnv() {
     CHAT_MEMORY_V2_PROJECTION_POLL_INTERVAL_MS: "60000", CHAT_MEMORY_V2_TASK_POLL_INTERVAL_MS: "1000",
     CHAT_MEMORY_V2_PROVIDER_ADAPTER: "openai-json-schema", CHAT_MEMORY_V2_PROVIDER_BASE_URL: "https://example.test/v1/", CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
     CHAT_MEMORY_V2_PROVIDER_MODEL: "structured-model", CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS: "60000",
-    CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000",
+    CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000", CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS: "8192",
   });
   return env;
 }
@@ -60,7 +60,7 @@ test("provider config is independently loadable and never falls back to chat pro
   assert.throws(() => loadMemoryProviderConfig(env), /CHAT_MEMORY_V2_PROVIDER_API_KEY/);
 });
 
-test("DeepSeek provider config requires an explicit thinking mode", () => {
+test("DeepSeek provider config requires thinking to be explicitly disabled", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "deepseek-strict-tools";
   env.CHAT_MEMORY_V2_PROVIDER_BASE_URL = "https://api.deepseek.com/beta";
@@ -68,7 +68,9 @@ test("DeepSeek provider config requires an explicit thinking mode", () => {
   env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "disabled";
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "disabled");
   env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "sometimes";
-  assert.throws(() => loadMemoryProviderConfig(env), /disabled or enabled/);
+  assert.throws(() => loadMemoryProviderConfig(env), /must be disabled/);
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "enabled";
+  assert.throws(() => loadMemoryProviderConfig(env), /must be disabled/);
 });
 
 test("schema-invalid retry is strictly bounded to at most one", () => {

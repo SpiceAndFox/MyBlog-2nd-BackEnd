@@ -1,5 +1,6 @@
 const { validateProposerOutput, validateTaskEnvelope } = require("../../contracts");
 const { buildOutputSchema } = require("./outputSchema");
+const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 
@@ -20,12 +21,12 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   return Object.freeze({
     async propose(envelope) {
-      const envelopeResult = validateTaskEnvelope(envelope);
-      if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
-      const { task } = envelope;
-      const schema = buildOutputSchema(task.proposer, task.targetSections);
       let response;
       try {
+        const envelopeResult = validateTaskEnvelope(envelope);
+        if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
+        const { task } = envelope;
+        const schema = buildOutputSchema(task.proposer, task.targetSections);
         response = await invokeStructured({
           proposer: task.proposer,
           systemPrompt: await promptLoader(task.proposer),
@@ -33,10 +34,12 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           responseSchema: schema,
         });
       } catch (error) {
-        return { status: "error", reason: "llm_call_failed", detail: { message: error instanceof Error ? error.message : String(error) } };
+        if (isSafetySignal(error?.code, error?.message)) return { status: "error", reason: "safety_policy_blocked", detail: { code: error?.code ?? null } };
+        return { status: "error", reason: "llm_call_failed", detail: { code: error?.code ?? null, message: error instanceof Error ? error.message : String(error), ...(error?.detail || {}) } };
       }
-      if (response?.refusal || response?.safetyBlocked) return { status: "error", reason: "safety_policy_blocked", detail: null };
-      if (["length", "max_tokens", "max_output_tokens"].includes(response?.finishReason)) return { status: "error", reason: "max_output_truncated", detail: null };
+      const { task } = envelope;
+      if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) return { status: "error", reason: "safety_policy_blocked", detail: null };
+      if (isTruncationSignal(response?.finishReason)) return { status: "error", reason: "max_output_truncated", detail: null };
       const output = normalizeProviderOutput(response?.output, task);
       const validated = validateProposerOutput(output, task);
       if (!validated.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors } };

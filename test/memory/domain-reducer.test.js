@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const { createInitialMemoryState, TARGETS } = require("../../modules/memory/contracts");
 const { loadFixtures, executeReducerTick } = require("../../modules/memory/harness/runner");
@@ -10,6 +11,7 @@ function budgets(maxItems = 20, maxRenderedChars = 2000) {
 }
 const config = { quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 }, sectionBudgets: budgets() };
 function sequence(...values) { let index = 0; return () => values[index++] || `id-${index}`; }
+function hash(value) { return `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`; }
 function task(targetKey, overrides = {}) {
   return {
     tickId: 1, taskId: "task", userId: 1, presetId: "p", schemaVersion: 2, sourceGeneration: 0, baseRevision: 0,
@@ -18,11 +20,14 @@ function task(targetKey, overrides = {}) {
   };
 }
 function message(id, role, content, createdAt = "2026-01-01T00:00:00.000Z") {
-  return { id, userId: 1, presetId: "p", role, createdAt, contentHash: `sha256:${id}`, content };
+  return { id, userId: 1, presetId: "p", role, createdAt, contentHash: hash(content), content };
 }
 function observed(database) { const { userId, presetId, content, ...value } = database; return { ...value, contentKind: "raw", content }; }
-function item(id, text, messageId = 1, todo = false) {
-  const value = { id, text, evidenceGroups: [{ evidenceKind: todo ? "user_commitment" : "long_term_fact", refs: [{ messageId, contentHash: `sha256:${messageId}`, quote: text }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
+function item(id, text, messageId = 1, todo = false, evidenceKind = null) {
+  const inferredKind = evidenceKind || (todo ? "user_commitment"
+    : id.startsWith("agreement:") || id.startsWith("standingAgreements:") ? "standing_agreement"
+      : id.startsWith("milestones:") ? "relationship_milestone" : "long_term_fact");
+  const value = { id, text, evidenceGroups: [{ evidenceKind: inferredKind, refs: [{ messageId, contentHash: hash(text), quote: text }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
   return todo ? { ...value, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null } : value;
 }
 
@@ -73,7 +78,7 @@ test("correction preserves item identity, appends evidence, and suppresses repla
   const updated = result.state.longTerm.worldFacts[0];
   assert.equal(updated.id, "worldFact:home");
   assert.equal(updated.evidenceGroups.length, 2);
-  assert.deepEqual(result.tombstones, [{ messageId: 1, contentHash: "sha256:1", reason: "correction", sourceItemId: "worldFact:home", sourceSection: "worldFacts", userId: 1, presetId: "p", createdRevision: 1 }]);
+  assert.deepEqual(result.tombstones, [{ messageId: 1, contentHash: hash("住在北京"), reason: "correction", sourceItemId: "worldFact:home", sourceSection: "worldFacts", userId: 1, presetId: "p", createdRevision: 1 }]);
   assert.equal(result.tombstones.some((entry) => entry.messageId === 2), false);
 });
 

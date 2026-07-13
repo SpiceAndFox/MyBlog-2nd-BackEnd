@@ -6,6 +6,7 @@ const { createMemorySourceRebuild } = require("./sourceRebuild");
 const { createMemoryStateRecovery } = require("./stateRecovery");
 const { createMemoryProviderAdapter } = require("../infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("../infrastructure/providers/structuredTransportFactory");
+const { runStructuredOutputPreflight } = require("../infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("../prompts");
 const { createMemoryMetrics } = require("./metrics");
 
@@ -34,6 +35,7 @@ function createDisabledRuntime(repositories) {
   }
   return Object.freeze({
     enabled: false,
+    initialize: async () => [],
     processScope: disabled,
     rebuildScope: disabled,
     mutateSourceAndRebuild,
@@ -57,10 +59,15 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   const enqueueByKey = createKeyedExecutor();
-  const adapter = providerAdapter || createMemoryProviderAdapter({
-    invokeStructured: createStructuredTransport(config.provider),
-    promptLoader: loadProposerPrompt,
-  });
+  const invokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
+  const adapter = providerAdapter || createMemoryProviderAdapter({ invokeStructured, promptLoader: loadProposerPrompt });
+  let providerInitialization = providerAdapter ? Promise.resolve([]) : null;
+  function initialize() {
+    if (!providerInitialization) {
+      providerInitialization = runStructuredOutputPreflight({ invokeStructured, promptLoader: loadProposerPrompt });
+    }
+    return providerInitialization;
+  }
   const observer = createObserver({
     sourceRepository: repositories.source,
     stateRepository: repositories.state,
@@ -182,6 +189,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   function processScope(userId, presetId) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
+      await initialize();
       await ensureState(userId, presetId);
       const memory = await pipeline.processScope(userId, presetId);
       const projections = await drainProjectionsNow(userId, presetId);
@@ -191,6 +199,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   function rebuildScope(userId, presetId, { reason = "source_mutation" } = {}) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
+      await initialize();
       const startedAt = performance.now();
       await ensureState(userId, presetId);
       const initialized = await sourceRebuild.initializeGeneration(userId, presetId, { reason });
@@ -203,6 +212,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function mutateSourceAndRebuild(userId, presetId, { mutateSource, purgeDerived = null, reason = "source_mutation" } = {}) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
+    await initialize();
     const initialized = await enqueueByKey(`${userId}:${presetId}`, async () => {
       await ensureState(userId, presetId);
       return sourceRebuild.initializeGeneration(userId, presetId, { mutateSource, purgeDerived, reason });
@@ -216,6 +226,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   async function recoverPending() {
+    await initialize();
     if (typeof repositories.state.listInitializedScopes === "function") {
       const scopes = await repositories.state.listInitializedScopes();
       for (const scope of scopes) {
@@ -236,6 +247,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   async function resumeTarget(userId, presetId, targetKey) {
+    await initialize();
     const result = await enqueueByKey(`${userId}:${presetId}`, () => (
       recovery.resumeTarget(userId, presetId, targetKey, { run: false })
     ));
@@ -247,6 +259,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   return Object.freeze({
     enabled: true,
+    initialize,
     processScope,
     rebuildScope,
     mutateSourceAndRebuild,

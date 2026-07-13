@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { buildNormalEnvelope } = require("../../modules/memory/application/envelope");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("../../modules/memory/infrastructure/providers/memoryProviderAdapter");
@@ -10,12 +11,13 @@ const { createStructuredTransport } = require("../../modules/memory/infrastructu
 const { runStructuredOutputPreflight } = require("../../modules/memory/infrastructure/providers/providerPreflight");
 
 const config = { overdueTodos: { maxRenderedItems: 2 } };
+function hash(content) { return `sha256:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`; }
 function envelope() {
   return buildNormalEnvelope({
     userId: 1, presetId: "default", state: createInitialMemoryState(),
     intent: { targetKey: "episodes", proposer: "episodeProposer", targetSections: ["recentEpisodes", "milestones"], cursorBefore: 0 },
-    messages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "你好", contentHash: `sha256:${"a".repeat(64)}` }],
-    now: "2026-07-12T00:00:01Z", taskId: "task", tickId: 7, config,
+    messages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "你好", contentHash: hash("你好") }],
+    now: "2026-07-12T00:00:01Z", taskId: "00000000-0000-4000-8000-000000000007", tickId: 7, config,
   });
 }
 
@@ -23,8 +25,8 @@ function sceneEnvelope() {
   return buildNormalEnvelope({
     userId: 1, presetId: "default", state: createInitialMemoryState(),
     intent: { targetKey: "scene", proposer: "currentStateProposer", targetSections: ["scene"], cursorBefore: 0 },
-    messages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "来到屋顶", contentHash: `sha256:${"b".repeat(64)}` }],
-    now: "2026-07-12T00:00:01Z", taskId: "scene-task", tickId: 8, config,
+    messages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "来到屋顶", contentHash: hash("来到屋顶") }],
+    now: "2026-07-12T00:00:01Z", taskId: "00000000-0000-4000-8000-000000000008", tickId: 8, config,
   });
 }
 
@@ -91,6 +93,8 @@ test("Provider Adapter accepts valid native structured output", async () => {
 test("Provider Adapter distinguishes truncation, refusal, call and schema errors", async () => {
   const cases = [
     [{ finishReason: "length" }, "max_output_truncated"],
+    [{ finishReason: "max_output_length" }, "max_output_truncated"],
+    [{ finishReason: "content_filter" }, "safety_policy_blocked"],
     [{ refusal: true }, "safety_policy_blocked"],
     [{ output: { tickId: 7 } }, "output_schema_invalid"],
   ];
@@ -159,6 +163,8 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
     apiKey: "test-key",
     model: "deepseek-v4-flash",
     timeoutMs: 1000,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 1024,
   }, {
     fetchImpl: async (url, options) => {
       request = { url, body: JSON.parse(options.body) };
@@ -178,10 +184,30 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
   });
   assert.equal(request.url, "https://api.deepseek.com/beta/chat/completions");
   assert.equal(request.body.response_format, undefined);
+  assert.equal(request.body.max_tokens, 1024);
   assert.deepEqual(request.body.thinking, { type: "disabled" });
   assert.equal(request.body.tools[0].function.strict, true);
   assert.equal(request.body.tool_choice.function.name, "probe");
   assert.deepEqual(result.output, { ok: true });
+});
+
+test("structured transport enforces input capability before dispatch", async () => {
+  let called = false;
+  const invoke = createStructuredTransport({
+    adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "model",
+    timeoutMs: 1000, maxInputTokens: 4, maxOutputTokens: 32,
+  }, { fetchImpl: async () => { called = true; throw new Error("must not dispatch"); } });
+  await assert.rejects(() => invoke({ systemPrompt: "long prompt", userPayload: {}, responseSchema: { name: "x", schema: {} } }), /exceeds configured context capability/);
+  assert.equal(called, false);
+});
+
+test("OpenAI-compatible HTTP safety rejection is normalized", async () => {
+  const invoke = createStructuredTransport({
+    adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "model",
+    timeoutMs: 1000, maxInputTokens: 1_000_000, maxOutputTokens: 32,
+  }, { fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error: { code: "content_filter", message: "blocked by safety policy" } }) }) });
+  const response = await invoke({ systemPrompt: "prompt", userPayload: {}, responseSchema: { name: "x", schema: {} } });
+  assert.equal(response.safetyBlocked, true);
 });
 
 test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {

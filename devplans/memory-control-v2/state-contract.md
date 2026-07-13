@@ -361,10 +361,12 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
 | `task.mode`                           | `"maintenance"`                     | Reducer 按维护模式切换 policy：只允许安全合并，不允许新增事实    |
 | `task.targetKey`                      | 来源 normal task 的 targetKey       | 仅用于关联被阻塞 target、event 和 ops log；compaction 不读取或推进该 cursor |
 | `task.targetMessageId`                | 来源 normal task 的 targetMessageId | 只标识被阻塞 proposal 的 raw-message 边界，用于关联、幂等和后续 replay；不是 compaction cursor，不用于读取 raw messages 或推进 cursor |
+| `task.parentTaskId`                   | 来源 normal task 的 taskId          | maintenance durable task 的父任务关联                                   |
+| `task.resumeEpoch`                    | 首次为 0，人工 resume 每次 +1       | 与 parentTaskId、section 共同参与 maintenance dedupe identity            |
 | `task.targetSections`                 | 仅含被预算阻塞的一个 section        | 禁止跨 section 合并；envelope 不再设置额外的 path 分组字段      |
 | `task.observedMessageIds`             | `[]`                                | 维护任务不观察新的最近对话窗口                                   |
 | `task.trigger`                        | `{ type: "lengthBudget", dimension, limit }` | `dimension` 为 `maxItems` 或 `maxRenderedChars`；`limit` 是对应配置值 |
-| `writableState`                       | 目标 section 的既有 items 全集      | item 使用 §5 redacted view                                       |
+| `writableState`                       | 目标 section 的全部可合并 items     | item 使用 §5 redacted view；todos 只包含 `status=active` 的 items |
 | `readOnlyContext`                     | `{}`                                | 维护任务只在目标 source items 内判断合并                         |
 | `observedMessages`                    | `[]`                                | 维护任务不读取 raw messages                                      |
 
@@ -380,9 +382,12 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
     "userId": 1,
     "presetId": "default",
     "schemaVersion": 2,
+    "sourceGeneration": 0,
     "baseRevision": 0,
     "targetKey": "profileRelationship",
     "targetMessageId": 124,
+    "parentTaskId": "018f2f5e-7f2a-7b11-9c31-111111111111",
+    "resumeEpoch": 0,
     "proposer": "compactionProposer",
     "mode": "maintenance",
     "targetSections": ["userProfile"],
@@ -392,7 +397,8 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
       "dimension": "maxRenderedChars",
       "limit": 1200
     },
-    "now": "2026-07-06T22:30:00Z"
+    "now": "2026-07-06T22:30:00Z",
+    "userTimeZone": "Asia/Shanghai"
   },
   "writableState": {
     "longTerm": {
@@ -433,7 +439,7 @@ Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不
 | `worldFactProposer`         | `worldFacts`                                           | `current.scene`、`working.recentEpisodes`、`working.standingAgreements`、`longTerm.milestones`、`longTerm.userProfile`、`longTerm.assistantProfile`、`longTerm.relationship` |
 | `compactionProposer`        | 被预算阻塞的单个 section                               | `{}`                                                                                                                                           |
 
-`profileRelationshipProposer` 的 `targetSections` 为 `["userProfile", "assistantProfile", "relationship"]`，三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 的 `targetSections` 为 `["worldFacts"]`。两者分别把对方 writable sections 放入 `readOnlyContext`：前者只读 `worldFacts`，后者只读 `userProfile`、`assistantProfile`、`relationship`；两者还都包含 `current.scene`、`working.recentEpisodes`、`working.standingAgreements` 和 `longTerm.milestones` 作为语义背景。维护模式下 `compactionProposer` 的 `readOnlyContext` 固定为空对象。
+`profileRelationshipProposer` 的 `targetSections` 为 `["userProfile", "assistantProfile", "relationship"]`，三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 的 `targetSections` 为 `["worldFacts"]`。两者分别把对方 writable sections 放入 `readOnlyContext`：前者只读 `worldFacts`，后者只读 `userProfile`、`assistantProfile`、`relationship`；两者还都包含 `current.scene`、`working.recentEpisodes`、`working.standingAgreements` 和 `longTerm.milestones` 作为语义背景。维护模式下 `compactionProposer` 的 `readOnlyContext` 固定为空对象。Todo 的 maintenance writableState 只包含 active items；overdue items 不参与 active 容量门且不可被 merge，因此不向 compactionProposer 暴露。
 
 ### 5.4 边界规则
 
@@ -594,6 +600,8 @@ Evidence source 校验、quote 归一化、信息量判断和统一 Levenshtein 
 > **容量 halt 策略说明**：当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略（见 [容量降级策略（延后）](../deferred/memory-control-v2/capacity-degradation.md)）。
 
 ## 9. Revision、Snapshot、Event 与运行恢复状态
+
+DDL 的数据库层责任是字段类型、nullable/default、主键、唯一约束、显式外键和索引；带条件的 stage/decision/outcome 枚举与跨字段状态机不变量由 contracts/Repository/应用事务层校验。生产启服前的 schema checker 必须逐表验证本节全部表和字段、关键 nullable/default 以及全部显式索引，不能只检查 v1 字段是否已删除。若未来允许模块外直接写这些表，必须先把相应应用层枚举与跨字段约束下沉为数据库 `CHECK`/trigger，不得绕过当前写入边界。
 
 Memory 恢复分为两条独立 authority：
 
@@ -1011,6 +1019,10 @@ Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。
 - `llm_call_failed`：网络异常、超时、provider 5xx、其它未归类异常。
 
 Provider/model 的物理 context window、最大输出和 schema/tool 限制由 Adapter 在请求前校验并按上述统一结果处理；这些上限不得折算、复用或写回为 §8 的 Memory section `maxItems/maxRenderedChars` 容量规则。
+
+Provider wire schema 可以为适配已知方言限制而使用可逆的、更窄表示，但必须在业务 schema 校验前归一化，且不得放宽 §5.5。例如 DeepSeek strict tools 不支持数组 cardinality 约束时，scene patch 在 wire 上使用单个 `evidenceRef` 对象，Adapter 立即归一化为 canonical `evidenceRefs: [ref]`；Reducer、durable proposal 和 event 中只允许 canonical 结构。此转换必须由完整 Provider preflight 覆盖。
+
+启用 Memory runtime 时，完整 Provider preflight 是服务监听前的启动门；仅运行独立 probe CLI 不构成启服条件。preflight 成功结果只对当前进程、adapter/model/schema 组合有效。运行请求还必须在传输前检查集中配置的输入能力上限，并显式发送集中配置的最大输出上限；DeepSeek Memory 调用的 `thinking.type` 固定为 `disabled`。
 
 tick orchestrator 行为：
 

@@ -33,7 +33,7 @@ test("rebuild terminal suppression removes forgotten candidates but preserves a 
 
   const recall = filterRecall({
     evidenceGroups: [group("long_term_fact", fixture.oldSource), group("user_correction", fixture.correctionSource)],
-    rawMessages: [{ id: 10, contentHash: "sha256:old" }, { id: 20, contentHash: "sha256:new" }],
+    rawMessages: [{ id: 10, contentHash: fixture.oldSource.contentHash }, { id: 20, contentHash: fixture.correctionSource.contentHash }],
   }, tombstones);
   assert.deepEqual(recall.rawMessages.map((entry) => entry.id), [20]);
   assert.deepEqual(recall.evidenceGroups.map((entry) => entry.evidenceKind), ["user_correction"]);
@@ -41,13 +41,13 @@ test("rebuild terminal suppression removes forgotten candidates but preserves a 
 
 test("Reducer rejects a proposal after the suppression query gate removes its source", () => {
   const state = createInitialMemoryState();
-  const message = { id: 10, userId: 7, presetId: "companion", role: "user", content: "旧事实", contentHash: "sha256:old", createdAt: "2026-07-01T00:00:00.000Z" };
+  const message = { id: 10, userId: 7, presetId: "companion", role: "user", content: "旧事实", contentHash: fixture.oldSource.contentHash, createdAt: "2026-07-01T00:00:00.000Z" };
   const sectionBudgets = Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: 20, maxRenderedChars: 2000 }]));
   const result = reduceProposal({
     state,
     task: { taskId: "task", tickId: 1, userId: 7, presetId: "companion", sourceGeneration: 0, baseRevision: 0, targetKey: "worldFacts", cursorBefore: 0, targetMessageId: 10, proposer: "worldFactProposer", mode: "normal", targetSections: ["worldFacts"], observedMessageIds: [10], now: "2026-07-13T00:00:00.000Z" },
     proposal: { sectionResults: { worldFacts: { status: "patches", patches: [{ op: "addItem", value: { text: "旧事实" }, evidenceKind: "long_term_fact", evidenceRefs: [{ messageId: 10, quote: "旧事实" }] }] } } },
-    observedMessages: [{ id: 10, role: "user", contentKind: "raw", content: "旧事实", contentHash: "sha256:old", createdAt: message.createdAt }],
+    observedMessages: [{ id: 10, role: "user", contentKind: "raw", content: "旧事实", contentHash: fixture.oldSource.contentHash, createdAt: message.createdAt }],
     databaseMessages: [],
     config: { quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 }, sectionBudgets },
   });

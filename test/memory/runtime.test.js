@@ -25,6 +25,43 @@ test("disabled runtime still commits source mutations through the repository tra
   assert.deepEqual(result, { status: "memory_disabled", mutationResult: { changed: true } });
 });
 
+test("default runtime performs one complete Provider preflight before becoming ready", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const request = JSON.parse(options.body);
+    const userPayload = JSON.parse(request.messages[1].content);
+    return {
+      ok: true,
+      async json() {
+        return { model: "preflight-model", choices: [{ finish_reason: "stop", message: { parsed: userPayload.expectedOutput } }] };
+      },
+    };
+  };
+  const repositories = {
+    state: {}, source: {}, runtime: {}, audit: {}, sidecars: {},
+    async withTransaction(work) { return work({}); },
+  };
+  try {
+    const runtime = createMemoryRuntime({
+      config: {
+        enabled: true,
+        provider: { adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "preflight-model", timeoutMs: 1000, maxInputTokens: 1_000_000, maxOutputTokens: 8192 },
+        targets: {}, providerRecovery: {}, compaction: {},
+      },
+      repositories,
+    });
+    const first = await runtime.initialize();
+    const second = await runtime.initialize();
+    assert.equal(first.length, 7);
+    assert.deepEqual(second, first);
+    assert.equal(calls, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("v2 runtime executor serializes one scope without blocking another", async () => {
   const enqueue = createKeyedExecutor();
   const events = [];

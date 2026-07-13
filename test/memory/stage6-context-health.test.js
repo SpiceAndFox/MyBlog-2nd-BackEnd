@@ -144,7 +144,7 @@ test("effective-view cleanup requests one idempotent housekeeping wake-up", asyn
   data.state.working.todos.push({
     id: "todo:due", text: "已到期事项", actor: "user", requester: "user", status: "active", dueAt: "2026-07-12T00:00:00.000Z", becameOverdueAt: null,
     createdAtMessageId: 1, updatedAtMessageId: 1,
-    evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId: 1, contentHash: "sha256:test", quote: "第一条" }] }],
+    evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId: 1, contentHash: `sha256:${"a".repeat(64)}`, quote: "第一条" }] }],
   });
   let wakes = 0;
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars, scheduleHousekeeping() { wakes += 1; } });

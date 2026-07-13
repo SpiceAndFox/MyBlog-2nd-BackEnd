@@ -1,14 +1,7 @@
 const crypto = require("node:crypto");
-const { SCHEMA_VERSION, TARGETS } = require("../contracts");
+const { SCHEMA_VERSION, TARGETS, READ_ONLY_CONTEXT_PATHS } = require("../contracts");
 
-const READ_ONLY = Object.freeze({
-  currentStateProposer: ["working.recentEpisodes"],
-  todoProposer: ["current.scene", "working.standingAgreements", "working.recentEpisodes", "longTerm.userProfile", "longTerm.assistantProfile"],
-  agreementProposer: ["current.scene", "working.todos", "working.recentEpisodes", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
-  episodeProposer: ["current.scene", "working.todos", "working.standingAgreements", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
-  profileRelationshipProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.worldFacts"],
-  worldFactProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.userProfile", "longTerm.assistantProfile", "longTerm.relationship"],
-});
+const READ_ONLY = READ_ONLY_CONTEXT_PATHS;
 
 function redactScene(scene) {
   return Object.fromEntries(Object.entries(scene).map(([key, field]) => [key, { value: field.value, updatedAtMessageId: field.updatedAtMessageId }]));
@@ -84,7 +77,8 @@ function normalDedupeKey(task) {
 function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
   const path = sectionPath(section);
   const writableState = {};
-  putPath(writableState, path, readPath(state, path, true, config.overdueTodos.maxRenderedItems));
+  const value = readPath(state, path, true, config.overdueTodos.maxRenderedItems);
+  putPath(writableState, path, section === "todos" ? value.filter((item) => item.status === "active") : value);
   return {
     task: {
       taskId,

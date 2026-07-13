@@ -1,4 +1,10 @@
-const { SCHEMA_VERSION, TARGET_KEYS, SCENE_FIELDS, ITEM_SECTIONS, EVIDENCE_KINDS } = require("./constants");
+const {
+  SCHEMA_VERSION, TARGET_KEYS, SCENE_FIELDS, ITEM_SECTIONS, EVIDENCE_KINDS,
+  SECTION_EVIDENCE_KINDS, QUOTE_MAX_CODE_POINTS,
+} = require("./constants");
+
+const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function createEmptyScene() {
   return Object.fromEntries(
@@ -42,17 +48,22 @@ function nonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function isIsoTimestamp(value) {
+  return typeof value === "string" && ISO_TIMESTAMP_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
+}
+
 function validateEvidenceRef(ref, path, errors, { persisted = true } = {}) {
   const keys = persisted ? ["messageId", "contentHash", "quote"] : ["messageId", "quote"];
   if (!exactKeys(ref, keys, path, errors)) return;
   if (!nonNegativeInteger(ref.messageId)) push(errors, `${path}.messageId`, "must be a non-negative safe integer");
-  if (persisted && (typeof ref.contentHash !== "string" || !ref.contentHash.startsWith("sha256:"))) {
-    push(errors, `${path}.contentHash`, "must be a sha256 content hash");
+  if (persisted && !CONTENT_HASH_PATTERN.test(ref.contentHash)) {
+    push(errors, `${path}.contentHash`, "must be sha256: followed by 64 lowercase hexadecimal characters");
   }
-  if (typeof ref.quote !== "string" || !ref.quote) push(errors, `${path}.quote`, "must be a non-empty string");
+  if (typeof ref.quote !== "string" || !ref.quote.trim()) push(errors, `${path}.quote`, "must be a non-empty string");
+  else if (Array.from(ref.quote).length > QUOTE_MAX_CODE_POINTS) push(errors, `${path}.quote`, `must not exceed ${QUOTE_MAX_CODE_POINTS} code points`);
 }
 
-function validateEvidenceGroups(groups, path, errors) {
+function validateEvidenceGroups(groups, section, path, errors) {
   if (!Array.isArray(groups) || groups.length === 0) {
     push(errors, path, "must be a non-empty array");
     return;
@@ -61,6 +72,7 @@ function validateEvidenceGroups(groups, path, errors) {
     const groupPath = `${path}[${groupIndex}]`;
     if (!exactKeys(group, ["evidenceKind", "refs"], groupPath, errors)) return;
     if (!EVIDENCE_KINDS.includes(group.evidenceKind)) push(errors, `${groupPath}.evidenceKind`, "is invalid");
+    else if (!SECTION_EVIDENCE_KINDS[section]?.includes(group.evidenceKind)) push(errors, `${groupPath}.evidenceKind`, `cannot be persisted in ${section}`);
     if (!Array.isArray(group.refs) || group.refs.length === 0) push(errors, `${groupPath}.refs`, "must be a non-empty array");
     else group.refs.forEach((ref, index) => validateEvidenceRef(ref, `${groupPath}.refs[${index}]`, errors));
   });
@@ -75,20 +87,31 @@ function validateItem(item, section, path, errors) {
   if (!exactKeys(item, keys, path, errors)) return;
   if (typeof item.id !== "string" || !item.id.trim()) push(errors, `${path}.id`, "must be a non-empty string");
   if (typeof item.text !== "string" || !item.text.trim()) push(errors, `${path}.text`, "must be a non-empty string");
-  validateEvidenceGroups(item.evidenceGroups, `${path}.evidenceGroups`, errors);
+  validateEvidenceGroups(item.evidenceGroups, section, `${path}.evidenceGroups`, errors);
   if (!nonNegativeInteger(item.createdAtMessageId)) push(errors, `${path}.createdAtMessageId`, "must be a non-negative safe integer");
   if (!nonNegativeInteger(item.updatedAtMessageId)) push(errors, `${path}.updatedAtMessageId`, "must be a non-negative safe integer");
   if (nonNegativeInteger(item.createdAtMessageId) && nonNegativeInteger(item.updatedAtMessageId) && item.updatedAtMessageId < item.createdAtMessageId) {
     push(errors, `${path}.updatedAtMessageId`, "cannot precede createdAtMessageId");
   }
+  const evidenceMessageIds = Array.isArray(item.evidenceGroups)
+    ? item.evidenceGroups.flatMap((group) => Array.isArray(group?.refs) ? group.refs.map((ref) => ref?.messageId).filter(nonNegativeInteger) : [])
+    : [];
+  if (evidenceMessageIds.length) {
+    if (!evidenceMessageIds.includes(item.createdAtMessageId)) push(errors, `${path}.createdAtMessageId`, "must identify persisted creation evidence");
+    if (item.updatedAtMessageId !== Math.max(...evidenceMessageIds)) push(errors, `${path}.updatedAtMessageId`, "must equal the newest evidence message id");
+  }
   if (section !== "todos") return;
   if (!["user", "assistant", "both"].includes(item.actor)) push(errors, `${path}.actor`, "is invalid");
   if (!["user", "assistant"].includes(item.requester)) push(errors, `${path}.requester`, "is invalid");
   if (!["active", "overdue"].includes(item.status)) push(errors, `${path}.status`, "is invalid");
-  if (item.dueAt !== null && (typeof item.dueAt !== "string" || Number.isNaN(Date.parse(item.dueAt)))) push(errors, `${path}.dueAt`, "must be null or an ISO timestamp");
-  if (item.becameOverdueAt !== null && (typeof item.becameOverdueAt !== "string" || Number.isNaN(Date.parse(item.becameOverdueAt)))) push(errors, `${path}.becameOverdueAt`, "must be null or an ISO timestamp");
+  if (item.dueAt !== null && !isIsoTimestamp(item.dueAt)) push(errors, `${path}.dueAt`, "must be null or an ISO 8601 timestamp");
+  if (item.becameOverdueAt !== null && !isIsoTimestamp(item.becameOverdueAt)) push(errors, `${path}.becameOverdueAt`, "must be null or an ISO 8601 timestamp");
   if (item.status === "active" && item.becameOverdueAt !== null) push(errors, `${path}.becameOverdueAt`, "must be null for active todos");
   if (item.status === "overdue" && item.becameOverdueAt === null) push(errors, `${path}.becameOverdueAt`, "is required for overdue todos");
+  if (item.status === "overdue" && item.dueAt === null) push(errors, `${path}.dueAt`, "is required for overdue todos");
+  if (item.status === "overdue" && isIsoTimestamp(item.dueAt) && isIsoTimestamp(item.becameOverdueAt) && item.dueAt !== item.becameOverdueAt) {
+    push(errors, `${path}.becameOverdueAt`, "must equal dueAt for overdue todos");
+  }
 }
 
 function validateSceneField(field, path, errors) {
@@ -99,11 +122,14 @@ function validateSceneField(field, path, errors) {
     return;
   }
   if (field.evidenceRef === null) push(errors, `${path}.evidenceRef`, "is required for a populated field");
-  else validateEvidenceRef(field.evidenceRef, `${path}.evidenceRef`, errors);
+  else {
+    validateEvidenceRef(field.evidenceRef, `${path}.evidenceRef`, errors);
+    if (field.updatedAtMessageId !== field.evidenceRef.messageId) push(errors, `${path}.updatedAtMessageId`, "must equal evidenceRef.messageId");
+  }
   if (!nonNegativeInteger(field.updatedAtMessageId)) push(errors, `${path}.updatedAtMessageId`, "must be a non-negative safe integer");
 }
 
-function validateMemoryState(value) {
+function validateMemoryStateV2(value) {
   const errors = [];
   if (!exactKeys(value, ["version", "current", "working", "longTerm", "meta"], "$", errors)) return { ok: false, errors };
   if (value.version !== SCHEMA_VERSION) push(errors, "$.version", `must equal ${SCHEMA_VERSION}`);
@@ -116,7 +142,7 @@ function validateMemoryState(value) {
       const previousKeys = [...SCENE_FIELDS, "expiredAt"];
       if (exactKeys(value.current.previousScene, previousKeys, "$.current.previousScene", errors)) {
         SCENE_FIELDS.forEach((name) => validateSceneField(value.current.previousScene[name], `$.current.previousScene.${name}`, errors));
-        if (typeof value.current.previousScene.expiredAt !== "string" || Number.isNaN(Date.parse(value.current.previousScene.expiredAt))) push(errors, "$.current.previousScene.expiredAt", "must be an ISO timestamp");
+        if (!isIsoTimestamp(value.current.previousScene.expiredAt)) push(errors, "$.current.previousScene.expiredAt", "must be an ISO 8601 timestamp");
       }
     }
   }
@@ -164,4 +190,29 @@ function assertMemoryState(value) {
   return value;
 }
 
-module.exports = { createEmptyScene, createInitialMemoryState, validateMemoryState, assertMemoryState, isPlainObject };
+const MEMORY_STATE_SCHEMA_HOLDERS = Object.freeze({
+  [SCHEMA_VERSION]: Object.freeze({ version: SCHEMA_VERSION, validate: validateMemoryStateV2 }),
+});
+
+function getMemoryStateSchemaHolder(version) {
+  return MEMORY_STATE_SCHEMA_HOLDERS[version] || null;
+}
+
+function validateMemoryState(value) {
+  if (!isPlainObject(value)) return { ok: false, errors: [{ path: "$", message: "must be an object" }] };
+  const holder = getMemoryStateSchemaHolder(value.version);
+  if (!holder) return { ok: false, errors: [{ path: "$.version", message: `unsupported Memory state schema version: ${value.version ?? "<missing>"}` }] };
+  return holder.validate(value);
+}
+
+function migrateMemoryState(value, targetVersion = SCHEMA_VERSION) {
+  if (value?.version === targetVersion) return assertMemoryState(value);
+  const error = new Error(`No explicit Memory state migration from version ${value?.version ?? "<missing>"} to ${targetVersion}`);
+  error.code = "MEMORY_V2_MIGRATION_REQUIRED";
+  throw error;
+}
+
+module.exports = {
+  createEmptyScene, createInitialMemoryState, validateMemoryState, assertMemoryState, isPlainObject,
+  isIsoTimestamp, getMemoryStateSchemaHolder, migrateMemoryState, MEMORY_STATE_SCHEMA_HOLDERS,
+};

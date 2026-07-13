@@ -1,4 +1,5 @@
 const { compileDeepSeekSchema } = require("./deepSeekSchemaCompiler");
+const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");
 
 function normalizeBaseUrl(value) {
   const url = new URL(String(value || "").trim());
@@ -27,12 +28,12 @@ function parseToolArguments(value) {
   }
 }
 
-function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
-  if (!["disabled", "enabled"].includes(thinkingMode)) throw new Error("Memory Provider thinkingMode must be disabled or enabled");
+  if (thinkingMode !== "disabled") throw new Error("Memory Provider thinkingMode must be disabled");
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   if (normalizedBaseUrl.hostname === "api.deepseek.com" && !normalizedBaseUrl.pathname.endsWith("/beta/")) {
     throw new Error("DeepSeek strict tools require CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.deepseek.com/beta");
@@ -42,6 +43,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
   return async function invokeStructured({ systemPrompt, userPayload, responseSchema }) {
     const functionName = responseSchema?.name;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(functionName || ""))) throw new Error("Structured output schema name is not a valid tool name");
+    assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
     try {
@@ -51,6 +53,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
         body: JSON.stringify({
           model,
           stream: false,
+          max_tokens: maxOutputTokens,
           thinking: { type: thinkingMode },
           messages: [
             { role: "system", content: systemPrompt },
@@ -71,13 +74,17 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
+        if (isSafetySignal(data?.error?.code, data?.error?.type, data?.error?.message)) {
+          return { safetyBlocked: true, finishReason: data?.error?.code ?? "input_rejected", model: data?.model ?? model, usage: data?.usage ?? null };
+        }
         const error = new Error(data?.error?.message || `Memory Provider HTTP ${response.status}`);
         error.status = response.status;
         throw error;
       }
       const choice = data?.choices?.[0];
-      if (choice?.finish_reason === "content_filter") {
-        return { safetyBlocked: true, finishReason: choice.finish_reason, model: data?.model, usage: data?.usage };
+      const finishReason = choice?.finish_reason ?? choice?.stop_reason;
+      if (isSafetySignal(finishReason, choice?.message?.refusal)) {
+        return { safetyBlocked: true, finishReason, model: data?.model, usage: data?.usage };
       }
       const toolCall = choice?.message?.tool_calls?.find((entry) => entry?.function?.name === functionName);
       const parsed = toolCall
@@ -85,7 +92,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
         : { output: null, recovery: null, error: "tool_call_missing" };
       return {
         output: parsed.output,
-        finishReason: choice?.finish_reason,
+        finishReason,
         model: data?.model ?? model,
         usage: data?.usage ?? null,
         transportError: parsed.error,

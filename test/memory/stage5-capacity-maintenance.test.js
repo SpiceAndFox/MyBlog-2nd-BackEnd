@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
@@ -8,7 +9,8 @@ const { createMemoryRecovery } = require("../../modules/memory/application/recov
 const { reduceProposal } = require("../../modules/memory/domain/reducer");
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/stage5-capacity-replay.json"), "utf8"));
-const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: "sha256:new" };
+const hash = (value) => `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
+const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: hash("还要记得归还杂志") };
 const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
@@ -19,7 +21,7 @@ const config = {
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
 
 function todo(id, text, messageId) {
-  return { id, text, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null, evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId, quote: text, contentHash: `sha256:${id}` }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
+  return { id, text, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null, evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId, quote: text, contentHash: hash(text) }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
 }
 function normalOutput(envelope) {
   return { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还杂志", actor: "user", requester: "user" }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 3, quote: "记得归还杂志" }] }] } } };
