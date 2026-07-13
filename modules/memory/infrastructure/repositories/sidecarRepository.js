@@ -77,7 +77,7 @@ async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { c
   const db = executor(client);
   const rows = [];
   for (const projectionKey of ["rag", "recall"]) {
-    const result = await db.query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,status,last_error_reason) VALUES ($1,$2,$3,$4,NULL,'rebuilding',NULL) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET status='rebuilding',last_error_reason=NULL,updated_at=NOW() RETURNING *`, [scope.userId, scope.presetId, projectionKey, Math.max(0, sourceGeneration - 1)]);
+    const result = await db.query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,status,last_error_reason) VALUES ($1,$2,$3,$4,NULL,'rebuilding',NULL) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET status='rebuilding',last_error_reason=NULL,updated_at=NOW() RETURNING *`, [scope.userId, scope.presetId, projectionKey, sourceGeneration - 1]);
     rows.push(result.rows[0]);
   }
   return rows;

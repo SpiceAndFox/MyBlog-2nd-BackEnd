@@ -43,6 +43,22 @@ module.exports = Object.freeze({
   createMemoryRetention,
   createPrivacyHardDelete,
   createMemoryMigration,
+  createDefaultMemoryMigration({ config, projectionDrains, providerAdapter, now, monotonicNow } = {}) {
+    if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
+    const adapter = providerAdapter || createMemoryProviderAdapter({
+      invokeStructured: createStructuredTransport(config.provider),
+      promptLoader: loadProposerPrompt,
+    });
+    const observer = createObserver({
+      sourceRepository: repositories.source,
+      stateRepository: repositories.state,
+      runtimeRepository: repositories.runtime,
+      config,
+    });
+    const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config });
+    const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
+    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now, monotonicNow });
+  },
   createMemoryRuntime,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });

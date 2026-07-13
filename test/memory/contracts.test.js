@@ -24,6 +24,11 @@ test("scene setField uses a direct string value", () => {
   const result = validatePatch({ op: "setField", path: "location", value: "医院门口", evidenceKind: "scene_change", evidenceRefs: [{ messageId: 1, quote: "到了医院门口" }] }, "scene");
   assert.equal(result.ok, true);
 });
+test("scene patch validator reports null evidence refs without throwing", () => {
+  const result = validatePatch({ op: "setField", path: "location", value: "医院门口", evidenceKind: "scene_change", evidenceRefs: null }, "scene");
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.path === "$.evidenceRefs" && error.message === "must be a non-empty array"), true);
+});
 test("todo add schema requires actor and requester", () => {
   const result = validatePatch({ op: "addItem", value: { text: "归还橡皮" }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "我会归还" }] }, "todos");
   assert.equal(result.ok, false);

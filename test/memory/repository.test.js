@@ -40,12 +40,13 @@ test("revision zero initialization atomically creates snapshot and six target st
 test("target recovery status and notification commit in one transaction", async () => {
   const originalGetClient = db.getClient;
   const statements = [];
+  let targetStatusParams = null;
   const client = {
-    async query(sql) {
+    async query(sql, params) {
       statements.push(sql);
       if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [], rowCount: 0 };
-      if (sql.startsWith("SELECT status FROM chat_memory_target_status")) return { rows: [{ status: "halted" }] };
-      if (sql.startsWith("INSERT INTO chat_memory_target_status")) return { rows: [{ target_key: "todos", status: "healthy" }], rowCount: 1 };
+      if (sql.startsWith("SELECT status,rebuild_boundary_message_id FROM chat_memory_target_status")) return { rows: [{ status: "halted", rebuild_boundary_message_id: 42 }] };
+      if (sql.startsWith("INSERT INTO chat_memory_target_status")) { targetStatusParams = params; return { rows: [{ target_key: "todos", status: "healthy" }], rowCount: 1 }; }
       if (sql.startsWith("SELECT status FROM chat_memory_tasks")) return { rows: [{ status: "succeeded" }] };
       if (sql.startsWith("SELECT memory_state FROM chat_preset_memory")) return { rows: [{ memory_state: { meta: { targetCursors: { todos: 42 } } } }] };
       if (sql.startsWith("INSERT INTO chat_memory_recovery_notifications")) return { rows: [], rowCount: 1 };
@@ -58,6 +59,7 @@ test("target recovery status and notification commit in one transaction", async 
     await upsertTargetStatus(1, "default", { targetKey: "todos", sourceGeneration: 0, status: "healthy", consecutiveErrors: 0, lastTaskId: "00000000-0000-0000-0000-000000000001" });
     assert.ok(statements.includes("BEGIN"));
     assert.ok(statements.includes("COMMIT"));
+    assert.equal(targetStatusParams[4], 42);
     assert.equal(statements.some((sql) => sql.startsWith("INSERT INTO chat_memory_recovery_notifications") && sql.includes("boundary_message_id")), true);
   } finally { db.getClient = originalGetClient; }
 });
@@ -77,4 +79,10 @@ test("the v1 schema removal migration drops only obsolete Memory storage", () =>
     assert.match(sql, new RegExp(`DROP COLUMN IF EXISTS ${column}`, "i"));
   }
   assert.doesNotMatch(sql, /(?:DELETE FROM|UPDATE|DROP TABLE(?: IF EXISTS)?)\s+chat_messages\b/i);
+});
+
+test("fresh RAG schema includes the embedding text required by the v2 projection adapter", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../models/tableCreate/chat_rag_chunks.sql"), "utf8");
+  assert.match(sql, /embedding_text\s+TEXT\s+NOT NULL/i);
+  assert.doesNotMatch(sql, /^\s*#/m, "SQL comments must not use shell syntax");
 });

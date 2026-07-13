@@ -22,8 +22,12 @@ const OPS = Object.freeze({
 });
 
 function patchSchema(proposer, section, op) {
-  const properties = { op: { const: op }, evidenceKind: { enum: PROPOSER_EVIDENCE_KINDS[proposer] }, evidenceRefs: { type: "array", minItems: 1, items: refSchema } };
-  const required = ["op", "evidenceKind", "evidenceRefs"];
+  const evidenceProperty = section === "scene"
+    ? { evidenceRef: refSchema }
+    : { evidenceRefs: { type: "array", minItems: 1, items: refSchema } };
+  const evidenceKey = section === "scene" ? "evidenceRef" : "evidenceRefs";
+  const properties = { op: { const: op }, evidenceKind: { enum: PROPOSER_EVIDENCE_KINDS[proposer] }, ...evidenceProperty };
+  const required = ["op", "evidenceKind", evidenceKey];
   if (["setField", "clearField"].includes(op)) { properties.path = { enum: SCENE_FIELDS }; required.push("path"); }
   if (["updateItem", "forgetItem", "completeTodo", "cancelTodo", "expireTodo", "cancelAgreement"].includes(op)) { properties.itemId = { type: "string", minLength: 1 }; required.push("itemId"); }
   if (["setField", "addItem", "updateItem"].includes(op)) {

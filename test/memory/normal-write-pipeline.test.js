@@ -33,6 +33,7 @@ function fakes() {
       source: { getObservedWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
       runtime: {
         createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, structuredClone(row)); return row; },
+        getTask: async (id) => tasks.get(id) || null,
         getTaskForUpdate: async (id) => tasks.get(id),
         updateTask: async (id, changes) => Object.assign(tasks.get(id), changes),
         upsertTargetStatus: async (_u, _p, status) => statuses.push(structuredClone(status)),
@@ -84,4 +85,43 @@ test("repeated commit phase returns the existing revision without duplicate writ
   assert.equal(store.inspect.groups.size, 1);
   assert.equal(store.inspect.snapshots.length, 1);
   assert.equal(store.inspect.state.meta.revision, 1);
+});
+
+test("unable_to_decide retry doubles overlap context and completes the same durable task", async () => {
+  const store = fakes();
+  store.inspect.state.meta.targetCursors.todos = 1;
+  const older = { ...message, id: 1, content: "之前提到过一本书", contentHash: "sha256:older" };
+  const newer = { ...message, id: 2 };
+  let expansionOptions = null;
+  store.repositories.source.getObservedWindow = async () => [newer];
+  store.repositories.source.getForceDrainWindow = async (_u, _p, cursor, boundary, options) => {
+    assert.equal(cursor, 1);
+    assert.equal(boundary, 2);
+    expansionOptions = options;
+    return [older, newer];
+  };
+  store.repositories.source.getByIds = async (_u, _p, ids) => [older, newer]
+    .filter((entry) => ids.includes(entry.id))
+    .map((entry) => ({ ...entry, userId: 1, presetId: "default" }));
+  const observedCounts = [];
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: store.repositories, config,
+    providerAdapter: { propose: async (envelope) => {
+      observedCounts.push(envelope.observedMessages.length);
+      return { status: "ok", output: {
+        tickId: envelope.task.tickId,
+        proposer: envelope.task.proposer,
+        sectionResults: { todos: { status: observedCounts.length === 1 ? "unable_to_decide" : "noop" } },
+      } };
+    } },
+  });
+  const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1 };
+  const first = await pipeline.processIntent(1, "default", intent);
+  assert.equal(first.status, "context_expansion_required");
+  const envelope = [...store.inspect.tasks.values()][0].task_payload;
+  const second = await pipeline.processEnvelope(envelope);
+  assert.equal(second.status, "committed");
+  assert.deepEqual(observedCounts, [1, 2]);
+  assert.deepEqual(expansionOptions, { newBatchSize: 1, contextWindow: 4 });
+  assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });

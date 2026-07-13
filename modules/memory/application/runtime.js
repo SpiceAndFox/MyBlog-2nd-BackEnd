@@ -20,6 +20,7 @@ function createKeyedExecutor() {
 
 function createDisabledRuntime(repositories) {
   const disabled = async () => ({ status: "disabled" });
+  const stopProjectionPolling = () => {};
   async function mutateSourceAndRebuild(_userId, _presetId, { mutateSource } = {}) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
     const mutationResult = repositories?.withTransaction
@@ -27,7 +28,17 @@ function createDisabledRuntime(repositories) {
       : await mutateSource(null);
     return { status: "memory_disabled", mutationResult };
   }
-  return Object.freeze({ enabled: false, processScope: disabled, rebuildScope: disabled, mutateSourceAndRebuild, drainProjections: disabled, recoverPending: async () => [] });
+  return Object.freeze({
+    enabled: false,
+    processScope: disabled,
+    rebuildScope: disabled,
+    mutateSourceAndRebuild,
+    drainProjections: disabled,
+    reconcileProjections: async () => ({}),
+    startProjectionPolling: () => stopProjectionPolling,
+    stopProjectionPolling,
+    recoverPending: async () => [],
+  });
 }
 
 function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, onBackgroundError } = {}) {
@@ -50,6 +61,8 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config });
   const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
   const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey });
+  let projectionPollTimer = null;
+  let projectionPollRunning = false;
 
   async function ensureState(userId, presetId) {
     return (await repositories.state.getState(userId, presetId))
@@ -67,13 +80,59 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     for (const projectionKey of ["rag", "recall"]) {
       const drain = projectionDrains[projectionKey];
       if (!drain?.drain) continue;
-      results[projectionKey] = await drain.drain(userId, presetId);
+      try {
+        results[projectionKey] = await drain.drain(userId, presetId);
+      } catch (error) {
+        results[projectionKey] = {
+          status: "failed",
+          reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
+        };
+        onBackgroundError?.(error);
+      }
     }
     return results;
   }
 
   function drainProjections(userId, presetId) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => drainProjectionsNow(userId, presetId)));
+  }
+
+  async function reconcileProjections() {
+    if (typeof repositories.state.listInitializedScopes !== "function") return {};
+    const scopes = await repositories.state.listInitializedScopes();
+    const results = {};
+    for (const scope of scopes) {
+      const userId = Number(scope.userId ?? scope.user_id);
+      const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
+      if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
+      results[`${userId}:${presetId}`] = await enqueueByKey(
+        `${userId}:${presetId}`,
+        () => drainProjectionsNow(userId, presetId),
+      );
+    }
+    return results;
+  }
+
+  function stopProjectionPolling() {
+    if (!projectionPollTimer) return;
+    clearInterval(projectionPollTimer);
+    projectionPollTimer = null;
+  }
+
+  function startProjectionPolling() {
+    if (projectionPollTimer) return stopProjectionPolling;
+    const intervalMs = Number(config?.projections?.pollIntervalMs);
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000) {
+      throw new Error("Memory projection pollIntervalMs must be a safe integer >= 1000");
+    }
+    const tick = () => {
+      if (projectionPollRunning) return;
+      projectionPollRunning = true;
+      runInBackground(reconcileProjections).finally(() => { projectionPollRunning = false; });
+    };
+    projectionPollTimer = setInterval(tick, intervalMs);
+    projectionPollTimer.unref?.();
+    return stopProjectionPolling;
   }
 
   function processScope(userId, presetId) {
@@ -111,12 +170,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function recoverPending() {
     const recovered = await recovery.recoverPending();
-    if (typeof repositories.state.listScopes === "function") {
-      const scopes = await repositories.state.listScopes();
-      for (const scope of scopes) {
-        await enqueueByKey(`${scope.user_id}:${scope.preset_id}`, () => drainProjectionsNow(scope.user_id, scope.preset_id));
-      }
-    }
+    await reconcileProjections();
     return recovered;
   }
 
@@ -126,6 +180,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     rebuildScope,
     mutateSourceAndRebuild,
     drainProjections,
+    reconcileProjections,
+    startProjectionPolling,
+    stopProjectionPolling,
     recoverPending: () => runInBackground(recoverPending),
   });
 }

@@ -216,6 +216,13 @@ async function searchSimilarChunks({ userId, presetId, beforeMessageId, embeddin
     WHERE user_id = $1
       AND preset_id = $2
       AND last_message_id <= $3
+      AND EXISTS (
+        SELECT 1 FROM chat_sessions active_session
+        WHERE active_session.id = chat_rag_chunks.session_id
+          AND active_session.user_id = $1
+          AND active_session.preset_id = $2
+          AND active_session.deleted_at IS NULL
+      )
       AND embedding_provider = $5
       AND embedding_model = $6
       AND embedding_dimensions = $7

@@ -57,6 +57,7 @@ function loadMemoryV2Config(env = process.env) {
     compaction: Object.freeze({ retryMax: requiredInt(env, "CHAT_MEMORY_V2_COMPACTION_RETRY_MAX") }),
     retention: Object.freeze({ snapshotDays: requiredInt(env, "CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS", { min: 1 }), eventDays: requiredInt(env, "CHAT_MEMORY_V2_EVENT_RETENTION_DAYS", { min: 1 }), taskDays: requiredInt(env, "CHAT_MEMORY_V2_TASK_RETENTION_DAYS", { min: 1 }), opsLogDays: requiredInt(env, "CHAT_MEMORY_V2_OPS_LOG_RETENTION_DAYS", { min: 1 }), debugDays: requiredInt(env, "CHAT_MEMORY_V2_DEBUG_RETENTION_DAYS") }),
     health: Object.freeze({ alertDebounceMs: requiredInt(env, "CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS"), recoveryStableMs: requiredInt(env, "CHAT_MEMORY_V2_RECOVERY_STABLE_MS") }),
+    projections: Object.freeze({ pollIntervalMs: requiredInt(env, "CHAT_MEMORY_V2_PROJECTION_POLL_INTERVAL_MS", { min: 1000 }) }),
     provider: loadMemoryProviderConfig(env),
   });
 }

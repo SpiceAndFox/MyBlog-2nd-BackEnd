@@ -3,6 +3,18 @@ const { buildOutputSchema } = require("./outputSchema");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 
+function normalizeProviderOutput(output, task) {
+  if (task?.proposer !== "currentStateProposer" || !output?.sectionResults?.scene?.patches) return output;
+  const normalized = structuredClone(output);
+  normalized.sectionResults.scene.patches = normalized.sectionResults.scene.patches.map((patch) => {
+    if (!patch || !Object.prototype.hasOwnProperty.call(patch, "evidenceRef")
+      || Object.prototype.hasOwnProperty.call(patch, "evidenceRefs")) return patch;
+    const { evidenceRef, ...rest } = patch;
+    return { ...rest, evidenceRefs: [evidenceRef] };
+  });
+  return normalized;
+}
+
 function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
@@ -25,7 +37,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       }
       if (response?.refusal || response?.safetyBlocked) return { status: "error", reason: "safety_policy_blocked", detail: null };
       if (["length", "max_tokens", "max_output_tokens"].includes(response?.finishReason)) return { status: "error", reason: "max_output_truncated", detail: null };
-      const output = response?.output;
+      const output = normalizeProviderOutput(response?.output, task);
       const validated = validateProposerOutput(output, task);
       if (!validated.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors } };
       return { status: "ok", output, usage: response?.usage ?? null, model: response?.model ?? null };
@@ -47,4 +59,4 @@ function createMockMemoryProviderAdapter({ outputs, promptLoader = async () => "
   });
 }
 
-module.exports = { createMemoryProviderAdapter, createMockMemoryProviderAdapter, ERROR_REASONS };
+module.exports = { createMemoryProviderAdapter, createMockMemoryProviderAdapter, normalizeProviderOutput, ERROR_REASONS };

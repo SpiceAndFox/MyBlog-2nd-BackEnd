@@ -64,7 +64,10 @@ startChatTrashCleanup({
 
 const server = app.listen(PORT, HOST);
 
-if (memoryRuntime.enabled) void memoryRuntime.recoverPending();
+if (memoryRuntime.enabled) {
+  void memoryRuntime.recoverPending();
+  memoryRuntime.startProjectionPolling();
+}
 
 server.on("listening", () => {
   logger.info("server_started", { port: PORT, host: HOST });

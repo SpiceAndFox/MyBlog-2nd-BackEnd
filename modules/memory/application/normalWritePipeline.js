@@ -38,7 +38,9 @@ function mapEvent(event, envelope, eventGroupId, index) {
   return {
     event_group_id: eventGroupId, event_index: index, user_id: task.userId, preset_id: task.presetId,
     task_id: task.taskId, tick_id: task.tickId, target_key: event.targetKey, section: event.section,
-    event_kind: event.eventKind, decision: event.decision, patch_id: event.patchId, op: event.op,
+    event_kind: event.eventKind,
+    decision: event.decision ?? (event.eventKind === "system_cleanup" ? "system_cleanup" : null),
+    patch_id: event.patchId, op: event.op,
     item_id: event.itemId, result_item_id: event.resultItemId, merged_from_item_ids: event.mergedFromItemIds,
     evidence_kind: event.evidenceKind, reject_reason: event.rejectReason, maintenance_task_id: null,
     patch_summary: event.patchSummary ?? null, normalized_operation: event.normalizedOperation,
@@ -147,6 +149,32 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         && result.detail?.boundary === "output";
       if (!retryableSchemaOutput || !(await reserveSchemaInvalidRetry(envelope, result))) return result;
     }
+  }
+
+  async function expandContextForRetry(envelope, persistedTask) {
+    const expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
+    if (expansionAttempt < 1 || envelope.task.mode !== "normal" || typeof repositories.source.getForceDrainWindow !== "function") return envelope;
+    const targetConfig = config.targets[envelope.task.targetKey];
+    const newBatchSize = envelope.observedMessages.filter((message) => (
+      message.id > envelope.task.cursorBefore && message.id <= envelope.task.targetMessageId
+    )).length;
+    if (!targetConfig || newBatchSize < 1) return envelope;
+    const messages = await repositories.source.getForceDrainWindow(
+      envelope.task.userId,
+      envelope.task.presetId,
+      envelope.task.cursorBefore,
+      envelope.task.targetMessageId,
+      {
+        newBatchSize,
+        contextWindow: Math.max(targetConfig.contextWindow * 2, envelope.observedMessages.length + newBatchSize),
+      },
+    );
+    if (!messages.length) return envelope;
+    return {
+      ...envelope,
+      task: { ...envelope.task, observedMessageIds: messages.map((message) => message.id) },
+      observedMessages: messages,
+    };
   }
 
   async function recordStale(envelope, reason, { cancel = true } = {}) {
@@ -305,14 +333,15 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     const group = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId))
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
-    const adapterResult = await proposeWithSchemaRetry(envelope);
+    const attemptEnvelope = await expandContextForRetry(envelope, persistedTask);
+    const adapterResult = await proposeWithSchemaRetry(attemptEnvelope);
     if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
-    let result = await commitWithRecovery(envelope, adapterResult.output);
+    let result = await commitWithRecovery(attemptEnvelope, adapterResult.output);
     if (result.status === "successor_required") {
-      const successor = await createSuccessor(envelope);
+      const successor = await createSuccessor(attemptEnvelope);
       return processEnvelope(successor);
     }
-    if (result.status === "stale") result = await recordStale(envelope, result.reason);
+    if (result.status === "stale") result = await recordStale(attemptEnvelope, result.reason);
     if (result.maintenanceEnvelope) return capacity.processMaintenanceEnvelope(result.maintenanceEnvelope);
     if (result.status === "capacity_deferred") return capacity.resumeParent(envelope);
     return result;

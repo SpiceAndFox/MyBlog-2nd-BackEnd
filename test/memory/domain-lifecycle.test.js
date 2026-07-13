@@ -23,6 +23,7 @@ test("scene expiration preserves provenance, evicts previous scene, and is idemp
   assert.equal(first.state.current.scene.location.value, null);
   assert.equal(first.state.current.previousScene.location.value, "屋顶");
   assert.deepEqual(first.events.map((event) => event.cleanupKind), ["scene_expired", "expired_scene_evicted"]);
+  assert.deepEqual(first.events.map((event) => event.decision), ["system_cleanup", "system_cleanup"]);
   assert.equal(normalizeLifecycle(first.state, {}, "2026-01-02T00:00:00.000Z", config).changed, false);
 });
 
@@ -32,6 +33,7 @@ test("todo becomes overdue in place exactly once", () => {
   const first = normalizeLifecycle(state, {}, "2026-01-01T00:00:00.000Z", config);
   assert.equal(first.state.working.todos[0].status, "overdue");
   assert.equal(first.events[0].cleanupKind, "todo_became_overdue");
+  assert.equal(first.events[0].decision, "system_cleanup");
   assert.equal(normalizeLifecycle(first.state, {}, "2026-01-02T00:00:00.000Z", config).changed, false);
 });
 

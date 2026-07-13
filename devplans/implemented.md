@@ -123,3 +123,18 @@
 - 删除重复的 `models/tableCreate/chat_preset_memory.sql`，Memory DDL 只保留在 `migrations/memory`；Provider probe 改为只经 `modules/memory/index.js` 公共入口访问模块。
 - 将旧 RAG debug reason `no_summarized_history` 改为 `no_retrievable_history`。
 - 增加 `npm run check:memory-schema`：WSL 网络连接失败时自动发现并调用 Windows `psql.exe`，不输出密码；已验证当前 Windows 数据库不存在 v1 checkpoint 表及 rolling/core/dirty/rebuild 列。
+
+## 2026-07-13：RAG v2 收口与迁移入口
+
+- 修复启动恢复使用错误 repository 方法名的问题；启动 recovery 与新增的周期 reconciliation 都会枚举已初始化 scope，并按 per-scope lane 追平 RAG/Recall projection。
+- 新增 `CHAT_MEMORY_V2_PROJECTION_POLL_INTERVAL_MS`；projection staging/commit 失败会保留旧 checkpoint coverage，并持久化 `degraded/rebuilding + lastErrorReason`，由后续轮询重试。
+- 将 RAG chunk、展示邻近窗口和 Scene Recall LLM 输入统一到 `messageId + contentHash` suppression gate；移除 Scene Recall debug 日志中的完整 prompt 与输出正文。
+- Memory v2 启用时 direct RAG index/delete API 和旧 `regenerateChatRag.js` 明确拒绝执行；相似度查询同时排除已 trash session 的残留 chunk。
+- 新增 `npm run migrate:memory-v2-data`：默认只读 inventory；rehearsal/cutover 必须显式 `--apply --report`，cutover 额外要求 `--service-stopped`，并经 Memory 模块公共入口装配正式 pipeline、RAG/Recall drain 和最终验证。
+- migration CLI 支持在 raw boundary 未变化时续跑已有 rebuilding generation，并在 force-drain 中断报告中保留 target/task/outcome 摘要；system cleanup 审计事件统一写入契约规定的 `decision=system_cleanup`。
+- `unable_to_decide` 的第二次有界尝试会按契约使用双倍 overlap contextWindow；force-drain 在同一执行中消费 `context_expansion_required` 中间态，不再把正常的两阶段判断误报为迁移失败。
+- DeepSeek 不支持 `minItems/maxItems` 的边界通过 Provider wire adapter 收口：scene strict schema 使用单个 `evidenceRef` 对象，adapter 再归一化为内部既有 `evidenceRefs: [ref]`；本地 validator、Reducer 与 state 契约不放宽。force-drain 可在同一 generation 内把修复后的终态失败 task 续为新的可审计 task，且 target 状态转换保留 rebuild boundary。
+- DeepSeek Beta strict-tools 偶发在完整 tool arguments 末尾多输出右花括号；transport 只允许移除最多两个末尾 `}`，且必须随后通过标准 `JSON.parse`，不修补截断内容、不改字段和值。真实 scene patch preflight 已覆盖该 wire schema、保守解析和 canonical 归一化。
+- Provider 输出 validator 对 null/错误类型保持总函数语义：畸形 evidenceRefs 只形成 `output_schema_invalid`，不再因读取 `.length` 抛出未分类 TypeError；force-drain 的未预期异常报告携带 generation/target/cursor/task/stage 定位信息。
+- 当前 Windows 数据库的只读 inventory 已验证：3 个 source scope、461 条有效消息；cutover dry-run 正确停在 `apply_required`。真实 DeepSeek 完整 Provider preflight 再次通过。
+- 生产历史副本 rehearsal 与正式 cutover 仍未执行；在两次 rehearsal、调用量/容量/耗时确认和停服入口验证完成前，不把当前数据库标记为 `canStartService=true`。

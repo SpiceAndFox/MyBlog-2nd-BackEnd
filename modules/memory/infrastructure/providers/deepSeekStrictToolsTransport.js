@@ -8,6 +8,25 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
+function parseToolArguments(value) {
+  if (value && typeof value === "object") return { output: value, recovery: null, error: null };
+  if (typeof value !== "string") return { output: null, recovery: null, error: "tool_arguments_missing" };
+  try {
+    return { output: JSON.parse(value), recovery: null, error: null };
+  } catch {
+    let candidate = value.trim();
+    for (let removed = 1; removed <= 2 && candidate.endsWith("}"); removed += 1) {
+      candidate = candidate.slice(0, -1).trimEnd();
+      try {
+        return { output: JSON.parse(candidate), recovery: `trimmed_${removed}_trailing_brace`, error: null };
+      } catch {
+        // Only a complete standard JSON parse may authorize this narrow recovery.
+      }
+    }
+    return { output: null, recovery: null, error: "tool_arguments_invalid_json" };
+  }
+}
+
 function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
@@ -61,19 +80,21 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
         return { safetyBlocked: true, finishReason: choice.finish_reason, model: data?.model, usage: data?.usage };
       }
       const toolCall = choice?.message?.tool_calls?.find((entry) => entry?.function?.name === functionName);
-      let output = null;
-      const argumentsValue = toolCall?.function?.arguments;
-      if (typeof argumentsValue === "string") {
-        try { output = JSON.parse(argumentsValue); }
-        catch { output = null; }
-      } else if (argumentsValue && typeof argumentsValue === "object") {
-        output = argumentsValue;
-      }
-      return { output, finishReason: choice?.finish_reason, model: data?.model ?? model, usage: data?.usage ?? null };
+      const parsed = toolCall
+        ? parseToolArguments(toolCall?.function?.arguments)
+        : { output: null, recovery: null, error: "tool_call_missing" };
+      return {
+        output: parsed.output,
+        finishReason: choice?.finish_reason,
+        model: data?.model ?? model,
+        usage: data?.usage ?? null,
+        transportError: parsed.error,
+        transportRecovery: parsed.recovery,
+      };
     } finally {
       clearTimeout(timeout);
     }
   };
 }
 
-module.exports = { createDeepSeekStrictToolsTransport };
+module.exports = { createDeepSeekStrictToolsTransport, parseToolArguments };

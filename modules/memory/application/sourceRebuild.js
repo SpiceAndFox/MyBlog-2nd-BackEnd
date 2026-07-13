@@ -3,6 +3,7 @@ const { filterRebuiltState } = require("../domain/suppression");
 const { isDeepStrictEqual } = require("node:util");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
+const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
 function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.source || !repositories.runtime || !repositories.audit || !repositories.sidecars) throw new Error("Source rebuild repositories are required");
@@ -85,14 +86,65 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", sourceGeneration, results };
         const cursor = state.meta.targetCursors[targetKey] ?? 0;
         if (cursor >= boundaryMessageId) break;
+        const targetStatus = await repositories.runtime.getTargetStatus(userId, presetId, targetKey);
+        if (!targetStatus || Number(rowValue(targetStatus, "source_generation", "sourceGeneration")) !== sourceGeneration) {
+          return { status: "stale", sourceGeneration, results };
+        }
+        if (rowValue(targetStatus, "status", "status") !== "rebuilding"
+          || Number(rowValue(targetStatus, "rebuild_boundary_message_id", "rebuildBoundaryMessageId")) !== boundaryMessageId) {
+          await repositories.runtime.upsertTargetStatus(userId, presetId, {
+            targetKey,
+            sourceGeneration,
+            rebuildBoundaryMessageId: boundaryMessageId,
+            status: "rebuilding",
+            consecutiveErrors: 0,
+            lastErrorReason: null,
+            lastTaskId: rowValue(targetStatus, "last_task_id", "lastTaskId") ?? null,
+            nextRetryAt: null,
+          });
+        }
         const targetConfig = config.targets[targetKey];
         const messages = await repositories.source.getForceDrainWindow(userId, presetId, cursor, boundaryMessageId, {
           newBatchSize: targetConfig.lagThreshold, contextWindow: targetConfig.contextWindow,
         });
         if (!messages.length) throw new Error(`No valid source remains between cursor ${cursor} and rebuild boundary ${boundaryMessageId}`);
         const intent = { targetKey, proposer: TARGETS[targetKey].proposer, targetSections: TARGETS[targetKey].sections.slice(), cursorBefore: cursor, trigger: { type: "forceDrain" } };
-        const envelope = await normalWritePipeline.createTask(userId, presetId, intent, { messages, dedupeSuffix: `force-drain:${sourceGeneration}:${boundaryMessageId}` });
-        const result = await normalWritePipeline.processEnvelope(envelope);
+        const targetMessageId = Math.max(...messages.filter((message) => message.id > cursor).map((message) => message.id));
+        const tasks = typeof repositories.runtime.listTasksForTarget === "function"
+          ? await repositories.runtime.listTasksForTarget(userId, presetId, targetKey)
+          : [];
+        const latest = tasks.find((task) => (
+          Number(rowValue(task, "source_generation", "sourceGeneration")) === sourceGeneration
+          && Number(rowValue(task, "cursor_before", "cursorBefore")) === cursor
+          && Number(rowValue(task, "target_message_id", "targetMessageId")) === targetMessageId
+        ));
+        const latestStatus = rowValue(latest, "status", "status");
+        let envelope;
+        if (latest && !TERMINAL_TASK_STATUSES.has(latestStatus)) {
+          envelope = rowValue(latest, "task_payload", "taskPayload");
+        } else {
+          const latestTaskId = rowValue(latest, "task_id", "taskId");
+          const dedupeSuffix = latest && ["failed", "cancelled"].includes(latestStatus)
+            ? `force-drain:${sourceGeneration}:${boundaryMessageId}:resume:${latestTaskId}`
+            : `force-drain:${sourceGeneration}:${boundaryMessageId}`;
+          envelope = await normalWritePipeline.createTask(userId, presetId, intent, { messages, dedupeSuffix });
+        }
+        if (!envelope?.task) throw new Error(`Force-drain task payload is missing for ${targetKey}`);
+        let result;
+        try {
+          result = await normalWritePipeline.processEnvelope(envelope);
+          if (result.status === "context_expansion_required") result = await normalWritePipeline.processEnvelope(envelope);
+        } catch (error) {
+          error.migrationDetail ||= {
+            sourceGeneration,
+            targetKey,
+            cursorBefore: cursor,
+            targetMessageId,
+            taskId: envelope.task.taskId ?? null,
+            stage: "process_envelope",
+          };
+          throw error;
+        }
         results.push(result);
         if (!["committed"].includes(result.status)) return { status: "incomplete", sourceGeneration, targetKey, result, results };
       }

@@ -11,6 +11,7 @@ async function main() {
 
 main().catch((error) => {
   const cause = error?.cause?.code || error?.cause?.message;
-  process.stderr.write(`${error.message}${cause ? ` (${cause})` : ""}\n`);
+  const detail = error?.detail ? ` ${JSON.stringify(error.detail)}` : "";
+  process.stderr.write(`${error.message}${cause ? ` (${cause})` : ""}${detail}\n`);
   process.exitCode = 1;
 });

@@ -4,11 +4,11 @@
 
 本文只登记尚待定稿的 v2 生产 rebuild、校验与启服操作。v1 runtime 与代码已经移除；一次性 `002-drop-memory-v1.sql` 会删除旧字段和 checkpoint 表，不触碰 `chat_messages`，也不表示 v2 已经可以启服。
 
-当前无法写出正式命令的原因：
+当前已经具备真实 Provider preflight、RAG/Recall adapter 与统一 migration CLI；仍不能正式切换的原因：
 
 - 尚未提供隔离的生产历史数据库副本；
-- migration 尚未装配真实 RAG/Recall projection adapters；
-- 尚未形成统一 migration CLI、报告落盘格式和服务停启入口；
+- 尚未在隔离历史副本上完成两次全量 rehearsal 并确认调用量、容量和耗时；
+- 尚未形成经验证的服务停启入口与失败恢复操作；
 - 尚无经过非生产环境验证的停服、失败处置和恢复命令。
 
 迁移算法与验收门以 [Source Rebuild 与 Projection](../memory-control-v2/algorithms/source-rebuild-and-projection.md) §5 和 [Harness 验收契约](../memory-control-v2/harness.md) §3.10 为准。
@@ -25,7 +25,7 @@
 1. DeepSeek 完整真实 preflight 持续通过六个 Normal Proposer 与 Compaction；
 2. 获得与生产 raw history 等价、与线上写入隔离的 rehearsal 数据库副本；
 3. RAG/Recall 均提供 staged rebuild、事务提交和 generation/boundary checkpoint adapter；
-4. migration CLI 通过 Memory 模块公共接口完成正式装配；
+4. migration CLI 通过 Memory 模块公共接口完成正式装配；（已完成）
 5. rehearsal 报告可稳定落盘并包含规模、section 容量、Provider 调用量、耗时和全部验证结果；
 6. 运维侧提供可验证的停服、raw boundary 冻结和重新启服入口；
 7. 数据库备份、失败处置责任人与维护窗口已经明确。
@@ -42,7 +42,28 @@
 - `canStartService=false` 时保持停服、保存诊断及选择修复续跑或数据库恢复的步骤；
 - 成功启服后的观察窗口与健康指标。
 
-所有命令都必须来自实际装配并在非生产环境验证，本文不预填猜测命令。
+当前已实际装配并验证以下只读/能力检查命令：
+
+```text
+npm run probe:memory-v2-provider
+npm run migrate:memory-v2-data -- --mode inventory
+npm run migrate:memory-v2-data -- --mode cutover
+```
+
+后者不带 `--apply` 时只输出计划并返回 `apply_required`，不会写数据库。待隔离历史副本可用后，rehearsal 使用：
+
+```text
+npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <new-report-path>
+```
+
+正式 cutover 只能在完成停服与 raw boundary 冻结后执行：
+
+```text
+npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <new-report-path>
+```
+
+报告文件使用独占创建，已存在时拒绝覆盖。命令返回 `canStartService=false` 或非零退出码时必须保持停服。
+失败后修复代码或 Provider 配置，再使用新的报告路径重跑同一 cutover 命令；若 raw boundary 未变化且现有 target generation 仍满足 rebuilding/healthy 边界约束，迁移器续跑该 generation 和未完成 task，不重复初始化已经开始的 rebuild。新报告中的错误明细会包含失败 target、task、内部 outcome 和本轮已完成 task 数。
 
 ## 4. 禁止行为
 

@@ -5,6 +5,7 @@ const { buildNormalEnvelope } = require("../../modules/memory/application/envelo
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { buildOutputSchema } = require("../../modules/memory/infrastructure/providers/outputSchema");
 const { compileDeepSeekSchema } = require("../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { parseToolArguments } = require("../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
 const { createStructuredTransport } = require("../../modules/memory/infrastructure/providers/structuredTransportFactory");
 const { runStructuredOutputPreflight } = require("../../modules/memory/infrastructure/providers/providerPreflight");
 
@@ -18,10 +19,51 @@ function envelope() {
   });
 }
 
+function sceneEnvelope() {
+  return buildNormalEnvelope({
+    userId: 1, presetId: "default", state: createInitialMemoryState(),
+    intent: { targetKey: "scene", proposer: "currentStateProposer", targetSections: ["scene"], cursorBefore: 0 },
+    messages: [{ id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "来到屋顶", contentHash: `sha256:${"b".repeat(64)}` }],
+    now: "2026-07-12T00:00:01Z", taskId: "scene-task", tickId: 8, config,
+  });
+}
+
 test("output schema is target-specific and requires every joint section", () => {
   const schema = buildOutputSchema("episodeProposer").schema;
   assert.deepEqual(schema.properties.sectionResults.required, ["recentEpisodes", "milestones"]);
   assert.equal(schema.properties.sectionResults.additionalProperties, false);
+});
+
+test("scene Provider schema uses one evidenceRef object and adapter normalizes it to canonical evidenceRefs", async () => {
+  let request;
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "prompt",
+    invokeStructured: async (value) => {
+      request = value;
+      return { output: {
+        tickId: 8,
+        proposer: "currentStateProposer",
+        sectionResults: { scene: { status: "patches", patches: [{
+          op: "setField",
+          path: "location",
+          value: "屋顶",
+          evidenceKind: "scene_change",
+          evidenceRef: { messageId: 1, quote: "来到屋顶" },
+        }] } },
+      } };
+    },
+  });
+  const result = await adapter.propose(sceneEnvelope());
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.output.sectionResults.scene.patches[0].evidenceRefs, [{ messageId: 1, quote: "来到屋顶" }]);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.output.sectionResults.scene.patches[0], "evidenceRef"), false);
+  const patchVariants = request.responseSchema.schema.properties.sectionResults.properties.scene.oneOf[0].properties.patches.items.oneOf;
+  assert.equal(patchVariants.every((variant) => variant.required.includes("evidenceRef")), true);
+  assert.equal(patchVariants.every((variant) => !variant.required.includes("evidenceRefs")), true);
+  const compiled = compileDeepSeekSchema(request.responseSchema.schema);
+  const serialized = JSON.stringify(compiled);
+  assert.equal(serialized.includes('"evidenceRef"'), true);
+  assert.equal(serialized.includes('"evidenceRefs"'), false);
 });
 
 test("compaction output schema is maintenance-only and section-specific", () => {
@@ -96,6 +138,17 @@ test("DeepSeek compiler adds primitive types to const and enum schemas", () => {
   assert.deepEqual(compileDeepSeekSchema({ const: "noop" }), { enum: ["noop"], type: "string" });
   assert.deepEqual(compileDeepSeekSchema({ enum: [1, 2] }), { enum: [1, 2], type: "integer" });
   assert.throws(() => compileDeepSeekSchema({ enum: ["one", 2] }), /must share one primitive type/);
+});
+
+test("DeepSeek tool argument parser only repairs excess trailing closing braces", () => {
+  assert.deepEqual(parseToolArguments('{"ok":true}}'), {
+    output: { ok: true }, recovery: "trimmed_1_trailing_brace", error: null,
+  });
+  assert.deepEqual(parseToolArguments('{"ok":true}}}'), {
+    output: { ok: true }, recovery: "trimmed_2_trailing_brace", error: null,
+  });
+  assert.equal(parseToolArguments('{"ok":').error, "tool_arguments_invalid_json");
+  assert.equal(parseToolArguments('{"ok":tru}').error, "tool_arguments_invalid_json");
 });
 
 test("structured transport factory maps DeepSeek strict tool calls to normalized output", async () => {

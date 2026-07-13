@@ -1,10 +1,10 @@
-const { chatRagConfig } = require("../../../config");
+const { chatRagConfig, memoryV2Config } = require("../../../config");
 const { logger } = require("../../../logger");
 const { createEmbeddings } = require("../../llm/embeddings");
 const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
 const chatRagRepo = require("./repo");
-const crypto = require("node:crypto");
 const memory = require("../../../modules/memory");
+const { contentHash, sourceRefsAreSuppressed } = require("./suppression");
 
 function normalizePositiveInteger(value, { name } = {}) {
   const number = Number(value);
@@ -22,8 +22,8 @@ function normalizePresetId(presetId) {
 
 function buildTurnMetadata({ userMessage, assistantMessage } = {}) {
   const sourceRefs = [
-    { messageId: Number(userMessage?.id), contentHash: `sha256:${crypto.createHash("sha256").update(String(userMessage?.content ?? userMessage?.contentText ?? ""), "utf8").digest("hex")}` },
-    { messageId: Number(assistantMessage?.id), contentHash: `sha256:${crypto.createHash("sha256").update(String(assistantMessage?.content ?? assistantMessage?.contentText ?? ""), "utf8").digest("hex")}` },
+    { messageId: Number(userMessage?.id), contentHash: contentHash(userMessage?.content ?? userMessage?.contentText) },
+    { messageId: Number(assistantMessage?.id), contentHash: contentHash(assistantMessage?.content ?? assistantMessage?.contentText) },
   ];
   return {
     userMessageId: userMessage?.id || null,
@@ -44,6 +44,7 @@ async function indexChatTurn({
   assistantContent,
 } = {}) {
   if (!chatRagConfig.enabled) return { indexed: 0, reason: "rag_disabled" };
+  if (memoryV2Config.enabled) throw new Error("Direct RAG indexing is disabled while Memory v2 manages projections");
 
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
@@ -79,8 +80,7 @@ async function prepareChatTurnProjection({ userId, presetId, sessionId, userMess
   const chunks = buildTurnChunks({ userContent, assistantContent });
   if (!chunks.length) return { chunks: [], reason: "empty_chunks" };
   const metadata = buildTurnMetadata({ userMessage: { ...userMessage, content: userContent }, assistantMessage: { ...assistantMessage, content: assistantContent } });
-  const suppressed = new Set(tombstones.map((row) => `${Number(row.message_id ?? row.messageId)}\u0000${row.content_hash ?? row.contentHash}`));
-  if (metadata.sourceRefs.some((ref) => suppressed.has(`${ref.messageId}\u0000${ref.contentHash}`))) {
+  if (sourceRefsAreSuppressed(metadata.sourceRefs, tombstones)) {
     return { chunks: [], reason: "source_suppressed" };
   }
   const embeddings = await createEmbeddings({ texts: chunks.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) });
@@ -96,6 +96,7 @@ async function prepareChatTurnProjection({ userId, presetId, sessionId, userMess
 
 function requestChatTurnIndexing(options = {}) {
   if (!chatRagConfig.enabled) return { scheduled: false, reason: "rag_disabled" };
+  if (memoryV2Config.enabled) return { scheduled: false, reason: "projection_managed" };
 
   void indexChatTurn(options).catch((error) => {
     logger.error("chat_rag_turn_index_failed", {
@@ -113,12 +114,14 @@ function requestChatTurnIndexing(options = {}) {
 
 async function deleteChunksFromMessageId({ userId, presetId, fromMessageId } = {}) {
   if (!chatRagConfig.enabled) return { deleted: 0, reason: "rag_disabled" };
+  if (memoryV2Config.enabled) throw new Error("Direct RAG deletion is disabled while Memory v2 manages projections");
   const deleted = await chatRagRepo.deleteChunksFromMessageId(userId, presetId, fromMessageId);
   return { deleted };
 }
 
 function requestDeleteChunksFromMessageId(options = {}) {
   if (!chatRagConfig.enabled) return { scheduled: false, reason: "rag_disabled" };
+  if (memoryV2Config.enabled) return { scheduled: false, reason: "projection_managed" };
 
   void deleteChunksFromMessageId(options).catch((error) => {
     logger.error("chat_rag_delete_from_message_failed", {

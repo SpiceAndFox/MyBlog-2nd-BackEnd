@@ -1,12 +1,12 @@
-const { chatRagConfig } = require("../../../config");
+const { chatRagConfig, memoryV2Config } = require("../../../config");
 const { logger } = require("../../../logger");
 const { createEmbeddings } = require("../../llm/embeddings");
 const { rerankDocuments } = require("../../llm/reranker");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const { generateSceneRecallForSource } = require("./sceneRecall");
 const chatRagRepo = require("./repo");
-const crypto = require("node:crypto");
 const memory = require("../../../modules/memory");
+const { filterRagChunks, filterSuppressedMessages } = require("./suppression");
 
 function parseEmbeddingVector(rawString) {
   const str = String(rawString || "").trim();
@@ -286,24 +286,20 @@ async function attachDialogueMessages(sources, { userId, presetId, tombstones = 
         beforeMessages,
         afterMessages,
       });
-      const keys = new Set(tombstones.map((row) => `${Number(row.message_id ?? row.messageId)}\u0000${row.content_hash ?? row.contentHash}`));
-      dialogueMessages = dialogueMessages.filter((message) => {
-        const hash = `sha256:${crypto.createHash("sha256").update(String(message.content), "utf8").digest("hex")}`;
-        return !keys.has(`${Number(message.id)}\u0000${hash}`);
-      });
+      dialogueMessages = filterSuppressedMessages(dialogueMessages, tombstones);
       return { ...source, dialogueMessages };
     })
   );
 }
 
-async function attachSceneRecalls(sources, { userId, presetId } = {}) {
+async function attachSceneRecalls(sources, { userId, presetId, tombstones = [] } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length || !chatRagConfig.sceneRecallEnabled) return list;
 
   return Promise.all(
     list.map(async (source) => {
       try {
-        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source });
+        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, tombstones });
         return sceneRecall ? { ...source, sceneRecall } : source;
       } catch (error) {
         logger.warn("chat_rag_scene_recall_failed", {
@@ -374,7 +370,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
   });
 
   const tombstones = await memory.listSuppressionTombstones(userId, presetId);
-  const eligibleRows = tombstones.length ? memory.domain.filterRagChunks(rows, tombstones) : rows;
+  const eligibleRows = filterRagChunks(rows, tombstones, { requireSourceRefs: memoryV2Config.enabled });
 
   if (!eligibleRows.length) {
     return {
@@ -470,7 +466,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
   }
 
   const withDialogue = await attachDialogueMessages(selectedRows, { userId, presetId, tombstones });
-  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId });
+  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, tombstones });
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {
     return {

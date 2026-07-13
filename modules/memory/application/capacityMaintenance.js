@@ -29,7 +29,9 @@ function mapEvent(event, envelope, groupId, index, maintenanceTaskId = null) {
   return {
     event_group_id: groupId, event_index: index, user_id: task.userId, preset_id: task.presetId,
     task_id: task.taskId, tick_id: task.tickId, target_key: event.targetKey, section: event.section,
-    event_kind: event.eventKind, decision: event.decision, patch_id: event.patchId, op: event.op,
+    event_kind: event.eventKind,
+    decision: event.decision ?? (event.eventKind === "system_cleanup" ? "system_cleanup" : null),
+    patch_id: event.patchId, op: event.op,
     item_id: event.itemId, result_item_id: event.resultItemId, merged_from_item_ids: event.mergedFromItemIds,
     evidence_kind: event.evidenceKind, reject_reason: event.rejectReason,
     maintenance_task_id: maintenanceTaskId, patch_summary: event.patchSummary ?? null,

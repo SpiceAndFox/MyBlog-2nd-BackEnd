@@ -7,6 +7,7 @@
     "test": "node --test test/**/*.test.js",
     "test:memory-v2": "node --test test/memory/*.test.js",
     "migrate:memory-v2": "node scripts/migrate-memory-v2.js",
+    "migrate:memory-v2-data": "node --use-env-proxy scripts/migrate-memory-v2-data.js",
     "probe:memory-v2-provider": "node --use-env-proxy scripts/probe-memory-v2-provider.js",
     "check:memory-schema": "node scripts/check-memory-schema.js",
     "start": "node --use-env-proxy app.js",

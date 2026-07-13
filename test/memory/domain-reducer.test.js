@@ -100,6 +100,7 @@ test("overdue todo can only revive through a future set dueChange", () => {
   assert.equal(result.state.working.todos[0].status, "active");
   assert.equal(result.state.working.todos[0].becameOverdueAt, null);
   assert.equal(result.cleanupEvents[0].cleanupKind, "todo_revived_from_overdue");
+  assert.equal(result.cleanupEvents[0].decision, "system_cleanup");
 });
 
 test("maintenance merge is accepted for every compactable item section", () => {

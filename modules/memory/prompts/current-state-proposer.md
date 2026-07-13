@@ -4,7 +4,7 @@
 
 - 已理解且无需变化用 `noop`；信息不足或指代无法确认用 `unable_to_decide`。
 - 只引用 observedMessages；readOnlyContext 只作背景。quote 复制最短连续原文，不改写，最多 200 Unicode code points。
-- scene 只允许 `setField` / `clearField`，path 为 location/time/mood/note。多字段分别输出 patch，每个 patch恰好一条 evidenceRef。
+- scene 只允许 `setField` / `clearField`，path 为 location/time/mood/note。多字段分别输出 patch；Provider 输出字段固定为单数 `evidenceRef` 对象，每个 patch 恰好一条，不能输出 `evidenceRefs` 数组。
 - evidenceKind 只用 `scene_change`、`user_correction`、`assistant_correction`。
 - text/value 使用关键词与符号，不写冗长完整句；成人内容只客观概括事件本质与关系变化。
 

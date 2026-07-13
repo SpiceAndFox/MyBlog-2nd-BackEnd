@@ -3,7 +3,14 @@ const { measureSection } = require("./capacity");
 
 function clone(value) { return structuredClone(value); }
 function cleanup(section, targetKey, cleanupKind, details = {}) {
-  return { eventKind: "system_cleanup", section, targetKey, cleanupKind, normalizedOperation: { cleanupKind, ...details } };
+  return {
+    eventKind: "system_cleanup",
+    section,
+    targetKey,
+    decision: "system_cleanup",
+    cleanupKind,
+    normalizedOperation: { cleanupKind, ...details },
+  };
 }
 
 function normalizeLifecycle(memoryState, anchors, now, config, { targetKeys = ["scene", "todos", "episodes"] } = {}) {

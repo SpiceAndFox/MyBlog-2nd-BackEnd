@@ -109,7 +109,12 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   state.meta.sourceGeneration = 1;
   state.meta.revision = 6;
   state.meta.targetCursors = Object.fromEntries(fixture.targets.map((key) => [key, 0]));
-  const statuses = Object.fromEntries(fixture.targets.map((key) => [key, { target_key: key, source_generation: 1, status: "rebuilding", rebuild_boundary_message_id: 20 }]));
+  const statuses = Object.fromEntries(fixture.targets.map((key) => [key, {
+    target_key: key,
+    source_generation: 1,
+    status: key === "scene" ? "halted" : "rebuilding",
+    rebuild_boundary_message_id: key === "scene" ? null : 20,
+  }]));
   const snapshots = new Map([[6, { source_generation: 1, state: structuredClone(state) }]]);
   const processed = [];
   const repositories = {
@@ -119,6 +124,16 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
     runtime: {
       async getTargetStatus(_u, _p, key) { return statuses[key]; },
       async upsertTargetStatus(_u, _p, value) { statuses[value.targetKey] = { ...value, source_generation: value.sourceGeneration, status: value.status }; },
+      async listTasksForTarget(_u, _p, key) {
+        if (key !== "scene") return [];
+        return [{
+          task_id: "failed-scene-task",
+          source_generation: 1,
+          cursor_before: 0,
+          target_message_id: 20,
+          status: "failed",
+        }];
+      },
     },
     audit: {
       async getSnapshot(_u, _p, revision) { return snapshots.get(revision); },
@@ -127,11 +142,19 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
     },
     sidecars: { async listTombstones() { return []; } },
   };
+  const attempts = new Map();
   const pipeline = {
-    async createTask(_u, _p, intent, options) { assert.equal(intent.trigger.type, "forceDrain"); return { task: { targetKey: intent.targetKey }, options }; },
+    async createTask(_u, _p, intent, options) {
+      assert.equal(intent.trigger.type, "forceDrain");
+      if (intent.targetKey === "scene") assert.match(options.dedupeSuffix, /resume:failed-scene-task$/);
+      return { task: { targetKey: intent.targetKey }, options };
+    },
     async processEnvelope(envelope) {
       processed.push(envelope.task.targetKey);
       assert.equal(statuses[envelope.task.targetKey].status, "rebuilding");
+      const attempt = (attempts.get(envelope.task.targetKey) || 0) + 1;
+      attempts.set(envelope.task.targetKey, attempt);
+      if (envelope.task.targetKey === "scene" && attempt === 1) return { status: "context_expansion_required" };
       state.meta.targetCursors[envelope.task.targetKey] = 20;
       state.meta.revision += 1;
       snapshots.set(state.meta.revision, { source_generation: 1, state: structuredClone(state) });
@@ -142,7 +165,7 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config: { targets } });
   const result = await rebuild.forceDrainTo(7, "companion", { sourceGeneration: 1, boundaryMessageId: 20 });
   assert.equal(result.status, "completed");
-  assert.deepEqual(processed, fixture.targets);
+  assert.deepEqual(processed, ["scene", ...fixture.targets]);
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
@@ -174,6 +197,37 @@ test("projection drain rebuilds on generation mismatch and rejects a stale compl
   const stale = await drain.drain(7, "companion");
   assert.equal(stale.status, "stale");
   assert.equal(checkpointWrite, null);
+});
+
+test("projection drain persists a retryable coverage state when staging fails", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 2;
+  let checkpointWrite = null;
+  const repositories = {
+    state: { async getState() { return structuredClone(state); } },
+    source: { async getBoundary() { return 20; } },
+    sidecars: {
+      async getProjectionCheckpoint() { return { processed_generation: 2, processed_boundary_message_id: 10 }; },
+      async listTombstones() { return []; },
+      async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
+    },
+    async withTransaction(work) { return work({}); },
+  };
+  const failure = Object.assign(new Error("embedding provider failed"), { code: "EMBEDDING_UNAVAILABLE" });
+  const adapter = {
+    async rebuild() { throw new Error("unexpected rebuild"); },
+    async append() { throw failure; },
+    async commit() {},
+  };
+  const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
+  await assert.rejects(() => drain.drain(7, "companion"), failure);
+  assert.deepEqual(checkpointWrite, {
+    projectionKey: "rag",
+    processedGeneration: 2,
+    processedBoundaryMessageId: 10,
+    status: "degraded",
+    lastErrorReason: "EMBEDDING_UNAVAILABLE",
+  });
 });
 
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {

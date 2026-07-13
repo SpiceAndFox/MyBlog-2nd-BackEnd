@@ -1,4 +1,4 @@
-# cd BlogBackEnd && pnpm regenerate-chat-rag -- --user spice --preset Lina-Weil --clear  # 回填某个角色的历史
+-- Legacy standalone bootstrap only. Memory v2 data migration owns production RAG rebuilds.
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE chat_rag_chunks (
@@ -12,6 +12,7 @@ CREATE TABLE chat_rag_chunks (
     source_kind VARCHAR(32) NOT NULL,
     source_hash TEXT NOT NULL,
     content TEXT NOT NULL,
+    embedding_text TEXT NOT NULL DEFAULT '',
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     embedding vector NOT NULL,
     embedding_provider VARCHAR(64) NOT NULL,
@@ -40,4 +41,3 @@ CREATE TRIGGER update_chat_rag_chunks_updated_at
 BEFORE UPDATE ON chat_rag_chunks
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
-

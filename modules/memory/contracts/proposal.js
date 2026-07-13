@@ -131,7 +131,9 @@ function validatePatch(patch, section, { maintenance = false, proposer } = {}) {
       if (!positiveText(ref.quote)) add(errors, `${refPath}.quote`, "must be a non-empty string");
       else if (Array.from(ref.quote).length > QUOTE_MAX_CODE_POINTS) add(errors, `${refPath}.quote`, `must not exceed ${QUOTE_MAX_CODE_POINTS} code points`);
     });
-    if (section === "scene" && patch.evidenceRefs.length !== 1) add(errors, "$.evidenceRefs", "scene operations require exactly one ref");
+    if (section === "scene" && Array.isArray(patch.evidenceRefs) && patch.evidenceRefs.length !== 1) {
+      add(errors, "$.evidenceRefs", "scene operations require exactly one ref");
+    }
   }
   return { ok: errors.length === 0, errors };
 }

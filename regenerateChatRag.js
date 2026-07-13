@@ -7,7 +7,7 @@ require("module-alias/register");
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const db = require("./db");
-const { chatRagConfig } = require("./config");
+const { chatRagConfig, memoryV2Config } = require("./config");
 const { indexChatTurn, deleteChunksFromMessageId } = require("./services/chat/rag/indexer");
 const chatRagRepo = require("./services/chat/rag/repo");
 
@@ -228,6 +228,9 @@ function buildTurns(messages, { limit } = {}) {
 
   if (!chatRagConfig.enabled) {
     throw new Error("CHAT_RAG_ENABLED must be true before regenerating chat RAG chunks");
+  }
+  if (memoryV2Config.enabled) {
+    throw new Error("regenerateChatRag.js is disabled while Memory v2 manages RAG projections; use the Memory v2 data migration command");
   }
 
   try {

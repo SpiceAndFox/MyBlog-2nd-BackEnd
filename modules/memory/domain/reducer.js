@@ -138,6 +138,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
       item.becameOverdueAt = null;
       context.cleanupEvents.push({
         eventKind: "system_cleanup", section: "todos", targetKey: "todos", cleanupKind: "todo_revived_from_overdue",
+        decision: "system_cleanup",
         normalizedOperation: { cleanupKind: "todo_revived_from_overdue", itemId: item.id, dueAt },
       });
     }

@@ -117,20 +117,67 @@ function createMemoryMigration({
     return { sourceGeneration: generation, revision: state.meta.revision, boundaryMessageId: boundary, sectionUsage: summarizeCapacity(state) };
   }
 
+  async function findResumableGeneration(scope, history) {
+    const state = await repositories.state.getState(scope.userId, scope.presetId);
+    if (!state) return null;
+    const boundary = await repositories.source.getBoundary(scope.userId, scope.presetId);
+    if (boundary !== history.boundaryMessageId) throw new Error("Raw source boundary changed after migration inventory");
+    const statuses = await repositories.runtime.getTargetStatuses(scope.userId, scope.presetId);
+    const byTarget = new Map(statuses.map((row) => [rowValue(row, "target_key", "targetKey"), row]));
+    const generation = state.meta.sourceGeneration;
+    const hasActiveRebuildBoundary = statuses.some((status) => (
+      Number(rowValue(status, "source_generation", "sourceGeneration")) === generation
+      && Number(rowValue(status, "rebuild_boundary_message_id", "rebuildBoundaryMessageId")) === boundary
+    ));
+    const resumable = TARGET_KEYS.every((targetKey) => {
+      const status = byTarget.get(targetKey);
+      if (!status || Number(rowValue(status, "source_generation", "sourceGeneration")) !== generation) return false;
+      const cursor = state.meta.targetCursors[targetKey] ?? 0;
+      if (cursor >= boundary) return true;
+      return hasActiveRebuildBoundary
+        || Number(rowValue(status, "rebuild_boundary_message_id", "rebuildBoundaryMessageId")) === boundary;
+    });
+    if (!resumable) return null;
+    return { sourceGeneration: generation, revision: state.meta.revision, boundaryMessageId: boundary, resumed: true };
+  }
+
+  function forceDrainError(drained) {
+    const error = new Error(`Memory force drain did not complete: ${drained.status}`);
+    error.migrationDetail = {
+      sourceGeneration: drained.sourceGeneration ?? null,
+      targetKey: drained.targetKey ?? null,
+      result: drained.result ? {
+        status: drained.result.status ?? null,
+        outcome: drained.result.outcome ?? null,
+        reason: drained.result.reason ?? null,
+        taskId: drained.result.taskId ?? null,
+      } : null,
+      completedTaskCount: Array.isArray(drained.results) ? drained.results.length : 0,
+    };
+    return error;
+  }
+
   async function rebuildScope(scope, history) {
     const started = monotonicNow();
     let state = await repositories.state.getState(scope.userId, scope.presetId);
     if (!state) state = await repositories.state.initializeRevisionZero(scope.userId, scope.presetId);
-    const initialized = await sourceRebuild.initializeGeneration(scope.userId, scope.presetId, { reason: "memory_v2_migration" });
+    const initialized = await findResumableGeneration(scope, history)
+      ?? await sourceRebuild.initializeGeneration(scope.userId, scope.presetId, { reason: "memory_v2_migration" });
     if (initialized.boundaryMessageId !== history.boundaryMessageId) throw new Error("Raw source boundary changed after migration inventory");
     const drained = await sourceRebuild.forceDrainTo(scope.userId, scope.presetId, initialized);
-    if (drained.status !== "completed") throw new Error(`Memory force drain did not complete: ${drained.status}`);
+    if (drained.status !== "completed") throw forceDrainError(drained);
     for (const projectionKey of ["rag", "recall"]) {
       const result = await projectionDrains[projectionKey].drain(scope.userId, scope.presetId);
       if (result.status !== "healthy") throw new Error(`Projection ${projectionKey} drain did not complete: ${result.status}`);
     }
     const verified = await verifyScope(scope.userId, scope.presetId, history.boundaryMessageId);
-    return { ...scope, ...history, ...verified, durationMs: Math.max(0, monotonicNow() - started) };
+    return {
+      ...scope,
+      ...history,
+      ...verified,
+      normalTaskCount: Array.isArray(drained.results) ? drained.results.length : 0,
+      durationMs: Math.max(0, monotonicNow() - started),
+    };
   }
 
   async function run({ mode = "rehearsal", serviceStopped = false, scopes } = {}) {
@@ -153,7 +200,11 @@ function createMemoryMigration({
       return {
         status: "failed", mode, startedAt, failedAt: now().toISOString(), durationMs: Math.max(0, monotonicNow() - started),
         scopeCount: histories.length, results, canStartService: false,
-        error: { name: error?.name || "Error", message: String(error?.message || error) },
+        error: {
+          name: error?.name || "Error",
+          message: String(error?.message || error),
+          ...(error?.migrationDetail ? { detail: error.migrationDetail } : {}),
+        },
       };
     }
   }

@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+const path = require("node:path");
+const fs = require("node:fs");
+const dotenv = require("dotenv");
+
+dotenv.config({ path: path.join(__dirname, "../.env"), quiet: true });
+
+const db = require("../db");
+const memory = require("../modules/memory");
+const {
+  createChatRagProjectionAdapter,
+  createQueryTimeRecallProjectionAdapter,
+} = require("../services/chat/rag/projectionAdapters");
+
+function parseArgs(argv) {
+  const parsed = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = String(argv[index] || "");
+    if (!value.startsWith("--")) continue;
+    const key = value.slice(2);
+    const next = argv[index + 1];
+    if (next !== undefined && !String(next).startsWith("--")) {
+      parsed[key] = String(next);
+      index += 1;
+    } else parsed[key] = true;
+  }
+  return parsed;
+}
+
+function positiveInteger(value, name) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`${name} must be a positive integer`);
+  return number;
+}
+
+function resolveOptions(args) {
+  const mode = String(args.mode || "inventory").trim();
+  if (!["inventory", "rehearsal", "cutover"].includes(mode)) {
+    throw new Error("--mode must be inventory, rehearsal, or cutover");
+  }
+  const userRaw = args.user ?? args.userId;
+  const presetRaw = args.preset ?? args.presetId;
+  if ((userRaw === undefined) !== (presetRaw === undefined)) {
+    throw new Error("--user and --preset must be provided together");
+  }
+  const scopes = userRaw === undefined ? undefined : [{
+    userId: positiveInteger(userRaw, "--user"),
+    presetId: String(presetRaw || "").trim(),
+  }];
+  if (scopes && !scopes[0].presetId) throw new Error("--preset cannot be empty");
+  return {
+    mode,
+    scopes,
+    apply: args.apply === true,
+    serviceStopped: args["service-stopped"] === true || args.serviceStopped === true,
+    reportPath: typeof args.report === "string" && args.report.trim() ? path.resolve(args.report.trim()) : null,
+  };
+}
+
+function printUsage() {
+  process.stdout.write([
+    "Usage:",
+    "  npm run migrate:memory-v2-data -- --mode inventory [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--user <id> --preset <id>]",
+    "",
+    "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG/Recall and write authority data.",
+    "Run rehearsal only against a production-history copy. Cutover requires the public service to be stopped.",
+    "",
+  ].join("\n"));
+}
+
+function withCallEstimates(inventory, config) {
+  return inventory.map((scope) => ({
+    ...scope,
+    estimatedNormalTaskCount: Object.values(config.targets).reduce(
+      (sum, target) => sum + Math.ceil(scope.messageCount / target.lagThreshold),
+      0,
+    ),
+  }));
+}
+
+function emitReport(report, reportPath) {
+  const serialized = `${JSON.stringify(report, null, 2)}\n`;
+  process.stdout.write(serialized);
+  if (!reportPath) return;
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, serialized, { encoding: "utf8", flag: "wx" });
+}
+
+function assertReportPathAvailable(reportPath) {
+  if (fs.existsSync(reportPath)) throw new Error(`Report path already exists: ${reportPath}`);
+}
+
+function createMigration(config) {
+  const projectionDrains = {
+    rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
+    recall: memory.createDefaultProjectionDrain("recall", createQueryTimeRecallProjectionAdapter()),
+  };
+  return memory.createDefaultMemoryMigration({ config, projectionDrains });
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help === true || args.h === true) {
+    printUsage();
+    return { status: "help" };
+  }
+  const options = resolveOptions(args);
+  const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
+  const migration = createMigration(config);
+  const inventory = withCallEstimates(await migration.inventory(options.scopes), config);
+
+  if (options.mode === "inventory") {
+    const report = { status: "inventory", scopeCount: inventory.length, scopes: inventory };
+    emitReport(report, options.reportPath);
+    return report;
+  }
+
+  if (!options.apply) {
+    const report = {
+      status: "apply_required",
+      mode: options.mode,
+      scopeCount: inventory.length,
+      scopes: inventory,
+      requiredFlag: "--apply",
+      requiredReportFlag: "--report <path>",
+      ...(options.mode === "cutover" ? { requiredCutoverFlag: "--service-stopped" } : {}),
+    };
+    emitReport(report, options.reportPath);
+    return report;
+  }
+  if (!options.reportPath) throw new Error(`${options.mode} requires --report <path>`);
+  if (options.mode === "cutover" && !options.serviceStopped) {
+    throw new Error("Cutover requires --service-stopped");
+  }
+  assertReportPathAvailable(options.reportPath);
+
+  const report = await migration.run({
+    mode: options.mode,
+    serviceStopped: options.serviceStopped,
+    scopes: options.scopes,
+  });
+  emitReport(report, options.reportPath);
+  if (report.status !== "completed") process.exitCode = 2;
+  return report;
+}
+
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      process.stderr.write(`${error?.stack || error}\n`);
+      process.exitCode = 1;
+    })
+    .finally(() => db.end());
+}
+
+module.exports = { parseArgs, resolveOptions, withCallEstimates, emitReport, assertReportPathAvailable, main };

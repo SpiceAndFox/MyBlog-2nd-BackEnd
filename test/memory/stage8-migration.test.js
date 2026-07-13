@@ -7,12 +7,14 @@ const { createMemoryMigration } = require("../../modules/memory/application/migr
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/stage8-migration.json"), "utf8"));
 
-function makeHarness({ projectionFailure = null, verificationFailure = null } = {}) {
+function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false } = {}) {
   let state = null;
   let snapshots = [];
   let statuses = [];
   let checkpoints = [];
   let clock = 0;
+  let initializeCount = 0;
+  let forceDrainCount = 0;
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
     state: {
@@ -39,13 +41,32 @@ function makeHarness({ projectionFailure = null, verificationFailure = null } = 
   };
   const sourceRebuild = {
     async initializeGeneration() {
+      initializeCount += 1;
       state.meta.sourceGeneration = fixture.sourceGeneration;
       state.meta.revision = fixture.revision;
       snapshots = [{ source_generation: fixture.sourceGeneration, revision: fixture.revision, schema_version: SCHEMA_VERSION, state: structuredClone(state) }];
-      statuses = TARGET_KEYS.map((targetKey) => ({ target_key: targetKey, source_generation: fixture.sourceGeneration, status: "rebuilding" }));
+      statuses = TARGET_KEYS.map((targetKey) => ({
+        target_key: targetKey,
+        source_generation: fixture.sourceGeneration,
+        rebuild_boundary_message_id: fixture.history.boundaryMessageId,
+        status: "rebuilding",
+      }));
       return { sourceGeneration: fixture.sourceGeneration, revision: fixture.revision, boundaryMessageId: fixture.history.boundaryMessageId };
     },
     async forceDrainTo() {
+      forceDrainCount += 1;
+      if (forceDrainFailureOnce && forceDrainCount === 1) {
+        statuses = statuses.map((status) => status.target_key === "scene"
+          ? { ...status, status: "halted", rebuild_boundary_message_id: null }
+          : status);
+        return {
+          status: "incomplete",
+          sourceGeneration: fixture.sourceGeneration,
+          targetKey: "scene",
+          result: { status: "queued", outcome: "transaction_failed", taskId: "task-1" },
+          results: [{ status: "queued" }],
+        };
+      }
       state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, fixture.history.boundaryMessageId]));
       state.current.scene.location = {
         value: "上海😊",
@@ -72,7 +93,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null } = 
     },
   }]));
   const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
-  return { migration };
+  return { migration, getInitializeCount: () => initializeCount };
 }
 
 test("stage 8 rehearsal rebuilds every raw-history scope", async () => {
@@ -96,6 +117,22 @@ test("stage 8 rehearsal is repeatable and never opens the service start gate", a
   assert.equal(first.status, "completed");
   assert.equal(second.status, "completed");
   assert.equal(second.canStartService, false);
+});
+
+test("stage 8 resumes an incomplete force drain without resetting its generation", async () => {
+  const harness = makeHarness({ forceDrainFailureOnce: true });
+  const first = await harness.migration.run({ mode: "cutover", serviceStopped: true });
+  assert.equal(first.status, "failed");
+  assert.deepEqual(first.error.detail, {
+    sourceGeneration: fixture.sourceGeneration,
+    targetKey: "scene",
+    result: { status: "queued", outcome: "transaction_failed", reason: null, taskId: "task-1" },
+    completedTaskCount: 1,
+  });
+  const second = await harness.migration.run({ mode: "cutover", serviceStopped: true });
+  assert.equal(second.status, "completed");
+  assert.equal(second.canStartService, true);
+  assert.equal(harness.getInitializeCount(), 1);
 });
 
 test("stage 8 cutover requires an explicitly stopped service", async () => {

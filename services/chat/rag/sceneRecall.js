@@ -3,6 +3,7 @@ const { logger } = require("../../../logger");
 const { createChatCompletion } = require("../../llm/chatCompletions");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const chatRagRepo = require("./repo");
+const { filterSuppressedMessages } = require("./suppression");
 
 function collapseWhitespace(value) {
   return String(value || "")
@@ -110,12 +111,12 @@ function normalizeSceneRecall(rawText) {
   return clipText(cleaned, chatRagConfig.sceneRecallMaxOutputChars);
 }
 
-async function generateSceneRecallForSource({ userId, presetId, source } = {}) {
+async function generateSceneRecallForSource({ userId, presetId, source, tombstones = [] } = {}) {
   if (!chatRagConfig.sceneRecallEnabled) return "";
 
   const contextTurns = Number(chatRagConfig.sceneRecallContextTurns) || 0;
   const beforeMessages = contextTurns * 2;
-  const messages = await chatRagRepo.listMessagesAroundChunk({
+  const rawMessages = await chatRagRepo.listMessagesAroundChunk({
     userId,
     presetId,
     sessionId: source.sessionId,
@@ -124,6 +125,7 @@ async function generateSceneRecallForSource({ userId, presetId, source } = {}) {
     beforeMessages,
     afterMessages: 0,
   });
+  const messages = filterSuppressedMessages(rawMessages, tombstones);
 
   if (!messages.length) return "";
 
@@ -137,7 +139,8 @@ async function generateSceneRecallForSource({ userId, presetId, source } = {}) {
     contextTurns,
     providerId: chatRagConfig.sceneRecallProviderId,
     modelId: chatRagConfig.sceneRecallModelId,
-    messages: prompt.messages,
+    messageCount: messages.length,
+    inputChars: prompt.messages.reduce((sum, message) => sum + String(message.content || "").length, 0),
   });
 
   const response = await createChatCompletion({
@@ -158,7 +161,6 @@ async function generateSceneRecallForSource({ userId, presetId, source } = {}) {
     firstMessageId: source.firstMessageId,
     lastMessageId: source.lastMessageId,
     chars: normalized.length,
-    content: normalized,
   });
 
   return normalized;

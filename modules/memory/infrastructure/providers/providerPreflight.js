@@ -2,6 +2,7 @@ const { isDeepStrictEqual } = require("node:util");
 const { TARGETS } = require("../../contracts");
 const { validateProposerOutput } = require("../../contracts/proposal");
 const { buildOutputSchema } = require("./outputSchema");
+const { normalizeProviderOutput } = require("./memoryProviderAdapter");
 
 function normalCase(targetKey, definition, tickId) {
   const task = {
@@ -11,11 +12,23 @@ function normalCase(targetKey, definition, tickId) {
     tickId,
     mode: "normal",
   };
-  const output = {
-    tickId,
-    proposer: definition.proposer,
-    sectionResults: Object.fromEntries(definition.sections.map((section) => [section, { status: "noop" }])),
-  };
+  const output = targetKey === "scene"
+    ? {
+      tickId,
+      proposer: definition.proposer,
+      sectionResults: { scene: { status: "patches", patches: [{
+        op: "setField",
+        path: "location",
+        value: "屋顶",
+        evidenceKind: "scene_change",
+        evidenceRef: { messageId: 1, quote: "来到屋顶" },
+      }] } },
+    }
+    : {
+      tickId,
+      proposer: definition.proposer,
+      sectionResults: Object.fromEntries(definition.sections.map((section) => [section, { status: "noop" }])),
+    };
   return { name: targetKey, task, output, responseSchema: buildOutputSchema(definition.proposer, definition.sections) };
 }
 
@@ -45,10 +58,15 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
     });
     if (response?.refusal || response?.safetyBlocked) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
     if (["length", "max_tokens", "max_output_tokens"].includes(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
-    const validation = validateProposerOutput(response?.output, probe.task);
+    const validation = validateProposerOutput(normalizeProviderOutput(response?.output, probe.task), probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);
-      error.detail = validation.errors;
+      error.detail = {
+        validationErrors: validation.errors,
+        finishReason: response?.finishReason ?? null,
+        transportError: response?.transportError ?? null,
+        transportRecovery: response?.transportRecovery ?? null,
+      };
       throw error;
     }
     if (!isDeepStrictEqual(response.output, probe.output)) {
