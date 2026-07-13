@@ -2,6 +2,7 @@ const { buildSystemPromptSegment } = require("./segments/systemPrompt");
 const { buildAssistantGistNoticeSegment } = require("./segments/assistantGistNotice");
 const { buildCoreMemorySegment } = require("./segments/coreMemory");
 const { buildRollingSummarySegment } = require("./segments/rollingSummary");
+const { buildMemorySegment } = require("./segments/memory");
 const { buildRagContextSegment } = require("./segments/ragContext");
 const { buildGapBridgeSegment } = require("./segments/gapBridge");
 const { buildRecentWindowSegment } = require("./segments/recentWindow");
@@ -35,6 +36,7 @@ const segmentOrder = [
   "assistantGistNotice",
   "coreMemory",
   "rollingSummary",
+  "memory",
   "ragContext",
   "gapBridge",
   "recentWindow",
@@ -46,6 +48,7 @@ const segmentBuilders = {
   assistantGistNotice: buildAssistantGistNoticeSegment,
   coreMemory: buildCoreMemorySegment,
   rollingSummary: buildRollingSummarySegment,
+  memory: buildMemorySegment,
   ragContext: buildRagContextSegment,
   gapBridge: buildGapBridgeSegment,
   recentWindow: buildRecentWindowSegment,

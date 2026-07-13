@@ -42,7 +42,11 @@ function validateFixture(fixture, filePath = "<fixture>") {
 }
 
 function loadFixtures(rootDir) {
-  return listFixtureFiles(rootDir).map((filePath) => ({ filePath, fixture: validateFixture(JSON.parse(fs.readFileSync(filePath, "utf8")), filePath) }));
+  return listFixtureFiles(rootDir).flatMap((filePath) => {
+    const fixture = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (fixture.fixtureKind && fixture.fixtureKind !== "reducer") return [];
+    return [{ filePath, fixture: validateFixture(fixture, filePath) }];
+  });
 }
 
 function executeReducerTick(fixture, tick, options) {

@@ -1,5 +1,5 @@
 const { TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES } = require("../../contracts");
-const { normalizeScope, executor } = require("./helpers");
+const { normalizeScope, executor, withTransaction } = require("./helpers");
 
 async function createTask(task, { client } = {}) {
   if (!TASK_TYPES.includes(task.task_type) || !TASK_STATUSES.includes(task.status) || !TARGET_KEYS.includes(task.target_key)) throw new Error("Invalid Memory v2 task enum");
@@ -47,9 +47,20 @@ async function getTargetStatuses(userId, presetId, { client } = {}) {
   return rows;
 }
 async function upsertTargetStatus(userId, presetId, status, { client } = {}) {
+  if (!client) return withTransaction((transactionClient) => upsertTargetStatus(userId, presetId, status, { client: transactionClient }));
   const scope = normalizeScope(userId, presetId);
   if (!TARGET_KEYS.includes(status.targetKey) || !TARGET_STATUSES.includes(status.status)) throw new Error("Invalid target status");
-  const { rows } = await executor(client).query(`INSERT INTO chat_memory_target_status (user_id,preset_id,target_key,source_generation,rebuild_boundary_message_id,status,consecutive_errors,last_error_reason,last_task_id,next_retry_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id,preset_id,target_key) DO UPDATE SET source_generation=EXCLUDED.source_generation,rebuild_boundary_message_id=EXCLUDED.rebuild_boundary_message_id,status=EXCLUDED.status,consecutive_errors=EXCLUDED.consecutive_errors,last_error_reason=EXCLUDED.last_error_reason,last_task_id=EXCLUDED.last_task_id,next_retry_at=EXCLUDED.next_retry_at,updated_at=NOW() RETURNING *`, [scope.userId,scope.presetId,status.targetKey,status.sourceGeneration,status.rebuildBoundaryMessageId??null,status.status,status.consecutiveErrors??0,status.lastErrorReason??null,status.lastTaskId??null,status.nextRetryAt??null]);
+  const db = executor(client);
+  const { rows: priorRows } = await db.query(`SELECT status FROM chat_memory_target_status WHERE user_id=$1 AND preset_id=$2 AND target_key=$3 FOR UPDATE`, [scope.userId,scope.presetId,status.targetKey]);
+  const { rows } = await db.query(`INSERT INTO chat_memory_target_status (user_id,preset_id,target_key,source_generation,rebuild_boundary_message_id,status,consecutive_errors,last_error_reason,last_task_id,next_retry_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id,preset_id,target_key) DO UPDATE SET source_generation=EXCLUDED.source_generation,rebuild_boundary_message_id=EXCLUDED.rebuild_boundary_message_id,status=EXCLUDED.status,consecutive_errors=EXCLUDED.consecutive_errors,last_error_reason=EXCLUDED.last_error_reason,last_task_id=EXCLUDED.last_task_id,next_retry_at=EXCLUDED.next_retry_at,updated_at=NOW() RETURNING *`, [scope.userId,scope.presetId,status.targetKey,status.sourceGeneration,status.rebuildBoundaryMessageId??null,status.status,status.consecutiveErrors??0,status.lastErrorReason??null,status.lastTaskId??null,status.nextRetryAt??null]);
+  if (priorRows[0] && priorRows[0].status !== "healthy" && status.status === "healthy") {
+    const { rows: taskRows } = status.lastTaskId ? await db.query(`SELECT status FROM chat_memory_tasks WHERE task_id=$1`, [status.lastTaskId]) : { rows: [] };
+    if (taskRows[0]?.status === "succeeded") {
+      const { rows: stateRows } = await db.query(`SELECT memory_state FROM chat_preset_memory WHERE user_id=$1 AND preset_id=$2`, [scope.userId,scope.presetId]);
+      const boundary = Number(stateRows[0]?.memory_state?.meta?.targetCursors?.[status.targetKey] ?? 0);
+      await db.query(`INSERT INTO chat_memory_recovery_notifications (user_id,preset_id,subject_kind,subject_key,notification_type,boundary_message_id,source_generation) VALUES ($1,$2,'target',$3,'recovered',$4,$5) ON CONFLICT (user_id,preset_id,subject_kind,subject_key,notification_type,source_generation,boundary_message_id) DO NOTHING`, [scope.userId,scope.presetId,status.targetKey,Number.isSafeInteger(boundary) && boundary >= 0 ? boundary : 0,status.sourceGeneration]);
+    }
+  }
   return rows[0];
 }
 async function appendOpsLog(entry, { client } = {}) {

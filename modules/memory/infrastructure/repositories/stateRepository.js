@@ -9,6 +9,11 @@ async function getState(userId, presetId, { client, forUpdate = false } = {}) {
   if (!rows[0] || rows[0].memory_state === null) return null;
   return assertMemoryState(rows[0].memory_state);
 }
+async function getRawState(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT memory_state FROM chat_preset_memory WHERE user_id=$1 AND preset_id=$2`, [scope.userId, scope.presetId]);
+  return rows[0]?.memory_state ?? null;
+}
 
 async function initializeRevisionZero(userId, presetId) {
   const scope = normalizeScope(userId, presetId);
@@ -70,4 +75,4 @@ async function listInitializedScopes({ client } = {}) {
   return rows.map((row) => ({ userId: Number(row.user_id), presetId: row.preset_id }));
 }
 
-module.exports = { getState, initializeRevisionZero, writeState, listInitializedScopes };
+module.exports = { getState, getRawState, initializeRevisionZero, writeState, listInitializedScopes };

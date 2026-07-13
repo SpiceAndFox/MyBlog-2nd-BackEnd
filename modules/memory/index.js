@@ -5,6 +5,8 @@ const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
 const { createMemoryRecovery } = require("./application/recovery");
 const { createMemoryHousekeeping } = require("./application/housekeeping");
+const { createMemoryContextAssembly } = require("./application/contextAssembly");
+const repositories = require("./infrastructure/repositories");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createOpenAiStructuredTransport } = require("./infrastructure/providers/openAiStructuredTransport");
 const { loadProposerPrompt } = require("./prompts");
@@ -19,6 +21,27 @@ module.exports = Object.freeze({
   createNormalWritePipeline,
   createMemoryRecovery,
   createMemoryHousekeeping,
+  createMemoryContextAssembly,
+  createDefaultMemoryContextAssembly(options) {
+    const lanes = new Map();
+    const enqueueByKey = (key, work) => {
+      const previous = lanes.get(key) || Promise.resolve();
+      const current = previous.catch(() => {}).then(work);
+      lanes.set(key, current);
+      const release = () => { if (lanes.get(key) === current) lanes.delete(key); };
+      void current.then(release, release);
+      return current;
+    };
+    const housekeeping = createMemoryHousekeeping({ repositories, config: options?.config, enqueueByKey });
+    return createMemoryContextAssembly({
+      ...options,
+      repositories,
+      scheduleHousekeeping: options?.scheduleHousekeeping || (({ userId, presetId }) => housekeeping.runScope(userId, presetId)),
+    });
+  },
+  markRecoveryNotificationsDelivered(ids) {
+    return repositories.sidecars.markRecoveryNotificationsDelivered(ids);
+  },
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
   createOpenAiStructuredTransport,

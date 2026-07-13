@@ -62,6 +62,19 @@
 - 增加阶段 5 recovery fixture，以及 deferred → compaction → replay、pending-item 保护、unable/halt/resume、稳定 identity、Provider schema/prompt 与重复 delivery 测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
+## 2026-07-13：Memory Control v2 阶段 6
+
+- 实现仅按 Unicode code point 字符阈值门控的跨 session recent window：预算内保留完整历史，超预算从最新消息反向选择完整 raw messages，保留最新单条与 user-boundary 裁剪，不叠加 message count/tokenizer/context 百分比。
+- 接入单一 Memory v2 context segment：仅在 `needsMemory=true` 且 authority state 存在、版本受支持、schema 合法时实时调用 Renderer；跳过时返回明确 debug reason，state/schema 异常只降级 Memory、不阻断主聊天。
+- 实现 per-target GapBridge：按六个 cursor 计算 gap，跨 target 去重并保留 target keys；独立字符/最近消息数预算只选择完整 raw message，超限持久化 omitted 边界与统计，不调用 LLM、不推进 cursor/revision。
+- 实现 target、active diagnostic 与 RAG/Recall projection query coverage 的 `healthy/degraded/rebuilding` 聚合；rebuilding 优先，halted 给出维护提示，所有路径显式保持 `chatBlocked=false`。
+- 实现 projection 的 `requiredBoundary/processedBoundary` 查询健康与有效 RAG cutoff；partial coverage 仍允许注入已处理结果并标记范围不完整，projection checkpoint 与 Memory cursor 保持独立。
+- 实现持续告警与恢复通知：GapBridge/projection 诊断保持 active 到明确追平；清诊断与创建 notification 同事务；target 从非健康恢复时同事务创建通知；JSON 与 SSE `done` 返回健康/通知，响应完成后 best-effort 标记 delivered。
+- Renderer 读取 target status 与 active GapBridge sidecar，为稳定 state 输出“可能滞后/正在重建”标记；请求时 effective view 需要 cleanup 时异步、串行唤醒幂等 housekeeping。
+- 增加 `CHAT_MEMORY_V1_CONTEXT_ENABLED` 独立开关；v2 启用时关闭 v1 rolling summary/core memory/legacy GapBridge 注入，但保留阶段 8 前的旧 worker 代码。
+- 增加阶段 6 context fixture，以及 recent window、GapBridge、健康优先级、projection lag、恢复通知、housekeeping wake-up、state 跳过原因与单一 segment 测试。
+- `npm run test:memory-v2` 与 `npm test` 全部通过。
+
 ## 尚未执行
 
-- 尚未开始 roadmap 阶段 6。
+- 尚未开始 roadmap 阶段 7。

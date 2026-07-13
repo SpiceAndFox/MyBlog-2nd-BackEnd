@@ -20,6 +20,21 @@ async function createDiagnostic(userId, presetId, diagnostic, { client } = {}) {
   const { rows } = await executor(client).query(`INSERT INTO chat_context_quality_diagnostics (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) RETURNING *`, values);
   return rows[0];
 }
+async function listActiveDiagnostics(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2 AND resolved=FALSE ORDER BY created_at,id`, [scope.userId, scope.presetId]);
+  return rows;
+}
+async function upsertActiveDiagnostic(userId, presetId, diagnostic, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const db = executor(client);
+  const { rows: active } = await db.query(`SELECT id FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2 AND subject_kind=$3 AND subject_key=$4 AND diagnostic_type=$5 AND resolved=FALSE ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE`, [scope.userId,scope.presetId,diagnostic.subjectKind,diagnostic.subjectKey,diagnostic.diagnosticType]);
+  if (!active[0]) return createDiagnostic(userId, presetId, diagnostic, { client: db });
+  const fields = ["request_id","target_cursor","processed_boundary_message_id","omitted_upper_message_id","recent_window_start","original_gap_count","original_gap_chars","retained_boundary","retained_count","omitted_count","omitted_chars","truncated"];
+  const values = [diagnostic.requestId??null,diagnostic.targetCursor??null,diagnostic.processedBoundaryMessageId??null,diagnostic.omittedUpperMessageId??null,diagnostic.recentWindowStart??null,diagnostic.originalGapCount??null,diagnostic.originalGapChars??null,diagnostic.retainedBoundary??null,diagnostic.retainedCount??null,diagnostic.omittedCount??null,diagnostic.omittedChars??null,Boolean(diagnostic.truncated)];
+  const { rows } = await db.query(`UPDATE chat_context_quality_diagnostics SET ${fields.map((field,index)=>`${field}=$${index+2}`).join(",")},updated_at=NOW() WHERE id=$1 RETURNING *`, [active[0].id,...values]);
+  return rows[0];
+}
 async function resolveDiagnostic(id, { client } = {}) {
   const { rows } = await executor(client).query(`UPDATE chat_context_quality_diagnostics SET resolved=TRUE,resolved_at=NOW(),updated_at=NOW() WHERE id=$1 AND resolved=FALSE RETURNING *`, [id]);
   return rows[0] || null;
@@ -39,4 +54,9 @@ async function markRecoveryNotificationsDelivered(ids, { client } = {}) {
   const { rowCount } = await executor(client).query(`UPDATE chat_memory_recovery_notifications SET delivered=TRUE,delivered_at=NOW() WHERE id=ANY($1::BIGINT[]) AND delivered=FALSE`, [ids]);
   return rowCount;
 }
-module.exports = { upsertProjectionCheckpoint, insertTombstone, createDiagnostic, resolveDiagnostic, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };
+async function listProjectionCheckpoints(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 ORDER BY projection_key`, [scope.userId,scope.presetId]);
+  return rows;
+}
+module.exports = { upsertProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };

@@ -36,4 +36,13 @@ async function getByIds(userId, presetId, ids, { client } = {}) {
   const { rows } = await executor(client).query(`SELECT m.id,m.role,m.content,m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id=ANY($3::BIGINT[]) ORDER BY m.id ASC`, [scope.userId, scope.presetId, ids]);
   return rows.map((row) => ({ ...mapRow(row), userId: scope.userId, presetId: scope.presetId }));
 }
-module.exports = { countAfter, getObservedWindow, getByIds };
+async function listUpTo(userId, presetId, upToMessageId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const hasBoundary = upToMessageId !== undefined && upToMessageId !== null;
+  const boundary = hasBoundary ? Number(upToMessageId) : null;
+  if (hasBoundary && (!Number.isSafeInteger(boundary) || boundary <= 0)) throw new Error("upToMessageId must be a positive safe integer");
+  const sql = `SELECT m.id,m.role,m.content,m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE}${hasBoundary ? " AND m.id<=$3" : ""} ORDER BY m.id ASC`;
+  const { rows } = await executor(client).query(sql, hasBoundary ? [scope.userId, scope.presetId, boundary] : [scope.userId, scope.presetId]);
+  return rows.map(mapRow);
+}
+module.exports = { countAfter, getObservedWindow, getByIds, listUpTo };

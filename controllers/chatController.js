@@ -3,8 +3,9 @@ const chatPresetModel = require("@models/chatPresetModel");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { chatConfig, llmConfig, chatMemoryConfig, chatRagConfig } = require("../config");
+const { chatConfig, llmConfig, chatMemoryConfig, chatRagConfig, memoryV2Config } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
+const { markRecoveryNotificationsDelivered } = require("../modules/memory");
 const { buildRecentWindowContext } = require("../services/chat/context/buildRecentWindowContext");
 const {
   getPresetMemoryStatus,
@@ -459,6 +460,20 @@ function attachRagSources(message, context) {
   const next = { ...message };
   if (sources.length) next.rag_sources = sources;
   if (debug) next.rag_debug = debug;
+  return next;
+}
+
+function attachContextHealth(payload, context, res) {
+  const notifications = Array.isArray(context?.memoryRecoveryNotifications) ? context.memoryRecoveryNotifications : [];
+  const next = { ...payload };
+  if (context?.memoryHealth) next.memory_health = context.memoryHealth;
+  if (notifications.length) next.memory_recovery_notifications = notifications;
+  const ids = notifications.map((entry) => Number(entry.id)).filter(Number.isSafeInteger);
+  if (ids.length) {
+    res.once("finish", () => {
+      void markRecoveryNotificationsDelivered(ids).catch((error) => logger.warn("memory_recovery_notification_delivery_mark_failed", { error, ids }));
+    });
+  }
   return next;
 }
 
@@ -1059,7 +1074,7 @@ const chatController = {
       if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
       const sessionPresetId = String(session?.preset_id || session?.presetId || "").trim();
-      if (sessionPresetId && (await isChatMemoryLocked({ userId, presetId: sessionPresetId }))) {
+      if (!memoryV2Config.enabled && sessionPresetId && (await isChatMemoryLocked({ userId, presetId: sessionPresetId }))) {
         return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
       }
 
@@ -1192,11 +1207,11 @@ const chatController = {
 
         return res
           .status(200)
-          .json({
+          .json(attachContextHealth({
             session: updatedSession,
             user_message: updatedUserMessage,
             assistant_message: attachRagSources(assistantMessage, context),
-          });
+          }, context, res));
       }
 
       res.status(200);
@@ -1292,12 +1307,12 @@ const chatController = {
         content: normalizedAssistantContent,
       });
 
-      writeSse(res, {
+      writeSse(res, attachContextHealth({
         type: "done",
         session: updatedSession,
         user_message: updatedUserMessage,
         assistant_message: attachRagSources(assistantMessage, context),
-      });
+      }, context, res));
       res.end();
     } catch (error) {
       const message = error?.message || "Internal Server Error";
@@ -1368,7 +1383,7 @@ const chatController = {
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
       errorSession = updatedSession;
 
-      if (await isChatMemoryLocked({ userId, presetId })) {
+      if (!memoryV2Config.enabled && (await isChatMemoryLocked({ userId, presetId }))) {
         return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
       }
 
@@ -1437,11 +1452,11 @@ const chatController = {
 
         return res
           .status(200)
-          .json({
+          .json(attachContextHealth({
             session: updatedSession,
             user_message: userMessage,
             assistant_message: attachRagSources(assistantMessage, context),
-          });
+          }, context, res));
       }
 
       res.status(200);
@@ -1538,12 +1553,12 @@ const chatController = {
         content: normalizedAssistantContent,
       });
 
-      writeSse(res, {
+      writeSse(res, attachContextHealth({
         type: "done",
         session: updatedSession,
         user_message: userMessage,
         assistant_message: attachRagSources(assistantMessage, context),
-      });
+      }, context, res));
       res.end();
     } catch (error) {
       const message = error?.message || "Internal Server Error";

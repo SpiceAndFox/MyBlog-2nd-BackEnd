@@ -6,4 +6,6 @@ module.exports = Object.freeze({
   ...require("./lifecycle"),
   ...require("./reducer"),
   ...require("./renderer"),
+  ...require("./contextCoverage"),
+  ...require("./health"),
 });

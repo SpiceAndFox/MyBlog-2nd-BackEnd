@@ -81,6 +81,10 @@ function assertContextState(contextState) {
 
   assertOptionalMessageContainer(contextState.gapBridge, { name: "contextState.gapBridge" });
   assertOptionalMessageContainer(contextState.ragContext, { name: "contextState.ragContext" });
+  if (contextState.memoryV2 !== null && contextState.memoryV2 !== undefined) {
+    if (!isPlainObject(contextState.memoryV2)) throw new Error("Invalid contextState.memoryV2: expected object or null");
+    assertString(contextState.memoryV2.renderedText ?? "", { name: "contextState.memoryV2.renderedText", allowEmpty: true });
+  }
 
   if (!isPlainObject(contextState.recent)) {
     throw new Error("Invalid contextState.recent: expected object");

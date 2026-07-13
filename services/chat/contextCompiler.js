@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const { buildRecentWindowContext } = require("./context/buildRecentWindowContext");
 const { buildMemorySnapshot } = require("./context/buildMemorySnapshot");
 const { buildGapBridge } = require("./context/buildGapBridge");
@@ -6,6 +7,15 @@ const { buildTimeContextState } = require("./context/buildTimeContextState");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
 const { scheduleAssistantGistBackfill } = require("./memory/gistPipeline");
 const { retrieveChatRagContext } = require("./rag/retriever");
+const { chatConfig, chatMemoryConfig, memoryV2Config } = require("../../config");
+const { createDefaultMemoryContextAssembly } = require("../../modules/memory");
+const { logger } = require("../../logger");
+
+let memoryV2Assembler = null;
+function getMemoryV2Assembler() {
+  if (!memoryV2Assembler) memoryV2Assembler = createDefaultMemoryContextAssembly({ config: memoryV2Config, recentWindowMaxChars: chatConfig.recentWindowMaxChars, onBackgroundError: (error) => logger.error("memory_v2_housekeeping_failed", { error }) });
+  return memoryV2Assembler;
+}
 
 function readCurrentUserContent({ recent } = {}) {
   const messages = Array.isArray(recent?.messages) ? recent.messages : [];
@@ -20,6 +30,57 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId) throw new Error("Missing userId");
   if (!normalizedPresetId) throw new Error("Missing presetId");
+
+  if (memoryV2Config.enabled) {
+    const contextV2 = await getMemoryV2Assembler()({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      upToMessageId,
+      requestId: crypto.randomUUID(),
+    });
+    const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
+    const recent = contextV2.recent;
+    const requiredBoundary = Math.max(0, Number(recent.stats.windowStartMessageId || 1) - 1);
+    const ragProjection = contextV2.projectionCoverage.find((entry) => entry.projectionKey === "rag");
+    const ragBoundary = ragProjection ? Math.min(requiredBoundary, ragProjection.processedBoundary) : requiredBoundary;
+    const ragContext = await retrieveChatRagContext({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      query: readCurrentUserContent({ recent }),
+      beforeMessageId: ragBoundary,
+    });
+    if (ragProjection && ragProjection.queryHealth !== "healthy" && ragContext?.messages?.length) {
+      ragContext.messages = ragContext.messages.map((message) => ({ ...message, content: `[检索范围不完整]\n${message.content}` }));
+    }
+    const compiled = buildContextSegments({
+      systemPrompt: normalizedSystemPrompt,
+      coreMemoryEnabled: false,
+      coreMemoryText: "",
+      coreMemoryChars: 0,
+      rollingSummaryEnabled: false,
+      memory: null,
+      memoryV2: { renderedText: contextV2.memorySegment },
+      ragContext,
+      gapBridge: contextV2.gapBridge,
+      recent,
+      timeContext: buildTimeContextState({ recentCandidates: contextV2.timeCandidates }),
+    });
+    return {
+      messages: compiled,
+      needsMemory: contextV2.needsMemory,
+      segments: {
+        systemPromptChars: normalizedSystemPrompt.length,
+        memoryChars: Array.from(contextV2.memorySegment).length,
+        rag: ragContext?.stats || null,
+        gapBridge: contextV2.gapBridge.stats,
+        recentWindow: { ...recent.stats, needsMemory: contextV2.needsMemory },
+      },
+      memory: { version: 2, sourceGeneration: contextV2.sourceGeneration, debug: contextV2.debug },
+      memoryHealth: contextV2.health,
+      memoryRecoveryNotifications: contextV2.notifications,
+      rag: ragContext ? { enabled: Boolean(ragContext.enabled), sources: Array.isArray(ragContext.sources) ? ragContext.sources : [], stats: ragContext.stats || null } : null,
+    };
+  }
 
   const recentWindow = await buildRecentWindowContext({
     userId: normalizedUserId,
@@ -44,12 +105,12 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 
   const recentWindowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
 
-  const memorySnapshot = await buildMemorySnapshot({
+  const memorySnapshot = chatMemoryConfig.v1ContextEnabled ? await buildMemorySnapshot({
     userId: normalizedUserId,
     presetId: normalizedPresetId,
     needsMemory,
     recentWindowStartMessageId,
-  });
+  }) : { memory: null, summarizedUntilMessageId: null, rollingSummaryEnabled: false, coreMemoryEnabled: false, coreMemoryText: "", coreMemoryChars: 0 };
   const memory = memorySnapshot.memory;
   const summarizedUntilMessageId = memorySnapshot.summarizedUntilMessageId;
   const rollingSummaryEnabled = memorySnapshot.rollingSummaryEnabled;
@@ -57,14 +118,14 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   const coreMemoryText = memorySnapshot.coreMemoryText;
   const coreMemoryChars = memorySnapshot.coreMemoryChars;
 
-  const gapBridge = await buildGapBridge({
+  const gapBridge = chatMemoryConfig.v1ContextEnabled ? await buildGapBridge({
     userId: normalizedUserId,
     presetId: normalizedPresetId,
     needsMemory,
     memory,
     recentWindowStartMessageId,
     summarizedUntilMessageId,
-  });
+  }) : null;
 
   const gapGistBackfill = scheduleAssistantGistBackfill({
     userId: normalizedUserId,
@@ -81,7 +142,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     userId: normalizedUserId,
     presetId: normalizedPresetId,
     query: readCurrentUserContent({ recent }),
-    beforeMessageId: summarizedUntilMessageId,
+    beforeMessageId: summarizedUntilMessageId ?? (recentWindowStartMessageId === null ? null : Math.max(0, recentWindowStartMessageId - 1)),
   });
 
   const compiled = buildContextSegments({

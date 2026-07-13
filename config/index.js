@@ -431,6 +431,7 @@ const chatTimeContextConfig = (() => {
 })();
 
 const chatMemoryConfig = (() => {
+  const v1ContextEnabled = readBoolEnv("CHAT_MEMORY_V1_CONTEXT_ENABLED", true);
   const rollingSummaryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_ROLLING_SUMMARY_MAX_CHARS"), {
     name: "CHAT_ROLLING_SUMMARY_MAX_CHARS",
   });
@@ -669,6 +670,7 @@ const chatMemoryConfig = (() => {
   const googleGenAiConfig = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_GOOGLE_GENAI_CONFIG_JSON");
 
   return {
+    v1ContextEnabled,
     rollingSummaryMaxChars,
     rollingSummaryUpdateEveryNTurns,
     coreMemoryEnabled,
@@ -1142,7 +1144,7 @@ const logConfig = {
   debugCoreEnabled: readBoolEnv("LOG_DEBUG_CORE_ENABLED", true),
 };
 
-const { loadMemoryV2Config } = require("../modules/memory/config/loadConfig");
+const { loadMemoryV2Config } = require("../modules/memory");
 const memoryV2Config = loadMemoryV2Config();
 
 const articleConfig = {
