@@ -890,9 +890,8 @@ const chatController = {
       const existing = await chatModel.getTrashedSession(userId, sessionId);
       if (!existing) return res.status(404).json({ error: "Session not found" });
       const presetId = String(existing.preset_id || existing.presetId || "").trim();
-      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
-        reason: "session_deleted_permanent",
-        mutateSource: (client) => chatModel.deleteSessionPermanently(userId, sessionId, { client }),
+      const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
+        deleteRawSource: (client) => chatModel.deleteSessionPermanently(userId, sessionId, { client }),
       });
       const deletedSession = mutation.mutationResult;
       if (!deletedSession) return res.status(404).json({ error: "Session not found" });

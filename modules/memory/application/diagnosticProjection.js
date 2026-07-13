@@ -75,6 +75,7 @@ function createDiagnosticProjection({ repositories } = {}) {
               subjectKind: "target",
               subjectKey: "scene",
               diagnosticType: DIAGNOSTIC_TYPE,
+              sourceGeneration: Number(rowValue(lastEvent, "groupSourceGeneration", "group_source_generation") ?? 0),
               targetCursor: Number(rowValue(lastEvent, "cursorAfter", "cursor_after") ?? 0),
               truncated: false,
               detail: {

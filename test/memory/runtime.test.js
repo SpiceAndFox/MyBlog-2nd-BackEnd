@@ -200,3 +200,28 @@ test("durable task polling continuously scans queued and due retry tasks", async
   stop();
   assert.ok(scans >= 1);
 });
+
+test("startup recovery resumes a persisted rebuilding boundary even when no task is pending", async () => {
+  const state = createInitialMemoryState();
+  const statuses = Object.fromEntries(TARGET_KEYS.map((key) => [key, { target_key: key, source_generation: 0, status: "rebuilding", rebuild_boundary_message_id: 0 }]));
+  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
+  const repositories = {
+    state: { async getState() { return structuredClone(state); }, async initializeRevisionZero() { return structuredClone(state); }, async listInitializedScopes() { return [{ userId: 1, presetId: "default" }]; } },
+    source: { async countAfter() { return 0; } },
+    runtime: {
+      async getTargetStatuses() { return Object.values(statuses); }, async listRecoverableTasks() { return []; },
+      async getTargetStatus(_u, _p, key) { return statuses[key]; },
+      async upsertTargetStatus(_u, _p, value) { statuses[value.targetKey] = { ...statuses[value.targetKey], ...value, source_generation: value.sourceGeneration, rebuild_boundary_message_id: value.rebuildBoundaryMessageId, status: value.status }; },
+    },
+    audit: {
+      async getSnapshot() { return { source_generation: 0, state: structuredClone(state) }; },
+      async listSnapshots() { return [{ revision: 0, source_generation: 0, state: structuredClone(state) }]; },
+      async listRevisionGroups() { return []; },
+    },
+    sidecars: { async listTombstones() { return []; }, async listProjectionCheckpoints() { return []; } },
+    async withTransaction(work) { return work({}); },
+  };
+  const runtime = createMemoryRuntime({ config: { enabled: true, targets, projections: { pollIntervalMs: 1000 }, providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 }, compaction: { retryMax: 1 } }, repositories, providerAdapter: { async propose() { throw new Error("no provider call expected"); } } });
+  await runtime.recoverPending();
+  assert.equal(Object.values(statuses).every((row) => row.status === "healthy" && row.rebuild_boundary_message_id === null), true);
+});

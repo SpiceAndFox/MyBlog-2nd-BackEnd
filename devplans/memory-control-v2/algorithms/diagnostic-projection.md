@@ -8,6 +8,8 @@
 - normal/maintenance 写入事务不得直接创建或清除本投影拥有的 diagnostic。
 - 投影使用独立事务和 `chat_memory_diagnostic_projection_checkpoints`。投影失败不得回滚、降级或改写已经成功的 Memory task；失败原因写入 checkpoint，后续 runtime poll、startup reconciliation 或 context assembly 重试。
 - Renderer 和健康聚合只消费 active diagnostic，不读取 reducer/task 内部状态猜测告警。
+- diagnostic 写入携带 `source_generation`，并受“同 scope/subject/type 仅一条 active row”的 partial unique index 约束；并发创建必须走原子 upsert，不能先 select 再 insert。
+- generation 初始化时 resolve 所有非空且不等于新 generation 的 active diagnostics。它们是旧 source 世代失效，不代表新世代已经追平，因此不创建 recovery notification。
 
 ## 2. `scene_capacity_exceeded`
 

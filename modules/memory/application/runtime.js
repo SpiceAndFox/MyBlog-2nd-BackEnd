@@ -10,6 +10,8 @@ const { runStructuredOutputPreflight } = require("../infrastructure/providers/pr
 const { loadProposerPrompt } = require("../prompts");
 const { createMemoryMetrics } = require("./metrics");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
+const { createPrivacyHardDelete } = require("./privacyHardDelete");
+const { createMemoryRetention } = require("./retention");
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -34,12 +36,18 @@ function createDisabledRuntime(repositories) {
       : await mutateSource(null);
     return { status: "memory_disabled", mutationResult };
   }
+  async function privacyHardDelete(_userId, _presetId, { deleteRawSource } = {}) {
+    return mutateSourceAndRebuild(_userId, _presetId, { mutateSource: deleteRawSource });
+  }
   return Object.freeze({
     enabled: false,
     initialize: async () => [],
     processScope: disabled,
     rebuildScope: disabled,
     mutateSourceAndRebuild,
+    privacyHardDelete,
+    runRetentionScope: disabled,
+    reconcileRebuilds: async () => ({}),
     drainProjections: disabled,
     reconcileProjections: async () => ({}),
     startProjectionPolling: () => stopProjectionPolling,
@@ -53,7 +61,7 @@ function createDisabledRuntime(repositories) {
   });
 }
 
-function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, metrics = createMemoryMetrics(), onBackgroundError } = {}) {
+function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, privacyStores = [], metrics = createMemoryMetrics(), onBackgroundError } = {}) {
   if (!config?.enabled) return createDisabledRuntime(repositories);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
@@ -77,12 +85,14 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   });
   const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
   const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
+  const privacyDelete = repositories.privacy ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey }) : null;
   const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
   const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError: onBackgroundError });
   const housekeeping = createMemoryHousekeeping({ repositories, config, enqueueByKey });
   const diagnosticProjection = repositories.diagnosticProjection
     ? createDiagnosticProjection({ repositories })
     : null;
+  const retention = config.retention ? createMemoryRetention({ repositories, config, diagnosticProjection }) : null;
   let projectionPollTimer = null;
   let projectionPollRunning = false;
   let taskPollTimer = null;
@@ -158,6 +168,30 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return results;
   }
 
+  async function reconcileRebuilds() {
+    if (typeof repositories.state.listInitializedScopes !== "function") return {};
+    const scopes = await repositories.state.listInitializedScopes();
+    const results = {};
+    for (const scope of scopes) {
+      const userId = Number(scope.userId ?? scope.user_id);
+      const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
+      if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
+      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, async () => {
+        const state = await ensureState(userId, presetId);
+        const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
+        const rebuilding = statuses.filter((row) => {
+          const boundary = row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId;
+          return Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration && boundary !== null && boundary !== undefined;
+        });
+        if (!rebuilding.length) return { status: "skipped", reason: "not_rebuilding" };
+        const boundaries = [...new Set(rebuilding.map((row) => Number(row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId)))];
+        if (boundaries.length !== 1) throw new Error("Memory rebuilding targets have inconsistent boundaries");
+        return sourceRebuild.forceDrainTo(userId, presetId, { sourceGeneration: state.meta.sourceGeneration, boundaryMessageId: boundaries[0] });
+      });
+    }
+    return results;
+  }
+
   function stopProjectionPolling() {
     if (!projectionPollTimer) return;
     clearInterval(projectionPollTimer);
@@ -195,7 +229,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     const tick = () => {
       if (taskPollRunning) return;
       taskPollRunning = true;
-      runInBackground(() => recovery.recoverPending()).finally(() => { taskPollRunning = false; });
+      runInBackground(async () => {
+        await recovery.recoverPending();
+        await reconcileRebuilds();
+      }).finally(() => { taskPollRunning = false; });
     };
     taskPollTimer = setInterval(tick, intervalMs);
     taskPollTimer.unref?.();
@@ -242,13 +279,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function recoverPending() {
     await initialize();
-    if (typeof repositories.state.listInitializedScopes === "function") {
-      const scopes = await repositories.state.listInitializedScopes();
-      for (const scope of scopes) {
-        await enqueueByKey(`${scope.userId}:${scope.presetId}`, () => ensureState(scope.userId, scope.presetId));
-      }
-    }
+    await reconcileRebuilds();
     const recovered = await recovery.recoverPending();
+    await reconcileRebuilds();
     await reconcileProjections();
     return recovered;
   }
@@ -272,12 +305,25 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return { ...result, recovered };
   }
 
+  function privacyHardDelete(userId, presetId, options) {
+    if (!privacyDelete) throw new Error("Memory privacy hard delete is unavailable");
+    return privacyDelete.execute(userId, presetId, options);
+  }
+
+  function runRetentionScope(userId, presetId) {
+    if (!retention) throw new Error("Memory retention is not configured");
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => retention.runScope(userId, presetId)));
+  }
+
   return Object.freeze({
     enabled: true,
     initialize,
     processScope,
     rebuildScope,
     mutateSourceAndRebuild,
+    privacyHardDelete,
+    runRetentionScope,
+    reconcileRebuilds,
     drainProjections,
     reconcileProjections,
     startProjectionPolling,

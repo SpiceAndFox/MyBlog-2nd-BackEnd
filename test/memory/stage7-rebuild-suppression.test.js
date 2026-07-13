@@ -169,6 +169,38 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
+test("rebuild reconciliation honors a durable retry_wait boundary before invoking the provider", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  state.meta.targetCursors = Object.fromEntries(fixture.targets.map((key) => [key, 0]));
+  const future = "2026-07-13T00:01:00.000Z";
+  const repositories = {
+    state: { async getState() { return structuredClone(state); } },
+    source: { async getForceDrainWindow() { return [{ id: 20, role: "user", content: "边界" }]; } },
+    runtime: {
+      async getTargetStatus(_u, _p, targetKey) { return { target_key: targetKey, source_generation: 1, status: "rebuilding", rebuild_boundary_message_id: 20 }; },
+      async listTasksForTarget() { return [{
+        task_id: "retrying-rebuild-task", source_generation: 1, cursor_before: 0, target_message_id: 20,
+        status: "retry_wait", not_before: future, task_payload: { task: { targetKey: "scene" } },
+      }]; },
+    },
+    audit: {}, sidecars: {}, async withTransaction(work) { return work({}); },
+  };
+  let providerCalls = 0;
+  const targets = Object.fromEntries(fixture.targets.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline: { async createTask() { throw new Error("must reuse retry task"); }, async processEnvelope() { providerCalls += 1; } },
+    config: { targets },
+    now: () => new Date("2026-07-13T00:00:00.000Z"),
+  });
+  const result = await rebuild.forceDrainTo(7, "companion", { sourceGeneration: 1, boundaryMessageId: 20 });
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.result.status, "retry_wait");
+  assert.equal(result.result.notBefore, future);
+  assert.equal(providerCalls, 0);
+});
+
 test("projection drain rebuilds on generation mismatch and rejects a stale completion", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 2;
@@ -185,7 +217,7 @@ test("projection drain rebuilds on generation mismatch and rejects a stale compl
     },
     async withTransaction(work) { return work({}); },
   };
-  const adapter = { async rebuild(args) { calls.push(["rebuild", args]); return { rows: [] }; }, async append() { calls.push(["append"]); return { rows: [] }; }, async commit(args) { calls.push(["commit", args]); } };
+  const adapter = { async rebuild(args) { calls.push(["rebuild", args]); return { rows: [] }; }, async append() { calls.push(["append"]); return { rows: [] }; }, async suppress(args) { calls.push(["suppress", args]); }, async commit(args) { calls.push(["commit", args]); } };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
   const healthy = await drain.drain(7, "companion");
   assert.equal(healthy.status, "healthy");
@@ -217,6 +249,7 @@ test("projection drain persists a retryable coverage state when staging fails", 
   const adapter = {
     async rebuild() { throw new Error("unexpected rebuild"); },
     async append() { throw failure; },
+    async suppress() {},
     async commit() {},
   };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
@@ -225,9 +258,34 @@ test("projection drain persists a retryable coverage state when staging fails", 
     projectionKey: "rag",
     processedGeneration: 2,
     processedBoundaryMessageId: 10,
+    processedTombstoneId: 0,
     status: "degraded",
     lastErrorReason: "EMBEDDING_UNAVAILABLE",
   });
+});
+
+test("projection drain consumes new tombstones even when generation and source boundary are unchanged", async () => {
+  const state = createInitialMemoryState();
+  let checkpointWrite;
+  const calls = [];
+  const repositories = {
+    state: { async getState() { return structuredClone(state); } },
+    source: { async getBoundary() { return 20; } },
+    sidecars: {
+      async getProjectionCheckpoint() { return { processed_generation: 0, processed_boundary_message_id: 20, processed_tombstone_id: 0 }; },
+      async listTombstones() { return [{ id: 5, message_id: 10, content_hash: "sha256:old" }]; },
+      async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
+    },
+    async withTransaction(work) { return work({}); },
+  };
+  const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter: {
+    async rebuild() { throw new Error("unexpected rebuild"); }, async append() { throw new Error("unexpected append"); },
+    async suppress(args) { calls.push(args.tombstones[0].id); }, async commit() { throw new Error("unexpected commit"); },
+  } });
+  const result = await drain.drain(7, "companion");
+  assert.equal(result.status, "healthy");
+  assert.deepEqual(calls, [5]);
+  assert.equal(checkpointWrite.processedTombstoneId, 5);
 });
 
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {
@@ -268,6 +326,7 @@ test("retention promotes only a validated continuous anchor and preserves refere
     audit: {
       async listSnapshots() { return snapshots; },
       async listRevisionGroups() { return groups; },
+      async listEventsForGroups() { return []; },
       async promoteAnchor(_u, _p, _g, revision) { promoted = revision; return { snapshotsDeleted: 1, groupsDeleted: 1 }; },
       async deleteExpiredAudit() { return { expiredEvents: 0, expiredGroups: 0, expiredSnapshots: 0 }; },
     },
@@ -288,4 +347,41 @@ test("retention promotes only a validated continuous anchor and preserves refere
   assert.equal(result.anchorRevision, 6);
   assert.equal(promoted, 6);
   assert.equal(runtimeAnchor, 6);
+});
+
+test("retention rejects an anchor whose state cannot be reproduced from semantic events", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 2;
+  state.meta.revision = 7;
+  const anchorFive = structuredClone(state);
+  anchorFive.meta.revision = 5;
+  const invalidAnchorSix = structuredClone(state);
+  invalidAnchorSix.meta.revision = 6;
+  invalidAnchorSix.meta.targetCursors.todos = 1;
+  const old = "2026-05-01T00:00:00.000Z";
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: { async getState() { return structuredClone(state); } },
+    audit: {
+      async listSnapshots() { return [
+        { revision: 5, created_at: old, state: anchorFive },
+        { revision: 6, created_at: old, state: invalidAnchorSix },
+        { revision: 7, created_at: "2026-07-12T00:00:00.000Z", state: structuredClone(state) },
+      ]; },
+      async listRevisionGroups() { return [
+        { event_group_id: "g6", base_revision: 5, result_revision: 6, created_at: old },
+        { event_group_id: "g7", base_revision: 6, result_revision: 7, created_at: "2026-07-12T00:00:00.000Z" },
+      ]; },
+      async listEventsForGroups() { return []; },
+      async promoteAnchor() { throw new Error("must not promote"); },
+    },
+    runtime: { async getTargetStatuses() { return []; } },
+    sidecars: { async listProjectionCheckpoints() { return []; } },
+  };
+  const retention = createMemoryRetention({
+    repositories,
+    config: { retention: { snapshotDays: 30, eventDays: 30, taskDays: 30, opsLogDays: 30 } },
+    now: () => new Date("2026-07-13T00:00:00.000Z"),
+  });
+  await assert.rejects(() => retention.runScope(7, "companion"), /does not equal deterministic event replay/);
 });

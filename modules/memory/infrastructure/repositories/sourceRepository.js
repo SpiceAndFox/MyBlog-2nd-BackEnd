@@ -50,6 +50,11 @@ async function getBoundary(userId, presetId, { client } = {}) {
   const { rows } = await executor(client).query(`SELECT MAX(m.id)::BIGINT AS boundary FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE}`, [scope.userId, scope.presetId]);
   return rows[0]?.boundary === null || rows[0]?.boundary === undefined ? 0 : Number(rows[0].boundary);
 }
+async function hasAnyBetween(userId, presetId, lowerExclusive, upperInclusive, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT EXISTS(SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id>$3 AND m.id<=$4) AS present`, [scope.userId, scope.presetId, lowerExclusive, upperInclusive]);
+  return rows[0]?.present === true;
+}
 async function getHistoryMetrics(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const { rows } = await executor(client).query(`SELECT COUNT(*)::BIGINT AS message_count,COALESCE(SUM(char_length(m.content)),0)::BIGINT AS character_count,COALESCE(MAX(m.id),0)::BIGINT AS boundary_message_id FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE}`, [scope.userId, scope.presetId]);
@@ -70,4 +75,4 @@ async function getForceDrainWindow(userId, presetId, cursor, boundary, { newBatc
   }
   return [...overlap, ...batch].map(mapRow);
 }
-module.exports = { countAfter, getObservedWindow, getByIds, listUpTo, getBoundary, getHistoryMetrics, getForceDrainWindow };
+module.exports = { countAfter, getObservedWindow, getByIds, listUpTo, getBoundary, hasAnyBetween, getHistoryMetrics, getForceDrainWindow };

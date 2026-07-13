@@ -40,9 +40,8 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
 
   let purged = 0;
   for (const group of groups.values()) {
-    const mutation = await memoryRuntime.mutateSourceAndRebuild(group.userId, group.presetId, {
-      reason: "trash_purge",
-      mutateSource: (client) => chatModel.purgeTrashedSessionIds(group.userId, group.presetId, group.sessionIds, { client }),
+    const mutation = await memoryRuntime.privacyHardDelete(group.userId, group.presetId, {
+      deleteRawSource: (client) => chatModel.purgeTrashedSessionIds(group.userId, group.presetId, group.sessionIds, { client }),
     });
     purged += Number(mutation.mutationResult) || 0;
   }

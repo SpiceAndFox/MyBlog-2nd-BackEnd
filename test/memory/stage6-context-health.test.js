@@ -46,8 +46,15 @@ function makeData() {
     async listProjectionCheckpoints() { return data.checkpoints; },
   };
   data.repositories = {
-    source: { async listUpTo() { return fixture.sourceMessages; } },
-    state: { async getRawState() { return data.state; } },
+    source: {
+      async listUpTo(_userId, _presetId, upToMessageId) {
+        return upToMessageId == null ? fixture.sourceMessages : fixture.sourceMessages.filter((message) => message.id <= upToMessageId);
+      },
+      async hasAnyBetween(_userId, _presetId, lowerExclusive, upperInclusive) {
+        return fixture.sourceMessages.some((message) => message.id > lowerExclusive && message.id <= upperInclusive);
+      },
+    },
+    state: { async getRawState() { return data.state; }, async getState() { return data.state; } },
     runtime: { async getTargetStatuses() { return TARGETS.map((targetKey) => ({ targetKey, status: "healthy", sourceGeneration: 0 })); } },
     sidecars,
     async withTransaction(work) { return work({}); },
@@ -96,6 +103,19 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   assert.equal(recovered.notifications.length, 6);
   assert.equal(recovered.notifications[0].message, fixture.expected.notificationMessage);
   assert.equal(data.diagnostics.every((row) => row.resolved), true);
+});
+
+test("historical context queries cannot falsely resolve a gap diagnostic outside their source slice", async () => {
+  const data = makeData();
+  data.state.meta.targetCursors.todos = 1;
+  data.diagnostics.push({
+    id: data.nextId++, subjectKind: "target", subjectKey: "todos", diagnosticType: "gap_bridge_omitted",
+    sourceGeneration: 0, targetCursor: 1, omittedUpperMessageId: 3, resolved: false,
+  });
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
+  await assemble({ userId: 1, presetId: "default", upToMessageId: 1, requestId: "historical-query" });
+  assert.equal(data.diagnostics[0].resolved, false);
+  assert.equal(data.notifications.length, 0);
 });
 
 test("health aggregation gives rebuilding precedence and projection health is query-scoped", () => {

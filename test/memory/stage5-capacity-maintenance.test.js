@@ -208,3 +208,26 @@ test("unable_to_compact halts only the target and capacity resume creates a new 
   assert.equal(data.inspect.statuses.get("todos").status, "healthy");
   assert.equal(data.inspect.state.meta.revision, 2);
 });
+
+test("maintenance retry_wait preserves capacity blocking and parent recovery honors notBefore", async () => {
+  const data = store();
+  let maintenanceCalls = 0;
+  const clock = new Date("2026-07-13T00:00:00.000Z");
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, now: () => clock,
+    providerAdapter: { propose: async (envelope) => {
+      if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+      maintenanceCalls += 1;
+      return { status: "error", reason: "llm_call_failed", detail: {} };
+    } },
+  });
+  const first = await pipeline.processIntent(1, "default", intent);
+  const parent = [...data.inspect.tasks.values()].find((task) => task.task_type === "normal");
+  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(first.halted, false);
+  assert.equal(child.status, "retry_wait");
+  assert.equal(data.inspect.statuses.get("todos").status, "capacity_blocked");
+  const recovered = await pipeline.processEnvelope(parent.task_payload);
+  assert.equal(recovered.status, "retry_wait");
+  assert.equal(maintenanceCalls, 1, "parent recovery must not bypass the child backoff boundary");
+});

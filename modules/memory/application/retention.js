@@ -1,6 +1,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const { assertMemoryState } = require("../contracts");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
+const { replayEventGroups } = require("../domain/eventReplay");
 
 function cutoff(now, days) { return new Date(new Date(now).getTime() - days * 86_400_000); }
 
@@ -30,6 +31,11 @@ function createMemoryRetention({ repositories, config, diagnosticProjection, now
       const anchor = eligible.at(-1) || snapshots[0];
       if (!anchor) throw new Error("Active generation has no retention anchor snapshot");
       assertMemoryState(anchor.state);
+      const oldAnchor = snapshots[0];
+      const absorbedGroups = groups.filter((row) => Number(row.result_revision ?? row.resultRevision) > Number(oldAnchor.revision) && Number(row.result_revision ?? row.resultRevision) <= Number(anchor.revision));
+      const absorbedEvents = await repositories.audit.listEventsForGroups(absorbedGroups.map((row) => row.event_group_id ?? row.eventGroupId), { client });
+      const replayedAnchor = replayEventGroups(oldAnchor.state, absorbedGroups, absorbedEvents);
+      if (!isDeepStrictEqual(replayedAnchor, anchor.state)) throw new Error("Retention anchor does not equal deterministic event replay");
       let expected = Number(anchor.revision) + 1;
       for (const group of groups.filter((row) => Number(row.result_revision ?? row.resultRevision) > Number(anchor.revision))) {
         if (Number(group.base_revision ?? group.baseRevision) !== expected - 1 || Number(group.result_revision ?? group.resultRevision) !== expected) throw new Error("Cannot promote a retention anchor across a revision gap");
@@ -41,7 +47,7 @@ function createMemoryRetention({ repositories, config, diagnosticProjection, now
         : { snapshotsDeleted: 0, groupsDeleted: 0 };
       const statuses = await repositories.runtime.getTargetStatuses(userId, presetId, { client });
       const checkpoints = await repositories.sidecars.listProjectionCheckpoints(userId, presetId, { client });
-      const targetsCurrent = statuses.length > 0 && statuses.every((row) => Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration && row.status !== "rebuilding");
+      const targetsCurrent = statuses.length === 6 && statuses.every((row) => Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration && (row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId) == null);
       const projectionsCurrent = checkpoints.length === 2 && checkpoints.every((row) => Number(row.processed_generation ?? row.processedGeneration) === state.meta.sourceGeneration && row.status === "healthy");
       const expiredAudit = await repositories.audit.deleteExpiredAudit(userId, presetId, {
         currentGeneration: state.meta.sourceGeneration,

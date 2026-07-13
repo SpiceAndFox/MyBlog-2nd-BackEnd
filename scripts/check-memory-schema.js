@@ -11,9 +11,9 @@ const REQUIRED_COLUMNS = Object.freeze({
   chat_memory_tasks: ["task_id", "dedupe_key", "user_id", "preset_id", "target_key", "source_generation", "task_type", "parent_task_id", "predecessor_task_id", "resume_epoch", "status", "stage", "cursor_before", "target_message_id", "base_revision", "task_payload", "stage_payload", "attempt", "context_expansion_attempt", "not_before", "last_error_reason", "result_revision", "created_at", "updated_at"],
   chat_memory_target_status: ["user_id", "preset_id", "target_key", "source_generation", "rebuild_boundary_message_id", "status", "consecutive_errors", "last_error_reason", "last_task_id", "next_retry_at", "updated_at"],
   chat_memory_ops_log: ["id", "user_id", "preset_id", "source_generation", "task_id", "tick_id", "target_key", "section", "proposer", "outcome", "attempt", "detail", "created_at"],
-  chat_context_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_generation", "processed_boundary_message_id", "status", "last_error_reason", "updated_at"],
+  chat_context_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_generation", "processed_boundary_message_id", "processed_tombstone_id", "status", "last_error_reason", "updated_at"],
   chat_context_suppression_tombstones: ["id", "user_id", "preset_id", "message_id", "content_hash", "reason", "source_item_id", "source_section", "created_revision", "created_at"],
-  chat_context_quality_diagnostics: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "diagnostic_type", "request_id", "target_cursor", "processed_boundary_message_id", "omitted_upper_message_id", "recent_window_start", "original_gap_count", "original_gap_chars", "retained_boundary", "retained_count", "omitted_count", "omitted_chars", "truncated", "detail", "resolved", "resolved_at", "created_at", "updated_at"],
+  chat_context_quality_diagnostics: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "diagnostic_type", "source_generation", "request_id", "target_cursor", "processed_boundary_message_id", "omitted_upper_message_id", "recent_window_start", "original_gap_count", "original_gap_chars", "retained_boundary", "retained_count", "omitted_count", "omitted_chars", "truncated", "detail", "resolved", "resolved_at", "created_at", "updated_at"],
   chat_memory_diagnostic_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_event_id", "last_error_reason", "updated_at"],
   chat_memory_recovery_notifications: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "notification_type", "boundary_message_id", "source_generation", "delivered", "delivered_at", "created_at"],
 });
@@ -22,7 +22,7 @@ const REQUIRED_INDEXES = Object.freeze([
   "idx_chat_preset_memory_user_preset", "idx_chat_preset_memory_user_updated_at",
   "idx_memory_events_user_preset", "idx_memory_events_target_decision", "idx_memory_events_group_order", "idx_memory_events_group_patch",
   "idx_memory_tasks_recovery", "idx_memory_tasks_scope_dedupe", "idx_memory_ops_log_health", "idx_memory_ops_log_outcome",
-  "idx_suppression_tombstones_lookup", "idx_context_diagnostics_active", "idx_recovery_notifications_pending",
+  "idx_suppression_tombstones_lookup", "idx_context_diagnostics_active", "idx_context_diagnostics_one_active", "idx_recovery_notifications_pending",
 ]);
 
 function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, legacy }) {
@@ -46,6 +46,8 @@ function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, lega
     && userTimeZoneColumn?.data_type === "text" && userTimeZoneColumn?.is_nullable === "NO"
     && columnMap.get("chat_memory_recovery_notifications")?.get("boundary_message_id")?.is_nullable === "NO"
     && String(columnMap.get("chat_memory_recovery_notifications")?.get("boundary_message_id")?.column_default ?? "").includes("0")
+    && columnMap.get("chat_context_projection_checkpoints")?.get("processed_tombstone_id")?.is_nullable === "NO"
+    && String(columnMap.get("chat_context_projection_checkpoints")?.get("processed_tombstone_id")?.column_default ?? "").includes("0")
     && columnMap.get("chat_context_quality_diagnostics")?.get("truncated")?.is_nullable === "NO"
     && columnMap.get("chat_context_quality_diagnostics")?.get("resolved")?.is_nullable === "NO"
     && columnMap.get("chat_context_quality_diagnostics")?.get("detail")?.data_type === "jsonb"

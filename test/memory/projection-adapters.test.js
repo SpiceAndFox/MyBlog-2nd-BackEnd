@@ -18,4 +18,5 @@ test("query-time Recall projection has no derived store commit", async () => {
   const staged = await adapter.rebuild({ sourceGeneration: 2, boundaryMessageId: 20 });
   assert.deepEqual(staged, { sourceGeneration: 2, boundaryMessageId: 20 });
   await adapter.commit({ staged });
+  await adapter.suppress({ tombstones: [] });
 });

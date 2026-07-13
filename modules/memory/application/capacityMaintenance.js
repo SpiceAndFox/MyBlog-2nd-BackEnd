@@ -258,6 +258,10 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     const current = await repositories.runtime.getTask(envelope.task.taskId);
     if (rowValue(current, "stage", "stage") === "compaction_applied") return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
     if (TERMINAL_STATUSES.has(rowValue(current, "status", "status"))) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
+    const notBefore = rowValue(current, "not_before", "notBefore");
+    if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
+      return { status: "retry_wait", taskId: envelope.task.taskId, notBefore };
+    }
     const adapterResult = proposeWithSchemaRetry
       ? await proposeWithSchemaRetry(envelope)
       : await providerAdapter.propose(envelope);

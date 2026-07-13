@@ -1,5 +1,15 @@
 # 已完成开发
 
+## 2026-07-13：State Contract 第三轮审查修复
+
+- 启动与周期任务恢复新增 durable rebuild-boundary reconciliation：即使当前没有 pending task，只要 target 仍处于同 generation rebuilding，就在 scope 串行 lane 中续跑 force drain，并尊重 durable `retry_wait/notBefore`。
+- maintenance Provider 退避期间 child task 保持 `retry_wait/notBefore`，target 保持 `capacity_blocked`；parent/replay 尊重 child 到期边界，不提前重试。
+- retention anchor 提升改为从旧 anchor 确定性 replay 已吸收的 semantic/system-cleanup events，并与候选 snapshot 深比较；仅 status row 完整、同 generation 且无 rebuild boundary 时才清理旧 generation。
+- GapBridge 恢复改为按当前 generation/state 和原省略 source 区间证明；diagnostic 增加 generation 归属、跨 generation 清理及 active partial unique index/原子 upsert。
+- projection checkpoint 增加独立 tombstone 水位；即使 generation/source boundary 不变，也会异步删除命中 tombstone 的 RAG 派生数据，同时保留 query-time suppression correctness gate。
+- session permanent delete 与自动 trash purge 接入 runtime privacy-hard-delete 编排和同一 scope lane，物理清理 RAG 后验证无残留，再从剩余 raw source rebuild。
+- 新增 `005-runtime-correctness.sql`，fresh schema、schema checker、契约说明和回归测试同步覆盖上述行为。
+
 ## 2026-07-13：State Contract 第二轮审查修复
 
 - scene 字段写入超过 `scene.maxRenderedChars` 时只拒绝该字段 patch（`capacity_exceeded`），恢复其 pre-patch 值；同 bundle 其他合法 patch 可提交，cursor 正常推进，不创建 maintenance task。

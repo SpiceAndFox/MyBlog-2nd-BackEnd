@@ -69,6 +69,7 @@ function createChatRagProjectionAdapter() {
   return Object.freeze({
     rebuild: (input) => stageRagProjection(input),
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
+    suppress: ({ userId, presetId, tombstones, client }) => chatRagRepo.deleteSuppressedChunks(userId, presetId, tombstones, { client }),
     async commit({ mode, staged, userId, presetId, client }) {
       if (mode === "rebuild") await chatRagRepo.deleteAllChunks(userId, presetId, { client });
       for (const chunk of staged?.chunks || []) await chatRagRepo.upsertChunk(chunk, { client });
@@ -80,7 +81,7 @@ function createChatRagProjectionAdapter() {
 // Its checkpoint records source coverage; it has no separate derived store to commit.
 function createQueryTimeRecallProjectionAdapter() {
   const stage = async ({ sourceGeneration, boundaryMessageId }) => ({ sourceGeneration, boundaryMessageId });
-  return Object.freeze({ rebuild: stage, append: stage, async commit() {} });
+  return Object.freeze({ rebuild: stage, append: stage, async suppress() {}, async commit() {} });
 }
 
 module.exports = { createChatRagProjectionAdapter, createQueryTimeRecallProjectionAdapter, buildTurns };

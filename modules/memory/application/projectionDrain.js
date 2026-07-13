@@ -8,7 +8,7 @@ function errorReason(error) {
 function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
   if (!["rag", "recall"].includes(projectionKey)) throw new Error("projectionKey must be rag or recall");
   if (!repositories?.state || !repositories?.source || !repositories?.sidecars || !repositories?.withTransaction) throw new Error("Projection drain repositories are required");
-  if (!adapter?.rebuild || !adapter?.append || !adapter?.commit) throw new Error("Projection adapter requires staged rebuild, append, and transactional commit");
+  if (!adapter?.rebuild || !adapter?.append || !adapter?.commit || !adapter?.suppress) throw new Error("Projection adapter requires staged rebuild, append, suppression, and transactional commit");
 
   async function drain(userId, presetId) {
     const state = await repositories.state.getState(userId, presetId);
@@ -18,7 +18,9 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
     const checkpoint = await repositories.sidecars.getProjectionCheckpoint(userId, presetId, projectionKey);
     const processedGeneration = Number(rowValue(checkpoint, "processed_generation", "processedGeneration") ?? -1);
     const processedBoundary = Number(rowValue(checkpoint, "processed_boundary_message_id", "processedBoundaryMessageId") ?? 0);
+    const processedTombstoneId = Number(rowValue(checkpoint, "processed_tombstone_id", "processedTombstoneId") ?? 0);
     const tombstones = await repositories.sidecars.listTombstones(userId, presetId);
+    const latestTombstoneId = Math.max(0, ...tombstones.map((row) => Number(row.id || 0)));
     let mode = "noop";
     let staged = null;
     try {
@@ -33,9 +35,11 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
         const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
         const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
         if (!current || current.meta.sourceGeneration !== capturedGeneration || currentBoundary !== capturedBoundary) return { status: "stale", projectionKey };
+        if (latestTombstoneId > processedTombstoneId) await adapter.suppress({ tombstones, userId, presetId, client });
         if (mode !== "noop") await adapter.commit({ mode, staged, userId, presetId, sourceGeneration: capturedGeneration, boundaryMessageId: capturedBoundary, client });
         await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
           projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary,
+          processedTombstoneId: latestTombstoneId,
           status: "healthy", lastErrorReason: null,
         }, { client });
         return { status: "healthy", projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary };
@@ -49,6 +53,7 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             projectionKey,
             processedGeneration: mode === "rebuild" ? processedGeneration : capturedGeneration,
             processedBoundaryMessageId: processedBoundary,
+            processedTombstoneId,
             status: mode === "rebuild" ? "rebuilding" : "degraded",
             lastErrorReason: errorReason(error),
           }, { client });

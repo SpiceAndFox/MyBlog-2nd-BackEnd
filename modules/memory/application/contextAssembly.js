@@ -11,6 +11,7 @@ function camelDiagnostic(row) {
     subjectKind: row.subjectKind ?? row.subject_kind,
     subjectKey: row.subjectKey ?? row.subject_key,
     diagnosticType: row.diagnosticType ?? row.diagnostic_type,
+    sourceGeneration: row.sourceGeneration ?? (row.source_generation == null ? null : Number(row.source_generation)),
     targetCursor: row.targetCursor ?? (row.target_cursor == null ? null : Number(row.target_cursor)),
     processedBoundaryMessageId: row.processedBoundaryMessageId ?? (row.processed_boundary_message_id == null ? null : Number(row.processed_boundary_message_id)),
     omittedUpperMessageId: row.omittedUpperMessageId ?? (row.omitted_upper_message_id == null ? null : Number(row.omitted_upper_message_id)),
@@ -45,19 +46,25 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     const resolved = [];
     for (const diagnostic of active) {
       if (diagnostic.diagnosticType !== "gap_bridge_omitted" || diagnostic.subjectKind !== "target" || !TARGET_KEYS.includes(diagnostic.subjectKey)) continue;
-      const cursor = statusCursor(state, diagnostic.subjectKey);
-      if (cursor < diagnostic.omittedUpperMessageId && sourceStillContainsOmitted(sourceMessages, diagnostic, cursor)) continue;
-      await repositories.withTransaction(async (client) => {
+      const didResolve = await repositories.withTransaction(async (client) => {
+        const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
+        if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) return false;
+        const cursor = statusCursor(current, diagnostic.subjectKey);
+        const sourceExists = repositories.source.hasAnyBetween
+          ? await repositories.source.hasAnyBetween(userId, presetId, cursor, diagnostic.omittedUpperMessageId, { client })
+          : sourceStillContainsOmitted(sourceMessages, diagnostic, cursor);
+        if (cursor < diagnostic.omittedUpperMessageId && sourceExists) return false;
         const row = await repositories.sidecars.resolveDiagnostic(diagnostic.id, { client });
-        if (!row) return;
+        if (!row) return false;
         await repositories.sidecars.createRecoveryNotification(userId, presetId, {
           subjectKind: diagnostic.subjectKind,
           subjectKey: diagnostic.subjectKey,
           boundaryMessageId: diagnostic.omittedUpperMessageId,
-          sourceGeneration: state.meta.sourceGeneration,
+          sourceGeneration: current.meta.sourceGeneration,
         }, { client });
+        return true;
       });
-      resolved.push(diagnostic.id);
+      if (didResolve) resolved.push(diagnostic.id);
     }
     return resolved;
   }
@@ -77,7 +84,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       }
       const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, {
         subjectKind: "projection", subjectKey: projection.projectionKey, diagnosticType: "projection_lag", requestId,
-        processedBoundaryMessageId: projection.processedBoundary, recentWindowStart: recentWindowStartMessageId, truncated: false,
+        processedBoundaryMessageId: projection.processedBoundary, recentWindowStart: recentWindowStartMessageId, sourceGeneration: state.meta.sourceGeneration, truncated: false,
       }, { client }));
       const normalized = camelDiagnostic(persisted);
       if (existing) active.splice(active.indexOf(existing), 1);
@@ -119,7 +126,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     const stateDiagnosticTypes = new Set(["state_missing", "state_read_failed", "state_schema_invalid", "version_unsupported"]);
     if (!state && debug.memorySkipReason && stateDiagnosticTypes.has(debug.memorySkipReason)) {
       const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, {
-        subjectKind: "system", subjectKey: "memory_state", diagnosticType: debug.memorySkipReason, requestId,
+        subjectKind: "system", subjectKey: "memory_state", diagnosticType: debug.memorySkipReason, requestId, sourceGeneration: null,
       }, { client }));
       const normalized = camelDiagnostic(persisted);
       activeDiagnostics = activeDiagnostics.filter((row) => !(row.subjectKind === normalized.subjectKind && row.subjectKey === normalized.subjectKey && row.diagnosticType === normalized.diagnosticType));
@@ -150,7 +157,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     if (recent.needsMemory && state) {
       gapBridge = buildGapBridgeCoverage({ messages: sourceMessages, state, recentWindowStartMessageId, maxRawChars: config.gapBridge.maxRawChars, retainedMessages: config.gapBridge.retainedMessages });
       for (const diagnostic of gapBridge.diagnostics) {
-        const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, { ...diagnostic, requestId }, { client }));
+        const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, { ...diagnostic, requestId, sourceGeneration: state.meta.sourceGeneration }, { client }));
         const normalized = camelDiagnostic(persisted);
         activeDiagnostics = activeDiagnostics.filter((row) => !(row.subjectKind === normalized.subjectKind && row.subjectKey === normalized.subjectKey && row.diagnosticType === normalized.diagnosticType));
         activeDiagnostics.push(normalized);

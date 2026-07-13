@@ -80,7 +80,8 @@ CREATE INDEX IF NOT EXISTS idx_memory_ops_log_outcome ON chat_memory_ops_log(use
 
 CREATE TABLE IF NOT EXISTS chat_context_projection_checkpoints (
   user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, projection_key TEXT NOT NULL,
-  processed_generation BIGINT NOT NULL, processed_boundary_message_id BIGINT, status TEXT NOT NULL,
+  processed_generation BIGINT NOT NULL, processed_boundary_message_id BIGINT,
+  processed_tombstone_id BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL,
   last_error_reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (user_id, preset_id, projection_key)
 );
@@ -95,7 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_suppression_tombstones_lookup ON chat_context_sup
 
 CREATE TABLE IF NOT EXISTS chat_context_quality_diagnostics (
   id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, subject_kind TEXT NOT NULL,
-  subject_key TEXT NOT NULL, diagnostic_type TEXT NOT NULL, request_id TEXT, target_cursor BIGINT,
+  subject_key TEXT NOT NULL, diagnostic_type TEXT NOT NULL, source_generation BIGINT, request_id TEXT, target_cursor BIGINT,
   processed_boundary_message_id BIGINT, omitted_upper_message_id BIGINT, recent_window_start BIGINT,
   original_gap_count INTEGER, original_gap_chars INTEGER, retained_boundary BIGINT, retained_count INTEGER,
   omitted_count INTEGER, omitted_chars INTEGER, truncated BOOLEAN NOT NULL DEFAULT FALSE,
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS chat_context_quality_diagnostics (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_context_diagnostics_active ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, resolved, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_diagnostics_one_active ON chat_context_quality_diagnostics(user_id,preset_id,subject_kind,subject_key,diagnostic_type) WHERE resolved=FALSE;
 
 CREATE TABLE IF NOT EXISTS chat_memory_recovery_notifications (
   id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, subject_kind TEXT NOT NULL,

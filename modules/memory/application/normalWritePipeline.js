@@ -139,9 +139,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         status: halted ? "failed" : "retry_wait", stage: "provider_error", attempt,
         not_before: retryAt, last_error_reason: adapterResult.reason,
       }, { client });
+      const targetStatus = halted ? "halted" : envelope.task.mode === "maintenance" ? "capacity_blocked" : "retry_wait";
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
         targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration,
-        status: halted ? "halted" : "retry_wait", consecutiveErrors,
+        status: targetStatus, consecutiveErrors,
         lastErrorReason: adapterResult.reason, lastTaskId: envelope.task.taskId, nextRetryAt: retryAt,
       }, { client });
       await appendOps(envelope, adapterResult.reason, attempt, adapterResult.detail, client);

@@ -50,6 +50,11 @@ async function listRevisionGroups(userId, presetId, sourceGeneration, afterRevis
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND result_revision>$4 ORDER BY result_revision`, [scope.userId, scope.presetId, sourceGeneration, afterRevision]);
   return rows;
 }
+async function listEventsForGroups(eventGroupIds, { client } = {}) {
+  if (!Array.isArray(eventGroupIds) || !eventGroupIds.length) return [];
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_events WHERE event_group_id=ANY($1::UUID[]) ORDER BY event_group_id,event_index`, [eventGroupIds]);
+  return rows;
+}
 async function promoteAnchor(userId, presetId, sourceGeneration, revision, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const db = executor(client);
@@ -79,4 +84,4 @@ async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBe
   if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
   return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, promoteAnchor, deleteExpiredAudit };
+module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit };

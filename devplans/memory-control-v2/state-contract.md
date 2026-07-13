@@ -823,7 +823,7 @@ Recovery 字段归属固定为：
 | retry attempt / notBefore | durable task |
 | 完整错误历史 | ops log |
 
-每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting` 阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。容量/compaction/replay 导致的 halted 在 resume 时变为 `capacity_blocked`；`output_schema_invalid` 或 Provider 重试/连续失败达到阈值导致的 halted，在根因排除后仍保持 `halted` 并创建新的 normal task。所有分支都只有恢复 task 成功、cursor 推进并提交 snapshot 后才恢复 `healthy`，旧 task 保留审计。恢复算法见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5；用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
+每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting`/退避等待阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。maintenance child 因 Provider 可重试错误进入 `retry_wait` 时，child task 的 `not_before` 仍是细粒度重试 authority，但 target 必须保持 `capacity_blocked`，不能退化为普通 `retry_wait`；parent/replay 在 child 到期并成功前不得继续。容量/compaction/replay 导致的 halted 在 resume 时变为 `capacity_blocked`；`output_schema_invalid` 或 Provider 重试/连续失败达到阈值导致的 halted，在根因排除后仍保持 `halted` 并创建新的 normal task。所有分支都只有恢复 task 成功、cursor 推进并提交 snapshot 后才恢复 `healthy`，旧 task 保留审计。恢复算法见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5；用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
 
 `source_generation` 必须等于该 row 所属 state 的当前 generation。Source rebuild 开始时，六个 target 在 raw-source mutation 同一事务进入 `rebuilding`，保存同一个 captured `rebuild_boundary_message_id` 并清除旧 task/error 状态；任一 target 未 force-drain 到该边界前不得恢复 `healthy`。因此“Memory dirty”是由当前 generation 下仍存在 `rebuilding` target 确定性派生的运行状态，不再增加第二个全局 dirty flag。
 
@@ -886,6 +886,7 @@ CREATE TABLE chat_context_projection_checkpoints (
   projection_key               TEXT NOT NULL,  -- rag | recall
   processed_generation         BIGINT NOT NULL,
   processed_boundary_message_id BIGINT,
+  processed_tombstone_id       BIGINT NOT NULL DEFAULT 0,
   status                       TEXT NOT NULL,  -- healthy | degraded | rebuilding
   last_error_reason            TEXT,
   updated_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -893,7 +894,7 @@ CREATE TABLE chat_context_projection_checkpoints (
 );
 ```
 
-`processed_generation` 必须与 `memory_state.meta.sourceGeneration` 比较。完整 drain、generation 重校与 checkpoint 推进见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)。
+`processed_generation` 必须与 `memory_state.meta.sourceGeneration` 比较。`processed_tombstone_id` 独立记录该 projection 已物理消费的 suppression tombstone 水位：即使 generation 与 raw-source boundary 均未变化，只要存在更大的 tombstone id，worker 仍必须执行派生数据失效/删除并在同一事务推进该水位。查询末端 tombstone gate 始终是 correctness 保证，物理清理只用于收敛残留。完整 drain、generation 重校与 checkpoint 推进见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)。
 
 ### 9.8 Context-suppression tombstone
 
@@ -932,6 +933,7 @@ CREATE TABLE chat_context_quality_diagnostics (
   subject_kind    TEXT NOT NULL,           -- target | projection | system
   subject_key     TEXT NOT NULL,           -- targetKey、projectionKey，或 system 诊断键
   diagnostic_type TEXT NOT NULL,           -- gap_bridge_omitted | projection_lag | scene_capacity_exceeded | state_* | ...
+  source_generation BIGINT,
   request_id      TEXT,
   target_cursor   BIGINT,                  -- target cursor/boundary（gap_bridge_omitted、scene_capacity_exceeded 使用）
   processed_boundary_message_id BIGINT,    -- projection 的 processedBoundary（仅 projection_lag 使用）
@@ -953,16 +955,21 @@ CREATE TABLE chat_context_quality_diagnostics (
 
 CREATE INDEX idx_context_diagnostics_active
   ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, resolved, created_at DESC);
+
+CREATE UNIQUE INDEX idx_context_diagnostics_one_active
+  ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, diagnostic_type)
+  WHERE resolved = FALSE;
 ```
 
 字段说明：
 
 - `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted、scene capacity 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag；`system + memory_state` 用于无法归属具体 target/projection 的 authority-state 诊断。
+- `source_generation`：记录创建/最近更新该诊断时的 source generation。可在 state 尚不存在时为 `NULL`；generation 初始化后，旧的非空 generation active 诊断必须直接 resolve，且不得为这种失效诊断创建“已恢复”通知。
 - `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
 - `omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`target_cursor` 还被 `scene_capacity_exceeded` 用来记录最近处理 event group 的 `cursor_after`。`processed_boundary_message_id` 仅用于 `projection_lag`。GapBridge/projection 诊断保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
 - `diagnostic_type = scene_capacity_exceeded` 表示最近有一个或多个 scene 字段 patch 因长度预算被拒绝；`detail.rejectedPaths` 保存仍待成功写入的字段，`detail.sourceEventGroupId/sourceGeneration/sourceRevision` 保存最近来源。它由[异常诊断投影](algorithms/diagnostic-projection.md)从已提交 event 派生，不由 Reducer 或 capacity maintenance 事务直接写入。
 
-诊断记录保持 active（`resolved=FALSE`），直到满足对应类型的明确 resolved 条件：GapBridge omitted 由 cursor/source coverage 证明缺口已消失；projection lag 由本次 required boundary 已覆盖证明；`scene_capacity_exceeded` 仅在 `detail.rejectedPaths` 中每个字段都出现后续 accepted scene patch 后恢复；authority-state 诊断仅在合法 state 恢复后清除。不能只因请求结束而清除。
+同一 `(user_id, preset_id, subject_kind, subject_key, diagnostic_type)` 最多存在一条 active 记录，写入必须使用数据库唯一约束支持的原子 upsert。诊断记录保持 active（`resolved=FALSE`），直到满足对应类型的明确 resolved 条件：GapBridge omitted 由 cursor 覆盖其省略上界，或在锁定当前 generation/state 后查询原省略 source 区间为空来证明缺口已消失；不得仅因一次历史 `upToMessageId` 查询返回空而清除。projection lag 由本次 required boundary 已覆盖证明；`scene_capacity_exceeded` 仅在 `detail.rejectedPaths` 中每个字段都出现后续 accepted scene patch 后恢复；authority-state 诊断仅在合法 state 恢复后清除。不能只因请求结束而清除。
 
 异常投影拥有独立持久化 checkpoint：
 

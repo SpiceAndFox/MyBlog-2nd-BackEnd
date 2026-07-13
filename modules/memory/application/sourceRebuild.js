@@ -5,7 +5,7 @@ const { isDeepStrictEqual } = require("node:util");
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
-function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work() } = {}) {
+function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work(), now = () => new Date() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.source || !repositories.runtime || !repositories.audit || !repositories.sidecars) throw new Error("Source rebuild repositories are required");
   if (!normalWritePipeline?.createTask || !normalWritePipeline?.processEnvelope) throw new Error("Source rebuild requires the normal write pipeline");
 
@@ -32,6 +32,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         }, { client });
       }
       if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, sourceGeneration, { client });
+      if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, sourceGeneration, { client });
       return { sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, mutationResult };
     });
   }
@@ -54,6 +55,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: next.meta.sourceGeneration, rebuildBoundaryMessageId: boundary, status: "rebuilding", consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: null, nextRetryAt: null }, { client });
       }
       if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, next.meta.sourceGeneration, { client });
+      if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, next.meta.sourceGeneration, { client });
       return { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, recoveredFromRaw: true };
     });
   }
@@ -141,6 +143,12 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
           && Number(rowValue(task, "target_message_id", "targetMessageId")) === targetMessageId
         ));
         const latestStatus = rowValue(latest, "status", "status");
+        const notBefore = rowValue(latest, "not_before", "notBefore");
+        if (latestStatus === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
+          const result = { status: "retry_wait", taskId: rowValue(latest, "task_id", "taskId"), notBefore };
+          results.push(result);
+          return { status: "incomplete", sourceGeneration, targetKey, result, results };
+        }
         let envelope;
         if (latest && !TERMINAL_TASK_STATUSES.has(latestStatus)) {
           envelope = rowValue(latest, "task_payload", "taskPayload");

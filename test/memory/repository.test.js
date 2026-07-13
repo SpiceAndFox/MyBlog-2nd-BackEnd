@@ -59,6 +59,9 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
     if (column.table_name === "chat_memory_diagnostic_projection_checkpoints" && column.column_name === "processed_event_id") {
       column.is_nullable = "NO"; column.column_default = "0";
     }
+    if (column.table_name === "chat_context_projection_checkpoints" && column.column_name === "processed_tombstone_id") {
+      column.is_nullable = "NO"; column.column_default = "0";
+    }
     if (column.table_name === "chat_context_quality_diagnostics" && ["truncated", "resolved"].includes(column.column_name)) column.is_nullable = "NO";
   }
   assert.equal(evaluateInspection(base).clean, true);
