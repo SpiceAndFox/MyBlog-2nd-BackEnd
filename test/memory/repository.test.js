@@ -60,7 +60,7 @@ test("target recovery status and notification commit in one transaction", async 
   } finally { db.getClient = originalGetClient; }
 });
 
-test("stage 8 legacy purge physically clears v1 values and checkpoints and verifies no residue", async () => {
+test("stage 8 legacy derived clear removes only v1 values/checkpoints and preserves raw messages", async () => {
   const statements = [];
   let countQuery = 0;
   const client = {
@@ -75,11 +75,12 @@ test("stage 8 legacy purge physically clears v1 values and checkpoints and verif
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
-  const purged = await migrationRepository.purgeLegacyMemory({ client });
-  const residue = await migrationRepository.getLegacyResidue({ client });
-  assert.deepEqual(purged, { memoryRows: 2, checkpointRows: 3 });
-  assert.deepEqual(residue, { memoryRows: 0, checkpointRows: 0 });
+  const cleared = await migrationRepository.clearLegacyDerivedMemory({ client });
+  const residue = await migrationRepository.getLegacyDerivedMemoryResidue({ client });
+  assert.deepEqual(cleared, { derivedMemoryRows: 2, checkpointRows: 3 });
+  assert.deepEqual(residue, { derivedMemoryRows: 0, checkpointRows: 0 });
   assert.equal(countQuery, 2);
   assert.equal(statements.some((sql) => sql.includes("rolling_summary=''")), true);
   assert.equal(statements.some((sql) => sql.startsWith("DELETE FROM chat_preset_memory_checkpoints")), true);
+  assert.equal(statements.some((sql) => /(?:DELETE FROM|UPDATE) chat_messages\b/i.test(sql)), false);
 });

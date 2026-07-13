@@ -35,7 +35,7 @@
 - 实现 Memory Provider Adapter、mock Adapter 与 OpenAI-compatible native structured-output transport，区分调用失败、安全拒绝、最大输出截断和 schema invalid。
 - 实现 durable normal task 的稳定 dedupe key，以及 state/event group/events/snapshot/cursor/task/target status/tombstone 的单事务成功提交；重复 phase delivery 返回既有 revision。
 - 增加阶段 3 pipeline fixture，以及 Observer/envelope、prompt、Adapter、原子提交和重复 delivery 测试。
-- 本机 `deepseek-v4-flash` smoke 已尝试；当前端点明确返回 `This response_format type is unavailable now`，不支持设计要求的原生 `json_schema`，因此未降级为裸 JSON 解析，真实 API golden 延后到可用 structured-output 端点。
+- 本机 `deepseek-v4-flash` smoke 已尝试；当时使用的正式端点明确返回 `This response_format type is unavailable now`，不支持原生 `json_schema`，因此未降级为裸 JSON 解析。该历史限制后续已由官方 Beta `deepseek-strict-tools` adapter 解决，最新结果见本文“Memory Provider adapter 与配置解耦”。
 
 ## 2026-07-13：Memory Control v2 阶段 4
 
@@ -102,6 +102,7 @@
 
 ## 尚未执行
 
-- roadmap 阶段 8 尚未完成。已实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、v1 数据物理清除、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门；测试覆盖重复 rehearsal 及 raw boundary、target health、authority snapshot、event chain、projection checkpoint 的失败门控。
+- roadmap 阶段 8 尚未完成。已实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门；测试覆盖重复 rehearsal 及 raw boundary、target health、authority snapshot、event chain、projection checkpoint 的失败门控。
+- v1 退役已与 v2 启服解耦：`clearLegacyDerivedMemory` 在确认 v1 runtime 停用并二次确认后，可独立、幂等清空 rolling/core Memory 及 v1 checkpoint；repository SQL 回归测试明确禁止对 `chat_messages` 执行更新或删除。提前清理表示放弃回退 v1，但不会自动开放 v2 启服门。
 - 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-v4-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
-- 尚需提供生产历史数据库副本与真实 RAG/Recall projection adapter 的 migration 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。通过前不执行正式删除/切换或 v1 worker/注入代码移除。
+- 尚需提供生产历史数据库副本与真实 RAG/Recall projection adapter 的 migration 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。v2 生产切换手册暂存于 [Memory v2 生产切换执行手册（Deferred）](deferred/memory-v2-production-migration-runbook.md)；通过前不启用 v2，也不移除仍需核对的 v1 遗留代码。

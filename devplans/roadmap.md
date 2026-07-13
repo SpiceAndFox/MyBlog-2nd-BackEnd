@@ -52,7 +52,7 @@ modules/memory/
 5. **容量维护**：实现 section budget、recentEpisodes 滚出、deferred、compaction child task、pending-item 保护、原 proposal replay 与容量类 resume。
 6. **上下文与健康**：接入单一 memory segment、跨 session recent window、GapBridge、target/diagnostic 健康聚合、持续告警与 recovery notification；保持 v1 注入关闭开关可控。
 7. **重建与抑制**：实现 source mutation/generation、force-drain（中间批次保持 rebuilding）、RAG/Recall checkpoints、correction/forget tombstone、查询末端过滤、retention 与 privacy hard delete。
-8. **迁移与切换**：用生产历史副本做全量 rebuild 演练、容量/耗时测量和端到端 smoke；停服后删除旧 Memory、正式 rebuild/校验，再启用 v2 并移除 v1 worker/注入路径。
+8. **迁移与切换**：确认 v1 worker/注入停用后清除 `rolling_summary`、`core_memory` 与 v1 checkpoint，始终保留 `chat_messages` 原文；用生产历史副本做全量 rebuild 演练、容量/耗时测量和端到端 smoke；正式环境停服后冻结 raw boundary，完成 v2 rebuild/校验再启服，并移除 v1 遗留代码。
 
 ## 完成标准
 

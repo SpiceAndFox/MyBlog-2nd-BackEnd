@@ -357,6 +357,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 ### 3.10 迁移与恢复
 
 - 旧 `rolling_summary` / `core_memory` 文本不会直接转换为 v2 权威状态。
+- v1 派生数据清理只允许清空 `chat_preset_memory` 的 rolling/core 及相关运行字段并删除 v1 checkpoint；SQL 与 repository 测试必须证明不对 `chat_messages` 执行 `DELETE`/`UPDATE`，也不删除 v2 state/history/task。该清理在 v1 runtime 停用并双确认后可独立、幂等执行，不以 v2 rehearsal 或 cutover 完成为前提。
 - 首次初始化 generation 0 state 时写 revision 0 完整 snapshot；revision 跨 generation 单调递增，每个成功 revision N 恰好一份带 generation 的同号完整 post-state snapshot，不额外写 pre-state snapshot。
 - 一个 task bundle 含多个 accepted patch 时只增加一次 revision、写一个 event group 和一份 snapshot；add event 的 `result_item_id` 非 null，accepted event 含完整 normalized operation。
 - cursor-only revision（noop、普通 rejected、二次 unable 后推进）也写完整 snapshot；纯 error/retry/halt/deferred 且 state/cursor 未变化时不增加 revision、不写 snapshot。
@@ -377,7 +378,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - rebuild 从当前有效 raw messages 重放，`forceDrainTo(capturedBoundaryMessageId)` 忽略 lagThreshold 并只使用既有 durable normal tasks；六个 cursor 与 state/snapshot/events 校验完成前保持 rebuilding，未追平不得宣告 healthy。
 - rebuild 期间再次改变 source 时，旧 rebuild 结果不得推进新 generation 的 state、cursor 或 status；worker 转而处理最新 generation/boundary。
 - RAG 与 Recall checkpoint 独立断言 `processedGeneration + processedBoundaryMessageId`；Memory targets 追平不代表 projection 追平。告警条件只基于 `requiredBoundary`（= `recentWindowStartMessageId - 1`）：`processedGeneration != sourceGeneration` → rebuilding；`processedBoundary < requiredBoundary` → degraded；`processedBoundary >= requiredBoundary` 且 generation 一致 → healthy（落后范围在 recent window 内不告警）。projection 只部分覆盖 requiredBoundary 时仍注入已处理部分并标记不完整，不因部分落后完全跳过。
-- 一次性迁移 smoke 按“停服 → 更新 → 删除旧 Memory → raw rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
+- 一次性迁移 smoke 按“停服并冻结 raw boundary → 更新 → 确认 v1 派生数据已清除 → 从保留的 raw messages rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
+- rehearsal 必须可重复执行，不修改 v1 派生数据；如果 v1 已经通过独立清理退役，rehearsal 既不恢复也不依赖它。rehearsal 不返回可启服状态。每次报告至少记录 scope 数、每 scope 的 raw message 数、Unicode code point 字符数、captured boundary、总耗时、scope 耗时，以及九个正式 section 的 itemCount/textChars；scene 的 itemCount 表示是否存在任一已填字段，textChars 为全部已填 scene value 的 code point 总数。
+- cutover 必须要求显式停服确认；若 v1 派生数据尚有 residue，还必须显式确认并执行独立清理。v1 已提前清除时重复清理应幂等。后续 rebuild/校验失败必须返回 `canStartService=false`，不得因 v1 已退役而放宽启服门。
+- 迁移最终校验逐 scope 覆盖：raw boundary 未变化、六个 target 均为同 generation 的 healthy 且 cursor 追平、authority state 与当前 revision snapshot 完全一致、generation 内 event/snapshot revision chain 连续并到达 authority revision、RAG/Recall checkpoint 均为同 generation 且追平 captured boundary。任一失败都必须返回失败报告并保持 `canStartService=false`。
 - context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
 - privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics（§9.9）、recovery notifications（§9.10）、RAG/Recall 与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
 

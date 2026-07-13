@@ -6,7 +6,7 @@
 
 ## 1. 权威状态与存储落点
 
-PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory authority，保存当前完整 memory state，由 Reducer 原子写回。旧 `rolling_summary` 和 `core_memory` 不转换为新系统 authority，也不与新 Memory 同时注入。最终迁移时停止旧 worker/注入并物理删除旧 Memory 数据；新系统从 raw messages 重建。
+PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory authority，保存当前完整 memory state，由 Reducer 原子写回。旧 `rolling_summary`、`core_memory` 和 v1 checkpoint 只是派生数据，不转换为新系统 authority，也不与新 Memory 同时注入；v1 runtime 停用并显式确认后可以独立清除。`chat_messages` 中的 User/Assistant 原文是 rebuild authority，任何 Memory 退役、演练或切换操作都不得修改或删除；raw source 只有在独立的用户隐私删除/消息管理操作明确授权时才可变化。
 
 user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。sessionId 只保留在消息中，不复制到 evidence、event 或 Recall provenance；这些结构通过 messageId / source messageIds 追溯来源。
 
@@ -990,7 +990,7 @@ Snapshot/event/task/ops log 的 anchor 提升、连续 replay 链和可清理条
 
 Proposer 的 LLM 调用必须经由 Memory 专用的归一化 Provider Adapter 层，而非复用裸文本解析路径或在 tick orchestrator 里直接调 provider SDK。配置以显式 adapter ID 选择协议实现；Adapter 必须使用 provider 原生 JSON schema、tool 或 function structured-output 能力，并在返回后再做本地 schema 校验。未知 adapter 在配置加载时拒绝；已知 adapter 对具体 Provider/model 的真实能力由完整 schema preflight 验证，不能由布尔环境变量自行宣称。Adapter 把不同 provider 的响应与错误映射为统一结果，使上层无需关心 `finish_reason` 取值差异。
 
-DeepSeek 首版使用 `deepseek-strict-tools`：端点必须为官方 `/beta` strict tool calling，指定 `strict=true` 并强制调用唯一输出 tool；schema compiler 将业务 schema 转换为 Provider 支持的子集，未由 Provider 强制的长度/数组约束仍由本地完整契约校验。高频 Memory 调用通过独立 Provider 配置显式发送 `thinking.type=disabled`；不得继承主聊天的 thinking 设置。OpenAI-compatible 原生 JSON Schema 端点使用独立的 `openai-json-schema` adapter。
+DeepSeek 首版使用 `deepseek-strict-tools`：端点必须为官方 `/beta` strict tool calling，指定 `strict=true` 并强制调用唯一输出 tool；schema compiler 将业务 schema 转换为 Provider 支持的子集。DeepSeek 传输 schema 中，`const` 转换为带显式 primitive `type` 的单值 `enum`，原本只有 `enum` 的节点也必须补出同质 primitive `type`；混合类型 enum 不得猜测转换。`anyOf` 的每个直接分支必须有 `type` 或 `$ref`，由可选 object 展开或业务 union 产生的纯嵌套 `anyOf` 必须展平。上述规则只约束 Provider 传输方言，不改变 §5.5 的业务 schema；未由 Provider 强制的长度、数组等约束仍由本地完整契约校验。高频 Memory 调用通过独立 Provider 配置显式发送 `thinking.type=disabled`；不得继承主聊天的 thinking 设置。OpenAI-compatible 原生 JSON Schema 端点使用独立的 `openai-json-schema` adapter。
 
 Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。Adapter 输出：
 

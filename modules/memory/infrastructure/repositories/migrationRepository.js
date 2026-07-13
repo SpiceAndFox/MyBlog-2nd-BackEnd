@@ -11,7 +11,7 @@ async function listSourceScopes({ client } = {}) {
   return rows.map((row) => ({ userId: Number(row.user_id), presetId: row.preset_id }));
 }
 
-async function purgeLegacyMemory({ client } = {}) {
+async function clearLegacyDerivedMemory({ client } = {}) {
   const db = executor(client);
   const checkpoints = await db.query(`DELETE FROM chat_preset_memory_checkpoints`);
   const memory = await db.query(`
@@ -21,18 +21,18 @@ async function purgeLegacyMemory({ client } = {}) {
     WHERE rolling_summary<>'' OR rolling_summary_updated_at IS NOT NULL OR summarized_until_message_id<>0
        OR dirty_since_message_id IS NOT NULL OR rebuild_required=TRUE OR core_memory<>'{}'::jsonb
   `);
-  return { memoryRows: memory.rowCount || 0, checkpointRows: checkpoints.rowCount || 0 };
+  return { derivedMemoryRows: memory.rowCount || 0, checkpointRows: checkpoints.rowCount || 0 };
 }
 
-async function getLegacyResidue({ client } = {}) {
+async function getLegacyDerivedMemoryResidue({ client } = {}) {
   const db = executor(client);
-  const { rows: memoryRows } = await db.query(`
+  const { rows: derivedMemoryRows } = await db.query(`
     SELECT COUNT(*)::BIGINT AS count FROM chat_preset_memory
     WHERE rolling_summary<>'' OR rolling_summary_updated_at IS NOT NULL OR summarized_until_message_id<>0
        OR dirty_since_message_id IS NOT NULL OR rebuild_required=TRUE OR core_memory<>'{}'::jsonb
   `);
   const { rows: checkpointRows } = await db.query(`SELECT COUNT(*)::BIGINT AS count FROM chat_preset_memory_checkpoints`);
-  return { memoryRows: Number(memoryRows[0].count), checkpointRows: Number(checkpointRows[0].count) };
+  return { derivedMemoryRows: Number(derivedMemoryRows[0].count), checkpointRows: Number(checkpointRows[0].count) };
 }
 
-module.exports = { listSourceScopes, purgeLegacyMemory, getLegacyResidue };
+module.exports = { listSourceScopes, clearLegacyDerivedMemory, getLegacyDerivedMemoryResidue };

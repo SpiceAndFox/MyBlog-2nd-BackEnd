@@ -49,7 +49,8 @@ function createMemoryMigration({
   now = () => new Date(),
   monotonicNow = () => Date.now(),
 } = {}) {
-  if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars || !repositories?.migration) {
+  if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
+    || !repositories?.migration?.listSourceScopes || !repositories.migration.clearLegacyDerivedMemory || !repositories.migration.getLegacyDerivedMemoryResidue) {
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
@@ -132,26 +133,34 @@ function createMemoryMigration({
     return { ...scope, ...history, ...verified, durationMs: Math.max(0, monotonicNow() - started) };
   }
 
-  async function run({ mode = "rehearsal", serviceStopped = false, confirmLegacyDelete = false, scopes } = {}) {
-    if (!["rehearsal", "cutover"].includes(mode)) throw new Error("Migration mode must be rehearsal or cutover");
-    if (mode === "cutover" && (!serviceStopped || !confirmLegacyDelete)) {
-      throw new Error("Cutover requires serviceStopped=true and confirmLegacyDelete=true");
+  async function clearLegacyDerivedMemory({ legacyRuntimeDisabled = false, confirmClear = false } = {}) {
+    if (!legacyRuntimeDisabled || !confirmClear) {
+      throw new Error("Legacy derived Memory clear requires legacyRuntimeDisabled=true and confirmClear=true");
     }
+    const cleared = await repositories.withTransaction((client) => repositories.migration.clearLegacyDerivedMemory({ client }));
+    const residue = await repositories.migration.getLegacyDerivedMemoryResidue();
+    if (residue.derivedMemoryRows !== 0 || residue.checkpointRows !== 0) throw new Error("Legacy derived Memory residue remains after clear");
+    return { status: "completed", ...cleared, residue };
+  }
+
+  async function run({ mode = "rehearsal", serviceStopped = false, confirmLegacyDerivedMemoryClear = false, scopes } = {}) {
+    if (!["rehearsal", "cutover"].includes(mode)) throw new Error("Migration mode must be rehearsal or cutover");
+    if (mode === "cutover" && !serviceStopped) throw new Error("Cutover requires serviceStopped=true");
     const startedAt = now().toISOString();
     const started = monotonicNow();
     const histories = await inventory(scopes);
     if (mode === "cutover") {
-      await repositories.withTransaction((client) => repositories.migration.purgeLegacyMemory({ client }));
+      const residue = await repositories.migration.getLegacyDerivedMemoryResidue();
+      if (residue.derivedMemoryRows !== 0 || residue.checkpointRows !== 0) {
+        if (!confirmLegacyDerivedMemoryClear) throw new Error("Cutover found legacy derived Memory residue and requires confirmLegacyDerivedMemoryClear=true");
+        await clearLegacyDerivedMemory({ legacyRuntimeDisabled: true, confirmClear: true });
+      }
     }
     const results = [];
     try {
       for (const history of histories) {
         const scope = { userId: history.userId, presetId: history.presetId };
         results.push(await rebuildScope(scope, history));
-      }
-      if (mode === "cutover") {
-        const residue = await repositories.migration.getLegacyResidue();
-        if (residue.memoryRows !== 0 || residue.checkpointRows !== 0) throw new Error("Legacy Memory data residue remains after cutover");
       }
       return {
         status: "completed", mode, startedAt, completedAt: now().toISOString(), durationMs: Math.max(0, monotonicNow() - started),
@@ -166,7 +175,7 @@ function createMemoryMigration({
     }
   }
 
-  return Object.freeze({ inventory, verifyScope, rebuildScope, run });
+  return Object.freeze({ inventory, verifyScope, rebuildScope, clearLegacyDerivedMemory, run });
 }
 
 module.exports = { createMemoryMigration };

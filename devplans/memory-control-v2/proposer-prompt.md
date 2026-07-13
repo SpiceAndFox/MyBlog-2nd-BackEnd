@@ -22,7 +22,7 @@ Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 servi
 
 每个专用 Proposer 的输出都必须通过 provider 支持的 schema-constrained structured output 强制（实现可以是 function/tool calling 或 JSON schema response format，由 provider adapter 决定；禁止裸 prompt + `JSON.parse` 作为主路径）。输出 schema 的字段、枚举和必填规则见 [state-contract.md](state-contract.md) §5.5。
 
-Provider adapter 可以针对受限 JSON Schema 方言编译等价的传输 schema，但不得改变业务输出契约；Provider 未强制的约束仍须由本地完整 schema 校验。DeepSeek strict-tools 的 Memory 调用默认关闭 thinking，并强制调用唯一输出 tool。真实 preflight 必须加载本节全部 Proposer schema，不能用简单 `{ok:true}` 代替。
+Provider adapter 可以针对受限 JSON Schema 方言编译等价的传输 schema，但不得改变业务输出契约；Provider 未强制的约束仍须由本地完整 schema 校验。DeepSeek strict-tools 的 Memory 调用默认关闭 thinking，并强制调用唯一输出 tool；其传输 schema 必须为 enum/const 补显式 primitive `type`，并保证 `anyOf` 的直接分支带 `type` 或 `$ref`，详细编译约束见 [state-contract.md](state-contract.md) §10。真实 preflight 必须加载本节全部 Proposer schema，不能用简单 `{ok:true}` 代替。
 
 schema 作者注意：
 
