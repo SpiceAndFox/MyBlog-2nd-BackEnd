@@ -3,9 +3,10 @@ const chatPresetModel = require("@models/chatPresetModel");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { chatConfig, llmConfig, chatRagConfig, memoryV2Config } = require("../config");
+const { chatConfig, llmConfig, chatRagConfig } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
-const { createDefaultMemoryRuntime, markRecoveryNotificationsDelivered } = require("../modules/memory");
+const { markRecoveryNotificationsDelivered } = require("../modules/memory");
+const memoryRuntime = require("../services/chat/memoryRuntime");
 const { requestAssistantGistGeneration } = require("../services/chat/gistPipeline");
 const {
   requestChatTurnIndexing,
@@ -13,10 +14,6 @@ const {
 } = require("../services/chat/rag/indexer");
 const { logger, withRequestContext } = require("../logger");
 
-const memoryRuntime = createDefaultMemoryRuntime({
-  config: memoryV2Config,
-  onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
-});
 const {
   getProviderDefinition,
   isSupportedProvider,
@@ -415,6 +412,7 @@ function attachContextHealth(payload, context, res) {
 }
 
 function kickRagTurnIndexing({ userId, presetId, sessionId, userMessage, assistantMessage, userContent, assistantContent } = {}) {
+  if (memoryRuntime.enabled) return;
   try {
     requestChatTurnIndexing({
       userId,
@@ -438,6 +436,7 @@ function kickRagTurnIndexing({ userId, presetId, sessionId, userMessage, assista
 }
 
 function kickRagDeleteFromMessage({ userId, presetId, fromMessageId } = {}) {
+  if (memoryRuntime.enabled) return;
   try {
     requestDeleteChunksFromMessageId({ userId, presetId, fromMessageId });
   } catch (error) {
@@ -842,17 +841,15 @@ const chatController = {
       const sessionId = parseSessionId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
 
-      const session = await chatModel.trashSession(userId, sessionId);
+      const existing = await chatModel.getSession(userId, sessionId);
+      if (!existing) return res.status(404).json({ error: "Session not found" });
+      const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
+        reason: "session_trashed",
+        mutateSource: (client) => chatModel.trashSession(userId, sessionId, { client }),
+      });
+      const session = mutation.mutationResult;
       if (!session) return res.status(404).json({ error: "Session not found" });
-
-      const presetId = String(session?.preset_id || session?.presetId || "").trim();
-      if (presetId) {
-        try {
-          requestMemoryRebuild({ userId, presetId, reason: "session_trashed" });
-        } catch (error) {
-          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
-        }
-      }
 
       res.status(204).send();
     } catch (error) {
@@ -867,17 +864,15 @@ const chatController = {
       const sessionId = parseSessionId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
 
-      const session = await chatModel.restoreSession(userId, sessionId);
+      const existing = await chatModel.getTrashedSession(userId, sessionId);
+      if (!existing) return res.status(404).json({ error: "Session not found" });
+      const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
+        reason: "session_restored",
+        mutateSource: (client) => chatModel.restoreSession(userId, sessionId, { client }),
+      });
+      const session = mutation.mutationResult;
       if (!session) return res.status(404).json({ error: "Session not found" });
-
-      const presetId = String(session?.preset_id || session?.presetId || "").trim();
-      if (presetId) {
-        try {
-          requestMemoryRebuild({ userId, presetId, reason: "session_restored" });
-        } catch (error) {
-          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
-        }
-      }
 
       res.status(200).json({ session });
     } catch (error) {
@@ -892,17 +887,15 @@ const chatController = {
       const sessionId = parseSessionId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
 
-      const deletedSession = await chatModel.deleteSessionPermanently(userId, sessionId);
+      const existing = await chatModel.getTrashedSession(userId, sessionId);
+      if (!existing) return res.status(404).json({ error: "Session not found" });
+      const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
+        reason: "session_deleted_permanent",
+        mutateSource: (client) => chatModel.deleteSessionPermanently(userId, sessionId, { client }),
+      });
+      const deletedSession = mutation.mutationResult;
       if (!deletedSession) return res.status(404).json({ error: "Session not found" });
-
-      const presetId = String(deletedSession?.preset_id || deletedSession?.presetId || "").trim();
-      if (presetId) {
-        try {
-          requestMemoryRebuild({ userId, presetId, reason: "session_deleted_permanent" });
-        } catch (error) {
-          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
-        }
-      }
 
       res.status(204).send();
     } catch (error) {
@@ -955,13 +948,6 @@ const chatController = {
       if (!message) return res.status(404).json({ error: "Message not found" });
       if (message.role !== "user") return res.status(400).json({ error: "Only user messages can be edited" });
 
-      if (truncate) {
-        await chatModel.deleteMessagesAfter(userId, sessionId, messageId);
-      }
-
-      const updatedUserMessage = await chatModel.updateMessageContent(userId, sessionId, messageId, content);
-      if (!updatedUserMessage) return res.status(404).json({ error: "Message not found" });
-
       let updatedSession = session;
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
@@ -989,10 +975,21 @@ const chatController = {
       if (providerDefinition?.capabilities?.webSearch === false) {
         effectiveSettings.enableWebSearch = false;
       }
+
+      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
+        reason: "message_edited",
+        mutateSource: async (client) => {
+          if (truncate) await chatModel.deleteMessagesAfter(userId, sessionId, messageId, { client });
+          const updated = await chatModel.updateMessageContent(userId, sessionId, messageId, content, { client });
+          if (!updated) throw new Error("Message disappeared during edit");
+          return updated;
+        },
+      });
+      const updatedUserMessage = mutation.mutationResult;
+      kickRagDeleteFromMessage({ userId, presetId, fromMessageId: messageId });
+
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
-
-      requestMemoryRebuild({ userId, presetId, reason: "message_edited" });
 
       if (!regenerate) {
         updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;

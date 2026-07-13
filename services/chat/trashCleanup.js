@@ -1,12 +1,6 @@
 const { logger } = require("../../logger");
-const { memoryV2Config } = require("../../config");
 const chatModel = require("../../models/chatModel");
-const { createDefaultMemoryRuntime } = require("../../modules/memory");
-
-const memoryRuntime = createDefaultMemoryRuntime({
-  config: memoryV2Config,
-  onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
-});
+const memoryRuntime = require("./memoryRuntime");
 
 const REQUIRED_ENV_KEYS = ["CHAT_TRASH_RETENTION_DAYS", "CHAT_TRASH_CLEAN_INTERVAL_MS", "CHAT_TRASH_PURGE_BATCH_SIZE"];
 
@@ -35,22 +29,22 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
   }
 
   const cutoff = computeCutoffDate({ now, retentionDays });
-  const purgeResult = await chatModel.purgeTrashedSessionsBefore(cutoff, { limit: batchSize });
-  const purged = Number(purgeResult?.purged) || 0;
-  const affectedPresets = Array.isArray(purgeResult?.affectedPresets) ? purgeResult.affectedPresets : [];
+  const candidates = await chatModel.listTrashedSessionPurgeCandidates(cutoff, { limit: batchSize });
+  const groups = new Map();
+  for (const candidate of candidates) {
+    const key = `${candidate.userId}:${candidate.presetId}`;
+    const group = groups.get(key) || { userId: candidate.userId, presetId: candidate.presetId, sessionIds: [] };
+    group.sessionIds.push(candidate.id);
+    groups.set(key, group);
+  }
 
-  if (memoryRuntime.enabled && purged > 0 && affectedPresets.length) {
-    const deduped = new Map();
-    for (const item of affectedPresets) {
-      const userId = item?.userId;
-      const presetId = String(item?.presetId || "").trim();
-      if (!userId || !presetId) continue;
-      deduped.set(`${userId}:${presetId}`, { userId, presetId });
-    }
-
-    for (const { userId, presetId } of deduped.values()) {
-      void memoryRuntime.rebuildScope(userId, presetId, { reason: "trash_purge" });
-    }
+  let purged = 0;
+  for (const group of groups.values()) {
+    const mutation = await memoryRuntime.mutateSourceAndRebuild(group.userId, group.presetId, {
+      reason: "trash_purge",
+      mutateSource: (client) => chatModel.purgeTrashedSessionIds(group.userId, group.presetId, group.sessionIds, { client }),
+    });
+    purged += Number(mutation.mutationResult) || 0;
   }
 
   return { purged, cutoff, retentionDays, batchSize };

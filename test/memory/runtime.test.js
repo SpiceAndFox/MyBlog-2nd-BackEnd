@@ -9,6 +9,21 @@ test("disabled v2 runtime never constructs provider or repository dependencies",
   assert.deepEqual(await runtime.rebuildScope(1, "default"), { status: "disabled" });
 });
 
+test("disabled runtime still commits source mutations through the repository transaction", async () => {
+  const client = { transaction: true };
+  const runtime = createMemoryRuntime({
+    config: { enabled: false },
+    repositories: { async withTransaction(work) { return work(client); } },
+  });
+  const result = await runtime.mutateSourceAndRebuild(1, "default", {
+    mutateSource(receivedClient) {
+      assert.equal(receivedClient, client);
+      return { changed: true };
+    },
+  });
+  assert.deepEqual(result, { status: "memory_disabled", mutationResult: { changed: true } });
+});
+
 test("v2 runtime executor serializes one scope without blocking another", async () => {
   const enqueue = createKeyedExecutor();
   const events = [];

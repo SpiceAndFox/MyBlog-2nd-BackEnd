@@ -350,7 +350,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
       messages: [],
       sources: [],
       stats: {
-        reason: "no_summarized_history",
+        reason: "no_retrievable_history",
       },
     };
   }

@@ -37,6 +37,9 @@ module.exports = Object.freeze({
   createMemoryContextAssembly,
   createMemorySourceRebuild,
   createProjectionDrain,
+  createDefaultProjectionDrain(projectionKey, adapter) {
+    return createProjectionDrain({ repositories, projectionKey, adapter });
+  },
   createMemoryRetention,
   createPrivacyHardDelete,
   createMemoryMigration,

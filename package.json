@@ -8,6 +8,7 @@
     "test:memory-v2": "node --test test/memory/*.test.js",
     "migrate:memory-v2": "node scripts/migrate-memory-v2.js",
     "probe:memory-v2-provider": "node --use-env-proxy scripts/probe-memory-v2-provider.js",
+    "check:memory-schema": "node scripts/check-memory-schema.js",
     "start": "node --use-env-proxy app.js",
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
     "regenerate-gists": "node --use-env-proxy regenerateGists.js",

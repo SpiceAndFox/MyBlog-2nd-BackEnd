@@ -93,8 +93,8 @@ function makeRebuildHarness() {
 test("source mutation atomically advances generation, preserves global revision, and enters rebuilding", async () => {
   const harness = makeRebuildHarness();
   const rebuild = createMemorySourceRebuild({ repositories: harness.repositories, normalWritePipeline: harness.normalWritePipeline, config: { targets: {} } });
-  const result = await rebuild.initializeGeneration(7, "companion", { mutateSource() { harness.data.mutationRan = true; } });
-  assert.deepEqual(result, { sourceGeneration: 1, revision: 6, boundaryMessageId: 20 });
+  const result = await rebuild.initializeGeneration(7, "companion", { mutateSource() { harness.data.mutationRan = true; return "mutated"; } });
+  assert.deepEqual(result, { sourceGeneration: 1, revision: 6, boundaryMessageId: 20, mutationResult: "mutated" });
   assert.equal(harness.data.mutationRan, true);
   assert.equal(harness.data.cancelled, true);
   assert.equal(harness.data.checkpointsMarked, true);

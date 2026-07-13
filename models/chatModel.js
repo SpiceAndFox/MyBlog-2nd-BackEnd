@@ -17,6 +17,10 @@ function normalizePresetId(rawPresetId) {
   return normalized || null;
 }
 
+function executor(client) {
+  return client && typeof client.query === "function" ? client : db;
+}
+
 const chatModel = {
   async listSessions(userId) {
     const query = `
@@ -99,25 +103,35 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async trashSession(userId, sessionId) {
+  async trashSession(userId, sessionId, { client } = {}) {
     const query = `
       UPDATE chat_sessions
       SET deleted_at = NOW(), updated_at = NOW()
       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at, deleted_at
     `;
+    const { rows } = await executor(client).query(query, [sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async getTrashedSession(userId, sessionId) {
+    const query = `
+      SELECT id, preset_id, title, settings, created_at, updated_at, deleted_at
+      FROM chat_sessions
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+    `;
     const { rows } = await db.query(query, [sessionId, userId]);
     return rows[0] || null;
   },
 
-  async restoreSession(userId, sessionId) {
+  async restoreSession(userId, sessionId, { client } = {}) {
     const query = `
       UPDATE chat_sessions
       SET deleted_at = NULL, updated_at = NOW()
       WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at, deleted_at
     `;
-    const { rows } = await db.query(query, [sessionId, userId]);
+    const { rows } = await executor(client).query(query, [sessionId, userId]);
     return rows[0] || null;
   },
 
@@ -141,10 +155,11 @@ const chatModel = {
     return { minMessageId: minId, maxMessageId: maxId };
   },
 
-  async deleteSessionPermanently(userId, sessionId) {
-    const client = await db.getClient();
+  async deleteSessionPermanently(userId, sessionId, { client: providedClient } = {}) {
+    const client = providedClient || await db.getClient();
+    const ownsTransaction = !providedClient;
     try {
-      await client.query("BEGIN");
+      if (ownsTransaction) await client.query("BEGIN");
 
       const sessionQuery = `
         SELECT id, preset_id
@@ -155,7 +170,7 @@ const chatModel = {
       const sessionResult = await client.query(sessionQuery, [sessionId, userId]);
       const session = sessionResult.rows[0] || null;
       if (!session) {
-        await client.query("ROLLBACK");
+        if (ownsTransaction) await client.query("ROLLBACK");
         return null;
       }
 
@@ -175,64 +190,54 @@ const chatModel = {
       `;
       const deleteResult = await client.query(deleteQuery, [sessionId, userId]);
       if (deleteResult.rowCount <= 0) {
-        await client.query("ROLLBACK");
+        if (ownsTransaction) await client.query("ROLLBACK");
         return null;
       }
 
-      await client.query("COMMIT");
+      if (ownsTransaction) await client.query("COMMIT");
       return {
         id: session.id,
         preset_id: session.preset_id,
         firstMessageId,
       };
     } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-        // ignore
+      if (ownsTransaction) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // ignore
+        }
       }
       throw error;
     } finally {
-      client.release();
+      if (ownsTransaction) client.release();
     }
   },
 
-  async purgeTrashedSessionsBefore(cutoff, { limit } = {}) {
-    if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
-      throw new Error("Invalid cutoff date");
+  async listTrashedSessionPurgeCandidates(cutoff, { limit } = {}) {
+    if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) throw new Error("Invalid cutoff date");
+    if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) throw new Error("Invalid purge limit");
+    const { rows } = await db.query(`
+      SELECT id, user_id, preset_id
+      FROM chat_sessions
+      WHERE deleted_at IS NOT NULL AND deleted_at < $1
+      ORDER BY deleted_at ASC, id ASC
+      LIMIT $2
+    `, [cutoff, limit]);
+    return rows.map((row) => ({ id: Number(row.id), userId: Number(row.user_id), presetId: String(row.preset_id) }));
+  },
+
+  async purgeTrashedSessionIds(userId, presetId, sessionIds, { client } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    const ids = Array.isArray(sessionIds) ? sessionIds.map(Number) : [];
+    if (!normalizedPresetId || !ids.length || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+      throw new Error("Invalid trashed session purge scope");
     }
-
-    if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) {
-      throw new Error("Invalid purge limit");
-    }
-
-    const query = `
-      WITH candidates AS (
-        SELECT id, user_id, preset_id
-        FROM chat_sessions
-        WHERE deleted_at IS NOT NULL AND deleted_at < $1
-        ORDER BY deleted_at ASC, id ASC
-        LIMIT $2
-      ),
-      deleted AS (
-        DELETE FROM chat_sessions s
-        USING candidates c
-        WHERE s.id = c.id
-        RETURNING s.user_id, s.preset_id
-      )
-      SELECT user_id, preset_id
-      FROM deleted
-    `;
-
-    const { rows } = await db.query(query, [cutoff, limit]);
-    const affectedPresets = rows
-      .map((row) => ({
-        userId: row.user_id,
-        presetId: row.preset_id,
-      }))
-      .filter((item) => item.userId && item.presetId);
-
-    return { purged: affectedPresets.length, affectedPresets };
+    const { rowCount } = await executor(client).query(`
+      DELETE FROM chat_sessions
+      WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NOT NULL AND id = ANY($3::BIGINT[])
+    `, [userId, normalizedPresetId, ids]);
+    return rowCount || 0;
   },
 
   async listMessages(userId, sessionId) {
@@ -411,7 +416,7 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async updateMessageContent(userId, sessionId, messageId, content) {
+  async updateMessageContent(userId, sessionId, messageId, content, { client } = {}) {
     const normalizedContent = String(content || "").trim();
     if (!normalizedContent) throw new Error("Content is required");
 
@@ -421,16 +426,16 @@ const chatModel = {
       WHERE id = $2 AND session_id = $3 AND user_id = $4
       RETURNING id, preset_id, role, content, created_at
     `;
-    const { rows } = await db.query(query, [normalizedContent, messageId, sessionId, userId]);
+    const { rows } = await executor(client).query(query, [normalizedContent, messageId, sessionId, userId]);
     return rows[0] || null;
   },
 
-  async deleteMessagesAfter(userId, sessionId, messageId) {
+  async deleteMessagesAfter(userId, sessionId, messageId, { client } = {}) {
     const query = `
       DELETE FROM chat_messages
       WHERE session_id = $1 AND user_id = $2 AND id > $3
     `;
-    const { rowCount } = await db.query(query, [sessionId, userId, messageId]);
+    const { rowCount } = await executor(client).query(query, [sessionId, userId, messageId]);
     return rowCount || 0;
   },
 };

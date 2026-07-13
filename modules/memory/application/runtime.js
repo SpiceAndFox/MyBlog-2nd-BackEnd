@@ -18,13 +18,20 @@ function createKeyedExecutor() {
   };
 }
 
-function createDisabledRuntime() {
+function createDisabledRuntime(repositories) {
   const disabled = async () => ({ status: "disabled" });
-  return Object.freeze({ enabled: false, processScope: disabled, rebuildScope: disabled, recoverPending: async () => [] });
+  async function mutateSourceAndRebuild(_userId, _presetId, { mutateSource } = {}) {
+    if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
+    const mutationResult = repositories?.withTransaction
+      ? await repositories.withTransaction((client) => mutateSource(client))
+      : await mutateSource(null);
+    return { status: "memory_disabled", mutationResult };
+  }
+  return Object.freeze({ enabled: false, processScope: disabled, rebuildScope: disabled, mutateSourceAndRebuild, drainProjections: disabled, recoverPending: async () => [] });
 }
 
-function createMemoryRuntime({ config, repositories, providerAdapter, onBackgroundError } = {}) {
-  if (!config?.enabled) return createDisabledRuntime();
+function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, onBackgroundError } = {}) {
+  if (!config?.enabled) return createDisabledRuntime(repositories);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
@@ -55,10 +62,26 @@ function createMemoryRuntime({ config, repositories, providerAdapter, onBackgrou
     return promise;
   }
 
+  async function drainProjectionsNow(userId, presetId) {
+    const results = {};
+    for (const projectionKey of ["rag", "recall"]) {
+      const drain = projectionDrains[projectionKey];
+      if (!drain?.drain) continue;
+      results[projectionKey] = await drain.drain(userId, presetId);
+    }
+    return results;
+  }
+
+  function drainProjections(userId, presetId) {
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => drainProjectionsNow(userId, presetId)));
+  }
+
   function processScope(userId, presetId) {
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
       await ensureState(userId, presetId);
-      return pipeline.processScope(userId, presetId);
+      const memory = await pipeline.processScope(userId, presetId);
+      const projections = await drainProjectionsNow(userId, presetId);
+      return { memory, projections };
     }));
   }
 
@@ -67,15 +90,43 @@ function createMemoryRuntime({ config, repositories, providerAdapter, onBackgrou
       await ensureState(userId, presetId);
       const initialized = await sourceRebuild.initializeGeneration(userId, presetId, { reason });
       const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
-      return { ...initialized, ...drained };
+      const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+      return { ...initialized, ...drained, projections };
     }));
+  }
+
+  async function mutateSourceAndRebuild(userId, presetId, { mutateSource, purgeDerived = null, reason = "source_mutation" } = {}) {
+    if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
+    const initialized = await enqueueByKey(`${userId}:${presetId}`, async () => {
+      await ensureState(userId, presetId);
+      return sourceRebuild.initializeGeneration(userId, presetId, { mutateSource, purgeDerived, reason });
+    });
+    runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
+      const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
+      const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+      return { ...drained, projections };
+    }));
+    return { status: "rebuilding", ...initialized };
+  }
+
+  async function recoverPending() {
+    const recovered = await recovery.recoverPending();
+    if (typeof repositories.state.listScopes === "function") {
+      const scopes = await repositories.state.listScopes();
+      for (const scope of scopes) {
+        await enqueueByKey(`${scope.user_id}:${scope.preset_id}`, () => drainProjectionsNow(scope.user_id, scope.preset_id));
+      }
+    }
+    return recovered;
   }
 
   return Object.freeze({
     enabled: true,
     processScope,
     rebuildScope,
-    recoverPending: () => runInBackground(() => recovery.recoverPending()),
+    mutateSourceAndRebuild,
+    drainProjections,
+    recoverPending: () => runInBackground(recoverPending),
   });
 }
 

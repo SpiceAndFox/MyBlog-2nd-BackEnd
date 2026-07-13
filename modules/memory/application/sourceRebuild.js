@@ -12,7 +12,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     return repositories.withTransaction(async (client) => {
       const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
       if (!current) throw new Error("Memory state must be initialized before source mutation");
-      await mutateSource(client);
+      const mutationResult = await mutateSource(client);
       const boundary = await repositories.source.getBoundary(userId, presetId, { client });
       const sourceGeneration = current.meta.sourceGeneration + 1;
       if (purgeDerived) await purgeDerived(client);
@@ -31,7 +31,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         }, { client });
       }
       if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, sourceGeneration, { client });
-      return { sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary };
+      return { sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, mutationResult };
     });
   }
 

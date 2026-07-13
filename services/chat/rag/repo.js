@@ -67,7 +67,7 @@ async function upsertChunk({
   embeddingText,
   metadata,
   embedding,
-} = {}) {
+} = {}, { client } = {}) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
   const normalizedSessionId = normalizePositiveInteger(sessionId, { name: "sessionId" });
@@ -137,8 +137,18 @@ async function upsertChunk({
     chatRagConfig.embeddingDimensions,
   ];
 
-  const { rows } = await db.query(query, params);
+  const { rows } = await (client || db).query(query, params);
   return rows[0] || null;
+}
+
+async function deleteAllChunks(userId, presetId, { client } = {}) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const { rowCount } = await (client || db).query(
+    "DELETE FROM chat_rag_chunks WHERE user_id = $1 AND preset_id = $2",
+    [normalizedUserId, normalizedPresetId]
+  );
+  return rowCount || 0;
 }
 
 async function deleteChunksFromMessageId(userId, presetId, fromMessageId) {
@@ -321,6 +331,7 @@ async function listMessagesAroundChunk({
 
 module.exports = {
   upsertChunk,
+  deleteAllChunks,
   deleteChunksFromMessageId,
   listExistingTurnKeys,
   searchSimilarChunks,
