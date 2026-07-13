@@ -1,12 +1,17 @@
 const { isDeepStrictEqual } = require("node:util");
 const { assertMemoryState } = require("../contracts");
+const { createDiagnosticProjection } = require("./diagnosticProjection");
 
 function cutoff(now, days) { return new Date(new Date(now).getTime() - days * 86_400_000); }
 
-function createMemoryRetention({ repositories, config, now = () => new Date() } = {}) {
+function createMemoryRetention({ repositories, config, diagnosticProjection, now = () => new Date() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.audit || !repositories.runtime || !repositories.sidecars) throw new Error("Retention repositories are required");
   if (!config?.retention) throw new Error("Memory retention config is required");
+  const eventDiagnosticProjection = diagnosticProjection || (repositories.diagnosticProjection
+    ? createDiagnosticProjection({ repositories })
+    : null);
   async function runScope(userId, presetId) {
+    if (eventDiagnosticProjection) await eventDiagnosticProjection.syncScope(userId, presetId);
     return repositories.withTransaction(async (client) => {
       const state = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
       if (!state) return { status: "skipped", reason: "state_missing" };

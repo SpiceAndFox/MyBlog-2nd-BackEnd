@@ -266,7 +266,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - compaction 成功释放容量后，replay 原 proposal（不重新调 Proposer），使用原稳定 `patchId` 写最终 replay group。
 - compaction 返回 `unable_to_compact` → tick orchestrator 截获，maintenance task failed、对应 target halted；不交 Reducer、cursor 不推进、不增加 revision/snapshot。
 - compaction 成功执行 mergeItems 但 replay 预检仍因容量不足 → normal task 进入 `replay_failed`（reason=`capacity_still_exceeded`）→ halt 对应 target，cursor 不推进。
-- 容量超限不产生 patch 级 `rejected: length_budget_exceeded`；首次阻塞为 `deferred`（审计 group），终局失败由 task 级 `compaction_failed` / `replay_failed` 触发 halt，其他 reject reason 仍推进 cursor。
+- 可 compaction item section 的容量超限不产生 patch 级 `rejected: length_budget_exceeded`；首次阻塞为 `deferred`（审计 group），终局失败由 task 级 `compaction_failed` / `replay_failed` 触发 halt。`scene` 是明确例外：超限字段以 `rejected: capacity_exceeded` 落 event，不创建 maintenance task，其他合法 patch 可继续提交，cursor 按普通 rejected 语义推进。
 - 缺少 target section 或包含非 target section 属于 `output_schema_invalid`，本 task 的 target cursor 不推进；其它 target 不受影响。
 - `episodeProposer` 的 `recentEpisodes` 与 `milestones` 共享 `episodes` cursor：一个 section accepted/noop、另一个 `unable_to_decide` 时整个 target 不推进；两者都形成可推进终局后只推进一次。
 - `profileRelationshipProposer` 的 `userProfile`、`assistantProfile`、`relationship` 三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 只推进独立的 `worldFacts` cursor。event 的 `section` 记录实际正式 section，`target_key` 记录共享 cursor 归属。
@@ -322,10 +322,11 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 任一成功 revision 在同事务将对应 target 恢复 healthy、错误计数归零并终结 task。
 - Reducer 永远只收到 `status: "ok"` 且 section 为 `patches`/`noop` 的 output，不处理空输出、Provider error、unable 或伪造输出。
 - 健康聚合表驱动覆盖全部 per-target status：全 healthy → `healthy`；任一 retry_wait/capacity_blocked/halted → `degraded`；任一 rebuilding → `rebuilding`，且 rebuilding 与 degraded 同时存在时整体仍为 `rebuilding`。
-- active GapBridge omitted 或其他非 target context-quality 诊断也使整体进入 `degraded`/`rebuilding`；只有全部 target healthy 且无 active 诊断时才能恢复 `healthy`。
-- 非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义；恢复事务完成后 active 告警消失，并为该恢复事件恰好创建一行包含已追平 boundary 的 notification。正常路径只投递一次；fixture 还必须允许“响应已包含通知、`delivered` 更新提交前崩溃”后再次投递，不能把 best-effort once 误测为 exactly-once delivery。target、projection、system 三类恢复分别断言正确的 `subject_kind/subject_key`。
+- active GapBridge omitted、`scene_capacity_exceeded` 或其他 context-quality 诊断也使整体进入 `degraded`/`rebuilding`；只有全部 target healthy 且无 active 诊断时才能恢复 `healthy`。
+- 新异常在 `alertDebounceMs` 内可暂不进入响应 health alert；越过防抖后，非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义。恢复事务完成后 active 告警消失，并为该恢复事件恰好创建一行包含已追平 boundary 的 notification。正常路径只投递一次；fixture 还必须允许“响应已包含通知、`delivered` 更新提交前崩溃”后再次投递，不能把 best-effort once 误测为 exactly-once delivery。target、projection、system 三类恢复分别断言正确的 `subject_kind/subject_key`。
 - 任一 target halted 不产生全局 `chatBlocked` 或 user/preset 级 halt；主聊天和其他 targets 的任务继续。resume/rebuild 维护入口可操作 halted target，普通 Observer 不可绕过。
 - halted target 的 Renderer golden 继续包含最后稳定 state：相邻的同 target sections 可在组前只出现一次“该类记忆可能滞后”，不相邻的 sections 必须分别出现。`episodes` 的 milestones 与 recentEpisodes 不相邻，因此两处各出现一次且文案状态一致；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
+- scene `capacity_exceeded` event 由独立 diagnostic projector 转换为 active `target + scene + scene_capacity_exceeded`；同 group 其他字段 accepted 时告警仍存在，只有 `detail.rejectedPaths` 中对应字段后续 accepted 才移除，全部恢复后在同一投影事务 resolve 并创建 recovery notification。重复投影不重复 diagnostic/notification；故障时 checkpoint 不推进、normal task 成功结果不回滚，runtime/context 后续可重试。
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls/message、eligible、tokens/latency/cost，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration 使用稳定标签且不含原始消息正文等高基数字段。
@@ -349,6 +350,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - recent window 可跨 session 且保留 user-boundary 裁剪；Memory Observer fixture 必须证明 Assistant 开头的 source 未被同一规则裁掉，且不注入 session boundary 控制标记。
 - 对每个 target 构造 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 的 gap；预算内完整 raw 注入，重复消息去重但保留 target keys。超预算只保留最近 N 条完整消息并恢复升序，单条超预算计入 omitted，不得截断或调用 LLM 压缩。
 - GapBridge omitted 必须产生 active 的持久化诊断记录（`subject_kind=target`、`subject_key` 为对应 targetKey），携带 `target_cursor` 与 `omitted_upper_message_id` 并触发 degraded；`target_cursor >= omitted_upper_message_id` 后才能 resolved。Projection lag 使用 `subject_kind=projection`、`subject_key=rag|recall` 和独立的 `processed_boundary_message_id`，不得复用 target cursor 字段。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
+- Context assembly 在读取 active diagnostics 前 best-effort 同步 diagnostic projection；active scene capacity diagnostic 令 `[当前状态]` 出现“该类记忆可能滞后”，并在通过 `alertDebounceMs` 后令响应 `memory_health.alerts` 包含“长度超限未写入”。同步失败只记录 debug error 并继续使用最后成功投影状态，不阻断主聊天。
 - RAG context 与 `memory` segment 并列存在，不互相覆盖。
 - RAG chunk 保存全部 source `messageId + contentHash`；任一 source 命中 tombstone 时，已有 chunk 即使尚未异步删除也被查询末端过滤，重新分块跳过整条消息。多事实消息被整条排除的保守副作用应有固定 fixture。
 - Recall 候选 refs、raw window 和最终文本分别覆盖 suppression 过滤；全部 refs 被过滤的 group 不注入，suppressed raw message 不因落在相邻窗口而泄漏。
@@ -367,6 +369,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - system cleanup 修改持久化 state 时必须写 `decision=system_cleanup`、具体 cleanup_type 和完整 normalized operation；覆盖 `scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`todo_revived_from_overdue`、`recent_episode_evicted` 五类。Proposal post-state 触发的 cleanup 与 proposal decisions 同 group/revision；独立后台 housekeeping 才断言 `group_kind=system_cleanup`。
 - 从当前 generation 最新合法 snapshot replay 后续 event groups 可恢复相同 state/cursors；replay 不调用 LLM，并拒绝 generation/revision 断层、cursor 不连续、schema 不兼容或 task/target 不一致的 event group。
 - Retention 清理必须保证 [state-contract.md](state-contract.md) §9.11 的不变量：每个活跃 generation 至少保留一个 schema-valid 完整 anchor snapshot；覆盖“校验新 snapshot → 原子提升 anchor → 清理旧 snapshot/events”的成功与逐故障点 rollback。只要求保留 `result_revision > anchor.revision` 的连续 event groups；从新 anchor replay后续 groups 必须恢复相同 state/cursors。终态 task 清理不得删除 active task 或 retained event groups 仍引用的 predecessor/parent/task。
+- Retention 在删除任何 event 前先同步 diagnostic projection；同步失败时 retention 不进入清理事务，checkpoint 之后的 event 必须保留供后续重放。
 - snapshot/state 损坏时优先恢复当前 generation 最新合法 snapshot；必要时从 raw messages rebuild。
 - 进程重启会从数据库读取 queued/running/retry_wait task 并从持久化 stage 继续；进程内队列、计数器或 flag 丢失不影响恢复。
 - stale generation/revision/cursor 执行结果写 `stale_result` ops log 并丢弃，不得覆盖新 state；replay 必须先匹配 generation，再检查 target cursor、proposal 活动性、引用 item 与 schema/source hashes；同 generation 的其他 target revision 增长不单独构成 stale。

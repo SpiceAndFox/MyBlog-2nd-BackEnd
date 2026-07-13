@@ -28,4 +28,4 @@
 
 ## 4. 用户可见语义
 
-active `scene_capacity_exceeded` 将 Memory 健康状态映射为 `degraded`，Renderer 在 `[当前状态]` 前显示 `[该类记忆可能滞后]`，响应健康告警说明最近一次更新因长度超限未写入。它不把 target 改成 `capacity_blocked/halted`，也不创建 maintenance task。
+active `scene_capacity_exceeded` 将 Memory 健康状态映射为 `degraded`，Renderer 在 `[当前状态]` 前显示 `[该类记忆可能滞后]`。响应 `memory_health.alerts` 遵循集中配置的 `alertDebounceMs`，通过防抖后说明最近一次更新因长度超限未写入；Renderer 标记本身不受该 health-alert 防抖影响。它不把 target 改成 `capacity_blocked/halted`，也不创建 maintenance task。

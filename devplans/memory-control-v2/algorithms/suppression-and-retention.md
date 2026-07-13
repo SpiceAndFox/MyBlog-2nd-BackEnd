@@ -1,6 +1,6 @@
 # Suppression、Hard Delete 与 Retention 算法
 
-本文是 correction/forget source suppression、RAG/Recall/rebuild 查询过滤、privacy hard delete 和 snapshot/event retention 的单一权威来源。Tombstone、diagnostic、notification、snapshot 和 event DDL 见 [状态契约](../state-contract.md) §9。
+本文是 correction/forget source suppression、RAG/Recall/rebuild 查询过滤、privacy hard delete 和 snapshot/event retention 的单一权威来源。Tombstone、diagnostic、diagnostic projection checkpoint、notification、snapshot 和 event DDL 见 [状态契约](../state-contract.md) §9。
 
 ## 1. Correction 与 Provenance
 
@@ -70,6 +70,7 @@ Snapshot/event/task/ops log 的 retention 清理必须保证以下不变量：
 3. **连续 event groups**：只需保留 `result_revision > anchor.revision` 的连续 event groups，且不得出现 revision 断层；`result_revision <= anchor.revision` 的 groups 已被完整 snapshot 吸收，可按审计策略清理。`result_revision IS NULL` 的审计 group 不参与语义 replay，可独立按 retention 清理。
 4. **旧 generation 清理**：只有当前 generation 已完成 rebuild 校验、相关 targets/projections 已不再读取旧 generation，且旧数据不再因审计或 privacy hard delete 策略要求保留时，才可清理旧 generation 的 snapshot/events。
 5. **Task/Ops log retention**：durable task 和 ops log 可按时间窗口清理，但必须保留所有非终态 task、被当前 active task 引用的 predecessor/parent task，以及当前 replay anchor 之后 retained event groups 所引用的 task。终态 task 清理不得破坏 retained event group 的审计关联。
+6. **诊断投影先行**：任何可能删除 `chat_memory_events` 的 retention 必须先按[异常诊断投影](diagnostic-projection.md)同步本 scope；同步失败时本轮 retention 终止，不得越过 `processed_event_id` 删除尚未投影的 event。投影成功后才可进入独立 retention 事务。
 
 ## 7. Harness
 

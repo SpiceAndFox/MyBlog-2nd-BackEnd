@@ -261,8 +261,9 @@ test("retention promotes only a validated continuous anchor and preserves refere
   ];
   let promoted = null;
   let runtimeAnchor = null;
+  const calls = [];
   const repositories = {
-    async withTransaction(work) { return work({}); },
+    async withTransaction(work) { calls.push("retention"); return work({}); },
     state: { async getState() { return structuredClone(state); } },
     audit: {
       async listSnapshots() { return snapshots; },
@@ -276,8 +277,14 @@ test("retention promotes only a validated continuous anchor and preserves refere
     },
     sidecars: { async listProjectionCheckpoints() { return ["rag", "recall"].map((projectionKey) => ({ projectionKey, processedGeneration: 2, status: "healthy" })); } },
   };
-  const retention = createMemoryRetention({ repositories, config: { retention: { snapshotDays: 30, eventDays: 30, taskDays: 30, opsLogDays: 30 } }, now: () => new Date("2026-07-13T00:00:00.000Z") });
+  const retention = createMemoryRetention({
+    repositories,
+    config: { retention: { snapshotDays: 30, eventDays: 30, taskDays: 30, opsLogDays: 30 } },
+    diagnosticProjection: { async syncScope() { calls.push("diagnostics"); } },
+    now: () => new Date("2026-07-13T00:00:00.000Z"),
+  });
   const result = await retention.runScope(7, "companion");
+  assert.deepEqual(calls.slice(0, 2), ["diagnostics", "retention"]);
   assert.equal(result.anchorRevision, 6);
   assert.equal(promoted, 6);
   assert.equal(runtimeAnchor, 6);

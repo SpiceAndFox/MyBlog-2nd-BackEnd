@@ -1,5 +1,14 @@
 # 已完成开发
 
+## 2026-07-13：State Contract 第二轮审查修复
+
+- scene 字段写入超过 `scene.maxRenderedChars` 时只拒绝该字段 patch（`capacity_exceeded`），恢复其 pre-patch 值；同 bundle 其他合法 patch 可提交，cursor 正常推进，不创建 maintenance task。
+- 新增从已提交 semantic events 派生的独立 `scene_capacity_diagnostics` 投影：持久化 event checkpoint、按字段维护 `detail.rejectedPaths`，投影失败不回滚 normal task，并由 runtime/context assembly 幂等重试。
+- active `scene_capacity_exceeded` 在 health 防抖后进入 degraded，Renderer 则立即在当前状态前标记“该类记忆可能滞后”；响应 health alert 说明长度超限未写入，对应字段后续 accepted 后逐项恢复并产生 recovery notification。
+- 新增 `004-add-diagnostic-projection-checkpoints.sql`，为 diagnostics 增加通用 `detail`，建立 diagnostic projection checkpoint；schema checker、privacy hard delete 和契约文档同步覆盖。
+- Retention 在删除 event 前先同步 diagnostic projection；同步失败则不清理，避免 checkpoint 尚未消费的 rejection event 被提前删除。
+- 同轮修复还包括 capacity phase 重入、maintenance 全 rejected 审计、replay suppression gate，以及日历毫秒与 DST gap/overlap 语义。
+
 ## 2026-07-13：Memory Control v2 写协议审查修复
 
 - 增加 durable task 持续轮询 worker 与 `CHAT_MEMORY_V2_TASK_POLL_INTERVAL_MS`，启动扫描之后仍会自动消费 queued/running/到期 retry_wait；task、housekeeping、source mutation/rebuild 和 projection 工作共用 runtime 的 user/preset 串行 lane。

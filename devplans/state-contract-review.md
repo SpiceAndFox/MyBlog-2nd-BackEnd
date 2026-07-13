@@ -2,14 +2,14 @@
 
 建议拆成 3 轮、12 个批次。顺序按“基础契约 → 写入语义 → 持久化与恢复 → 跨系统 sidecar”排列，避免下游审查建立在错误 schema 上。
 
-本轮只制定了审查顺序，尚未对实现作合规结论，也没有修改代码或运行测试。
+本文保留审查拆分与覆盖清单，不作为合规结论本身。第二轮已经按批次 5–7、12 的交叉边界完成首轮修复；具体实现状态见 `devplans/implemented.md`，最终合规结论仍应以各轮审查报告和测试结果为准。
 
 ## 第一轮：静态契约与输入边界
 
 | 批次                             | 审查范围                                                                                                                                 | 主要代码                                                                                                                                    |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1. 权威状态与基础枚举            | §1–§3：九个 section、六个 target、state 容器、scene/item/evidenceGroups、Todo 字段、schema version、全局唯一 ID、meta 禁止保存运行状态   | `modules/memory/contracts/constants.js`、`modules/memory/contracts/state.js`、初始化逻辑                                                    |
-| 2. DDL 与 Repository 映射        | §1、§9.1–§9.10 的所有表、字段、类型、nullable/default、唯一约束、索引；数据库行与 JS 对象映射                                            | `migrations/memory/001-memory-v2.sql`、`infrastructure/repositories/*`、`test/memory/repository.test.js`                                    |
+| 2. DDL 与 Repository 映射        | §1、§9.1–§9.10 的所有表、字段、类型、nullable/default、唯一约束、索引；数据库行与 JS 对象映射                                            | `migrations/memory/001-memory-v2.sql`、`migrations/memory/003-add-user-time-zone.sql`、`migrations/memory/004-add-diagnostic-projection-checkpoints.sql`、`infrastructure/repositories/*`、`test/memory/repository.test.js` |
 | 3. Patch、Envelope 与输出 Schema | §4–§5：op 字段组合、normal/maintenance 判别、redacted view、readOnlyContext 固定范围、target sections 完整覆盖、unable/noop/patches 结构 | `modules/memory/contracts/proposal.js`、`modules/memory/application/envelope.js`、`modules/memory/infrastructure/providers/outputSchema.js` |
 | 4. Provider Adapter              | §10：显式 adapter 选择、原生 structured output、本地二次校验、DeepSeek schema 编译、错误归一化、完整 schema preflight                    | `infrastructure/providers/*`、`modules/memory/config/loadProviderConfig.js`、`test/memory/provider-adapter.test.js`                         |
 
@@ -33,4 +33,4 @@
 | 9. Capacity Maintenance 与 Replay        | §5.2、§5.5、§8、§9.2–§9.4：deferred 审计 group、maintenance child、pending item 保护、compaction revision、冻结 proposal replay、容量类 resume                   | `modules/memory/application/capacityMaintenance.js`、`test/memory/stage5-capacity-maintenance.test.js`                                                                                            |
 | 10. Source Generation 与 Projection      | §1 的 sourceGeneration、§9.4 rebuilding、§9.7：source mutation 原子初始化、六 target rebuild boundary、force-drain、RAG/Recall 独立 checkpoint、stale projection | `modules/memory/application/sourceRebuild.js`、`modules/memory/application/projectionDrain.js`                                                                                                    |
 | 11. Suppression、Retention 与隐私删除    | §9.8、§9.11、§9.6 日志限制：forget/correction tombstone 原子性、查询/rebuild gate、anchor 提升、引用保护、privacy hard delete、禁止持久日志泄漏正文              | `modules/memory/domain/suppression.js`、`modules/memory/application/retention.js`、`modules/memory/application/privacyHardDelete.js`                                                              |
-| 12. Diagnostics 与 Recovery Notification | §9.9–§9.10：诊断归属、omitted boundary、resolved 条件、健康聚合、通知唯一性、事务内创建、响应成功后 best-effort delivered                                        | `modules/memory/application/contextAssembly.js`、`modules/memory/domain/contextCoverage.js`、`modules/memory/domain/health.js`、`modules/memory/infrastructure/repositories/sidecarRepository.js` |
+| 12. Diagnostics 与 Recovery Notification | §9.9–§9.10：诊断归属、omitted boundary、scene capacity event projection/checkpoint、per-field resolved 条件、健康聚合、通知唯一性、事务内创建、响应成功后 best-effort delivered | `modules/memory/application/contextAssembly.js`、`modules/memory/application/diagnosticProjection.js`、`modules/memory/domain/contextCoverage.js`、`modules/memory/domain/health.js`、`modules/memory/infrastructure/repositories/sidecarRepository.js`、`modules/memory/infrastructure/repositories/diagnosticProjectionRepository.js` |

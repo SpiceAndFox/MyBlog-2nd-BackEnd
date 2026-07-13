@@ -736,7 +736,7 @@ Replay 与 ID 规则：
 5. 提交事务必须先按 `task_id` 锁定并读取 task，再校验 source generation、target `cursor_before`、当前 revision 与该 stage 的预期执行 revision；normal successor 与 revision stale 见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4，compaction/replay 的专用 stale 条件见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) §2。
 6. 每个 task phase 使用稳定的 event group identity；同一 group 内的 `patch_id` 以及非 null `result_revision` 都有唯一约束。capacity-blocked 审计与最终 replay 是两个稳定 phase/group，因此允许同一原 patchId 在两组中分别出现 deferred 与最终 decision。Phase identity、重复 delivery、提交结果不确定与新 maintenance child 的幂等规则见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §6–§8。
 
-target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome。普通 proposal attempt 中，任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` 时均不推进；只有所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进。唯一例外是 §9.2 已定义的二次 `unable_to_decide` 终结分支：扩大一次上下文后仍无法判断时，可以创建零条 event 的 cursor-only revision，并以 event group 的 `cursor_before/cursor_after` 确定性 replay（见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §3、§5.2）。除该特例外，不能只凭某一 section 的 accepted event 推进联合 target。容量超限不产生 patch 级 `rejected`，而是由 `deferred`（审计 group）和 task 级 `compaction_failed` / `replay_failed` 表达（见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)）。
+target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome。普通 proposal attempt 中，任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` 时均不推进；只有所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进。唯一例外是 §9.2 已定义的二次 `unable_to_decide` 终结分支：扩大一次上下文后仍无法判断时，可以创建零条 event 的 cursor-only revision，并以 event group 的 `cursor_before/cursor_after` 确定性 replay（见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §3、§5.2）。除该特例外，不能只凭某一 section 的 accepted event 推进联合 target。可 compaction 的 item section 容量超限不产生 patch 级 `rejected`，而是由 `deferred`（审计 group）和 task 级 `compaction_failed` / `replay_failed` 表达（见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)）；不可 compaction 的 `scene` 是明确例外：单字段超限写 `rejected: capacity_exceeded`，按普通 rejected 语义推进 cursor，且不创建 maintenance task。
 
 `reject_reason` 合法值（仅 `rejected` 时填写）：
 
@@ -922,18 +922,18 @@ CREATE INDEX idx_suppression_tombstones_lookup
 
 ### 9.9 Context-quality diagnostics
 
-GapBridge omitted、projection lag 等 context 质量诊断是独立于 `memory_state`、semantic event 和 Memory ops log 的持久化 sidecar（语义见 [Context Coverage 算法](algorithms/context-coverage.md)）：
+GapBridge omitted、projection lag、scene capacity rejection 等 context 质量诊断是独立于 `memory_state`、semantic event 和 Memory ops log 的持久化 sidecar（语义见 [Context Coverage 算法](algorithms/context-coverage.md)和[异常诊断投影](algorithms/diagnostic-projection.md)）：
 
 ```sql
 CREATE TABLE chat_context_quality_diagnostics (
   id              BIGSERIAL PRIMARY KEY,
   user_id         BIGINT NOT NULL,
   preset_id       TEXT NOT NULL,
-  subject_kind    TEXT NOT NULL,           -- target | projection
-  subject_key     TEXT NOT NULL,           -- target 的 targetKey（todos 等）或 projection 的 projectionKey（rag | recall）
-  diagnostic_type TEXT NOT NULL,           -- gap_bridge_omitted | projection_lag | ...
+  subject_kind    TEXT NOT NULL,           -- target | projection | system
+  subject_key     TEXT NOT NULL,           -- targetKey、projectionKey，或 system 诊断键
+  diagnostic_type TEXT NOT NULL,           -- gap_bridge_omitted | projection_lag | scene_capacity_exceeded | state_* | ...
   request_id      TEXT,
-  target_cursor   BIGINT,                  -- target 的 coveredUntilMessageId（仅 gap_bridge_omitted 使用）
+  target_cursor   BIGINT,                  -- target cursor/boundary（gap_bridge_omitted、scene_capacity_exceeded 使用）
   processed_boundary_message_id BIGINT,    -- projection 的 processedBoundary（仅 projection_lag 使用）
   omitted_upper_message_id BIGINT,         -- GapBridge 的省略上界 messageId，用于确定 resolved 条件
   recent_window_start BIGINT,              -- 当时的 recent window 起点 messageId
@@ -957,12 +957,12 @@ CREATE INDEX idx_context_diagnostics_active
 
 字段说明：
 
-- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag 诊断。
+- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted、scene capacity 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag；`system + memory_state` 用于无法归属具体 target/projection 的 authority-state 诊断。
 - `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
-- `target_cursor`、`omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`processed_boundary_message_id` 仅用于 `projection_lag`。两类诊断都保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
+- `omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`target_cursor` 还被 `scene_capacity_exceeded` 用来记录最近处理 event group 的 `cursor_after`。`processed_boundary_message_id` 仅用于 `projection_lag`。GapBridge/projection 诊断保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
 - `diagnostic_type = scene_capacity_exceeded` 表示最近有一个或多个 scene 字段 patch 因长度预算被拒绝；`detail.rejectedPaths` 保存仍待成功写入的字段，`detail.sourceEventGroupId/sourceGeneration/sourceRevision` 保存最近来源。它由[异常诊断投影](algorithms/diagnostic-projection.md)从已提交 event 派生，不由 Reducer 或 capacity maintenance 事务直接写入。
 
-诊断记录保持 active（`resolved=FALSE`），直到满足明确 resolved 条件（如该 target cursor 覆盖其 `omitted_upper_message_id`，或后续 context assembly 证明该 target 在当时的 recent-window 起点前已无 omitted gap）。不能只因请求结束而清除。
+诊断记录保持 active（`resolved=FALSE`），直到满足对应类型的明确 resolved 条件：GapBridge omitted 由 cursor/source coverage 证明缺口已消失；projection lag 由本次 required boundary 已覆盖证明；`scene_capacity_exceeded` 仅在 `detail.rejectedPaths` 中每个字段都出现后续 accepted scene patch 后恢复；authority-state 诊断仅在合法 state 恢复后清除。不能只因请求结束而清除。
 
 异常投影拥有独立持久化 checkpoint：
 
@@ -978,7 +978,7 @@ CREATE TABLE chat_memory_diagnostic_projection_checkpoints (
 );
 ```
 
-checkpoint、diagnostic 更新/恢复和 recovery notification 必须在同一投影事务中提交。投影失败不得影响已提交的 Memory task，且不得推进 `processed_event_id`；runtime poll、启动 reconciliation 和 context assembly 均可按 checkpoint 幂等重试。
+成功投影时，checkpoint 推进、diagnostic 更新/恢复和 recovery notification 必须在同一投影事务中提交。投影失败不得影响已提交的 Memory task，且不得推进 `processed_event_id`；失败原因用独立 best-effort 事务写入 `last_error_reason`。runtime poll、启动 reconciliation 和 context assembly 均可按 checkpoint 幂等重试。
 
 ### 9.10 Recovery notification
 
