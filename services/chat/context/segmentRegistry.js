@@ -1,7 +1,5 @@
 const { buildSystemPromptSegment } = require("./segments/systemPrompt");
 const { buildAssistantGistNoticeSegment } = require("./segments/assistantGistNotice");
-const { buildCoreMemorySegment } = require("./segments/coreMemory");
-const { buildRollingSummarySegment } = require("./segments/rollingSummary");
 const { buildMemorySegment } = require("./segments/memory");
 const { buildRagContextSegment } = require("./segments/ragContext");
 const { buildGapBridgeSegment } = require("./segments/gapBridge");
@@ -19,11 +17,7 @@ const { assertContextState, assertSegmentResult } = require("./validateContextSt
 /**
  * @typedef {Object} ContextState
  * @property {string} systemPrompt
- * @property {boolean} coreMemoryEnabled
- * @property {string} coreMemoryText
- * @property {number} coreMemoryChars
- * @property {boolean} rollingSummaryEnabled
- * @property {Object|null} memory
+ * @property {{renderedText: string}|null} memoryV2
  * @property {{messages: ChatMessage[], sources?: any[], stats?: any}|null} ragContext
  * @property {{messages: ChatMessage[], stats?: any}|null} gapBridge
  * @property {{messages: ChatMessage[], stats?: any}} recent
@@ -34,8 +28,6 @@ const segmentOrder = [
   "systemPrompt",
   "timeContext",
   "assistantGistNotice",
-  "coreMemory",
-  "rollingSummary",
   "memory",
   "ragContext",
   "gapBridge",
@@ -46,8 +38,6 @@ const segmentOrder = [
 const segmentBuilders = {
   systemPrompt: buildSystemPromptSegment,
   assistantGistNotice: buildAssistantGistNoticeSegment,
-  coreMemory: buildCoreMemorySegment,
-  rollingSummary: buildRollingSummarySegment,
   memory: buildMemorySegment,
   ragContext: buildRagContextSegment,
   gapBridge: buildGapBridgeSegment,

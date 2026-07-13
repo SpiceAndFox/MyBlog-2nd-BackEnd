@@ -1,7 +1,12 @@
 const { logger } = require("../../logger");
-const { chatMemoryConfig } = require("../../config");
+const { memoryV2Config } = require("../../config");
 const chatModel = require("../../models/chatModel");
-const { markPresetMemoryDirty, requestMemoryTick } = require("./memory/writePipeline");
+const { createDefaultMemoryRuntime } = require("../../modules/memory");
+
+const memoryRuntime = createDefaultMemoryRuntime({
+  config: memoryV2Config,
+  onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
+});
 
 const REQUIRED_ENV_KEYS = ["CHAT_TRASH_RETENTION_DAYS", "CHAT_TRASH_CLEAN_INTERVAL_MS", "CHAT_TRASH_PURGE_BATCH_SIZE"];
 
@@ -34,7 +39,7 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
   const purged = Number(purgeResult?.purged) || 0;
   const affectedPresets = Array.isArray(purgeResult?.affectedPresets) ? purgeResult.affectedPresets : [];
 
-  if (chatMemoryConfig.legacyEnabled && purged > 0 && affectedPresets.length) {
+  if (memoryRuntime.enabled && purged > 0 && affectedPresets.length) {
     const deduped = new Map();
     for (const item of affectedPresets) {
       const userId = item?.userId;
@@ -44,25 +49,7 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
     }
 
     for (const { userId, presetId } of deduped.values()) {
-      try {
-        await markPresetMemoryDirty({
-          userId,
-          presetId,
-          sinceMessageId: 0,
-          rebuildRequired: false,
-          reason: "trash_purge",
-        });
-      } catch (error) {
-        if (error?.code !== "42P01") {
-          logger.error("chat_trash_cleanup_memory_dirty_failed", { error, userId, presetId });
-        }
-      }
-
-      try {
-        requestMemoryTick({ userId, presetId });
-      } catch (error) {
-        logger.error("chat_trash_cleanup_memory_tick_failed", { error, userId, presetId });
-      }
+      void memoryRuntime.rebuildScope(userId, presetId, { reason: "trash_purge" });
     }
   }
 

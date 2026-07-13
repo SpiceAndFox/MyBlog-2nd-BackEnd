@@ -12,6 +12,7 @@ const { createProjectionDrain } = require("./application/projectionDrain");
 const { createMemoryRetention } = require("./application/retention");
 const { createPrivacyHardDelete } = require("./application/privacyHardDelete");
 const { createMemoryMigration } = require("./application/migration");
+const { createMemoryRuntime } = require("./application/runtime");
 const repositories = require("./infrastructure/repositories");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createOpenAiStructuredTransport } = require("./infrastructure/providers/openAiStructuredTransport");
@@ -19,6 +20,8 @@ const { createDeepSeekStrictToolsTransport } = require("./infrastructure/provide
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
 const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("./prompts");
+
+let defaultMemoryRuntime = null;
 
 // Memory 模块之外只能从本入口访问公开能力。后续阶段按真实调用需求
 // 增加 application use case，不在这里暴露 domain/infrastructure 内部文件。
@@ -37,6 +40,11 @@ module.exports = Object.freeze({
   createMemoryRetention,
   createPrivacyHardDelete,
   createMemoryMigration,
+  createMemoryRuntime,
+  createDefaultMemoryRuntime(options) {
+    if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
+    return defaultMemoryRuntime;
+  },
   createDefaultMemoryContextAssembly(options) {
     const lanes = new Map();
     const enqueueByKey = (key, work) => {

@@ -1,5 +1,5 @@
 const chatModel = require("@models/chatModel");
-const { chatConfig, chatMemoryConfig } = require("../../../config");
+const { chatConfig, chatContextConfig } = require("../../../config");
 const { loadAssistantGistMap, buildAssistantGistBackfillCandidates } = require("./assistantGist");
 const { selectRecentWindowMessages } = require("./selectRecentWindowMessages");
 
@@ -13,7 +13,7 @@ async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}
     upToMessageId,
   });
 
-  const assistantGistEnabled = Boolean(chatMemoryConfig.recentWindowAssistantGistEnabled);
+  const assistantGistEnabled = Boolean(chatContextConfig.recentWindowAssistantGistEnabled);
   const assistantGistMap = assistantGistEnabled
     ? await loadAssistantGistMap({
         userId,
@@ -26,8 +26,8 @@ async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}
     maxMessages,
     maxChars,
     assistantGistEnabled,
-    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
+    assistantRawLastN: chatContextConfig.recentWindowAssistantRawLastN,
+    assistantGistPrefix: chatContextConfig.recentWindowAssistantGistPrefix,
     assistantGistMap,
   });
 

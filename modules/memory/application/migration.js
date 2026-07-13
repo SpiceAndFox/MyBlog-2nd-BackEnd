@@ -50,7 +50,7 @@ function createMemoryMigration({
   monotonicNow = () => Date.now(),
 } = {}) {
   if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
-    || !repositories?.migration?.listSourceScopes || !repositories.migration.clearLegacyDerivedMemory || !repositories.migration.getLegacyDerivedMemoryResidue) {
+    || !repositories?.migration?.listSourceScopes) {
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
@@ -133,29 +133,12 @@ function createMemoryMigration({
     return { ...scope, ...history, ...verified, durationMs: Math.max(0, monotonicNow() - started) };
   }
 
-  async function clearLegacyDerivedMemory({ legacyRuntimeDisabled = false, confirmClear = false } = {}) {
-    if (!legacyRuntimeDisabled || !confirmClear) {
-      throw new Error("Legacy derived Memory clear requires legacyRuntimeDisabled=true and confirmClear=true");
-    }
-    const cleared = await repositories.withTransaction((client) => repositories.migration.clearLegacyDerivedMemory({ client }));
-    const residue = await repositories.migration.getLegacyDerivedMemoryResidue();
-    if (residue.derivedMemoryRows !== 0 || residue.checkpointRows !== 0) throw new Error("Legacy derived Memory residue remains after clear");
-    return { status: "completed", ...cleared, residue };
-  }
-
-  async function run({ mode = "rehearsal", serviceStopped = false, confirmLegacyDerivedMemoryClear = false, scopes } = {}) {
+  async function run({ mode = "rehearsal", serviceStopped = false, scopes } = {}) {
     if (!["rehearsal", "cutover"].includes(mode)) throw new Error("Migration mode must be rehearsal or cutover");
     if (mode === "cutover" && !serviceStopped) throw new Error("Cutover requires serviceStopped=true");
     const startedAt = now().toISOString();
     const started = monotonicNow();
     const histories = await inventory(scopes);
-    if (mode === "cutover") {
-      const residue = await repositories.migration.getLegacyDerivedMemoryResidue();
-      if (residue.derivedMemoryRows !== 0 || residue.checkpointRows !== 0) {
-        if (!confirmLegacyDerivedMemoryClear) throw new Error("Cutover found legacy derived Memory residue and requires confirmLegacyDerivedMemoryClear=true");
-        await clearLegacyDerivedMemory({ legacyRuntimeDisabled: true, confirmClear: true });
-      }
-    }
     const results = [];
     try {
       for (const history of histories) {
@@ -175,7 +158,7 @@ function createMemoryMigration({
     }
   }
 
-  return Object.freeze({ inventory, verifyScope, rebuildScope, clearLegacyDerivedMemory, run });
+  return Object.freeze({ inventory, verifyScope, rebuildScope, run });
 }
 
 module.exports = { createMemoryMigration };

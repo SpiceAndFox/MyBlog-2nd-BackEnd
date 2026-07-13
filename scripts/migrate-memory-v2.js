@@ -3,8 +3,12 @@ const path = require("node:path");
 const db = require("../db");
 
 async function main() {
-  const sql = fs.readFileSync(path.join(__dirname, "../migrations/memory/001-memory-v2.sql"), "utf8");
-  await db.query(sql);
+  const directory = path.join(__dirname, "../migrations/memory");
+  const files = fs.readdirSync(directory).filter((file) => /^\d+.*\.sql$/.test(file)).sort();
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(directory, file), "utf8");
+    await db.query(sql);
+  }
   process.stdout.write("Memory Control v2 schema migration completed.\n");
 }
 main().then(() => db.end()).catch(async (error) => {

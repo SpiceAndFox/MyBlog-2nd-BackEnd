@@ -1,6 +1,6 @@
-﻿const { chatMemoryConfig } = require("../../../../config");
+﻿const { chatContextConfig } = require("../../../../config");
 
-const assistantGistPrefix = String(chatMemoryConfig?.recentWindowAssistantGistPrefix || "").trim();
+const assistantGistPrefix = String(chatContextConfig?.recentWindowAssistantGistPrefix || "").trim();
 if (!assistantGistPrefix) {
   throw new Error("Missing required env: CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX");
 }

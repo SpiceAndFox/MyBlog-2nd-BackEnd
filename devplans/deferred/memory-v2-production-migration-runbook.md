@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文只登记尚待定稿的 v2 生产 rebuild、校验与启服操作，不管理 v1 派生数据是否继续保留。v1 的 `rolling_summary`、`core_memory` 和 checkpoint 在其 worker/注入停用后即可通过 `clearLegacyDerivedMemory` 独立清理；该动作不触碰 `chat_messages`，也不表示 v2 已经可以启服。
+本文只登记尚待定稿的 v2 生产 rebuild、校验与启服操作。v1 runtime 与代码已经移除；一次性 `002-drop-memory-v1.sql` 会删除旧字段和 checkpoint 表，不触碰 `chat_messages`，也不表示 v2 已经可以启服。
 
 当前无法写出正式命令的原因：
 
@@ -37,10 +37,10 @@
 - Provider preflight、两次全量 rehearsal 和端到端 smoke 的精确命令；
 - scope 清单、报告路径、容量分布、总调用量和维护窗口估算；
 - 停服证明与 captured raw boundary；
-- v1 residue 检查，以及仅在存在 residue 时运行的幂等清理命令；
+- `002-drop-memory-v1.sql` 已应用且旧列/表不存在的 schema 校验；
 - v2 state 初始化、force drain、RAG/Recall drain 和逐项验证命令；
 - `canStartService=false` 时保持停服、保存诊断及选择修复续跑或数据库恢复的步骤；
-- 成功启服后的观察窗口、健康指标和 v1 遗留代码移除步骤。
+- 成功启服后的观察窗口与健康指标。
 
 所有命令都必须来自实际装配并在非生产环境验证，本文不预填猜测命令。
 

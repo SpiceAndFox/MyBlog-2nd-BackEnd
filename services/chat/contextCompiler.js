@@ -1,13 +1,11 @@
 const crypto = require("node:crypto");
 const { buildRecentWindowContext } = require("./context/buildRecentWindowContext");
-const { buildMemorySnapshot } = require("./context/buildMemorySnapshot");
-const { buildGapBridge } = require("./context/buildGapBridge");
 const { buildContextSegments } = require("./context/segmentRegistry");
 const { buildTimeContextState } = require("./context/buildTimeContextState");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
-const { scheduleAssistantGistBackfill } = require("./memory/gistPipeline");
+const { scheduleAssistantGistBackfill } = require("./gistPipeline");
 const { retrieveChatRagContext } = require("./rag/retriever");
-const { chatConfig, chatMemoryConfig, memoryV2Config } = require("../../config");
+const { chatConfig, memoryV2Config } = require("../../config");
 const { createDefaultMemoryContextAssembly } = require("../../modules/memory");
 const { logger } = require("../../logger");
 
@@ -56,11 +54,6 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     }
     const compiled = buildContextSegments({
       systemPrompt: normalizedSystemPrompt,
-      coreMemoryEnabled: false,
-      coreMemoryText: "",
-      coreMemoryChars: 0,
-      rollingSummaryEnabled: false,
-      memory: null,
       memoryV2: { renderedText: contextV2.memorySegment },
       ragContext,
       gapBridge: contextV2.gapBridge,
@@ -107,55 +100,19 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 
   const recentWindowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
 
-  const memorySnapshot = chatMemoryConfig.v1ContextEnabled ? await buildMemorySnapshot({
-    userId: normalizedUserId,
-    presetId: normalizedPresetId,
-    needsMemory,
-    recentWindowStartMessageId,
-  }) : { memory: null, summarizedUntilMessageId: null, rollingSummaryEnabled: false, coreMemoryEnabled: false, coreMemoryText: "", coreMemoryChars: 0 };
-  const memory = memorySnapshot.memory;
-  const summarizedUntilMessageId = memorySnapshot.summarizedUntilMessageId;
-  const rollingSummaryEnabled = memorySnapshot.rollingSummaryEnabled;
-  const coreMemoryEnabled = memorySnapshot.coreMemoryEnabled;
-  const coreMemoryText = memorySnapshot.coreMemoryText;
-  const coreMemoryChars = memorySnapshot.coreMemoryChars;
-
-  const gapBridge = chatMemoryConfig.v1ContextEnabled ? await buildGapBridge({
-    userId: normalizedUserId,
-    presetId: normalizedPresetId,
-    needsMemory,
-    memory,
-    recentWindowStartMessageId,
-    summarizedUntilMessageId,
-  }) : null;
-
-  const gapGistBackfill = scheduleAssistantGistBackfill({
-    userId: normalizedUserId,
-    presetId: normalizedPresetId,
-    gistBackfillCandidates: gapBridge?.gistBackfillCandidates,
-  });
-  if (gapBridge?.stats?.assistantAntiEcho) {
-    gapBridge.stats.assistantAntiEcho.gistBackfill = gapGistBackfill;
-  }
-
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
   const timeContext = buildTimeContextState({ recentCandidates });
   const ragContext = await retrieveChatRagContext({
     userId: normalizedUserId,
     presetId: normalizedPresetId,
     query: readCurrentUserContent({ recent }),
-    beforeMessageId: summarizedUntilMessageId ?? (recentWindowStartMessageId === null ? null : Math.max(0, recentWindowStartMessageId - 1)),
+    beforeMessageId: recentWindowStartMessageId === null ? null : Math.max(0, recentWindowStartMessageId - 1),
   });
 
   const compiled = buildContextSegments({
     systemPrompt: normalizedSystemPrompt,
-    coreMemoryEnabled,
-    coreMemoryText,
-    coreMemoryChars,
-    rollingSummaryEnabled,
-    memory,
     ragContext,
-    gapBridge,
+    gapBridge: null,
     recent,
     timeContext,
   });
@@ -165,10 +122,8 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     needsMemory,
     segments: {
       systemPromptChars: normalizedSystemPrompt.length,
-      coreMemoryChars: coreMemoryEnabled ? coreMemoryChars : 0,
-      rollingSummaryChars: rollingSummaryEnabled ? String(memory.rollingSummary || "").length : 0,
       rag: ragContext?.stats || null,
-      gapBridge: gapBridge ? gapBridge.stats : null,
+      gapBridge: null,
       recentWindow: {
         ...recent.stats,
         candidates: recentCandidates.length,
@@ -176,13 +131,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
         needsMemory,
       },
     },
-    memory: memory
-      ? {
-          summarizedUntilMessageId: memory.summarizedUntilMessageId,
-          dirtySinceMessageId: memory.dirtySinceMessageId,
-          rebuildRequired: memory.rebuildRequired,
-        }
-      : null,
+    memory: null,
     rag: ragContext
       ? {
           enabled: Boolean(ragContext.enabled),

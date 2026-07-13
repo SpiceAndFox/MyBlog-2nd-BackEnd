@@ -7,15 +7,11 @@ const { createMemoryMigration } = require("../../modules/memory/application/migr
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/stage8-migration.json"), "utf8"));
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, legacyAlreadyCleared = false } = {}) {
+function makeHarness({ projectionFailure = null, verificationFailure = null } = {}) {
   let state = null;
   let snapshots = [];
   let statuses = [];
   let checkpoints = [];
-  let legacyDerivedMemoryCleared = false;
-  let residue = legacyAlreadyCleared
-    ? { derivedMemoryRows: 0, checkpointRows: 0 }
-    : { derivedMemoryRows: 1, checkpointRows: 2 };
   let clock = 0;
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
@@ -39,8 +35,6 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, leg
     sidecars: { async listProjectionCheckpoints() { return structuredClone(checkpoints); } },
     migration: {
       async listSourceScopes() { return [fixture.scope]; },
-      async clearLegacyDerivedMemory({ client } = {}) { assert.equal(client.transaction, true); legacyDerivedMemoryCleared = true; residue = { derivedMemoryRows: 0, checkpointRows: 0 }; return { derivedMemoryRows: 1, checkpointRows: 2 }; },
-      async getLegacyDerivedMemoryResidue() { return { ...residue }; },
     },
   };
   const sourceRebuild = {
@@ -78,10 +72,10 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, leg
     },
   }]));
   const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
-  return { migration, wasLegacyDerivedMemoryCleared: () => legacyDerivedMemoryCleared };
+  return { migration };
 }
 
-test("stage 8 rehearsal rebuilds every raw-history scope without mutating legacy derived Memory", async () => {
+test("stage 8 rehearsal rebuilds every raw-history scope", async () => {
   const harness = makeHarness();
   const report = await harness.migration.run({ mode: "rehearsal" });
   assert.equal(report.status, "completed");
@@ -93,7 +87,6 @@ test("stage 8 rehearsal rebuilds every raw-history scope without mutating legacy
   assert.deepEqual(report.results[0].sectionUsage.scene, { itemCount: 1, textChars: 3 });
   assert.deepEqual(report.results[0].sectionUsage.todos, { itemCount: 0, textChars: 0 });
   assert.equal(report.results[0].durationMs > 0, true);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), false);
 });
 
 test("stage 8 rehearsal is repeatable and never opens the service start gate", async () => {
@@ -103,47 +96,26 @@ test("stage 8 rehearsal is repeatable and never opens the service start gate", a
   assert.equal(first.status, "completed");
   assert.equal(second.status, "completed");
   assert.equal(second.canStartService, false);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), false);
 });
 
-test("stage 8 cutover requires an explicit stopped-service and destructive-data confirmation", async () => {
+test("stage 8 cutover requires an explicitly stopped service", async () => {
   const harness = makeHarness();
   await assert.rejects(() => harness.migration.run({ mode: "cutover" }), /serviceStopped=true/);
-  await assert.rejects(() => harness.migration.run({ mode: "cutover", serviceStopped: true }), /confirmLegacyDerivedMemoryClear=true/);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), false);
 });
 
-test("legacy derived Memory can be cleared independently after its runtime is disabled", async () => {
+test("stage 8 cutover opens the start gate only after full verification", async () => {
   const harness = makeHarness();
-  await assert.rejects(() => harness.migration.clearLegacyDerivedMemory(), /legacyRuntimeDisabled=true/);
-  const result = await harness.migration.clearLegacyDerivedMemory({ legacyRuntimeDisabled: true, confirmClear: true });
-  assert.deepEqual(result.residue, { derivedMemoryRows: 0, checkpointRows: 0 });
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), true);
-});
-
-test("stage 8 cutover clears legacy derived data and opens the start gate only after full verification", async () => {
-  const harness = makeHarness();
-  const report = await harness.migration.run({ mode: "cutover", serviceStopped: true, confirmLegacyDerivedMemoryClear: true });
-  assert.equal(report.status, "completed");
-  assert.equal(report.canStartService, true);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), true);
-});
-
-test("stage 8 cutover accepts independently cleared legacy derived Memory without another clear confirmation", async () => {
-  const harness = makeHarness({ legacyAlreadyCleared: true });
   const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(report.status, "completed");
   assert.equal(report.canStartService, true);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), false);
 });
 
-test("a stale projection keeps the service start gate closed after legacy deletion", async () => {
+test("a stale projection keeps the service start gate closed", async () => {
   const harness = makeHarness({ projectionFailure: "recall" });
-  const report = await harness.migration.run({ mode: "cutover", serviceStopped: true, confirmLegacyDerivedMemoryClear: true });
+  const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(report.status, "failed");
   assert.equal(report.canStartService, false);
   assert.match(report.error.message, /Projection recall drain did not complete/);
-  assert.equal(harness.wasLegacyDerivedMemoryCleared(), true);
 });
 
 for (const [failure, message] of [
@@ -155,7 +127,7 @@ for (const [failure, message] of [
 ]) {
   test(`stage 8 verification closes the start gate on ${failure} failure`, async () => {
     const harness = makeHarness({ verificationFailure: failure });
-    const report = await harness.migration.run({ mode: "cutover", serviceStopped: true, confirmLegacyDerivedMemoryClear: true });
+    const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
     assert.equal(report.status, "failed");
     assert.equal(report.canStartService, false);
     assert.match(report.error.message, message);

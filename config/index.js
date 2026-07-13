@@ -430,294 +430,16 @@ const chatTimeContextConfig = (() => {
   };
 })();
 
-const chatMemoryConfig = (() => {
-  // Memory v1 已退役。保留这个只读兼容对象，直到旧模块和管理端点完成物理删除；
-  // 不再从环境变量加载 rolling summary/core memory/worker 配置。
+const chatContextConfig = (() => {
   return Object.freeze({
-    legacyEnabled: false,
-    v1ContextEnabled: false,
-    coreMemoryEnabled: false,
     recentWindowAssistantGistEnabled: readRequiredBoolEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_ENABLED"),
     recentWindowAssistantRawLastN: ensureNonNegativeInt(
       readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N"),
       { name: "CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N" }
     ),
     recentWindowAssistantGistPrefix: readRequiredStringEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX"),
-    workerProviderId: null,
-    workerModelId: null,
-    workerConcurrency: 1,
   });
 
-  /* c8 ignore start -- 待旧 memory 模块物理删除时一并移除。 */
-  const v1ContextEnabled = readBoolEnv("CHAT_MEMORY_V1_CONTEXT_ENABLED", true);
-  const rollingSummaryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_ROLLING_SUMMARY_MAX_CHARS"), {
-    name: "CHAT_ROLLING_SUMMARY_MAX_CHARS",
-  });
-
-  const rollingSummaryUpdateEveryNTurns = ensurePositiveInt(
-    readRequiredIntEnv("CHAT_MEMORY_ROLLING_SUMMARY_UPDATE_EVERY_N_TURNS"),
-    { name: "CHAT_MEMORY_ROLLING_SUMMARY_UPDATE_EVERY_N_TURNS" }
-  );
-
-  const coreMemoryEnabled = readRequiredBoolEnv("CHAT_MEMORY_CORE_ENABLED");
-
-  const coreMemoryStrictSyncWithRsCheckpointEnabled = readRequiredBoolEnv(
-    "CHAT_MEMORY_CORE_STRICT_SYNC_WITH_RS_CHECKPOINT_ENABLED"
-  );
-
-  const coreMemoryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_CORE_MAX_CHARS"), {
-    name: "CHAT_MEMORY_CORE_MAX_CHARS",
-  });
-
-  const coreMemoryUpdateEveryNTurns = ensurePositiveInt(
-    readRequiredIntEnv("CHAT_MEMORY_CORE_UPDATE_EVERY_N_TURNS"),
-    { name: "CHAT_MEMORY_CORE_UPDATE_EVERY_N_TURNS" }
-  );
-
-  const coreMemoryDeltaBatchMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_CORE_DELTA_BATCH_MESSAGES"), {
-    name: "CHAT_MEMORY_CORE_DELTA_BATCH_MESSAGES",
-  });
-
-  const gapBridgeMaxMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES"), {
-    name: "CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES",
-  });
-
-  const gapBridgeMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS"), {
-    name: "CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS",
-  });
-
-  const recentWindowAssistantGistEnabled = readRequiredBoolEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_ENABLED");
-
-  const recentWindowAssistantRawLastN = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N"), {
-    name: "CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N",
-  });
-
-  const recentWindowAssistantGistPrefix = readRequiredStringEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX");
-
-  const workerProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_MEMORY_WORKER_PROVIDER"), {
-    name: "CHAT_MEMORY_WORKER_PROVIDER",
-  });
-
-  const workerModelId = ensureSupportedModel(workerProviderId, readRequiredStringEnv("CHAT_MEMORY_WORKER_MODEL"), {
-    name: "CHAT_MEMORY_WORKER_MODEL",
-  });
-
-  const workerConcurrency = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_WORKER_CONCURRENCY"), {
-    name: "CHAT_MEMORY_WORKER_CONCURRENCY",
-  });
-
-  const backfillBatchMessages = ensurePositiveInt(
-    readRequiredIntEnv("CHAT_MEMORY_BACKFILL_BATCH_MESSAGES"),
-    { name: "CHAT_MEMORY_BACKFILL_BATCH_MESSAGES" }
-  );
-
-  const backfillCooldownMs = ensureNonNegativeInt(
-    readRequiredIntEnv("CHAT_MEMORY_BACKFILL_COOLDOWN_MS"),
-    { name: "CHAT_MEMORY_BACKFILL_COOLDOWN_MS" }
-  );
-
-  const checkpointEveryNMessages = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES"), {
-    name: "CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES",
-  });
-
-  const checkpointKeepLastN = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N"), {
-    name: "CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N",
-  });
-
-  if (coreMemoryStrictSyncWithRsCheckpointEnabled && (checkpointEveryNMessages <= 0 || checkpointKeepLastN <= 0)) {
-    throw new Error(
-      "CHAT_MEMORY_CORE_STRICT_SYNC_WITH_RS_CHECKPOINT_ENABLED requires checkpoint feature enabled: " +
-        "set CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES > 0 and CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N > 0"
-    );
-  }
-
-  const writeRetryMax = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_WRITE_RETRY_MAX"), {
-    name: "CHAT_MEMORY_WRITE_RETRY_MAX",
-  });
-
-  const syncRebuildTimeoutMs = ensurePositiveInt(
-    readRequiredIntEnv("CHAT_MEMORY_SYNC_REBUILD_TIMEOUT_MS"),
-    { name: "CHAT_MEMORY_SYNC_REBUILD_TIMEOUT_MS" }
-  );
-
-  const syncRebuildTotalTimeoutMs = ensureNonNegativeInt(
-    readRequiredIntEnv("CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS"),
-    { name: "CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS" }
-  );
-
-  function sanitizeWorkerSettings(rawSettings) {
-    if (!isPlainObject(rawSettings)) return {};
-
-    const sanitized = {};
-
-    const keys = [
-      "temperature",
-      "topP",
-      "maxOutputTokens",
-      "presencePenalty",
-      "frequencyPenalty",
-      "thinkingBudget",
-      "stream",
-      "enableWebSearch",
-    ];
-
-    for (const key of keys) {
-      if (!Object.prototype.hasOwnProperty.call(rawSettings, key)) continue;
-      if (key === "stream" || key === "enableWebSearch") {
-        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
-        continue;
-      }
-
-      const number = Number(rawSettings[key]);
-      if (Number.isFinite(number)) sanitized[key] = number;
-    }
-
-    const schema = getActiveSchemaControls(workerProviderId, workerModelId);
-    const model = getProviderModel(workerProviderId, workerModelId);
-    const modelId = workerModelId;
-
-    for (const control of schema) {
-      const key = normalizeKey(control?.key);
-      if (!key) continue;
-      if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
-
-      const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
-      if (modelId && blocklist.includes(modelId)) continue;
-
-      const type = normalizeKey(control?.type);
-
-      if (type === "toggle") {
-        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
-        continue;
-      }
-
-      if (type === "select") {
-        if (typeof rawSettings[key] !== "string") continue;
-        const value = rawSettings[key].trim();
-        if (!value) continue;
-
-        const allowed = new Set(getControlOptions(control, { model }).map((option) => normalizeKey(option?.value)).filter(Boolean));
-        if (!allowed.has(value)) {
-          throw new Error(
-            `Invalid worker setting ${key} for provider/model ${workerProviderId}/${workerModelId}: ${value}. Allowed values: ${
-              Array.from(allowed).join(", ") || "(none)"
-            }`
-          );
-        }
-
-        sanitized[key] = value;
-        continue;
-      }
-
-      if (type === "range" || type === "number") {
-        const number = Number(rawSettings[key]);
-        if (Number.isFinite(number)) sanitized[key] = number;
-      }
-    }
-
-    return sanitized;
-  }
-
-  function normalizeWorkerSettings(settings) {
-    if (!isPlainObject(settings)) return {};
-
-    const normalized = { ...settings };
-    const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"];
-
-    for (const key of keys) {
-      if (normalized[key] === undefined) continue;
-
-      const range = getProviderNumericRange(workerProviderId, key);
-      const fallbackRange = getGlobalNumericRange(key);
-      const nextValue = clampNumberWithRange(normalized[key], range || fallbackRange);
-
-      if (!Number.isFinite(nextValue)) {
-        delete normalized[key];
-        continue;
-      }
-
-      if (key === "maxOutputTokens" || key === "thinkingBudget") {
-        normalized[key] = Math.trunc(nextValue);
-      } else {
-        normalized[key] = nextValue;
-      }
-    }
-
-    return normalized;
-  }
-
-  function buildWorkerSettingsForMemory(maxOutputTokensEnvName) {
-    const rawWorkerSettings = {
-      temperature: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TEMPERATURE", {
-        key: "temperature",
-        providerId: workerProviderId,
-      }),
-      topP: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TOP_P", { key: "topP", providerId: workerProviderId }),
-      maxOutputTokens: readRequiredSettingNumber(maxOutputTokensEnvName, {
-        key: "maxOutputTokens",
-        providerId: workerProviderId,
-        integer: true,
-      }),
-      stream: readRequiredBoolEnv("CHAT_MEMORY_WORKER_STREAM"),
-      enableWebSearch: readRequiredBoolEnv("CHAT_MEMORY_WORKER_ENABLE_WEB_SEARCH"),
-      thinkingMode:
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_DEEPSEEK_THINKING_MODE") ||
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_MODE"),
-      reasoningEffort:
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_DEEPSEEK_REASONING_EFFORT") ||
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_REASONING_EFFORT"),
-      thinkingLevel:
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_GEMINI_THINKING_LEVEL") ||
-        readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
-      thinkingBudget:
-        readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_GEMINI_THINKING_BUDGET") ??
-        readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
-      safetyHarassment: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HARASSMENT"),
-      safetyHateSpeech: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HATE_SPEECH"),
-      safetySexuallyExplicit: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
-      safetyDangerousContent: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_DANGEROUS_CONTENT"),
-    };
-
-    return normalizeWorkerSettings(sanitizeWorkerSettings(rawWorkerSettings));
-  }
-
-  const rollingSummaryWorkerSettings = buildWorkerSettingsForMemory("CHAT_MEMORY_ROLLING_SUMMARY_WORKER_MAX_OUTPUT_TOKENS");
-  const coreMemoryWorkerSettings = buildWorkerSettingsForMemory("CHAT_MEMORY_CORE_WORKER_MAX_OUTPUT_TOKENS");
-
-  const openaiCompatibleBody = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_OPENAI_COMPATIBLE_BODY_JSON");
-  const googleGenAiConfig = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_GOOGLE_GENAI_CONFIG_JSON");
-
-  return {
-    v1ContextEnabled,
-    rollingSummaryMaxChars,
-    rollingSummaryUpdateEveryNTurns,
-    coreMemoryEnabled,
-    coreMemoryStrictSyncWithRsCheckpointEnabled,
-    coreMemoryMaxChars,
-    coreMemoryUpdateEveryNTurns,
-    coreMemoryDeltaBatchMessages,
-    gapBridgeMaxMessages,
-    gapBridgeMaxChars,
-    recentWindowAssistantGistEnabled,
-    recentWindowAssistantRawLastN,
-    recentWindowAssistantGistPrefix,
-    workerProviderId,
-    workerModelId,
-    workerConcurrency,
-    backfillBatchMessages,
-    backfillCooldownMs,
-    checkpointEveryNMessages,
-    checkpointKeepLastN,
-    writeRetryMax,
-    syncRebuildTimeoutMs,
-    syncRebuildTotalTimeoutMs,
-    rollingSummaryWorkerSettings,
-    coreMemoryWorkerSettings,
-    workerRaw: {
-      openaiCompatibleBody,
-      googleGenAiConfig,
-    },
-  };
 })();
 
 const chatGistConfig = (() => {
@@ -1154,13 +876,9 @@ const logConfig = {
   debugFile: readStringEnv("LOG_DEBUG_FILE", "debug.log"),
   chatFile: readStringEnv("LOG_CHAT_FILE", ""),
   debugFullFile: readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log"),
-  debugRollingFile: readStringEnv("LOG_DEBUG_ROLLING_FILE", "debug-rolling.log"),
   debugGistFile: readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log"),
-  debugCoreFile: readStringEnv("LOG_DEBUG_CORE_FILE", "debug-core.log"),
   debugFullEnabled: readBoolEnv("LOG_DEBUG_FULL_ENABLED", true),
-  debugRollingEnabled: readBoolEnv("LOG_DEBUG_ROLLING_ENABLED", true),
   debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", true),
-  debugCoreEnabled: readBoolEnv("LOG_DEBUG_CORE_ENABLED", true),
 };
 
 const { loadMemoryV2Config } = require("../modules/memory");
@@ -1178,7 +896,7 @@ const articleConfig = {
 module.exports = {
   chatConfig,
   chatTimeContextConfig,
-  chatMemoryConfig,
+  chatContextConfig,
   chatGistConfig,
   chatRagConfig,
   llmConfig,

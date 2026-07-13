@@ -1,9 +1,9 @@
 ﻿const crypto = require("crypto");
 const chatModel = require("@models/chatModel");
 const chatMessageGistModel = require("@models/chatMessageGistModel");
-const { chatGistConfig, chatMemoryConfig } = require("../../../config");
-const { logger } = require("../../../logger");
-const { createChatCompletion } = require("../../llm/chatCompletions");
+const { chatContextConfig, chatGistConfig } = require("../../config");
+const { logger } = require("../../logger");
+const { createChatCompletion } = require("../llm/chatCompletions");
 const { createSemaphore, createKeyedTaskQueue } = require("./taskQueue");
 const { stripCodeFences, clipText } = require("./textUtils");
 
@@ -245,7 +245,7 @@ function requestAssistantGistGeneration({ userId, presetId, messageId, content, 
 
 function scheduleAssistantGistBackfill({ userId, presetId, gistBackfillCandidates } = {}) {
   if (!chatGistConfig?.enabled) return { scheduled: 0, reason: "gist_disabled" };
-  if (!chatMemoryConfig?.recentWindowAssistantGistEnabled) return { scheduled: 0, reason: "assistant_gist_disabled" };
+  if (!chatContextConfig.recentWindowAssistantGistEnabled) return { scheduled: 0, reason: "assistant_gist_disabled" };
 
   const candidates = Array.isArray(gistBackfillCandidates) ? gistBackfillCandidates : [];
   if (!candidates.length) return { scheduled: 0, reason: "no_candidates" };

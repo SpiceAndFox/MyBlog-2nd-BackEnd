@@ -22,13 +22,9 @@ const LOG_INFO_FILE = readStringEnv("LOG_INFO_FILE", "info.log");
 const LOG_DEBUG_FILE = readStringEnv("LOG_DEBUG_FILE", "debug.log");
 const LOG_CHAT_FILE = readStringEnv("LOG_CHAT_FILE", "");
 const LOG_DEBUG_FULL_FILE = readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log");
-const LOG_DEBUG_ROLLING_FILE = readStringEnv("LOG_DEBUG_ROLLING_FILE", "debug-rolling.log");
 const LOG_DEBUG_GIST_FILE = readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log");
-const LOG_DEBUG_CORE_FILE = readStringEnv("LOG_DEBUG_CORE_FILE", "debug-core.log");
 const LOG_DEBUG_FULL_ENABLED = readBoolEnv("LOG_DEBUG_FULL_ENABLED", true);
-const LOG_DEBUG_ROLLING_ENABLED = readBoolEnv("LOG_DEBUG_ROLLING_ENABLED", true);
 const LOG_DEBUG_GIST_ENABLED = readBoolEnv("LOG_DEBUG_GIST_ENABLED", true);
-const LOG_DEBUG_CORE_ENABLED = readBoolEnv("LOG_DEBUG_CORE_ENABLED", true);
 
 function resolveLogPath(logDir, rawPath) {
   const normalized = typeof rawPath === "string" ? rawPath.trim() : "";
@@ -45,9 +41,7 @@ const levelLogFilePaths = {
 };
 const chatLogFilePath = resolveLogPath(logDir, LOG_CHAT_FILE);
 const debugFullLogFilePath = LOG_DEBUG_FULL_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_FULL_FILE) : "";
-const debugRollingLogFilePath = LOG_DEBUG_ROLLING_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_ROLLING_FILE) : "";
 const debugGistLogFilePath = LOG_DEBUG_GIST_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_GIST_FILE) : "";
-const debugCoreLogFilePath = LOG_DEBUG_CORE_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_CORE_FILE) : "";
 
 if (LOG_TO_FILE) {
   fs.mkdirSync(logDir, { recursive: true });
@@ -179,9 +173,7 @@ const logger = {
   },
   debug: (message, meta) => log("debug", message, meta),
   debugFull: (message, meta) => logCustom("debug_full", message, meta, { filePath: debugFullLogFilePath }),
-  debugRolling: (message, meta) => logCustom("debug_rolling", message, meta, { filePath: debugRollingLogFilePath }),
   debugGist: (message, meta) => logCustom("debug_gist", message, meta, { filePath: debugGistLogFilePath }),
-  debugCore: (message, meta) => logCustom("debug_core", message, meta, { filePath: debugCoreLogFilePath }),
 };
 
 function withRequestContext(req, meta = {}) {

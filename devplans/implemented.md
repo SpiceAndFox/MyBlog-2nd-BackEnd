@@ -71,7 +71,7 @@
 - 实现 projection 的 `requiredBoundary/processedBoundary` 查询健康与有效 RAG cutoff；partial coverage 仍允许注入已处理结果并标记范围不完整，projection checkpoint 与 Memory cursor 保持独立。
 - 实现持续告警与恢复通知：GapBridge/projection 诊断保持 active 到明确追平；清诊断与创建 notification 同事务；target 从非健康恢复时同事务创建通知；JSON 与 SSE `done` 返回健康/通知，响应完成后 best-effort 标记 delivered。
 - Renderer 读取 target status 与 active GapBridge sidecar，为稳定 state 输出“可能滞后/正在重建”标记；请求时 effective view 需要 cleanup 时异步、串行唤醒幂等 housekeeping。
-- v1 rolling summary/core memory/legacy GapBridge 已正式退役：删除其环境变量，运行时固定禁止旧上下文注入与后台 tick，旧手动重建端点返回 `410`；旧实现代码仅暂留用于后续物理清理，不再参与配置或执行。
+- v1 rolling summary/core memory/legacy GapBridge 已正式退役：删除其环境变量，运行时固定禁止旧上下文注入与后台 tick；本阶段暂留的实现代码已在阶段 8 物理清理。
 - 增加阶段 6 context fixture，以及 recent window、GapBridge、健康优先级、projection lag、恢复通知、housekeeping wake-up、state 跳过原因与单一 segment 测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
@@ -99,10 +99,18 @@
 - DeepSeek Memory 请求显式发送独立 `thinking.type=disabled`，不继承主聊天思考设置；配置允许显式启用以便实验，但高频生产默认关闭。
 - preflight 从简单布尔 schema 扩展为六个 Normal Proposer 与 Compaction 完整 schema 的顺序 golden 探测，并移除脚本对单一模型 ID 的硬编码。
 - Provider 输出边界 `output_schema_invalid` 首次将计数持久化到 durable task 并立即重试一次；输入边界错误不重试，第二次输出错误 halt，恢复扫描不会重新获得次数。
+- 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-v4-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
+
+## 2026-07-13：Memory Control v2 阶段 8 代码退役与运行时切换
+
+- 物理删除 v1 rolling summary、core memory、checkpoint、worker/tick/rebuild lock、旧 context segments、旧模型和旧 prompts；聊天代码不再导入或分支到 v1。
+- 上下文编译器只允许单一 Memory v2 segment；v2 关闭时只提供普通 recent/RAG 上下文，不存在旧 Memory fallback。
+- 增加 v2 runtime 装配：normal observer/pipeline、per-scope 串行队列、source mutation rebuild 与进程启动 durable task recovery 已接入聊天运行路径。
+- 旧手动 rebuild API 改为触发 v2 source rebuild；消息编辑、会话删除/恢复/永久删除和 trash purge 均改为使 v2 generation 失效并 rebuild。
+- 新增 `002-drop-memory-v1.sql`，幂等删除 v1 checkpoint 表及 rolling/core/dirty/rebuild 字段；fresh schema 与 migration runner 均只建立/执行 v2 所需结构，且不修改或删除 `chat_messages`。
+- Assistant gist 仍是可选的近期窗口压缩能力，不是 Memory authority；其实现和配置已移出旧 Memory 命名空间。
 
 ## 尚未执行
 
-- roadmap 阶段 8 尚未完成。已实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门；测试覆盖重复 rehearsal 及 raw boundary、target health、authority snapshot、event chain、projection checkpoint 的失败门控。
-- v1 退役已与 v2 启服解耦：`clearLegacyDerivedMemory` 在确认 v1 runtime 停用并二次确认后，可独立、幂等清空 rolling/core Memory 及 v1 checkpoint；repository SQL 回归测试明确禁止对 `chat_messages` 执行更新或删除。提前清理表示放弃回退 v1，但不会自动开放 v2 启服门。
-- 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-v4-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
-- 尚需提供生产历史数据库副本与真实 RAG/Recall projection adapter 的 migration 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。v2 生产切换手册暂存于 [Memory v2 生产切换执行手册（Deferred）](deferred/memory-v2-production-migration-runbook.md)；通过前不启用 v2，也不移除仍需核对的 v1 遗留代码。
+- roadmap 阶段 8 的代码退役已完成；生产历史副本上的正式 rehearsal/cutover 仍未执行。当前已有历史规模与 section 容量/耗时报告、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门。
+- 尚需提供生产历史数据库副本与真实 RAG/Recall projection adapter 的 migration 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。v2 生产切换手册暂存于 [Memory v2 生产切换执行手册（Deferred）](deferred/memory-v2-production-migration-runbook.md)；通过前不开放生产启服门。

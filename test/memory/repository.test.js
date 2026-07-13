@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const db = require("../../db");
 const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
@@ -60,27 +62,19 @@ test("target recovery status and notification commit in one transaction", async 
   } finally { db.getClient = originalGetClient; }
 });
 
-test("stage 8 legacy derived clear removes only v1 values/checkpoints and preserves raw messages", async () => {
+test("stage 8 source inventory reads raw messages without mutating them", async () => {
   const statements = [];
-  let countQuery = 0;
-  const client = {
-    async query(sql) {
-      statements.push(sql.replace(/\s+/g, " ").trim());
-      if (sql.includes("DELETE FROM chat_preset_memory_checkpoints")) return { rows: [], rowCount: 3 };
-      if (sql.includes("UPDATE chat_preset_memory")) return { rows: [], rowCount: 2 };
-      if (sql.includes("SELECT COUNT(*)::BIGINT AS count")) {
-        countQuery += 1;
-        return { rows: [{ count: "0" }], rowCount: 1 };
-      }
-      throw new Error(`Unexpected SQL: ${sql}`);
-    },
-  };
-  const cleared = await migrationRepository.clearLegacyDerivedMemory({ client });
-  const residue = await migrationRepository.getLegacyDerivedMemoryResidue({ client });
-  assert.deepEqual(cleared, { derivedMemoryRows: 2, checkpointRows: 3 });
-  assert.deepEqual(residue, { derivedMemoryRows: 0, checkpointRows: 0 });
-  assert.equal(countQuery, 2);
-  assert.equal(statements.some((sql) => sql.includes("rolling_summary=''")), true);
-  assert.equal(statements.some((sql) => sql.startsWith("DELETE FROM chat_preset_memory_checkpoints")), true);
+  const client = { async query(sql) { statements.push(sql.replace(/\s+/g, " ").trim()); return { rows: [] }; } };
+  await migrationRepository.listSourceScopes({ client });
+  assert.equal(statements.some((sql) => sql.includes("FROM chat_messages")), true);
   assert.equal(statements.some((sql) => /(?:DELETE FROM|UPDATE) chat_messages\b/i.test(sql)), false);
+});
+
+test("the v1 schema removal migration drops only obsolete Memory storage", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../migrations/memory/002-drop-memory-v1.sql"), "utf8");
+  assert.match(sql, /DROP TABLE IF EXISTS chat_preset_memory_checkpoints/i);
+  for (const column of ["rolling_summary", "core_memory", "dirty_since_message_id", "rebuild_required"]) {
+    assert.match(sql, new RegExp(`DROP COLUMN IF EXISTS ${column}`, "i"));
+  }
+  assert.doesNotMatch(sql, /(?:DELETE FROM|UPDATE|DROP TABLE(?: IF EXISTS)?)\s+chat_messages\b/i);
 });

@@ -7,9 +7,9 @@ require("module-alias/register");
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const db = require("./db");
-const { chatConfig, chatMemoryConfig } = require("./config");
+const { chatConfig, chatContextConfig } = require("./config");
 const { buildRecentWindowContext } = require("./services/chat/context/buildRecentWindowContext");
-const { requestAssistantGistGeneration } = require("./services/chat/memory/gistPipeline");
+const { requestAssistantGistGeneration } = require("./services/chat/gistPipeline");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -80,7 +80,7 @@ async function listRecentWindowGistCandidates({ userId, presetId, upToMessageId 
       candidatesCount: candidates.length,
       windowStartMessageId: recentWindow?.stats?.windowStartMessageId ?? null,
       windowEndMessageId: recentWindow?.stats?.windowEndMessageId ?? null,
-      assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
+      assistantRawLastN: chatContextConfig.recentWindowAssistantRawLastN,
       assistantCandidates: list.length,
     },
   };

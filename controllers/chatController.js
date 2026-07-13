@@ -3,23 +3,20 @@ const chatPresetModel = require("@models/chatPresetModel");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { chatConfig, llmConfig, chatMemoryConfig, chatRagConfig, memoryV2Config } = require("../config");
+const { chatConfig, llmConfig, chatRagConfig, memoryV2Config } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
-const { markRecoveryNotificationsDelivered } = require("../modules/memory");
-const { buildRecentWindowContext } = require("../services/chat/context/buildRecentWindowContext");
-const {
-  getPresetMemoryStatus,
-  markPresetMemoryDirty,
-  clearPresetCoreMemory,
-  rebuildRollingSummarySync,
-  requestMemoryTick,
-} = require("../services/chat/memory/writePipeline");
-const { requestAssistantGistGeneration } = require("../services/chat/memory/gistPipeline");
+const { createDefaultMemoryRuntime, markRecoveryNotificationsDelivered } = require("../modules/memory");
+const { requestAssistantGistGeneration } = require("../services/chat/gistPipeline");
 const {
   requestChatTurnIndexing,
   requestDeleteChunksFromMessageId,
 } = require("../services/chat/rag/indexer");
 const { logger, withRequestContext } = require("../logger");
+
+const memoryRuntime = createDefaultMemoryRuntime({
+  config: memoryV2Config,
+  onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
+});
 const {
   getProviderDefinition,
   isSupportedProvider,
@@ -362,80 +359,18 @@ function getAbortReasonMessage(signal) {
   return String(reason);
 }
 
-async function isChatMemoryLocked({ userId, presetId } = {}) {
-  try {
-    const memory = await getPresetMemoryStatus({ userId, presetId });
-    return Boolean(memory?.rebuildRequired);
-  } catch (error) {
-    if (error?.code === "42P01") return false;
-    throw error;
-  }
+function requestMemoryUpdate({ userId, presetId } = {}) {
+  if (!memoryRuntime.enabled) return false;
+  void memoryRuntime.processScope(userId, presetId);
+  return true;
 }
 
-async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) {
-  const normalizedUserId = userId;
-  const normalizedPresetId = String(presetId || "").trim();
-  if (!normalizedUserId || !normalizedPresetId) return false;
-
-  const recentWindow = await buildRecentWindowContext({ userId: normalizedUserId, presetId: normalizedPresetId });
-  return Boolean(recentWindow?.needsMemory);
+function requestMemoryRebuild({ userId, presetId, reason } = {}) {
+  if (!memoryRuntime.enabled) return false;
+  void memoryRuntime.rebuildScope(userId, presetId, { reason });
+  return true;
 }
 
-async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason } = {}) {
-  if (!chatMemoryConfig.legacyEnabled) return;
-
-  let existing = null;
-  try {
-    existing = await getPresetMemoryStatus({ userId, presetId });
-  } catch (error) {
-    if (error?.code === "42P01") return;
-    throw error;
-  }
-
-  let needsMemory = false;
-  try {
-    needsMemory = await isPresetHistoryLongerThanRecentWindow({ userId, presetId });
-  } catch (error) {
-    logger.error("chat_memory_needs_check_failed", { error, userId, presetId });
-    needsMemory = false;
-  }
-
-  if (!existing && !needsMemory) return;
-
-  try {
-    await markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: needsMemory, reason });
-  } catch (error) {
-    if (error?.code !== "42P01") throw error;
-    return;
-  }
-
-  if (!needsMemory) return;
-
-  void rebuildRollingSummarySync({ userId, presetId }).catch((error) => {
-    logger.error("chat_memory_rebuild_failed", {
-      error,
-      userId,
-      presetId,
-      providerId: chatMemoryConfig.workerProviderId,
-      modelId: chatMemoryConfig.workerModelId,
-    });
-    logger.error("chat_memory_rebuild_hard_lock_retained", {
-      userId,
-      presetId,
-      reason: "hard_no_fallback_unlock_enabled",
-      note: "rebuildRequired lock is intentionally retained; chat remains blocked with 423 until rebuild succeeds or is manually released",
-    });
-  });
-}
-
-function kickMemoryUpdate({ userId, presetId, needsMemory } = {}) {
-  if (!chatMemoryConfig.legacyEnabled || !needsMemory) return;
-  try {
-    requestMemoryTick({ userId, presetId });
-  } catch (error) {
-    logger.error("chat_memory_tick_kick_failed", { error, userId, presetId });
-  }
-}
 
 function getRagSources(context) {
   const sources = Array.isArray(context?.rag?.sources) ? context.rag.sources : [];
@@ -709,10 +644,6 @@ const chatController = {
 
   async rebuildPresetMemory(req, res) {
     try {
-      if (!chatMemoryConfig.legacyEnabled) {
-        return res.status(410).json({ error: "Legacy memory rebuild is no longer available" });
-      }
-
       const userId = req.user?.id;
       const presetId = normalizePresetId(req.params.presetId);
       if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
@@ -720,52 +651,15 @@ const chatController = {
       const preset = await chatPresetModel.getPreset(userId, presetId);
       if (!preset) return res.status(404).json({ error: "Preset not found" });
 
-      await markPresetMemoryDirty({
-        userId,
-        presetId: preset.id,
-        sinceMessageId: 0,
-        rebuildRequired: true,
-        reason: "manual_rebuild",
-      });
-
-      const logContext = withRequestContext(req, {
-        userId,
-        presetId: preset.id,
-        providerId: chatMemoryConfig.workerProviderId,
-        modelId: chatMemoryConfig.workerModelId,
-      });
-
-      void rebuildRollingSummarySync({ userId, presetId: preset.id })
-        .then((result) => {
-          logger.info("chat_memory_manual_rebuild_completed", {
-            ...logContext,
-            updated: Boolean(result?.updated),
-            reason: result?.reason,
-            needsMemory: Boolean(result?.needsMemory),
-            processedBatches: result?.processedBatches,
-            processedMessages: result?.processedMessages,
-          });
-        })
-        .catch((error) => {
-          logger.error("chat_memory_manual_rebuild_failed", { ...logContext, error });
-          logger.error("chat_memory_rebuild_hard_lock_retained", {
-            ...logContext,
-            reason: "manual_rebuild_failed",
-            note: "rebuildRequired lock is intentionally retained; chat remains blocked with 423 until rebuild succeeds or is manually released",
-          });
-        });
+      if (!requestMemoryRebuild({ userId, presetId: preset.id, reason: "manual_rebuild" })) {
+        return res.status(503).json({ error: "Memory Control v2 is disabled" });
+      }
 
       res.status(202).json({
         presetId: preset.id,
-        memory: {
-          status: "queued",
-          rebuildRequired: true,
-        },
+        memory: { version: 2, status: "queued" },
       });
     } catch (error) {
-      if (error?.code === "42P01") {
-        return res.status(500).json({ error: "Chat memory table is not initialized" });
-      }
       logger.error("chat_preset_memory_rebuild_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
@@ -954,15 +848,7 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          let sinceMessageId = 0;
-          try {
-            const range = await chatModel.getSessionMessageIdRange(userId, sessionId);
-            if (range?.minMessageId) sinceMessageId = range.minMessageId;
-          } catch (rangeError) {
-            logger.error("chat_session_message_range_failed", withRequestContext(req, { error: rangeError, sessionId, presetId }));
-          }
-
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason: "session_trashed" });
+          requestMemoryRebuild({ userId, presetId, reason: "session_trashed" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -987,15 +873,7 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          let sinceMessageId = 0;
-          try {
-            const range = await chatModel.getSessionMessageIdRange(userId, sessionId);
-            if (range?.minMessageId) sinceMessageId = range.minMessageId;
-          } catch (rangeError) {
-            logger.error("chat_session_message_range_failed", withRequestContext(req, { error: rangeError, sessionId, presetId }));
-          }
-
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason: "session_restored" });
+          requestMemoryRebuild({ userId, presetId, reason: "session_restored" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -1020,13 +898,7 @@ const chatController = {
       const presetId = String(deletedSession?.preset_id || deletedSession?.presetId || "").trim();
       if (presetId) {
         try {
-          const sinceMessageId = Number(deletedSession?.firstMessageId) || 0;
-          await lockAndRebuildChatMemoryAsync({
-            userId,
-            presetId,
-            sinceMessageId,
-            reason: "session_deleted_permanent",
-          });
+          requestMemoryRebuild({ userId, presetId, reason: "session_deleted_permanent" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -1079,11 +951,6 @@ const chatController = {
       if (!session) return res.status(404).json({ error: "Session not found" });
       if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
-      const sessionPresetId = String(session?.preset_id || session?.presetId || "").trim();
-      if (!memoryV2Config.enabled && sessionPresetId && (await isChatMemoryLocked({ userId, presetId: sessionPresetId }))) {
-        return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
-      }
-
       const message = await chatModel.getMessage(userId, sessionId, messageId);
       if (!message) return res.status(404).json({ error: "Message not found" });
       if (message.role !== "user") return res.status(400).json({ error: "Only user messages can be edited" });
@@ -1125,21 +992,7 @@ const chatController = {
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
 
-      try {
-        const existing = await getPresetMemoryStatus({ userId, presetId });
-        if (existing) {
-          const summarizedUntilMessageId = Number(existing?.summarizedUntilMessageId) || 0;
-          const coreCoveredUntilMessageId = Number(existing?.coreMemory?.meta?.coveredUntilMessageId) || 0;
-
-          if (summarizedUntilMessageId >= messageId) {
-            await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: messageId, reason: "edit_truncate" });
-          } else if (coreCoveredUntilMessageId >= messageId) {
-            await clearPresetCoreMemory({ userId, presetId, sinceMessageId: messageId, reason: "edit_truncate" });
-          }
-        }
-      } catch (error) {
-        if (error?.code !== "42P01") throw error;
-      }
+      requestMemoryRebuild({ userId, presetId, reason: "message_edited" });
 
       if (!regenerate) {
         updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;
@@ -1159,7 +1012,6 @@ const chatController = {
         upToMessageId: messageId,
       });
       const messages = context.messages;
-      const needsMemory = Boolean(context.needsMemory);
 
       logger.debug(
         "chat_context_compiled",
@@ -1193,7 +1045,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
-        kickMemoryUpdate({ userId, presetId, needsMemory });
+        requestMemoryUpdate({ userId, presetId });
         kickRagTurnIndexing({
           userId,
           presetId,
@@ -1295,7 +1147,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
-      kickMemoryUpdate({ userId, presetId, needsMemory });
+      requestMemoryUpdate({ userId, presetId });
       kickRagTurnIndexing({
         userId,
         presetId,
@@ -1389,10 +1241,6 @@ const chatController = {
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
       errorSession = updatedSession;
 
-      if (!memoryV2Config.enabled && (await isChatMemoryLocked({ userId, presetId }))) {
-        return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
-      }
-
       userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
 
@@ -1403,7 +1251,6 @@ const chatController = {
         upToMessageId: userMessage.id,
       });
       const messages = context.messages;
-      const needsMemory = Boolean(context.needsMemory);
 
       logger.debug(
         "chat_context_compiled",
@@ -1438,7 +1285,7 @@ const chatController = {
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
         errorSession = updatedSession;
-        kickMemoryUpdate({ userId, presetId, needsMemory });
+        requestMemoryUpdate({ userId, presetId });
         kickRagTurnIndexing({
           userId,
           presetId,
@@ -1541,7 +1388,7 @@ const chatController = {
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
       errorSession = updatedSession;
-      kickMemoryUpdate({ userId, presetId, needsMemory });
+      requestMemoryUpdate({ userId, presetId });
       kickRagTurnIndexing({
         userId,
         presetId,

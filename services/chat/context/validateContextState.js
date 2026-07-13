@@ -11,12 +11,6 @@ function assertString(value, { name, allowEmpty = true } = {}) {
   }
 }
 
-function assertBoolean(value, { name } = {}) {
-  if (typeof value !== "boolean") {
-    throw new Error(`Invalid ${name || "boolean"}: expected boolean`);
-  }
-}
-
 function assertNumber(value, { name, allowNull = false } = {}) {
   if (allowNull && (value === null || value === undefined)) return;
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -51,34 +45,6 @@ function assertContextState(contextState) {
   if (!isPlainObject(contextState)) throw new Error("Invalid contextState: expected object");
 
   assertString(contextState.systemPrompt ?? "", { name: "contextState.systemPrompt", allowEmpty: true });
-  assertBoolean(contextState.coreMemoryEnabled, { name: "contextState.coreMemoryEnabled" });
-  assertString(contextState.coreMemoryText ?? "", { name: "contextState.coreMemoryText", allowEmpty: true });
-  assertNumber(contextState.coreMemoryChars, { name: "contextState.coreMemoryChars" });
-  assertBoolean(contextState.rollingSummaryEnabled, { name: "contextState.rollingSummaryEnabled" });
-
-  const memory = contextState.memory;
-  if (memory !== null && memory !== undefined && !isPlainObject(memory)) {
-    throw new Error("Invalid contextState.memory: expected object or null");
-  }
-  if (contextState.coreMemoryEnabled) {
-    if (!isPlainObject(memory)) throw new Error("Invalid contextState.memory: coreMemoryEnabled requires memory");
-    assertString(contextState.coreMemoryText, { name: "contextState.coreMemoryText", allowEmpty: false });
-    if (contextState.coreMemoryChars !== contextState.coreMemoryText.length) {
-      throw new Error("Invalid contextState.coreMemoryChars: expected length of coreMemoryText");
-    }
-  } else {
-    if (contextState.coreMemoryText.trim()) {
-      throw new Error("Invalid contextState.coreMemoryText: expected empty when coreMemory is disabled");
-    }
-    if (contextState.coreMemoryChars !== 0) {
-      throw new Error("Invalid contextState.coreMemoryChars: expected 0 when coreMemory is disabled");
-    }
-  }
-  if (contextState.rollingSummaryEnabled) {
-    if (!isPlainObject(memory)) throw new Error("Invalid contextState.memory: rollingSummaryEnabled requires memory");
-    assertString(memory.rollingSummary ?? "", { name: "contextState.memory.rollingSummary", allowEmpty: false });
-  }
-
   assertOptionalMessageContainer(contextState.gapBridge, { name: "contextState.gapBridge" });
   assertOptionalMessageContainer(contextState.ragContext, { name: "contextState.ragContext" });
   if (contextState.memoryV2 !== null && contextState.memoryV2 !== undefined) {

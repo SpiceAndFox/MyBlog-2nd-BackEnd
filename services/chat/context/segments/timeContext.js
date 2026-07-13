@@ -120,7 +120,7 @@ function buildTimeContextSegment({ timeContext, recent } = {}) {
   const currentUserContent = readCurrentUserMessageContent({ recent });
   const messages = [];
 
-  // 现已调整顺序timecontext到rolling summary后，所以只传system即可，传user反而会导致时间错乱
+  // timeContext 只作为 system 上下文注入；复制为 user 消息会扰乱当前消息边界。
   // if (isTimeQuery(currentUserContent)) {
   //   const userTemplate = normalizeTemplate(TIME_CONTEXT_USER_TEMPLATE);
   //   const userContent = renderTemplate(userTemplate, vars).trim();

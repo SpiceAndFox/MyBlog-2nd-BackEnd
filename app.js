@@ -8,8 +8,9 @@ require("module-alias/register");
 // 引入配置文件
 dotenv.config();
 
-const { chatConfig } = require("./config");
+const { chatConfig, memoryV2Config } = require("./config");
 const { logger } = require("./logger");
+const { createDefaultMemoryRuntime } = require("./modules/memory");
 const requestLogger = require("./middleware/requestLogger");
 const errorHandler = require("./middleware/errorHandler");
 
@@ -62,6 +63,12 @@ startChatTrashCleanup({
 });
 
 const server = app.listen(PORT, HOST);
+
+const memoryRuntime = createDefaultMemoryRuntime({
+  config: memoryV2Config,
+  onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
+});
+if (memoryRuntime.enabled) void memoryRuntime.recoverPending();
 
 server.on("listening", () => {
   logger.info("server_started", { port: PORT, host: HOST });
