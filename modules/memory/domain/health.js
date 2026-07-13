@@ -15,7 +15,8 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
       alerts.push({ subjectKind: "target", subjectKey: targetKey, status: "degraded", message: `${TARGET_LABELS[targetKey]}记忆健康状态不可用` });
       continue;
     }
-    const internal = rowValue(row, "status");
+    const hasRebuildBoundary = rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== null && rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== undefined;
+    const internal = hasRebuildBoundary ? "rebuilding" : rowValue(row, "status");
     if (internal === "healthy") continue;
     const rebuilding = internal === "rebuilding";
     status = rebuilding ? "rebuilding" : status === "healthy" ? "degraded" : status;

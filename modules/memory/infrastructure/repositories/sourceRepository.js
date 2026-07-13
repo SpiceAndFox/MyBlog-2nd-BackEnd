@@ -45,4 +45,29 @@ async function listUpTo(userId, presetId, upToMessageId, { client } = {}) {
   const { rows } = await executor(client).query(sql, hasBoundary ? [scope.userId, scope.presetId, boundary] : [scope.userId, scope.presetId]);
   return rows.map(mapRow);
 }
-module.exports = { countAfter, getObservedWindow, getByIds, listUpTo };
+async function getBoundary(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT MAX(m.id)::BIGINT AS boundary FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE}`, [scope.userId, scope.presetId]);
+  return rows[0]?.boundary === null || rows[0]?.boundary === undefined ? 0 : Number(rows[0].boundary);
+}
+async function getHistoryMetrics(userId, presetId, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT COUNT(*)::BIGINT AS message_count,COALESCE(SUM(char_length(m.content)),0)::BIGINT AS character_count,COALESCE(MAX(m.id),0)::BIGINT AS boundary_message_id FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE}`, [scope.userId, scope.presetId]);
+  const row = rows[0];
+  return { messageCount: Number(row.message_count), characterCount: Number(row.character_count), boundaryMessageId: Number(row.boundary_message_id) };
+}
+async function getForceDrainWindow(userId, presetId, cursor, boundary, { newBatchSize, contextWindow }, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (![cursor, boundary, newBatchSize, contextWindow].every(Number.isSafeInteger) || cursor < 0 || boundary < cursor || newBatchSize < 1 || contextWindow < newBatchSize) throw new Error("Invalid force-drain window parameters");
+  const db = executor(client);
+  const { rows: batch } = await db.query(`SELECT m.id,m.role,m.content,m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id>$3 AND m.id<=$4 ORDER BY m.id ASC LIMIT $5`, [scope.userId, scope.presetId, cursor, boundary, newBatchSize]);
+  if (!batch.length) return [];
+  const overlapLimit = Math.max(0, contextWindow - batch.length);
+  let overlap = [];
+  if (overlapLimit) {
+    const result = await db.query(`SELECT m.id,m.role,m.content,m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id<=$3 ORDER BY m.id DESC LIMIT $4`, [scope.userId, scope.presetId, cursor, overlapLimit]);
+    overlap = result.rows.reverse();
+  }
+  return [...overlap, ...batch].map(mapRow);
+}
+module.exports = { countAfter, getObservedWindow, getByIds, listUpTo, getBoundary, getHistoryMetrics, getForceDrainWindow };

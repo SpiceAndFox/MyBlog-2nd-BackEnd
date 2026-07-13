@@ -2,7 +2,11 @@ const { buildEffectiveMemoryView } = require("./lifecycle");
 const { codePointLength } = require("./capacity");
 
 function healthStatus(targetStatuses, targetKey) {
-  if (Array.isArray(targetStatuses)) return targetStatuses.find((entry) => entry.targetKey === targetKey)?.status || "healthy";
+  if (Array.isArray(targetStatuses)) {
+    const row = targetStatuses.find((entry) => (entry.targetKey ?? entry.target_key) === targetKey);
+    if ((row?.rebuildBoundaryMessageId ?? row?.rebuild_boundary_message_id) !== null && (row?.rebuildBoundaryMessageId ?? row?.rebuild_boundary_message_id) !== undefined) return "rebuilding";
+    return row?.status || "healthy";
+  }
   return targetStatuses?.[targetKey]?.status || targetStatuses?.[targetKey] || "healthy";
 }
 

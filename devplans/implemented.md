@@ -75,6 +75,29 @@
 - 增加阶段 6 context fixture，以及 recent window、GapBridge、健康优先级、projection lag、恢复通知、housekeeping wake-up、state 跳过原因与单一 segment 测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
+## 2026-07-13：Memory Control v2 阶段 7
+
+- 实现 source mutation generation 初始化事务：raw mutation 回调、有效 source boundary、`sourceGeneration + 1`、旧 generation 非终态 task 取消、空 state/cursor、全局 revision 单调递增 snapshot、六 target `rebuilding` 与 RAG/Recall checkpoint invalidation 原子提交。
+- 实现授权 `forceDrainTo`：绕过普通 lag/status 门控，复用 normal durable task pipeline 分批追平 captured boundary；中间批次保持 `rebuilding`，仅在 generation、authority state、完整 snapshot、连续 event/revision/cursor 与 suppression 终态校验通过后逐 target 恢复 healthy。
+- 实现 RAG/Recall 通用 projection drain：generation 不一致全量 staged rebuild、同 generation 增量 staged append，提交前重校 generation/boundary，并在同事务提交派生结果与独立 checkpoint；stale 结果不推进 checkpoint 或写入派生数据。
+- 完成 correction/forget suppression 闭环：既有 Reducer tombstone 原子提交保持不变；normal/rebuild evidence 查询先排除 suppressed source；重建终态过滤支持“更晚且未 suppress 的 correction evidenceGroup”例外。
+- RAG chunk metadata 保存全部 source `messageId + contentHash`；建索引前、相似度查询末端和相邻 raw dialogue window 均应用 tombstone gate。generation mismatch 时不注入旧 RAG projection。
+- 实现 Recall 三段 suppression 的纯代码 gate：候选 evidence refs、raw window 与最终可注入 evidenceGroups 统一按 source key 过滤，全 refs 被过滤的 group 跳过。
+- 实现 retention：校验 schema-valid authority/anchor、revision/event/snapshot 连续链后原子提升 anchor，清理已吸收 event/snapshot；保留 active task、predecessor/parent 和 retained group 引用，并仅在 targets/projections 已脱离旧 generation 后清理旧 generation 审计数据。
+- 实现 privacy hard delete 编排：raw source、Memory state/history/task/ops/tombstone/diagnostic/notification/checkpoint 与显式 RAG/Recall/debug store adapter 同一受控流程物理清除；任一 store 仍有残留时保持 rebuilding，不执行 force drain；清除后从剩余 raw source 重建。
+- 增加阶段 7 rebuild/suppression fixture，覆盖 correction 例外、RAG/Recall 查询 gate、source generation 初始化、force drain 中间状态、projection stale、retention anchor 与 privacy residue 阻断。
+- `npm run test:memory-v2` 与 `npm test` 全部通过。
+
+## 2026-07-13：Memory Provider adapter 与配置解耦
+
+- 保留上层 `MemoryProviderAdapter` 的统一结果语义，新增 structured transport factory；Memory pipeline 不再绑定单一 Provider 请求协议。
+- 支持 `openai-json-schema` 与 `deepseek-strict-tools` 两种显式 adapter。DeepSeek adapter 使用 Beta strict function/tool calling、强制指定 tool，并将 tool arguments 归一化为统一 structured output。
+- 增加 DeepSeek schema 编译层：将 `oneOf`/`const` 和可选 object properties 转换为 strict-tools 可接受的 schema 子集；不受 Provider 支持的长度、数组约束仍由既有本地契约校验兜底。
+- 用 `CHAT_MEMORY_V2_PROVIDER_ADAPTER` 替代不能证明真实能力的 `CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT` 布尔声明。
+- Provider 配置可独立加载；preflight 只读取 `CHAT_MEMORY_V2_PROVIDER_*`，不再回退到聊天链路的 `DEEPSEEK_*` 配置。官方 DeepSeek strict adapter 会在请求前拒绝非 `/beta` 端点。
+- 增加 adapter 选择、配置隔离、schema 转换、strict tool 请求及响应归一化测试；`npm run test:memory-v2` 与 `npm test` 全部通过。
+
 ## 尚未执行
 
-- 尚未开始 roadmap 阶段 7。
+- roadmap 阶段 8 尚未完成。已开始实现可重复的 rehearsal/cutover 编排、历史规模与 section 容量/耗时报告、v1 数据物理清除、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门。
+- 原 `response_format=json_schema` preflight 已确认不受 DeepSeek 正式端点支持；现已改用 `deepseek-strict-tools` adapter。尚需为独立的 `CHAT_MEMORY_V2_PROVIDER_*` 配置 Beta 端点/凭据并完成真实 preflight 与生产历史 golden；通过前不执行生产历史全量演练、正式删除/切换或 v1 worker/注入代码移除。

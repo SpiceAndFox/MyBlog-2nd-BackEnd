@@ -59,4 +59,27 @@ async function listProjectionCheckpoints(userId, presetId, { client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 ORDER BY projection_key`, [scope.userId,scope.presetId]);
   return rows;
 }
-module.exports = { upsertProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };
+async function getProjectionCheckpoint(userId, presetId, projectionKey, { client, forUpdate = false } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!["rag", "recall"].includes(projectionKey)) throw new Error("Invalid projectionKey");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 AND projection_key=$3${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId, projectionKey]);
+  return rows[0] || null;
+}
+async function listTombstones(userId, presetId, { messageIds, client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const filtered = Array.isArray(messageIds);
+  if (filtered && messageIds.some((id) => !Number.isSafeInteger(Number(id)))) throw new Error("messageIds must be integers");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_suppression_tombstones WHERE user_id=$1 AND preset_id=$2${filtered ? " AND message_id=ANY($3::BIGINT[])" : ""} ORDER BY message_id,id`, filtered ? [scope.userId, scope.presetId, messageIds] : [scope.userId, scope.presetId]);
+  return rows;
+}
+async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const db = executor(client);
+  const rows = [];
+  for (const projectionKey of ["rag", "recall"]) {
+    const result = await db.query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,status,last_error_reason) VALUES ($1,$2,$3,$4,NULL,'rebuilding',NULL) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET status='rebuilding',last_error_reason=NULL,updated_at=NOW() RETURNING *`, [scope.userId, scope.presetId, projectionKey, Math.max(0, sourceGeneration - 1)]);
+    rows.push(result.rows[0]);
+  }
+  return rows;
+}
+module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, listTombstones, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };

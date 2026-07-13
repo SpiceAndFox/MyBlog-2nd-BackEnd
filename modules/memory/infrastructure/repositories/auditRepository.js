@@ -30,4 +30,43 @@ async function insertEvents(events, { client } = {}) {
   }
   return result;
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents };
+async function listSnapshots(userId, presetId, sourceGeneration, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 ORDER BY revision`, [scope.userId, scope.presetId, sourceGeneration]);
+  return rows;
+}
+async function listRevisionGroups(userId, presetId, sourceGeneration, afterRevision = -1, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND result_revision>$4 ORDER BY result_revision`, [scope.userId, scope.presetId, sourceGeneration, afterRevision]);
+  return rows;
+}
+async function promoteAnchor(userId, presetId, sourceGeneration, revision, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const db = executor(client);
+  const snapshot = await getSnapshot(userId, presetId, revision, { client: db });
+  if (!snapshot || Number(snapshot.source_generation) !== sourceGeneration) throw new Error("Retention anchor snapshot is missing or belongs to another generation");
+  const groups = await listRevisionGroups(userId, presetId, sourceGeneration, revision, { client: db });
+  let expected = revision + 1;
+  for (const group of groups) {
+    if (Number(group.result_revision) !== expected) throw new Error("Retained Memory event groups are not revision-contiguous");
+    expected += 1;
+  }
+  await db.query(`DELETE FROM chat_memory_events WHERE event_group_id IN (SELECT event_group_id FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND result_revision<=$4)`, [scope.userId, scope.presetId, sourceGeneration, revision]);
+  const groupsDeleted = await db.query(`DELETE FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND result_revision<=$4`, [scope.userId, scope.presetId, sourceGeneration, revision]);
+  const snapshotsDeleted = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND revision<$4`, [scope.userId, scope.presetId, sourceGeneration, revision]);
+  return { snapshot, groupsDeleted: groupsDeleted.rowCount || 0, snapshotsDeleted: snapshotsDeleted.rowCount || 0 };
+}
+async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBefore, snapshotBefore, allowOldGenerations }, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const db = executor(client);
+  const params = [scope.userId, scope.presetId, currentGeneration, eventBefore];
+  const eligible = allowOldGenerations
+    ? `(result_revision IS NULL OR source_generation<$3)`
+    : `result_revision IS NULL`;
+  const events = await db.query(`DELETE FROM chat_memory_events WHERE event_group_id IN (SELECT event_group_id FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND created_at<$4 AND ${eligible})`, params);
+  const groups = await db.query(`DELETE FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2 AND created_at<$4 AND ${eligible}`, params);
+  let snapshots = { rowCount: 0 };
+  if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
+  return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
+}
+module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listRevisionGroups, promoteAnchor, deleteExpiredAudit };

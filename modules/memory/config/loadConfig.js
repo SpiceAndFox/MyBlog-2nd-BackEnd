@@ -1,4 +1,5 @@
 const { TARGET_KEYS, ITEM_SECTIONS } = require("../contracts/constants");
+const { loadMemoryProviderConfig } = require("./loadProviderConfig");
 
 function parseBool(env, name, fallback) {
   const raw = env[name];
@@ -21,11 +22,6 @@ function requiredFloat(env, name, { min, max } = {}) {
   if (raw === undefined || String(raw).trim() === "") throw new Error(`Missing required env: ${name}`);
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min || value > max) throw new Error(`Env ${name} must be between ${min} and ${max}`);
-  return value;
-}
-function requiredString(env, name) {
-  const value = String(env[name] ?? "").trim();
-  if (!value) throw new Error(`Missing required env: ${name}`);
   return value;
 }
 function envName(value) { return value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase(); }
@@ -59,18 +55,7 @@ function loadMemoryV2Config(env = process.env) {
     compaction: Object.freeze({ retryMax: requiredInt(env, "CHAT_MEMORY_V2_COMPACTION_RETRY_MAX") }),
     retention: Object.freeze({ snapshotDays: requiredInt(env, "CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS", { min: 1 }), eventDays: requiredInt(env, "CHAT_MEMORY_V2_EVENT_RETENTION_DAYS", { min: 1 }), taskDays: requiredInt(env, "CHAT_MEMORY_V2_TASK_RETENTION_DAYS", { min: 1 }), opsLogDays: requiredInt(env, "CHAT_MEMORY_V2_OPS_LOG_RETENTION_DAYS", { min: 1 }), debugDays: requiredInt(env, "CHAT_MEMORY_V2_DEBUG_RETENTION_DAYS") }),
     health: Object.freeze({ alertDebounceMs: requiredInt(env, "CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS"), recoveryStableMs: requiredInt(env, "CHAT_MEMORY_V2_RECOVERY_STABLE_MS") }),
-    provider: Object.freeze({
-      baseUrl: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_BASE_URL"),
-      apiKey: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_API_KEY"),
-      model: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_MODEL"),
-      timeoutMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS", { min: 1 }),
-      maxInputTokens: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS", { min: 1_000_000 }),
-      structuredOutput: (() => {
-        const supported = parseBool(env, "CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT", false);
-        if (!supported) throw new Error("CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT must be true");
-        return true;
-      })(),
-    }),
+    provider: loadMemoryProviderConfig(env),
   });
 }
 module.exports = { loadMemoryV2Config };

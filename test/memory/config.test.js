@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadMemoryV2Config } = require("../../modules/memory/config/loadConfig");
+const { loadMemoryProviderConfig } = require("../../modules/memory/config/loadProviderConfig");
 
 test("v2 config is inert while feature is disabled", () => assert.deepEqual(loadMemoryV2Config({}), { enabled: false }));
 test("v2 config fails explicitly when enabled configuration is incomplete", () => {
@@ -29,21 +30,30 @@ function validEnv() {
     CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS: "30", CHAT_MEMORY_V2_EVENT_RETENTION_DAYS: "30",
     CHAT_MEMORY_V2_TASK_RETENTION_DAYS: "30", CHAT_MEMORY_V2_OPS_LOG_RETENTION_DAYS: "30",
     CHAT_MEMORY_V2_DEBUG_RETENTION_DAYS: "7", CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS: "0", CHAT_MEMORY_V2_RECOVERY_STABLE_MS: "0",
-    CHAT_MEMORY_V2_PROVIDER_BASE_URL: "https://example.test/v1/", CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
+    CHAT_MEMORY_V2_PROVIDER_ADAPTER: "openai-json-schema", CHAT_MEMORY_V2_PROVIDER_BASE_URL: "https://example.test/v1/", CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
     CHAT_MEMORY_V2_PROVIDER_MODEL: "structured-model", CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS: "60000",
-    CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000", CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT: "true",
+    CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000",
   });
   return env;
 }
 
-test("v2 config validates native structured-output provider capability", () => {
+test("v2 config requires an explicit structured-output adapter", () => {
   const env = validEnv();
   const config = loadMemoryV2Config(env);
   assert.equal(config.provider.model, "structured-model");
-  assert.equal(config.provider.structuredOutput, true);
-  env.CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT = "false";
-  assert.throws(() => loadMemoryV2Config(env), /STRUCTURED_OUTPUT must be true/);
-  env.CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT = "true";
+  assert.equal(config.provider.adapter, "openai-json-schema");
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "prompt-and-parse";
+  assert.throws(() => loadMemoryV2Config(env), /PROVIDER_ADAPTER must be one of/);
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "openai-json-schema";
   env.CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS = "999999";
   assert.throws(() => loadMemoryV2Config(env), /1000000/);
+});
+
+test("provider config is independently loadable and never falls back to chat provider env", () => {
+  const env = validEnv();
+  delete env.CHAT_MEMORY_V2_ENABLED;
+  assert.equal(loadMemoryProviderConfig(env).baseUrl, "https://example.test/v1/");
+  delete env.CHAT_MEMORY_V2_PROVIDER_API_KEY;
+  env.DEEPSEEK_API_KEY = "must-not-be-used";
+  assert.throws(() => loadMemoryProviderConfig(env), /CHAT_MEMORY_V2_PROVIDER_API_KEY/);
 });

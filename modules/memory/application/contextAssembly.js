@@ -127,6 +127,13 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       projectionKey: checkpoint.projection_key ?? checkpoint.projectionKey,
       ...assessProjectionCoverage(checkpoint, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }),
     })) : [];
+    if (state) {
+      for (const projectionKey of ["rag", "recall"]) {
+        if (!projectionHealth.some((entry) => entry.projectionKey === projectionKey)) {
+          projectionHealth.push({ projectionKey, ...assessProjectionCoverage({ processedGeneration: -1, processedBoundaryMessageId: 0 }, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }) });
+        }
+      }
+    }
     if (state) await syncProjectionDiagnostics(userId, presetId, state, projectionHealth, activeDiagnostics, requestId, recentWindowStartMessageId);
     const stateDiagnostics = recent.needsMemory && debug.memorySkipReason
       ? [{ subjectKind: "system", subjectKey: "memory_state", diagnosticType: debug.memorySkipReason, resolved: false }]

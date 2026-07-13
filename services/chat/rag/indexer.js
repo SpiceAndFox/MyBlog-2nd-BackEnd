@@ -3,6 +3,8 @@ const { logger } = require("../../../logger");
 const { createEmbeddings } = require("../../llm/embeddings");
 const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
 const chatRagRepo = require("./repo");
+const crypto = require("node:crypto");
+const memory = require("../../../modules/memory");
 
 function normalizePositiveInteger(value, { name } = {}) {
   const number = Number(value);
@@ -19,11 +21,16 @@ function normalizePresetId(presetId) {
 }
 
 function buildTurnMetadata({ userMessage, assistantMessage } = {}) {
+  const sourceRefs = [
+    { messageId: Number(userMessage?.id), contentHash: `sha256:${crypto.createHash("sha256").update(String(userMessage?.content ?? userMessage?.contentText ?? ""), "utf8").digest("hex")}` },
+    { messageId: Number(assistantMessage?.id), contentHash: `sha256:${crypto.createHash("sha256").update(String(assistantMessage?.content ?? assistantMessage?.contentText ?? ""), "utf8").digest("hex")}` },
+  ];
   return {
     userMessageId: userMessage?.id || null,
     assistantMessageId: assistantMessage?.id || null,
     userCreatedAt: userMessage?.created_at || userMessage?.createdAt || null,
     assistantCreatedAt: assistantMessage?.created_at || assistantMessage?.createdAt || null,
+    sourceRefs,
   };
 }
 
@@ -49,8 +56,14 @@ async function indexChatTurn({
   const chunks = buildTurnChunks({ userContent, assistantContent });
   if (!chunks.length) return { indexed: 0, reason: "empty_chunks" };
 
+  const metadata = buildTurnMetadata({
+    userMessage: { ...userMessage, content: userContent },
+    assistantMessage: { ...assistantMessage, content: assistantContent },
+  });
+  const tombstones = await memory.listSuppressionTombstones(normalizedUserId, normalizedPresetId, { messageIds: [firstMessageId, lastMessageId] });
+  const suppressed = new Set(tombstones.map((row) => `${Number(row.message_id ?? row.messageId)}\u0000${row.content_hash ?? row.contentHash}`));
+  if (metadata.sourceRefs.some((ref) => suppressed.has(`${ref.messageId}\u0000${ref.contentHash}`))) return { indexed: 0, reason: "source_suppressed" };
   const embeddings = await createEmbeddings({ texts: chunks.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) });
-  const metadata = buildTurnMetadata({ userMessage, assistantMessage });
 
   let indexed = 0;
   for (let index = 0; index < chunks.length; index += 1) {
@@ -119,4 +132,3 @@ module.exports = {
   deleteChunksFromMessageId,
   requestDeleteChunksFromMessageId,
 };
-

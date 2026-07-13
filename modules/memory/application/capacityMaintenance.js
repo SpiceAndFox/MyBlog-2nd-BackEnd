@@ -208,7 +208,11 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(parentEnvelope.task.userId, parentEnvelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(parentEnvelope.task.userId, parentEnvelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: payload, result_revision: reduction.state.meta.revision, last_error_reason: null }, { client });
-      await repositories.runtime.upsertTargetStatus(parentEnvelope.task.userId, parentEnvelope.task.presetId, { targetKey: parentEnvelope.task.targetKey, sourceGeneration: parentEnvelope.task.sourceGeneration, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: parentEnvelope.task.taskId, nextRetryAt: null }, { client });
+      if (repositories.runtime.recordSuccessfulTargetTask) {
+        await repositories.runtime.recordSuccessfulTargetTask(parentEnvelope.task.userId, parentEnvelope.task.presetId, { targetKey: parentEnvelope.task.targetKey, sourceGeneration: parentEnvelope.task.sourceGeneration, taskId: parentEnvelope.task.taskId }, { client });
+      } else {
+        await repositories.runtime.upsertTargetStatus(parentEnvelope.task.userId, parentEnvelope.task.presetId, { targetKey: parentEnvelope.task.targetKey, sourceGeneration: parentEnvelope.task.sourceGeneration, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: parentEnvelope.task.taskId, nextRetryAt: null }, { client });
+      }
       return { status: "committed", taskId: parentEnvelope.task.taskId, revision: reduction.state.meta.revision, replayed: true, events: reduction.events };
     });
   }

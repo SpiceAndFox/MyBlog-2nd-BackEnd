@@ -43,12 +43,14 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     const requiredBoundary = Math.max(0, Number(recent.stats.windowStartMessageId || 1) - 1);
     const ragProjection = contextV2.projectionCoverage.find((entry) => entry.projectionKey === "rag");
     const ragBoundary = ragProjection ? Math.min(requiredBoundary, ragProjection.processedBoundary) : requiredBoundary;
-    const ragContext = await retrieveChatRagContext({
-      userId: normalizedUserId,
-      presetId: normalizedPresetId,
-      query: readCurrentUserContent({ recent }),
-      beforeMessageId: ragBoundary,
-    });
+    const ragContext = !ragProjection || ragProjection.queryHealth === "rebuilding"
+      ? { enabled: true, messages: [], sources: [], stats: { reason: ragProjection ? "projection_rebuilding" : "projection_checkpoint_missing" } }
+      : await retrieveChatRagContext({
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        query: readCurrentUserContent({ recent }),
+        beforeMessageId: ragBoundary,
+      });
     if (ragProjection && ragProjection.queryHealth !== "healthy" && ragContext?.messages?.length) {
       ragContext.messages = ragContext.messages.map((message) => ({ ...message, content: `[检索范围不完整]\n${message.content}` }));
     }

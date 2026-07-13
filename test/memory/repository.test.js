@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const db = require("../../db");
 const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
+const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
   const originalGetClient = db.getClient;
@@ -57,4 +58,28 @@ test("target recovery status and notification commit in one transaction", async 
     assert.ok(statements.includes("COMMIT"));
     assert.equal(statements.some((sql) => sql.startsWith("INSERT INTO chat_memory_recovery_notifications") && sql.includes("boundary_message_id")), true);
   } finally { db.getClient = originalGetClient; }
+});
+
+test("stage 8 legacy purge physically clears v1 values and checkpoints and verifies no residue", async () => {
+  const statements = [];
+  let countQuery = 0;
+  const client = {
+    async query(sql) {
+      statements.push(sql.replace(/\s+/g, " ").trim());
+      if (sql.includes("DELETE FROM chat_preset_memory_checkpoints")) return { rows: [], rowCount: 3 };
+      if (sql.includes("UPDATE chat_preset_memory")) return { rows: [], rowCount: 2 };
+      if (sql.includes("SELECT COUNT(*)::BIGINT AS count")) {
+        countQuery += 1;
+        return { rows: [{ count: "0" }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+  const purged = await migrationRepository.purgeLegacyMemory({ client });
+  const residue = await migrationRepository.getLegacyResidue({ client });
+  assert.deepEqual(purged, { memoryRows: 2, checkpointRows: 3 });
+  assert.deepEqual(residue, { memoryRows: 0, checkpointRows: 0 });
+  assert.equal(countQuery, 2);
+  assert.equal(statements.some((sql) => sql.includes("rolling_summary=''")), true);
+  assert.equal(statements.some((sql) => sql.startsWith("DELETE FROM chat_preset_memory_checkpoints")), true);
 });

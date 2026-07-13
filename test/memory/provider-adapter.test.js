@@ -4,6 +4,8 @@ const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { buildNormalEnvelope } = require("../../modules/memory/application/envelope");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { buildOutputSchema } = require("../../modules/memory/infrastructure/providers/outputSchema");
+const { compileDeepSeekSchema } = require("../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { createStructuredTransport } = require("../../modules/memory/infrastructure/providers/structuredTransportFactory");
 
 const config = { overdueTodos: { maxRenderedItems: 2 } };
 function envelope() {
@@ -60,4 +62,65 @@ test("Provider Adapter distinguishes truncation, refusal, call and schema errors
 test("mock Adapter preserves explicit error fixtures", async () => {
   const adapter = createMockMemoryProviderAdapter({ outputs: [{ status: "error", reason: "safety_policy_blocked" }] });
   assert.deepEqual(await adapter.propose(envelope()), { status: "error", reason: "safety_policy_blocked" });
+});
+
+test("DeepSeek compiler preserves optional object fields as strict anyOf variants", () => {
+  const source = buildOutputSchema("todoProposer").schema;
+  const compiled = compileDeepSeekSchema(source);
+  const seen = new Set();
+  function inspect(value) {
+    if (!value || typeof value !== "object") return;
+    for (const key of Object.keys(value)) seen.add(key);
+    if (value.type === "object") {
+      assert.equal(value.additionalProperties, false);
+      assert.deepEqual(new Set(value.required), new Set(Object.keys(value.properties)));
+    }
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) child.forEach(inspect);
+      else inspect(child);
+    }
+  }
+  inspect(compiled);
+  for (const unsupported of ["oneOf", "const", "minLength", "maxLength", "minItems", "uniqueItems"]) {
+    assert.equal(seen.has(unsupported), false, `compiled schema contains ${unsupported}`);
+  }
+  assert.equal(seen.has("anyOf"), true);
+});
+
+test("structured transport factory maps DeepSeek strict tool calls to normalized output", async () => {
+  let request;
+  const invoke = createStructuredTransport({
+    adapter: "deepseek-strict-tools",
+    baseUrl: "https://api.deepseek.com/beta",
+    apiKey: "test-key",
+    model: "deepseek-v4-flash",
+    timeoutMs: 1000,
+  }, {
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return {
+        ok: true,
+        json: async () => ({
+          model: "deepseek-v4-flash",
+          choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{ function: { name: "probe", arguments: '{"ok":true}' } }] } }],
+        }),
+      };
+    },
+  });
+  const result = await invoke({
+    systemPrompt: "prompt",
+    userPayload: { value: 1 },
+    responseSchema: { name: "probe", schema: { type: "object", additionalProperties: false, properties: { ok: { type: "boolean" } }, required: ["ok"] } },
+  });
+  assert.equal(request.url, "https://api.deepseek.com/beta/chat/completions");
+  assert.equal(request.body.response_format, undefined);
+  assert.equal(request.body.tools[0].function.strict, true);
+  assert.equal(request.body.tool_choice.function.name, "probe");
+  assert.deepEqual(result.output, { ok: true });
+});
+
+test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {
+  assert.throws(() => createStructuredTransport({
+    adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,
+  }), /api\.deepseek\.com\/beta/);
 });

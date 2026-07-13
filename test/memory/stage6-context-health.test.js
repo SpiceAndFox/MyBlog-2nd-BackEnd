@@ -23,7 +23,10 @@ function config() {
 function makeData() {
   const state = createInitialMemoryState();
   state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 0]));
-  const data = { state, diagnostics: [], notifications: [], checkpoints: [], nextId: 1 };
+  const data = { state, diagnostics: [], notifications: [], checkpoints: [
+    { projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
+    { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
+  ], nextId: 1 };
   const sidecars = {
     async listActiveDiagnostics() { return data.diagnostics.filter((row) => !row.resolved); },
     async upsertActiveDiagnostic(_user, _preset, diagnostic) {
@@ -106,12 +109,13 @@ test("health aggregation gives rebuilding precedence and projection health is qu
   assert.deepEqual(assessProjectionCoverage({ processedGeneration: 0, processedBoundaryMessageId: 8 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }), { queryHealth: "rebuilding", requiredBoundary: 9, processedBoundary: 8 });
   assert.equal(assessProjectionCoverage({ processedGeneration: 1, processedBoundaryMessageId: 8 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }).queryHealth, "degraded");
   assert.equal(assessProjectionCoverage({ processedGeneration: 1, processedBoundaryMessageId: 9 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }).queryHealth, "healthy");
+  assert.equal(aggregateMemoryHealth({ targetStatuses: TARGETS.map((targetKey) => targetKey === "todos" ? { target_key: targetKey, status: "halted", rebuild_boundary_message_id: 42 } : { target_key: targetKey, status: "healthy", rebuild_boundary_message_id: null }) }).status, "rebuilding");
 });
 
 test("projection lag diagnostic persists until the query boundary is covered", async () => {
   const data = makeData();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
-  data.checkpoints = [{ projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 2 }];
+  data.checkpoints = [{ projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 2 }, { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5 }];
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
   const degraded = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "projection-1" });
   assert.equal(degraded.health.status, "degraded");

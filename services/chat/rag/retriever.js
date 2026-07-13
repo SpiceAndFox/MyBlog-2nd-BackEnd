@@ -5,6 +5,8 @@ const { rerankDocuments } = require("../../llm/reranker");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const { generateSceneRecallForSource } = require("./sceneRecall");
 const chatRagRepo = require("./repo");
+const crypto = require("node:crypto");
+const memory = require("../../../modules/memory");
 
 function parseEmbeddingVector(rawString) {
   const str = String(rawString || "").trim();
@@ -266,7 +268,7 @@ function serializeSource(source) {
   return serialized;
 }
 
-async function attachDialogueMessages(sources, { userId, presetId } = {}) {
+async function attachDialogueMessages(sources, { userId, presetId, tombstones = [] } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length) return [];
 
@@ -275,7 +277,7 @@ async function attachDialogueMessages(sources, { userId, presetId } = {}) {
 
   return Promise.all(
     list.map(async (source) => {
-      const dialogueMessages = await chatRagRepo.listMessagesAroundChunk({
+      let dialogueMessages = await chatRagRepo.listMessagesAroundChunk({
         userId,
         presetId,
         sessionId: source.sessionId,
@@ -283,6 +285,11 @@ async function attachDialogueMessages(sources, { userId, presetId } = {}) {
         lastMessageId: source.lastMessageId,
         beforeMessages,
         afterMessages,
+      });
+      const keys = new Set(tombstones.map((row) => `${Number(row.message_id ?? row.messageId)}\u0000${row.content_hash ?? row.contentHash}`));
+      dialogueMessages = dialogueMessages.filter((message) => {
+        const hash = `sha256:${crypto.createHash("sha256").update(String(message.content), "utf8").digest("hex")}`;
+        return !keys.has(`${Number(message.id)}\u0000${hash}`);
       });
       return { ...source, dialogueMessages };
     })
@@ -366,7 +373,10 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     candidateLimit,
   });
 
-  if (!rows.length) {
+  const tombstones = await memory.listSuppressionTombstones(userId, presetId);
+  const eligibleRows = tombstones.length ? memory.domain.filterRagChunks(rows, tombstones) : rows;
+
+  if (!eligibleRows.length) {
     return {
       enabled: true,
       messages: [],
@@ -393,7 +403,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     };
 
     try {
-      const rerankInput = rows.slice(0, chatRagConfig.rerankerMaxDocuments);
+      const rerankInput = eligibleRows.slice(0, chatRagConfig.rerankerMaxDocuments);
       const scored = await rerankDocuments({
         query: normalizedQuery,
         documents: rerankInput.map((row) => row.content),
@@ -447,19 +457,19 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
   }
 
   if (!selectedRows) {
-    if (rows.length > 0 && rows[0].embedding) {
-      const candidates = rows.map((row) => ({
+    if (eligibleRows.length > 0 && eligibleRows[0].embedding) {
+      const candidates = eligibleRows.map((row) => ({
         ...row,
         similarity: row.similarity,
         embedding: parseEmbeddingVector(row.embedding),
       }));
       selectedRows = mmrSelect(candidates, chatRagConfig.topK, chatRagConfig.mmrLambda);
     } else {
-      selectedRows = rows;
+      selectedRows = eligibleRows;
     }
   }
 
-  const withDialogue = await attachDialogueMessages(selectedRows, { userId, presetId });
+  const withDialogue = await attachDialogueMessages(selectedRows, { userId, presetId, tombstones });
   const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId });
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {

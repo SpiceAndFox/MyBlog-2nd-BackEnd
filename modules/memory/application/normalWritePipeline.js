@@ -3,6 +3,7 @@ const { SCHEMA_VERSION, validateProposerOutput } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
 const { buildNormalEnvelope, normalDedupeKey } = require("./envelope");
 const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
+const { sourceKey } = require("../domain/suppression");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
@@ -27,6 +28,11 @@ function taskRow(envelope, overrides = {}) {
 }
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function numberValue(row, snake, camel, fallback = 0) { return Number(rowValue(row, snake, camel) ?? fallback); }
+async function recordSuccessfulTarget(repositories, envelope, client) {
+  const args = { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, taskId: envelope.task.taskId };
+  if (repositories.runtime.recordSuccessfulTargetTask) return repositories.runtime.recordSuccessfulTargetTask(envelope.task.userId, envelope.task.presetId, args, { client });
+  return repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { ...args, lastTaskId: args.taskId, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, nextRetryAt: null }, { client });
+}
 function mapEvent(event, envelope, eventGroupId, index) {
   const task = envelope.task;
   return {
@@ -152,7 +158,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       }, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: nextState.meta.sourceGeneration, revision: nextState.meta.revision, schemaVersion: SCHEMA_VERSION, state: nextState }, { client });
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "unable_cursor_committed", stage_payload: { persistedProposal: output }, attempt, result_revision: nextState.meta.revision, not_before: null, last_error_reason: null }, { client });
-      await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: envelope.task.taskId, nextRetryAt: null }, { client });
+      await recordSuccessfulTarget(repositories, envelope, client);
       return { status: "committed", taskId: envelope.task.taskId, revision: nextState.meta.revision, cursorOnly: true };
     });
   }
@@ -174,9 +180,14 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (state.meta.revision !== envelope.task.baseRevision) return { status: "successor_required", taskId: envelope.task.taskId, currentRevision: state.meta.revision };
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "reducing", stage_payload: { persistedProposal: output } }, { client });
       const databaseMessages = await repositories.source.getByIds(envelope.task.userId, envelope.task.presetId, envelope.task.observedMessageIds, { client });
+      const tombstones = repositories.sidecars?.listTombstones
+        ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, { messageIds: envelope.task.observedMessageIds, client })
+        : [];
+      const suppressedKeys = new Set(tombstones.map((row) => sourceKey(row.message_id ?? row.messageId, row.content_hash ?? row.contentHash)));
+      const effectiveDatabaseMessages = databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
       let reduction;
       try {
-        reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: envelope.observedMessages, databaseMessages, now: envelope.task.now, config, idFactory });
+        reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: envelope.observedMessages, databaseMessages: effectiveDatabaseMessages, now: envelope.task.now, config, idFactory });
       } catch (error) {
         error.memoryOutcome = "reducer_failed";
         throw error;
@@ -188,7 +199,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(envelope.task.userId, envelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: { persistedProposal: output }, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null }, { client });
-      await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, lastTaskId: envelope.task.taskId, nextRetryAt: null }, { client });
+      await recordSuccessfulTarget(repositories, envelope, client);
       return { status: "committed", taskId: envelope.task.taskId, revision: reduction.state.meta.revision, events: reduction.events };
     });
   }

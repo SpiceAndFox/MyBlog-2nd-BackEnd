@@ -4,5 +4,7 @@ module.exports = {
   runtime: require("./runtimeRepository"),
   source: require("./sourceRepository"),
   sidecars: require("./sidecarRepository"),
+  privacy: require("./privacyRepository"),
+  migration: require("./migrationRepository"),
   withTransaction: require("./helpers").withTransaction,
 };
