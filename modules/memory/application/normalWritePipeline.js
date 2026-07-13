@@ -48,7 +48,7 @@ function mapEvent(event, envelope, eventGroupId, index) {
 
 function createNormalWritePipeline({ observer, providerAdapter, repositories, config, now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
-  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError });
+  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError, proposeWithSchemaRetry });
 
   async function createTask(userId, presetId, intent, options = {}) {
     const create = async (client) => {
@@ -113,6 +113,40 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       await appendOps(envelope, adapterResult.reason, attempt, adapterResult.detail, client);
       return { ...adapterResult, taskId: envelope.task.taskId, halted, attempt, consecutiveErrors, notBefore: retryAt };
     });
+  }
+
+  async function reserveSchemaInvalidRetry(envelope, adapterResult) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task disappeared before schema retry persistence");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return false;
+      const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      const used = Number(stagePayload.schemaInvalidAttempts || 0);
+      const limit = config.providerRecovery.schemaInvalidRetryMax;
+      if (used >= limit) return false;
+      const attempt = numberValue(task, "attempt", "attempt") + 1;
+      stagePayload.schemaInvalidAttempts = used + 1;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "schema_invalid_retry", stage_payload: stagePayload,
+        attempt, not_before: null, last_error_reason: "output_schema_invalid",
+      }, { client });
+      await appendOps(envelope, "output_schema_invalid_retry", attempt, adapterResult.detail, client);
+      return true;
+    });
+  }
+
+  async function proposeWithSchemaRetry(envelope) {
+    while (true) {
+      let result = await providerAdapter.propose(envelope);
+      if (result.status !== "error") {
+        const validation = validateProposerOutput(result.output, envelope.task);
+        if (!validation.ok) result = { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validation.errors } };
+      }
+      const retryableSchemaOutput = result.status === "error"
+        && result.reason === "output_schema_invalid"
+        && result.detail?.boundary === "output";
+      if (!retryableSchemaOutput || !(await reserveSchemaInvalidRetry(envelope, result))) return result;
+    }
   }
 
   async function recordStale(envelope, reason, { cancel = true } = {}) {
@@ -271,7 +305,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     const group = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId))
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
-    const adapterResult = await providerAdapter.propose(envelope);
+    const adapterResult = await proposeWithSchemaRetry(envelope);
     if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
     let result = await commitWithRecovery(envelope, adapterResult.output);
     if (result.status === "successor_required") {

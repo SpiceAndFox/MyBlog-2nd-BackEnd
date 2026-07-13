@@ -47,7 +47,7 @@ modules/memory/
 
 1. **状态与存储骨架**：实现 v2 schema/校验器、配置入口、全部 DDL/repository、revision 0 初始化；建立 Harness runner 与 fixture 目录。
 2. **纯代码核心**：依次实现 evidence/quote matcher、policy gate、生命周期、Reducer、Renderer；覆盖 accepted/rejected/noop、event/snapshot、effective view 的单元与 golden 测试。
-3. **Normal 写入链路**：实现 envelope/schema、六个 Proposer prompt、Memory Provider Adapter、Observer、窗口/eligibility、cursor、durable task 与原子提交；先使用 mock Adapter 完成 prompt golden；真实 Provider smoke 在配置的模型/端点支持原生 schema-constrained structured output 后执行，并作为阶段 8 迁移演练的前置验收条件。
+3. **Normal 写入链路**：实现 envelope/schema、六个 Proposer prompt、Memory Provider Adapter、Observer、窗口/eligibility、cursor、durable task 与原子提交；先使用 mock Adapter 完成 prompt golden；真实 Provider preflight 必须通过配置的协议 adapter 顺序验证六个 Normal Proposer 与 Compaction 完整 schema，而非只探测简单 JSON，并作为阶段 8 迁移演练的前置验收条件。
 4. **恢复与幂等**：实现 retry/halt/resume、successor task、phase identity、commit outcome unknown、进程重启恢复和后台 housekeeping；故障注入验证无重复 revision/event/cursor。
 5. **容量维护**：实现 section budget、recentEpisodes 滚出、deferred、compaction child task、pending-item 保护、原 proposal replay 与容量类 resume。
 6. **上下文与健康**：接入单一 memory segment、跨 session recent window、GapBridge、target/diagnostic 健康聚合、持续告警与 recovery notification；保持 v1 注入关闭开关可控。

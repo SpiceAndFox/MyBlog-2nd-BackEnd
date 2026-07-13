@@ -41,7 +41,7 @@ function proposalItemIds(proposal) {
   return Object.values(proposal.sectionResults).flatMap((result) => (result.patches || []).flatMap((patch) => [patch.itemId, ...(patch.itemIds || [])].filter(Boolean)));
 }
 
-function createCapacityMaintenance({ repositories, providerAdapter, config, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError } = {}) {
+function createCapacityMaintenance({ repositories, providerAdapter, config, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry } = {}) {
   if (!repositories?.withTransaction || !repositories.runtime || !providerAdapter) throw new Error("Capacity maintenance dependencies are required");
 
   async function appendOps(envelope, outcome, detail, client) {
@@ -221,7 +221,9 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     const current = await repositories.runtime.getTask(envelope.task.taskId);
     if (rowValue(current, "stage", "stage") === "compaction_applied") return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
     if (TERMINAL_STATUSES.has(rowValue(current, "status", "status"))) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
-    const adapterResult = await providerAdapter.propose(envelope);
+    const adapterResult = proposeWithSchemaRetry
+      ? await proposeWithSchemaRetry(envelope)
+      : await providerAdapter.propose(envelope);
     if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
     const validation = validateProposerOutput(adapterResult.output, envelope.task);
     if (!validation.ok) return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });

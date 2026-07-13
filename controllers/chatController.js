@@ -382,6 +382,8 @@ async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) 
 }
 
 async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason } = {}) {
+  if (!chatMemoryConfig.legacyEnabled) return;
+
   let existing = null;
   try {
     existing = await getPresetMemoryStatus({ userId, presetId });
@@ -427,7 +429,7 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId,
 }
 
 function kickMemoryUpdate({ userId, presetId, needsMemory } = {}) {
-  if (!needsMemory) return;
+  if (!chatMemoryConfig.legacyEnabled || !needsMemory) return;
   try {
     requestMemoryTick({ userId, presetId });
   } catch (error) {
@@ -707,6 +709,10 @@ const chatController = {
 
   async rebuildPresetMemory(req, res) {
     try {
+      if (!chatMemoryConfig.legacyEnabled) {
+        return res.status(410).json({ error: "Legacy memory rebuild is no longer available" });
+      }
+
       const userId = req.user?.id;
       const presetId = normalizePresetId(req.params.presetId);
       if (!presetId) return res.status(400).json({ error: "Invalid preset id" });

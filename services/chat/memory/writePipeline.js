@@ -49,6 +49,8 @@ async function updateCoreMemoryOnce({
 }
 
 async function processMemoryTick({ userId, presetId } = {}) {
+  if (!chatMemoryConfig.legacyEnabled) return { updated: false, reason: "legacy_memory_disabled" };
+
   let summaryResult = null;
   try {
     summaryResult = await catchUpRollingSummaryOnce({
@@ -154,7 +156,9 @@ const tickScheduler = createTickScheduler({
 });
 
 function requestMemoryTick({ userId, presetId } = {}) {
+  if (!chatMemoryConfig.legacyEnabled) return false;
   tickScheduler.requestTick({ userId, presetId });
+  return true;
 }
 
 function requestRollingSummaryCatchUp(args = {}) {
@@ -162,6 +166,8 @@ function requestRollingSummaryCatchUp(args = {}) {
 }
 
 async function rebuildRollingSummarySync({ userId, presetId } = {}) {
+  if (!chatMemoryConfig.legacyEnabled) return { updated: false, reason: "legacy_memory_disabled" };
+
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId) throw new Error("Missing userId");

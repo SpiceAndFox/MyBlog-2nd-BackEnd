@@ -296,7 +296,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `memory_compaction` accepted 后，merge event 的 `item_id` 为 null，`merged_from_item_ids` 存储完整 source item ID 数组（按持久化 patch 中的稳定顺序），`result_item_id` 存储新 merged item ID。
 - `memory_compaction` accepted 后，merged item 的 `updatedAtMessageId` 取所有 source evidenceGroups refs 的最大 `messageId`。
 - `memory_compaction` 的 `value.text` 不得引入 source items 未表达的新事实——此约束由 compactionProposer prompt 承担（[proposer-prompt.md](proposer-prompt.md) §2.4/§4.7），Reducer 不做语义检测，仅 LLM smoke 覆盖。
-- Proposer 输出非 target section 时记 `output_schema_invalid` 并 halt 对应 target；item patch 携带 `path` 时 schema 拒绝，只按本 task 的 `targetKey` 决定 cursor，其它 target cursor 不受影响。
+- Proposer 输出非 target section 时记 `output_schema_invalid`；若这是首次 Provider 输出边界错误则持久化一次 retry 后重新调用，第二次仍非法才 halt 对应 target。item patch 携带 `path` 时同样由 schema 拒绝，只按本 task 的 `targetKey` 决定 cursor，其它 target cursor 不受影响。
 - Todo add 缺 actor/requester 或输出非法枚举时 schema 拒绝；合法 add 初始化 `status=active`、`becameOverdueAt=null`，dueAt 缺省为 null。
 - Todo update 的 dueChange 分别覆盖 keep/clear/set；dueChange 缺失或分支混合时 schema 拒绝。relative dueAt 必须以 evidence message createdAt 为 anchor；fixture 故意令 task.now 与 message.createdAt 不同，证明实现未误用执行时间。absolute date 和 relative 运算必须使用 preset 配置的用户时区（默认 UTC）；fixture 覆盖非 UTC 时区下"日期结束后的首个日界线"以及月末截断（如 1 月 31 日 + 1 个月 = 2 月 28/29 日）。
 - 已计算 dueAt 早于 housekeeping now 时不拒绝历史事实：同一 apply/cleanup 或下一次 housekeeping 将 item 原位改为 overdue，写 `todo_became_overdue`，`becameOverdueAt=dueAt`，并保留 itemId、actor、requester、dueAt、evidenceGroups。
@@ -309,14 +309,14 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 ### 3.7 Provider Adapter 与 per-target recovery
 
-- 配置加载覆盖支持/不支持 structured output 的 Provider/model：不支持者必须启动失败，不能回退到裸文本 + `JSON.parse`；支持者使用原生 schema/tool/function 并对返回值再做本地 schema 校验。
+- 配置加载覆盖已实现/未实现的 structured-output adapter：未知 adapter 必须启动失败，不能回退到裸文本 + `JSON.parse`；已实现 adapter 使用原生 schema/tool/function 并对返回值再做本地完整 schema 校验。真实 Provider preflight 顺序覆盖六个 Normal Proposer 与 Compaction schema，任一 schema 被端点拒绝、返回错误分支或本地验证失败均不通过。
 - mock adapter 返回合法 `status: "ok"` → output 交 Reducer；成功提交时 task/status/events/state/snapshot 同事务完成。
-- proposer/tickId 不匹配、`sectionResults` 残缺或非法 → task failed、对应 target halted、ops log=`output_schema_invalid`；不交 Reducer，不推进 cursor，不增加 revision/snapshot。
+- proposer/tickId 不匹配、`sectionResults` 残缺或非法 → 首次输出边界错误写 ops log=`output_schema_invalid_retry` 并持久化计数；第二次仍非法才 task failed、对应 target halted、ops log=`output_schema_invalid`。不交 Reducer，不推进 cursor，不增加 revision/snapshot。
 - `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，不修改 target 长期错误计数；二次仍 unable 才以 cursor-only revision 终结。
 - compactionProposer 返回 `unable_to_compact` → maintenance task failed、对应 target halted、写 ops log；不增加 revision/snapshot。
 - `safety_policy_blocked` / `llm_call_failed` → task `retry_wait`、attempt 递增、写 notBefore，target status=`retry_wait` 且 `consecutive_errors + 1`；第三次只 halt 对应 target。
 - provider 明确因最大输出长度停止时归类 `max_output_truncated`，不得落为 `output_schema_invalid`，即使响应残片可解析也不交 Reducer；它按有界 retry/backoff 处理并单独计数，且不得因此缩小 section 容量。
-- `output_schema_invalid` 是持续性错误：task failed、对应 target halted，不重试同输入。
+- 输入 envelope 的 `output_schema_invalid` 不重试；Provider 输出的 `output_schema_invalid` 最多立即重试一次，计数跨重启保持，第二次失败后 task failed、对应 target halted，且不得发生第三次 Provider 调用。
 - 任一 target halted 时，其他 target 仍可创建/提交 task；halted target 的最后稳定 state 保留。全局 `memory_state.meta.halted` 不得重新出现。
 - resume 指定 target：对于 `retry_wait` target，重置为 `healthy`、清 error count/nextRetryAt 并重新排队可恢复 task；对于容量/compaction/replay 失败导致的 `halted` target，重置为 `capacity_blocked`（不立即设 `healthy`），按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §6 创建新 maintenance child task 重新进入 compaction；对于 `output_schema_invalid` 导致的 halted target，修复 model/prompt/schema/adapter 根因后重置为 `healthy` 并创建新 normal task；对于 Provider 可重试错误连续达到阈值导致的 halted target，排除故障后重置为 `healthy` 并创建新 normal task。旧 task 保留审计，不修改 state/revision/snapshot，也不重置其他 targets。容量类 halt 只有原 proposal 成功 replay、cursor 推进并提交 snapshot 后才恢复 `healthy`。
 - 任一成功 revision 在同事务将对应 target 恢复 healthy、错误计数归零并终结 task。

@@ -8,11 +8,12 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
-function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
+  if (!["disabled", "enabled"].includes(thinkingMode)) throw new Error("Memory Provider thinkingMode must be disabled or enabled");
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   if (normalizedBaseUrl.hostname === "api.deepseek.com" && !normalizedBaseUrl.pathname.endsWith("/beta/")) {
     throw new Error("DeepSeek strict tools require CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.deepseek.com/beta");
@@ -31,6 +32,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
         body: JSON.stringify({
           model,
           stream: false,
+          thinking: { type: thinkingMode },
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: JSON.stringify(userPayload) },

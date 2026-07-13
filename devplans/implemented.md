@@ -40,7 +40,7 @@
 ## 2026-07-13：Memory Control v2 阶段 4
 
 - 实现 Provider 可重试错误的有限指数退避：task attempt/notBefore 与 target consecutiveErrors/nextRetryAt 分别持久化，连续错误达到阈值时只 halt 对应 target。
-- 实现 `output_schema_invalid` 直接 halt、首次 `unable_to_decide` 扩展尝试，以及二次 unable 的零 semantic event cursor-only revision。
+- 实现 `output_schema_invalid` 的边界化恢复：输入契约错误直接 halt；Provider 输出错误持久化后最多立即重试一次，第二次仍非法才 halt。首次 `unable_to_decide` 扩展尝试，二次 unable 以零 semantic event cursor-only revision 终结。
 - 实现 generation/cursor stale 的持久化丢弃，以及 revision mismatch 时旧 task 取消、新 baseRevision successor task 原子创建并重新调用 Proposer。
 - 为 normal/cursor-only/system-cleanup phase 建立稳定 identity；重复 delivery 与 COMMIT outcome unknown 均先查询既有 event group，避免重复 revision、event、snapshot 或 cursor 推进。
 - 区分并记录 `reducer_failed`、`transaction_failed`、`commit_outcome_unknown`；明确回滚后保留可恢复 task，未知提交结果先 reconcile。
@@ -71,7 +71,7 @@
 - 实现 projection 的 `requiredBoundary/processedBoundary` 查询健康与有效 RAG cutoff；partial coverage 仍允许注入已处理结果并标记范围不完整，projection checkpoint 与 Memory cursor 保持独立。
 - 实现持续告警与恢复通知：GapBridge/projection 诊断保持 active 到明确追平；清诊断与创建 notification 同事务；target 从非健康恢复时同事务创建通知；JSON 与 SSE `done` 返回健康/通知，响应完成后 best-effort 标记 delivered。
 - Renderer 读取 target status 与 active GapBridge sidecar，为稳定 state 输出“可能滞后/正在重建”标记；请求时 effective view 需要 cleanup 时异步、串行唤醒幂等 housekeeping。
-- 增加 `CHAT_MEMORY_V1_CONTEXT_ENABLED` 独立开关；v2 启用时关闭 v1 rolling summary/core memory/legacy GapBridge 注入，但保留阶段 8 前的旧 worker 代码。
+- v1 rolling summary/core memory/legacy GapBridge 已正式退役：删除其环境变量，运行时固定禁止旧上下文注入与后台 tick，旧手动重建端点返回 `410`；旧实现代码仅暂留用于后续物理清理，不再参与配置或执行。
 - 增加阶段 6 context fixture，以及 recent window、GapBridge、健康优先级、projection lag、恢复通知、housekeeping wake-up、state 跳过原因与单一 segment 测试。
 - `npm run test:memory-v2` 与 `npm test` 全部通过。
 
@@ -96,6 +96,9 @@
 - 用 `CHAT_MEMORY_V2_PROVIDER_ADAPTER` 替代不能证明真实能力的 `CHAT_MEMORY_V2_PROVIDER_STRUCTURED_OUTPUT` 布尔声明。
 - Provider 配置可独立加载；preflight 只读取 `CHAT_MEMORY_V2_PROVIDER_*`，不再回退到聊天链路的 `DEEPSEEK_*` 配置。官方 DeepSeek strict adapter 会在请求前拒绝非 `/beta` 端点。
 - 增加 adapter 选择、配置隔离、schema 转换、strict tool 请求及响应归一化测试；`npm run test:memory-v2` 与 `npm test` 全部通过。
+- DeepSeek Memory 请求显式发送独立 `thinking.type=disabled`，不继承主聊天思考设置；配置允许显式启用以便实验，但高频生产默认关闭。
+- preflight 从简单布尔 schema 扩展为六个 Normal Proposer 与 Compaction 完整 schema 的顺序 golden 探测，并移除脚本对单一模型 ID 的硬编码。
+- Provider 输出边界 `output_schema_invalid` 首次将计数持久化到 durable task 并立即重试一次；输入边界错误不重试，第二次输出错误 halt，恢复扫描不会重新获得次数。
 
 ## 尚未执行
 

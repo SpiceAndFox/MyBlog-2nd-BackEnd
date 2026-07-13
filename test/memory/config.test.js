@@ -25,6 +25,7 @@ function validEnv() {
     CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS: "10", CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS: "1000",
     CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS: "10000", CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES: "10",
     CHAT_MEMORY_V2_QUOTE_MATCH_THRESHOLD: "0.75", CHAT_MEMORY_V2_PROVIDER_RETRY_MAX: "2",
+    CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS: "1000", CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS: "10000",
     CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS: "3", CHAT_MEMORY_V2_COMPACTION_RETRY_MAX: "2",
     CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS: "30", CHAT_MEMORY_V2_EVENT_RETENTION_DAYS: "30",
@@ -56,4 +57,21 @@ test("provider config is independently loadable and never falls back to chat pro
   delete env.CHAT_MEMORY_V2_PROVIDER_API_KEY;
   env.DEEPSEEK_API_KEY = "must-not-be-used";
   assert.throws(() => loadMemoryProviderConfig(env), /CHAT_MEMORY_V2_PROVIDER_API_KEY/);
+});
+
+test("DeepSeek provider config requires an explicit thinking mode", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "deepseek-strict-tools";
+  env.CHAT_MEMORY_V2_PROVIDER_BASE_URL = "https://api.deepseek.com/beta";
+  assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_THINKING_MODE/);
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "disabled";
+  assert.equal(loadMemoryProviderConfig(env).thinkingMode, "disabled");
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "sometimes";
+  assert.throws(() => loadMemoryProviderConfig(env), /disabled or enabled/);
+});
+
+test("schema-invalid retry is strictly bounded to at most one", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX = "2";
+  assert.throws(() => loadMemoryV2Config(env), /must be 0 or 1/);
 });

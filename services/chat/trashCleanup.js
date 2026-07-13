@@ -1,4 +1,5 @@
 const { logger } = require("../../logger");
+const { chatMemoryConfig } = require("../../config");
 const chatModel = require("../../models/chatModel");
 const { markPresetMemoryDirty, requestMemoryTick } = require("./memory/writePipeline");
 
@@ -33,7 +34,7 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
   const purged = Number(purgeResult?.purged) || 0;
   const affectedPresets = Array.isArray(purgeResult?.affectedPresets) ? purgeResult.affectedPresets : [];
 
-  if (purged > 0 && affectedPresets.length) {
+  if (chatMemoryConfig.legacyEnabled && purged > 0 && affectedPresets.length) {
     const deduped = new Map();
     for (const item of affectedPresets) {
       const userId = item?.userId;

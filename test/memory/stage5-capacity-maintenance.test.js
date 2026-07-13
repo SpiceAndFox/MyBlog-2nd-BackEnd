@@ -13,7 +13,7 @@ const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: section === "todos" ? 2 : 20, maxRenderedChars: 2000 }])),
-  providerRecovery: { retryMax: 2, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
+  providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
 };
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
@@ -82,6 +82,25 @@ test("capacity block persists deferred audit, compacts, and replays the original
   assert.equal(duplicate.duplicate, true);
   assert.equal(normalCalls, 1, "recovery must replay persisted output without calling the normal Proposer again");
   assert.equal(data.inspect.state.meta.revision, fixture.expected.replayRevision);
+});
+
+test("maintenance proposer shares the single durable schema-invalid retry", async () => {
+  const data = store();
+  const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];
+  let maintenanceCalls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, idFactory: () => ids.shift() || "unused",
+    providerAdapter: { propose: async (envelope) => {
+      if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+      maintenanceCalls += 1;
+      if (maintenanceCalls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$" }] } };
+      return { status: "ok", output: compactionOutput(envelope) };
+    } },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  assert.equal(result.status, "committed");
+  assert.equal(maintenanceCalls, 2);
+  assert.equal(data.inspect.ops.some((entry) => entry.outcome === "output_schema_invalid_retry"), true);
 });
 
 test("compaction reducer rejects pending item intersections without changing state", () => {

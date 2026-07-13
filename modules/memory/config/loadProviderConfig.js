@@ -20,14 +20,22 @@ function loadMemoryProviderConfig(env = process.env) {
   if (!ADAPTER_IDS.includes(adapter)) {
     throw new Error(`Env CHAT_MEMORY_V2_PROVIDER_ADAPTER must be one of: ${ADAPTER_IDS.join(", ")}`);
   }
-  return Object.freeze({
+  const config = {
     adapter,
     baseUrl: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_BASE_URL"),
     apiKey: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_API_KEY"),
     model: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_MODEL"),
     timeoutMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS", { min: 1 }),
     maxInputTokens: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS", { min: 1_000_000 }),
-  });
+  };
+  if (adapter === "deepseek-strict-tools") {
+    const thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
+    if (!["disabled", "enabled"].includes(thinkingMode)) {
+      throw new Error("Env CHAT_MEMORY_V2_PROVIDER_THINKING_MODE must be disabled or enabled");
+    }
+    config.thinkingMode = thinkingMode;
+  }
+  return Object.freeze(config);
 }
 
 module.exports = { ADAPTER_IDS, loadMemoryProviderConfig };

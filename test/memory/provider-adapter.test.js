@@ -6,6 +6,7 @@ const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require
 const { buildOutputSchema } = require("../../modules/memory/infrastructure/providers/outputSchema");
 const { compileDeepSeekSchema } = require("../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
 const { createStructuredTransport } = require("../../modules/memory/infrastructure/providers/structuredTransportFactory");
+const { runStructuredOutputPreflight } = require("../../modules/memory/infrastructure/providers/providerPreflight");
 
 const config = { overdueTodos: { maxRenderedItems: 2 } };
 function envelope() {
@@ -114,6 +115,7 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
   });
   assert.equal(request.url, "https://api.deepseek.com/beta/chat/completions");
   assert.equal(request.body.response_format, undefined);
+  assert.deepEqual(request.body.thinking, { type: "disabled" });
   assert.equal(request.body.tools[0].function.strict, true);
   assert.equal(request.body.tool_choice.function.name, "probe");
   assert.deepEqual(result.output, { ok: true });
@@ -123,4 +125,30 @@ test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {
   assert.throws(() => createStructuredTransport({
     adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,
   }), /api\.deepseek\.com\/beta/);
+});
+
+test("provider preflight exercises every normal proposer and compaction schema", async () => {
+  const requests = [];
+  const results = await runStructuredOutputPreflight({
+    promptLoader: async (proposer) => `prompt:${proposer}`,
+    invokeStructured: async (request) => {
+      requests.push(request);
+      return { output: structuredClone(request.userPayload.expectedOutput), finishReason: "tool_calls" };
+    },
+  });
+  assert.deepEqual(results.map((entry) => entry.name), [
+    "scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts", "compaction:todos",
+  ]);
+  assert.equal(new Set(requests.map((request) => request.responseSchema.name)).size, 7);
+  assert.equal(requests.every((request) => request.responseSchema.strict === true), true);
+  assert.equal(requests.every((request) => request.systemPrompt.startsWith(`prompt:${request.proposer}`)), true);
+});
+
+test("provider preflight rejects a schema-valid but wrong result branch", async () => {
+  await assert.rejects(() => runStructuredOutputPreflight({
+    promptLoader: async () => "prompt",
+    invokeStructured: async (request) => ({
+      output: { ...request.userPayload.expectedOutput, sectionResults: Object.fromEntries(Object.keys(request.userPayload.expectedOutput.sectionResults).map((section) => [section, { status: "unable_to_decide" }])) },
+    }),
+  }), /exact preflight branch/);
 });

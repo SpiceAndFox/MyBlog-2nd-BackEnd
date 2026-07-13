@@ -17,6 +17,7 @@ const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require
 const { createOpenAiStructuredTransport } = require("./infrastructure/providers/openAiStructuredTransport");
 const { createDeepSeekStrictToolsTransport } = require("./infrastructure/providers/deepSeekStrictToolsTransport");
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
+const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("./prompts");
 
 // Memory 模块之外只能从本入口访问公开能力。后续阶段按真实调用需求
@@ -64,5 +65,6 @@ module.exports = Object.freeze({
   createOpenAiStructuredTransport,
   createDeepSeekStrictToolsTransport,
   createStructuredTransport,
+  runStructuredOutputPreflight,
   loadProposerPrompt,
 });

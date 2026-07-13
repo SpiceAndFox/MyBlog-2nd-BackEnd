@@ -431,6 +431,24 @@ const chatTimeContextConfig = (() => {
 })();
 
 const chatMemoryConfig = (() => {
+  // Memory v1 已退役。保留这个只读兼容对象，直到旧模块和管理端点完成物理删除；
+  // 不再从环境变量加载 rolling summary/core memory/worker 配置。
+  return Object.freeze({
+    legacyEnabled: false,
+    v1ContextEnabled: false,
+    coreMemoryEnabled: false,
+    recentWindowAssistantGistEnabled: readRequiredBoolEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_ENABLED"),
+    recentWindowAssistantRawLastN: ensureNonNegativeInt(
+      readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N"),
+      { name: "CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N" }
+    ),
+    recentWindowAssistantGistPrefix: readRequiredStringEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX"),
+    workerProviderId: null,
+    workerModelId: null,
+    workerConcurrency: 1,
+  });
+
+  /* c8 ignore start -- 待旧 memory 模块物理删除时一并移除。 */
   const v1ContextEnabled = readBoolEnv("CHAT_MEMORY_V1_CONTEXT_ENABLED", true);
   const rollingSummaryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_ROLLING_SUMMARY_MAX_CHARS"), {
     name: "CHAT_ROLLING_SUMMARY_MAX_CHARS",
@@ -872,6 +890,7 @@ const chatGistConfig = (() => {
       googleGenAiConfig,
     },
   };
+  /* c8 ignore stop */
 })();
 
 const chatRagConfig = (() => {

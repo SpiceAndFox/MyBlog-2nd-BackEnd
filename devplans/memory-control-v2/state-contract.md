@@ -503,7 +503,7 @@ Proposer 输出必须通过 provider 支持的 schema-constrained structured out
 ```
 
 - `compactionProposer` 的 schema 额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`。输出 `addItem`、`forgetItem`、通用删除、跨 section 合并、`user_correction` 或 `evidenceRefs` 均非法。compaction section 的 `status` 必须是 `patches | unable_to_compact` 之一（不同于普通 Proposer 的 `patches | noop | unable_to_decide`）。
-- `sectionResults` 必须恰好覆盖 `task.targetSections`。缺少 target section、包含非 target section、目标 section 缺少 `status`，均由 tick orchestrator 归类为 `output_schema_invalid`，不交 Reducer、不推进 cursor；按 §9.3-§9.5 原子更新 task、对应 target status 与 ops log，不产生 revision/snapshot。
+- `sectionResults` 必须恰好覆盖 `task.targetSections`。缺少 target section、包含非 target section、目标 section 缺少 `status`，均由 tick orchestrator 归类为 `output_schema_invalid`，不交 Reducer、不推进 cursor；首次 Provider 输出边界错误可按 §10 的有界规则持久化后重试，耗尽后按 §9.3-§9.5 原子更新 task、对应 target status 与 ops log，不产生 revision/snapshot。
 
 compaction 输出示例（`patches` 状态，仍使用 `sectionResults`，但只允许 `mergeItems`）：
 
@@ -832,7 +832,7 @@ CREATE TABLE chat_memory_ops_log (
   target_key      TEXT NOT NULL,
   section         TEXT,
   proposer        TEXT,
-  outcome         TEXT NOT NULL,           -- llm_call_failed | safety_policy_blocked | max_output_truncated | output_schema_invalid | unable_to_decide | unable_to_compact | stale_result | reducer_failed | transaction_failed | commit_outcome_unknown
+  outcome         TEXT NOT NULL,           -- llm_call_failed | safety_policy_blocked | max_output_truncated | output_schema_invalid_retry | output_schema_invalid | unable_to_decide | unable_to_compact | stale_result | reducer_failed | transaction_failed | commit_outcome_unknown
   attempt         INTEGER NOT NULL,
   detail          JSONB,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -849,7 +849,7 @@ CREATE INDEX idx_memory_ops_log_outcome
 
 通用 outcome 至少包括：
 
-- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 `output_schema_invalid` 分开统计，即使残片可解析也不作为完整 proposal。前三者可重试，`output_schema_invalid` 是持续性错误；
+- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid_retry`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 schema invalid 分开统计，即使残片可解析也不作为完整 proposal。前三者按退避策略可重试；`output_schema_invalid_retry` 表示首次 Provider 输出边界失败获得的唯一即时重试，最终 `output_schema_invalid` 表示输入边界错误或输出重试耗尽；
 - `unable_to_decide`：Proposer 自认信息不足，扩窗口 attempt 属于 task；
 - `unable_to_compact`：compactionProposer 判定无安全合并空间，对应 maintenance task/target 进入失败或 halt；
 - `stale_result`：revision/cursor/generation 校验失败后丢弃旧执行结果；
@@ -988,7 +988,9 @@ Snapshot/event/task/ops log 的 anchor 提升、连续 replay 链和可清理条
 
 ## 10. Provider Adapter 契约
 
-Proposer 的 LLM 调用必须经由 Memory 专用的归一化 Provider Adapter 层，而非复用裸文本解析路径或在 tick orchestrator 里直接调 provider SDK。Adapter 必须使用 provider 原生 JSON schema、tool 或 function structured-output 能力，并在返回后再做本地 schema 校验；不具备可用 structured output 能力的 Provider/model 在配置加载时即拒绝作为 Memory Proposer。Adapter 把不同 provider 的响应与错误映射为统一结果，使上层无需关心 `finish_reason` 取值差异。
+Proposer 的 LLM 调用必须经由 Memory 专用的归一化 Provider Adapter 层，而非复用裸文本解析路径或在 tick orchestrator 里直接调 provider SDK。配置以显式 adapter ID 选择协议实现；Adapter 必须使用 provider 原生 JSON schema、tool 或 function structured-output 能力，并在返回后再做本地 schema 校验。未知 adapter 在配置加载时拒绝；已知 adapter 对具体 Provider/model 的真实能力由完整 schema preflight 验证，不能由布尔环境变量自行宣称。Adapter 把不同 provider 的响应与错误映射为统一结果，使上层无需关心 `finish_reason` 取值差异。
+
+DeepSeek 首版使用 `deepseek-strict-tools`：端点必须为官方 `/beta` strict tool calling，指定 `strict=true` 并强制调用唯一输出 tool；schema compiler 将业务 schema 转换为 Provider 支持的子集，未由 Provider 强制的长度/数组约束仍由本地完整契约校验。高频 Memory 调用通过独立 Provider 配置显式发送 `thinking.type=disabled`；不得继承主聊天的 thinking 设置。OpenAI-compatible 原生 JSON Schema 端点使用独立的 `openai-json-schema` adapter。
 
 Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。Adapter 输出：
 
@@ -1004,7 +1006,7 @@ Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。
 
 - `safety_policy_blocked`：provider 返回 `finish_reason`/`stop_reason` 含 `content_filter`，或返回 refusal 标记，或输入被 provider 拒绝。此错误必须显式记录，不得伪装成 noop 或静默跳过（见 [write-protocol.md](write-protocol.md) §6）。
 - `max_output_truncated`：provider 明确因 max tokens/max output length 停止，或响应元数据表明 structured payload 被输出上限截断。即使残片碰巧能被解析，也不得作为完整 proposal 交给 Reducer；该原因必须与一般 schema invalid 分开统计。
-- `output_schema_invalid`：provider 返回了内容但 adapter/tick orchestrator 无法验证为 §5.5 schema。命名上与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前。
+- `output_schema_invalid`：输入 envelope 不符合契约，或 provider 返回了内容但 adapter/tick orchestrator 无法验证为 §5.5 schema。命名上与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前。输入边界错误立即 halt；输出边界错误最多获得一次持久化即时重试，首次记录为 `output_schema_invalid_retry`，耗尽后才记录最终错误并 halt。
 - `llm_call_failed`：网络异常、超时、provider 5xx、其它未归类异常。
 
 Provider/model 的物理 context window、最大输出和 schema/tool 限制由 Adapter 在请求前校验并按上述统一结果处理；这些上限不得折算、复用或写回为 §8 的 Memory section `maxItems/maxRenderedChars` 容量规则。
