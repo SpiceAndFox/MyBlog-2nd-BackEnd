@@ -1,22 +1,17 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { createNormalWritePipeline } = require("../../modules/memory/application/normalWritePipeline");
 const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
+const { createMemoryTestConfig, sha256 } = require("./support/memory-builders");
 
-function budgets() {
-  return Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: 20, maxRenderedChars: 2000 }]));
-}
-const config = {
+const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
-  overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-  quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, sectionBudgets: budgets(),
   providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
-};
+});
 const content = "我答应明天还书";
-const message = { id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content, contentHash: `sha256:${crypto.createHash("sha256").update(content).digest("hex")}` };
+const message = { id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content, contentHash: sha256(content) };
 
 function fakes() {
   let state = createInitialMemoryState();

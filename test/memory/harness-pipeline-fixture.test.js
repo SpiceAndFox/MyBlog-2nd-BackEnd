@@ -4,13 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createNormalWritePipeline, taskRow } = require("../../modules/memory/application/normalWritePipeline");
 const { loadFixtureCatalog, loadFixtures, runReducerFixture, assertTickExpected, validateFixture } = require("../../modules/memory/harness/runner");
+const { createMemoryTestConfig } = require("./support/memory-builders");
 
-function budgets() {
-  return Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: 20, maxRenderedChars: 2000 }]));
-}
-const config = { quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 }, sectionBudgets: budgets() };
+const config = createMemoryTestConfig();
 
-test("stage 3 normal pipeline fixture locks noop cursor revision semantics", () => {
+test("fixture catalog routes each scenario kind and runs reducer fixtures", () => {
   const root = path.join(__dirname, "../../modules/memory/harness/fixtures");
   const catalog = loadFixtureCatalog(root);
   assert.deepEqual(catalog.map((entry) => entry.fixtureKind).sort(), ["context", "pipeline", "reducer", "reducer"]);

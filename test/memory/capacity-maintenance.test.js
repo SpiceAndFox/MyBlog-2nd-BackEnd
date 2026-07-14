@@ -9,7 +9,7 @@ const { createMemoryMetrics } = require("../../modules/memory/application/metric
 const { createMemoryRecovery } = require("../../modules/memory/application/recovery");
 const { reduceProposal } = require("../../modules/memory/domain/reducer");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/stage5-capacity-replay.json"), "utf8"));
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/capacity-replay.json"), "utf8"));
 const hash = (value) => `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: hash("还要记得归还杂志") };
 const config = {

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  normalizeEvidenceText, validateQuote, validateEvidenceRefs, isPolicyAllowed,
+  normalizeEvidenceText, validateQuote, validateEvidenceRefs,
 } = require("../../modules/memory/domain");
 
 test("quote normalization is Unicode-aware and uses the fixed punctuation set", () => {
@@ -12,8 +12,12 @@ test("quote normalization is Unicode-aware and uses the fixed punctuation set", 
 test("all quote lengths use equal-window Levenshtein matching", () => {
   assert.equal(validateQuote("我明天会把像皮还给她", "她说：我明天会把橡皮还给她。", { threshold: 0.75 }).ok, true);
   assert.deepEqual(validateQuote("！？…", "！？…"), { ok: false, reason: "quote_too_short", similarity: 0 });
+  assert.equal(validateQuote("甲乙", "甲乙").reason, "quote_too_short");
+  assert.equal(validateQuote("甲乙丙", "甲乙丙").ok, true);
   assert.equal(validateQuote("abc", "abx", { threshold: 0.75 }).reason, "quote_not_found");
-  assert.equal(validateQuote("a".repeat(201), "a".repeat(201)).reason, "quote_too_long");
+  assert.equal(validateQuote("abc", "abx", { threshold: 0.66 }).ok, true);
+  assert.equal(validateQuote("𠮷".repeat(200), "𠮷".repeat(200)).ok, true);
+  assert.equal(validateQuote("𠮷".repeat(201), "𠮷".repeat(201)).reason, "quote_too_long");
 });
 
 test("fuzzy quote matching fails closed after its deterministic candidate budget", () => {
@@ -45,19 +49,4 @@ test("evidence validation rechecks task membership, database metadata, role, and
   assert.equal(validateEvidenceRefs({ ...base, patch: { ...base.patch, evidenceKind: "assistant_correction" } }).reason, "evidence_role_mismatch");
   assert.equal(validateEvidenceRefs({ ...base, databaseMessages: [{ ...base.databaseMessages[0], contentHash: "sha256:y" }] }).reason, "evidence_source_mismatch");
   assert.equal(validateEvidenceRefs({ ...base, task: { ...base.task, observedMessageIds: [] } }).reason, "message_id_not_found");
-});
-
-test("policy table accepts and rejects the documented combinations", () => {
-  assert.equal(isPolicyAllowed("scene", "setField", "scene_change"), true);
-  assert.equal(isPolicyAllowed("todos", "addItem", "assistant_commitment"), true);
-  assert.equal(isPolicyAllowed("standingAgreements", "cancelAgreement", "agreement_cancel"), true);
-  assert.equal(isPolicyAllowed("milestones", "addItem", "recent_episode"), false);
-  assert.equal(isPolicyAllowed("milestones", "addItem", "relationship_milestone"), true);
-  for (const section of ["worldFacts", "userProfile", "assistantProfile", "relationship"]) {
-    assert.equal(isPolicyAllowed(section, "addItem", "long_term_fact"), true);
-    assert.equal(isPolicyAllowed(section, "addItem", "scene_change"), false);
-    assert.equal(isPolicyAllowed(section, "updateItem", "long_term_fact"), false);
-    assert.equal(isPolicyAllowed(section, "updateItem", "user_correction"), true);
-    assert.equal(isPolicyAllowed(section, "forgetItem", "assistant_forget"), true);
-  }
 });

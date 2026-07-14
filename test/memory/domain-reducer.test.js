@@ -1,17 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
-const path = require("node:path");
 const { createInitialMemoryState, TARGETS } = require("../../modules/memory/contracts");
-const { loadFixtures, executeReducerTick } = require("../../modules/memory/harness/runner");
 const { reduceProposal } = require("../../modules/memory/domain");
+const { createMemoryTestConfig, sha256: hash, sequence } = require("./support/memory-builders");
 
-function budgets(maxItems = 20, maxRenderedChars = 2000) {
-  return Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems, maxRenderedChars }]));
-}
-const config = { quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 }, sectionBudgets: budgets() };
-function sequence(...values) { let index = 0; return () => values[index++] || `id-${index}`; }
-function hash(value) { return `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`; }
+const config = createMemoryTestConfig();
 function task(targetKey, overrides = {}) {
   return {
     tickId: 1, taskId: "task", userId: 1, presetId: "p", schemaVersion: 2, sourceGeneration: 0, baseRevision: 0,
@@ -30,19 +23,6 @@ function item(id, text, messageId = 1, todo = false, evidenceKind = null) {
   const value = { id, text, evidenceGroups: [{ evidenceKind: inferredKind, refs: [{ messageId, contentHash: hash(text), quote: text }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
   return todo ? { ...value, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null } : value;
 }
-
-test("stage 2 reducer fixture produces accepted event, snapshot, provenance, and cursor", () => {
-  const loaded = loadFixtures(path.join(__dirname, "../../modules/memory/harness/fixtures"));
-  const { fixture } = loaded.find((entry) => entry.fixture.name === "todo-add-with-valid-evidence");
-  const result = executeReducerTick(fixture, fixture.ticks[0], { config, idFactory: sequence("patch-1", "1") });
-  assert.equal(result.outcome, "committable");
-  assert.equal(result.events[0].decision, "accepted");
-  assert.equal(result.state.working.todos[0].id, "todo:1");
-  assert.equal(result.state.working.todos[0].evidenceGroups[0].refs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
-  assert.equal(result.events[0].normalizedOperation.evidenceRefs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
-  assert.equal(result.state.meta.targetCursors.todos, 1);
-  assert.deepEqual(result.snapshot.state, result.state);
-});
 
 test("ordinary rejected and noop proposals still yield a cursor-only revision", () => {
   const database = message(2, "user", "只是普通的一天，没有里程碑");

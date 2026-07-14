@@ -1,5 +1,5 @@
 {
-  "name": "revision-zero-scene-noop",
+  "name": "scene-noop-from-revision-zero",
   "fixtureKind": "reducer",
   "initialState": {
     "version": 2,

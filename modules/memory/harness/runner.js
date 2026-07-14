@@ -6,6 +6,7 @@ const { reduceProposal } = require("../domain/reducer");
 const { renderMemory } = require("../domain/renderer");
 
 const TARGET_STATUSES = new Set(["healthy", "retry_wait", "capacity_blocked", "halted", "rebuilding"]);
+const FIXTURE_KINDS = new Set(["reducer", "pipeline", "context", "recovery"]);
 const EXPECTED_KEYS = new Set([
   "outcome", "revision", "cursorAfter", "decision", "stateText",
   "statePatch", "events", "eventGroup", "snapshot", "task", "targetStatus",
@@ -72,7 +73,8 @@ function validateFixture(fixture, filePath = "<fixture>") {
 function loadFixtureCatalog(rootDir) {
   return listFixtureFiles(rootDir).map((filePath) => {
     const fixture = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    const fixtureKind = fixture.fixtureKind || "reducer";
+    const fixtureKind = fixture.fixtureKind;
+    if (!FIXTURE_KINDS.has(fixtureKind)) throw new Error(`${filePath}: fixtureKind must be one of ${[...FIXTURE_KINDS].join(", ")}`);
     if (["reducer", "pipeline"].includes(fixtureKind)) validateFixture(fixture, filePath);
     else if (typeof fixture.name !== "string" || !fixture.name.trim()) throw new Error(`${filePath}: named support fixture is required`);
     return { filePath, fixture, fixtureKind };
@@ -216,6 +218,6 @@ function runReducerFixture(fixture, options = {}, context = {}) {
 }
 
 module.exports = {
-  listFixtureFiles, validateFixture, loadFixtureCatalog, loadFixtures, executeReducerTick, runReducerFixture,
+  FIXTURE_KINDS, listFixtureFiles, validateFixture, loadFixtureCatalog, loadFixtures, executeReducerTick, runReducerFixture,
   assertTickExpected, assertDurableInvariants, assertMatch, deepMerge,
 };

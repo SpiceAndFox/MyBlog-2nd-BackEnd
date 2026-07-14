@@ -5,7 +5,7 @@ const path = require("node:path");
 const { createInitialMemoryState, TARGET_KEYS, SCHEMA_VERSION } = require("../../modules/memory/contracts");
 const { createMemoryMigration } = require("../../modules/memory/application/migration");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/stage8-migration.json"), "utf8"));
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/migration.json"), "utf8"));
 
 function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false } = {}) {
   let state = null;
@@ -96,7 +96,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
   return { migration, getInitializeCount: () => initializeCount };
 }
 
-test("stage 8 rehearsal rebuilds every raw-history scope", async () => {
+test("migration rehearsal rebuilds every raw-history scope", async () => {
   const harness = makeHarness();
   const report = await harness.migration.run({ mode: "rehearsal" });
   assert.equal(report.status, "completed");
@@ -110,7 +110,7 @@ test("stage 8 rehearsal rebuilds every raw-history scope", async () => {
   assert.equal(report.results[0].durationMs > 0, true);
 });
 
-test("stage 8 rehearsal is repeatable and never opens the service start gate", async () => {
+test("migration rehearsal is repeatable and never opens the service start gate", async () => {
   const harness = makeHarness();
   const first = await harness.migration.run({ mode: "rehearsal" });
   const second = await harness.migration.run({ mode: "rehearsal" });
@@ -119,7 +119,7 @@ test("stage 8 rehearsal is repeatable and never opens the service start gate", a
   assert.equal(second.canStartService, false);
 });
 
-test("stage 8 resumes an incomplete force drain without resetting its generation", async () => {
+test("migration resumes an incomplete force drain without resetting its generation", async () => {
   const harness = makeHarness({ forceDrainFailureOnce: true });
   const first = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(first.status, "failed");
@@ -135,12 +135,12 @@ test("stage 8 resumes an incomplete force drain without resetting its generation
   assert.equal(harness.getInitializeCount(), 1);
 });
 
-test("stage 8 cutover requires an explicitly stopped service", async () => {
+test("migration cutover requires an explicitly stopped service", async () => {
   const harness = makeHarness();
   await assert.rejects(() => harness.migration.run({ mode: "cutover" }), /serviceStopped=true/);
 });
 
-test("stage 8 cutover opens the start gate only after full verification", async () => {
+test("migration cutover opens the start gate only after full verification", async () => {
   const harness = makeHarness();
   const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(report.status, "completed");
@@ -162,7 +162,7 @@ for (const [failure, message] of [
   ["eventChain", /event\/snapshot chain is not continuous/],
   ["checkpoint", /did not reach the captured generation\/boundary/],
 ]) {
-  test(`stage 8 verification closes the start gate on ${failure} failure`, async () => {
+  test(`migration verification closes the start gate on ${failure} failure`, async () => {
     const harness = makeHarness({ verificationFailure: failure });
     const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
     assert.equal(report.status, "failed");

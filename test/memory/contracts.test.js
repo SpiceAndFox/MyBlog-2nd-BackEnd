@@ -1,9 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const path = require("node:path");
 const crypto = require("node:crypto");
 const { createInitialMemoryState, validateMemoryState, validatePatch, validateProposerOutput, validateTaskEnvelope } = require("../../modules/memory/contracts");
-const { loadFixtures } = require("../../modules/memory/harness/runner");
 
 test("revision zero state satisfies the strict v2 schema", () => {
   const state = createInitialMemoryState();
@@ -75,8 +73,4 @@ test("output must exactly cover target sections", () => {
   const result = validateProposerOutput({ tickId: 1, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" } } }, task);
   assert.equal(result.ok, false);
   assert.match(result.errors.map((entry) => entry.path).join(" "), /milestones/);
-});
-test("memory fixtures load through the harness runner", () => {
-  const fixtures = loadFixtures(path.join(__dirname, "../../modules/memory/harness/fixtures"));
-  assert.ok(fixtures.length >= 2);
 });

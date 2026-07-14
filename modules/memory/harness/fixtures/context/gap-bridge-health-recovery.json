@@ -1,5 +1,5 @@
 {
-  "name": "stage6-gapbridge-health-recovery",
+  "name": "gap-bridge-health-recovery",
   "fixtureKind": "context",
   "recentWindowMaxChars": 5,
   "gapBridge": { "maxRawChars": 5, "retainedMessages": 2 },

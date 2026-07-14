@@ -1,5 +1,5 @@
 {
-  "name": "stage-5-capacity-replay",
+  "name": "capacity-replay",
   "fixtureKind": "recovery",
   "initialRevision": 0,
   "initialCursor": 0,

@@ -420,8 +420,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `standingAgreements` 达到上限 -> deferred -> compaction 合并重叠约定 -> replay 原 proposal 成功，cursor 推进。
 - Provider Adapter 返回 `safety_policy_blocked` -> 落 ops log，cursor 不推进；连续达阈值后只 halt 对应 target，其他 targets/主聊天继续；resume 指定 target 后从 durable task/cursor 位置继续。
 
-## 5. 建议落点
+## 5. 测试落点与入口
 
-首版建议新增 `scripts/memory-v2-verify/run-all.js` 作为统一入口，内部按 fixture 目录分组执行。测试数据建议放在 `scripts/memory-v2-verify/fixtures/`，不要混进 service 目录。
+离线回归统一使用 Node test runner：`npm run test:memory-v2` 执行 `test/memory/*.test.js`。可复用的结构化场景放在 `modules/memory/harness/fixtures/`，恢复链路的支持数据放在 `modules/memory/harness/recovery-fixtures/`，并由 `modules/memory/harness/runner.js` 按显式 `fixtureKind` 发现、校验和路由。不得再建立第二套 `scripts/memory-v2-verify` runner 或把 fixture 复制到多个目录。
+
+真实 Provider 验收使用 §4 的 `probe:memory-v2-provider` 与 `smoke:memory-v2-provider` 显式入口，不进入离线回归。
 
 Harness 通过后，v2 才能接入真实主链路。否则 memory v2 只是换了形状的不可控摘要器。

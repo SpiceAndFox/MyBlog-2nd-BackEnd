@@ -1,5 +1,5 @@
 {
-  "name": "stage-4-recovery",
+  "name": "task-recovery",
   "fixtureKind": "recovery",
   "providerErrors": [
     { "reason": "llm_call_failed", "expectedStatus": "retry_wait", "expectedDelayMs": 1000, "expectedConsecutiveErrors": 1 },

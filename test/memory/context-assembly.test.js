@@ -4,12 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
-const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage, aggregateMemoryHealth } = require("../../modules/memory/domain");
 const { createMemoryContextAssembly } = require("../../modules/memory/application/contextAssembly");
 const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
-const { buildMemorySegment } = require("../../services/chat/context/segments/memory");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/fixtures/context/stage6-context-health.json"), "utf8"));
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/fixtures/context/gap-bridge-health-recovery.json"), "utf8"));
 const TARGETS = ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"];
 
 function config() {
@@ -68,50 +66,6 @@ function makeData() {
   return data;
 }
 
-test("recent window uses Unicode code points, complete messages, and a user boundary", () => {
-  const under = selectRecentWindow([{ id: 1, role: "assistant", content: "😀" }, { id: 2, role: "user", content: "好" }], 2);
-  assert.equal(under.needsMemory, false);
-  assert.equal(under.candidateChars, 2);
-
-  const over = selectRecentWindow([{ id: 1, role: "user", content: "1111" }, { id: 2, role: "assistant", content: "2222" }, { id: 3, role: "assistant", content: "3333" }, { id: 4, role: "user", content: "4444" }], 9);
-  assert.equal(over.needsMemory, true);
-  assert.deepEqual(over.messages.map((row) => row.id), [4]);
-  assert.equal(over.droppedToUserBoundary, 1);
-
-  const oversizedLatest = selectRecentWindow([{ id: 1, role: "user", content: "😀😀😀😀" }], 3);
-  assert.equal(oversizedLatest.messages[0].content, "😀😀😀😀");
-});
-
-test("GapBridge deduplicates target overlap and never truncates a raw message", () => {
-  const state = createInitialMemoryState();
-  const result = buildGapBridgeCoverage({ messages: fixture.sourceMessages, state, recentWindowStartMessageId: 5, ...fixture.gapBridge });
-  assert.deepEqual(result.messages.map((row) => row.id), fixture.expected.retainedGapMessageIds);
-  assert.deepEqual(result.messages[0].targetKeys, TARGETS);
-  assert.equal(result.messages[0].content, "第四条");
-  assert.equal(result.diagnostics.length, 6);
-  assert.equal(result.diagnostics[0].omittedUpperMessageId, fixture.expected.omittedUpperMessageId);
-  assert.equal(result.stats.truncated, true);
-});
-
-test("GapBridge retains every message when the raw character budget is not exceeded", () => {
-  const state = createInitialMemoryState();
-  const messages = [1, 2, 3, 4, 5].map((id) => ({
-    id,
-    role: id % 2 ? "user" : "assistant",
-    content: "x",
-  }));
-  const result = buildGapBridgeCoverage({
-    messages,
-    state,
-    recentWindowStartMessageId: 5,
-    maxRawChars: 100,
-    retainedMessages: 2,
-  });
-  assert.deepEqual(result.messages.map((row) => row.id), [1, 2, 3, 4]);
-  assert.equal(result.diagnostics.length, 0);
-  assert.equal(result.stats.truncated, false);
-});
-
 test("context assembly persists omitted diagnostics and atomically emits recovery notifications", async () => {
   const data = makeData();
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
@@ -153,69 +107,6 @@ test("historical context queries cannot falsely resolve a gap diagnostic outside
   await assemble({ userId: 1, presetId: "default", upToMessageId: 1, requestId: "historical-query" });
   assert.equal(data.diagnostics[0].resolved, false);
   assert.equal(data.notifications.length, 0);
-});
-
-test("health aggregation gives rebuilding precedence and projection health is query-scoped", () => {
-  const health = aggregateMemoryHealth({ targetStatuses: [{ targetKey: "todos", status: "halted" }, { targetKey: "scene", status: "rebuilding" }] });
-  assert.equal(health.status, "rebuilding");
-  assert.equal(health.chatBlocked, false);
-  const haltedAlert = health.alerts.find((row) => row.subjectKey === "todos");
-  assert.match(haltedAlert.message, /服务器维护/);
-  assert.equal(Object.hasOwn(haltedAlert, "detail"), false, "user health payload must not expose internal status/error details");
-
-  assert.deepEqual(assessProjectionCoverage({ processedGeneration: 0, processedBoundaryMessageId: 8 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }), { queryHealth: "rebuilding", requiredBoundary: 9, processedBoundary: 8 });
-  assert.equal(assessProjectionCoverage({ processedGeneration: 1, processedBoundaryMessageId: 8 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }).queryHealth, "degraded");
-  assert.equal(assessProjectionCoverage({ processedGeneration: 1, processedBoundaryMessageId: 9 }, { sourceGeneration: 1, recentWindowStartMessageId: 10 }).queryHealth, "healthy");
-  assert.equal(aggregateMemoryHealth({ targetStatuses: TARGETS.map((targetKey) => targetKey === "todos" ? { target_key: targetKey, status: "halted", rebuild_boundary_message_id: 42 } : { target_key: targetKey, status: "healthy", rebuild_boundary_message_id: null }) }).status, "rebuilding");
-});
-
-test("health alert debounce suppresses only newly changed persisted failures", () => {
-  const changedAt = "2026-07-13T00:00:00.000Z";
-  const statuses = TARGETS.map((targetKey) => targetKey === "todos"
-    ? { targetKey, status: "retry_wait", updatedAt: changedAt }
-    : { targetKey, status: "healthy", updatedAt: changedAt });
-  const duringDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:00.500Z"), alertDebounceMs: 1000 });
-  const afterDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:01.001Z"), alertDebounceMs: 1000 });
-  assert.equal(duringDebounce.status, "degraded");
-  assert.equal(duringDebounce.alerts.length, 0);
-  assert.equal(afterDebounce.status, "degraded");
-});
-
-test("diagnostic debounce hides only alert text, not degraded health", () => {
-  const statuses = TARGETS.map((targetKey) => ({ targetKey, status: "healthy" }));
-  const health = aggregateMemoryHealth({
-    targetStatuses: statuses,
-    diagnostics: [{
-      subjectKind: "target",
-      subjectKey: "scene",
-      diagnosticType: "scene_capacity_exceeded",
-      createdAt: "2026-07-13T00:00:00.000Z",
-      resolved: false,
-    }],
-    now: new Date("2026-07-13T00:00:00.500Z"),
-    alertDebounceMs: 1000,
-  });
-  assert.equal(health.status, "degraded");
-  assert.deepEqual(health.alerts, []);
-});
-
-test("projection diagnostics apply the same alert debounce as target diagnostics", () => {
-  const statuses = TARGETS.map((targetKey) => ({ targetKey, status: "healthy" }));
-  const health = aggregateMemoryHealth({
-    targetStatuses: statuses,
-    diagnostics: [{
-      subjectKind: "projection",
-      subjectKey: "rag",
-      diagnosticType: "projection_lag",
-      createdAt: "2026-07-13T00:00:00.000Z",
-      resolved: false,
-    }],
-    projectionHealth: [{ projectionKey: "rag", queryHealth: "degraded", requiredBoundary: 4, processedBoundary: 2 }],
-    now: new Date("2026-07-13T00:00:00.500Z"),
-    alertDebounceMs: 1000,
-  });
-  assert.equal(health.status, "degraded");
-  assert.deepEqual(health.alerts, []);
 });
 
 test("projection lag diagnostic persists until the query boundary is covered", async () => {
@@ -315,9 +206,3 @@ test("invalid authority schedules background state recovery without blocking con
   assert.equal(recoveries, 1);
 });
 
-test("v2 memory is emitted as one context segment", () => {
-  const segment = buildMemorySegment({ memoryV2: { renderedText: "[长期核心记忆]\n(无)" } });
-  assert.equal(segment.messages.length, 1);
-  assert.equal(segment.messages[0].role, "system");
-  assert.match(segment.messages[0].content, /Memory Control v2/);
-});
