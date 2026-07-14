@@ -69,16 +69,21 @@ function buildGapBridgeCoverage({ messages, state, recentWindowStartMessageId, m
   }
 
   const all = [...union.values()].sort((left, right) => left.id - right.id);
-  const retainedReversed = [];
-  let retainedChars = 0;
-  for (let index = all.length - 1; index >= 0; index -= 1) {
-    const message = all[index];
-    const chars = codePointLength(message.content);
-    if (retainedReversed.length >= retainedMessages || retainedChars + chars > maxRawChars) continue;
-    retainedReversed.push(message);
-    retainedChars += chars;
+  const originalChars = all.reduce((sum, item) => sum + codePointLength(item.content), 0);
+  let retained = all;
+  let retainedChars = originalChars;
+  if (originalChars > maxRawChars) {
+    const retainedReversed = [];
+    retainedChars = 0;
+    for (let index = all.length - 1; index >= 0; index -= 1) {
+      const message = all[index];
+      const chars = codePointLength(message.content);
+      if (retainedReversed.length >= retainedMessages || retainedChars + chars > maxRawChars) continue;
+      retainedReversed.push(message);
+      retainedChars += chars;
+    }
+    retained = retainedReversed.reverse();
   }
-  const retained = retainedReversed.reverse();
   const retainedIds = new Set(retained.map((message) => message.id));
   const diagnostics = [];
   for (const targetKey of TARGET_KEYS) {
@@ -97,7 +102,20 @@ function buildGapBridgeCoverage({ messages, state, recentWindowStartMessageId, m
       omittedUpperMessageId: omitted[omitted.length - 1].id, truncated: true,
     });
   }
-  return { messages: retained, diagnostics, gapsByTarget, stats: { originalCount: all.length, originalChars: all.reduce((sum, item) => sum + codePointLength(item.content), 0), retainedCount: retained.length, retainedChars, omittedCount: all.length - retained.length } };
+  const omittedCount = all.length - retained.length;
+  return {
+    messages: retained,
+    diagnostics,
+    gapsByTarget,
+    stats: {
+      originalCount: all.length,
+      originalChars,
+      retainedCount: retained.length,
+      retainedChars,
+      omittedCount,
+      truncated: omittedCount > 0,
+    },
+  };
 }
 
 function assessProjectionCoverage(checkpoint, { sourceGeneration, recentWindowStartMessageId }) {

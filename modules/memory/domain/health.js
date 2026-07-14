@@ -24,14 +24,13 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     const hasRebuildBoundary = rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== null && rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== undefined;
     const internal = hasRebuildBoundary ? "rebuilding" : rowValue(row, "status");
     if (internal === "healthy") continue;
-    if (debounced(row)) continue;
     const rebuilding = internal === "rebuilding";
     status = rebuilding ? "rebuilding" : status === "healthy" ? "degraded" : status;
+    if (debounced(row)) continue;
     alerts.push({ subjectKind: "target", subjectKey: targetKey, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${TARGET_LABELS[targetKey]}记忆正在重建` : `${TARGET_LABELS[targetKey]}记忆可能滞后${internal === "halted" ? "，需要服务器维护" : ""}` });
   }
   const queryProjectionKeys = new Set(projectionHealth.filter(Boolean).map((row) => row.projectionKey));
   for (const diagnostic of diagnostics.filter((row) => rowValue(row, "resolved") !== true)) {
-    if (debounced(diagnostic)) continue;
     const kind = rowValue(diagnostic, "subjectKind", "subject_kind");
     const key = rowValue(diagnostic, "subjectKey", "subject_key");
     const diagnosticType = rowValue(diagnostic, "diagnosticType", "diagnostic_type");
@@ -39,6 +38,7 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     const rebuilding = rowValue(diagnostic, "healthStatus", "health_status") === "rebuilding";
     if (rebuilding) status = "rebuilding";
     else if (status === "healthy") status = "degraded";
+    if (debounced(diagnostic)) continue;
     const degradedMessage = diagnosticType === "scene_capacity_exceeded"
       ? "当前状态：最近一次更新因长度超限未写入，记忆可能滞后"
       : kind === "target" ? `${TARGET_LABELS[key] || key}：部分早期对话未在上下文中` : `${key}：部分早期对话未在上下文中`;

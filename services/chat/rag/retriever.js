@@ -268,7 +268,7 @@ function serializeSource(source) {
   return serialized;
 }
 
-async function attachDialogueMessages(sources, { userId, presetId, tombstones = [] } = {}) {
+async function attachDialogueMessages(sources, { userId, presetId, beforeMessageId, tombstones = [] } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length) return [];
 
@@ -285,6 +285,7 @@ async function attachDialogueMessages(sources, { userId, presetId, tombstones = 
         lastMessageId: source.lastMessageId,
         beforeMessages,
         afterMessages,
+        maxMessageId: beforeMessageId,
       });
       dialogueMessages = filterSuppressedMessages(dialogueMessages, tombstones);
       return { ...source, dialogueMessages };
@@ -465,7 +466,12 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     }
   }
 
-  const withDialogue = await attachDialogueMessages(selectedRows, { userId, presetId, tombstones });
+  const withDialogue = await attachDialogueMessages(selectedRows, {
+    userId,
+    presetId,
+    beforeMessageId: normalizedBeforeMessageId,
+    tombstones,
+  });
   const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, tombstones });
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {

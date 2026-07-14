@@ -5,6 +5,7 @@ const path = require("node:path");
 const db = require("../../db");
 const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
+const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
 const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
 const { REQUIRED_TABLES, REQUIRED_COLUMNS, REQUIRED_INDEXES, evaluateInspection } = require("../../scripts/check-memory-schema");
 
@@ -97,6 +98,41 @@ test("target recovery status and notification commit in one transaction", async 
   } finally { db.getClient = originalGetClient; }
 });
 
+test("active context diagnostics reject stale boundary regressions and resolve only proven rows", async () => {
+  const statements = [];
+  const existing = {
+    id: 9,
+    source_generation: 2,
+    diagnostic_type: "gap_bridge_omitted",
+    omitted_upper_message_id: 100,
+    resolved: false,
+  };
+  const client = {
+    async query(sql) {
+      statements.push(sql);
+      if (sql.startsWith("INSERT INTO chat_context_quality_diagnostics")) return { rows: [] };
+      if (sql.startsWith("SELECT * FROM chat_context_quality_diagnostics")) return { rows: [existing] };
+      if (sql.includes("diagnostic_type='gap_bridge_omitted'")) return { rows: [existing] };
+      if (sql.includes("diagnostic_type='projection_lag'")) return { rows: [{ ...existing, diagnostic_type: "projection_lag", recent_window_start: 101 }] };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+  const row = await upsertActiveDiagnostic(1, "default", {
+    subjectKind: "target",
+    subjectKey: "todos",
+    diagnosticType: "gap_bridge_omitted",
+    sourceGeneration: 2,
+    omittedUpperMessageId: 40,
+    truncated: true,
+  }, { client });
+  assert.equal(row.omitted_upper_message_id, 100);
+  assert.match(statements[0], /EXCLUDED\.omitted_upper_message_id.*chat_context_quality_diagnostics\.omitted_upper_message_id/);
+  await resolveGapDiagnosticIfProven(9, { sourceGeneration: 2, provenUpperMessageId: 100 }, { client });
+  await resolveProjectionDiagnosticIfCovered(10, { sourceGeneration: 2, processedBoundaryMessageId: 100 }, { client });
+  assert.equal(statements.some((sql) => /omitted_upper_message_id<=\$3/.test(sql)), true);
+  assert.equal(statements.some((sql) => /recent_window_start,1\)-1\)<=\$3/.test(sql)), true);
+});
+
 test("stage 8 source inventory reads raw messages without mutating them", async () => {
   const statements = [];
   const client = { async query(sql) { statements.push(sql.replace(/\s+/g, " ").trim()); return { rows: [] }; } };
@@ -132,4 +168,11 @@ test("fresh RAG schema includes the embedding text required by the v2 projection
   const sql = fs.readFileSync(path.join(__dirname, "../../models/tableCreate/chat_rag_chunks.sql"), "utf8");
   assert.match(sql, /embedding_text\s+TEXT\s+NOT NULL/i);
   assert.doesNotMatch(sql, /^\s*#/m, "SQL comments must not use shell syntax");
+});
+
+test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {
+  const retriever = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/retriever.js"), "utf8");
+  const repository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");
+  assert.match(retriever, /maxMessageId:\s*beforeMessageId/);
+  assert.match(repository, /AND id > \$4\s+AND id <= \$5\s+ORDER BY id ASC\s+LIMIT \$6/);
 });

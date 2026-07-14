@@ -292,6 +292,7 @@ async function listMessagesAroundChunk({
   lastMessageId,
   beforeMessages,
   afterMessages,
+  maxMessageId,
 } = {}) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
@@ -300,8 +301,10 @@ async function listMessagesAroundChunk({
   const normalizedLastMessageId = normalizePositiveInteger(lastMessageId, { name: "lastMessageId" });
   const normalizedBeforeMessages = normalizeNonNegativeInteger(beforeMessages, { name: "beforeMessages" });
   const normalizedAfterMessages = normalizeNonNegativeInteger(afterMessages, { name: "afterMessages" });
+  const normalizedMaxMessageId = normalizePositiveInteger(maxMessageId, { name: "maxMessageId" });
 
   if (normalizedFirstMessageId > normalizedLastMessageId) throw new Error("Invalid chat RAG message range");
+  if (normalizedLastMessageId > normalizedMaxMessageId) throw new Error("Chat RAG chunk exceeds retrieval boundary");
 
   const baseParams = [normalizedUserId, normalizedPresetId, normalizedSessionId];
   let beforeRows = [];
@@ -346,10 +349,11 @@ async function listMessagesAroundChunk({
           AND preset_id = $2
           AND session_id = $3
           AND id > $4
+          AND id <= $5
         ORDER BY id ASC
-        LIMIT $5
+        LIMIT $6
       `,
-      [...baseParams, normalizedLastMessageId, normalizedAfterMessages]
+      [...baseParams, normalizedLastMessageId, normalizedMaxMessageId, normalizedAfterMessages]
     );
     afterRows = result.rows;
   }

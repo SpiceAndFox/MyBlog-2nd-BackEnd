@@ -83,6 +83,37 @@ test("v2 runtime executor serializes one scope without blocking another", async 
   assert.deepEqual(events, ["first:start", "other", "first:end", "second"]);
 });
 
+test("ensureScope initializes revision zero before context assembly", async () => {
+  const initial = createInitialMemoryState();
+  let state = null;
+  let initializations = 0;
+  const repositories = {
+    state: {
+      async getState() { return state; },
+      async initializeRevisionZero() {
+        initializations += 1;
+        state = structuredClone(initial);
+        return state;
+      },
+    },
+    source: {},
+    runtime: {},
+    audit: {},
+    sidecars: {},
+    async withTransaction(work) { return work({}); },
+  };
+  const runtime = createMemoryRuntime({
+    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {} },
+    repositories,
+    providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
+  });
+  const ensured = await runtime.ensureScope({ userId: 1, presetId: "new-preset" });
+  assert.deepEqual(ensured, initial);
+  assert.equal(initializations, 1);
+  await runtime.ensureScope({ userId: 1, presetId: "new-preset" });
+  assert.equal(initializations, 1);
+});
+
 test("startup recovery reconciles projections for initialized scopes using the public repository method", async () => {
   const state = createInitialMemoryState();
   const projectionCalls = [];

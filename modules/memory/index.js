@@ -79,6 +79,7 @@ module.exports = Object.freeze({
       repositories,
       scheduleHousekeeping: options?.scheduleHousekeeping || defaultMemoryRuntime?.scheduleHousekeeping,
       scheduleStateRecovery: options?.scheduleStateRecovery || defaultMemoryRuntime?.scheduleStateRecovery,
+      ensureState: options?.ensureState || defaultMemoryRuntime?.ensureScope,
       metrics: options?.metrics || defaultMemoryRuntime?.metrics,
     });
   },

@@ -32,11 +32,29 @@ async function upsertActiveDiagnostic(userId, presetId, diagnostic, { client } =
   const values = [diagnostic.sourceGeneration??null,diagnostic.requestId??null,diagnostic.targetCursor??null,diagnostic.processedBoundaryMessageId??null,diagnostic.omittedUpperMessageId??null,diagnostic.recentWindowStart??null,diagnostic.originalGapCount??null,diagnostic.originalGapChars??null,diagnostic.retainedBoundary??null,diagnostic.retainedCount??null,diagnostic.omittedCount??null,diagnostic.omittedChars??null,Boolean(diagnostic.truncated),diagnostic.detail??{}];
   const insertFields = ["user_id","preset_id","subject_kind","subject_key","diagnostic_type",...fields];
   const params = [scope.userId,scope.presetId,diagnostic.subjectKind,diagnostic.subjectKey,diagnostic.diagnosticType,...values];
-  const { rows } = await db.query(`INSERT INTO chat_context_quality_diagnostics (${insertFields.join(",")}) VALUES (${insertFields.map((_,index)=>`$${index+1}`).join(",")}) ON CONFLICT (user_id,preset_id,subject_kind,subject_key,diagnostic_type) WHERE resolved=FALSE DO UPDATE SET ${fields.map((field)=>`${field}=EXCLUDED.${field}`).join(",")},updated_at=NOW() RETURNING *`, params);
-  return rows[0];
+  const { rows } = await db.query(`INSERT INTO chat_context_quality_diagnostics (${insertFields.join(",")}) VALUES (${insertFields.map((_,index)=>`$${index+1}`).join(",")}) ON CONFLICT (user_id,preset_id,subject_kind,subject_key,diagnostic_type) WHERE resolved=FALSE DO UPDATE SET ${fields.map((field)=>`${field}=EXCLUDED.${field}`).join(",")},updated_at=NOW() WHERE EXCLUDED.diagnostic_type NOT IN ('gap_bridge_omitted','projection_lag') OR COALESCE(EXCLUDED.source_generation,-1)>COALESCE(chat_context_quality_diagnostics.source_generation,-1) OR (EXCLUDED.source_generation IS NOT DISTINCT FROM chat_context_quality_diagnostics.source_generation AND ((EXCLUDED.diagnostic_type='gap_bridge_omitted' AND COALESCE(EXCLUDED.omitted_upper_message_id,-1)>=COALESCE(chat_context_quality_diagnostics.omitted_upper_message_id,-1)) OR (EXCLUDED.diagnostic_type='projection_lag' AND COALESCE(EXCLUDED.recent_window_start,-1)>=COALESCE(chat_context_quality_diagnostics.recent_window_start,-1)))) RETURNING *`, params);
+  if (rows[0]) return rows[0];
+  const { rows: activeRows } = await db.query(`SELECT * FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2 AND subject_kind=$3 AND subject_key=$4 AND diagnostic_type=$5 AND resolved=FALSE`, params.slice(0, 5));
+  return activeRows[0] || null;
 }
 async function resolveDiagnostic(id, { client } = {}) {
   const { rows } = await executor(client).query(`UPDATE chat_context_quality_diagnostics SET resolved=TRUE,resolved_at=NOW(),updated_at=NOW() WHERE id=$1 AND resolved=FALSE RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function resolveGapDiagnosticIfProven(id, proof, { client } = {}) {
+  const sourceGeneration = Number(proof.sourceGeneration);
+  const provenUpperMessageId = Number(proof.provenUpperMessageId);
+  if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) throw new Error("sourceGeneration must be a non-negative safe integer");
+  if (!Number.isSafeInteger(provenUpperMessageId) || provenUpperMessageId < 0) throw new Error("provenUpperMessageId must be a non-negative safe integer");
+  const { rows } = await executor(client).query(`UPDATE chat_context_quality_diagnostics SET resolved=TRUE,resolved_at=NOW(),updated_at=NOW() WHERE id=$1 AND resolved=FALSE AND diagnostic_type='gap_bridge_omitted' AND source_generation=$2 AND omitted_upper_message_id<=$3 RETURNING *`, [id, sourceGeneration, provenUpperMessageId]);
+  return rows[0] || null;
+}
+async function resolveProjectionDiagnosticIfCovered(id, coverage, { client } = {}) {
+  const sourceGeneration = Number(coverage.sourceGeneration);
+  const processedBoundaryMessageId = Number(coverage.processedBoundaryMessageId);
+  if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) throw new Error("sourceGeneration must be a non-negative safe integer");
+  if (!Number.isSafeInteger(processedBoundaryMessageId) || processedBoundaryMessageId < 0) throw new Error("processedBoundaryMessageId must be a non-negative safe integer");
+  const { rows } = await executor(client).query(`UPDATE chat_context_quality_diagnostics SET resolved=TRUE,resolved_at=NOW(),updated_at=NOW() WHERE id=$1 AND resolved=FALSE AND diagnostic_type='projection_lag' AND source_generation=$2 AND GREATEST(0,COALESCE(recent_window_start,1)-1)<=$3 RETURNING *`, [id, sourceGeneration, processedBoundaryMessageId]);
   return rows[0] || null;
 }
 async function resolveDiagnosticsOutsideGeneration(userId, presetId, sourceGeneration, { client } = {}) {
@@ -87,4 +105,4 @@ async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { c
   }
   return rows;
 }
-module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, listTombstones, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };
+module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, listTombstones, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };

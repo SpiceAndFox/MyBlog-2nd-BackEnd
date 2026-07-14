@@ -42,6 +42,7 @@ function createDisabledRuntime(repositories) {
   return Object.freeze({
     enabled: false,
     initialize: async () => [],
+    ensureScope: disabled,
     processScope: disabled,
     rebuildScope: disabled,
     mutateSourceAndRebuild,
@@ -108,6 +109,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       if (!["healthy", "snapshot_restored", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
       return recovered.state ?? repositories.state.getState(userId, presetId);
     }
+  }
+
+  function ensureScope({ userId, presetId } = {}) {
+    return enqueueByKey(`${userId}:${presetId}`, () => ensureState(userId, presetId));
   }
 
   function runInBackground(work) {
@@ -318,6 +323,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   return Object.freeze({
     enabled: true,
     initialize,
+    ensureScope,
     processScope,
     rebuildScope,
     mutateSourceAndRebuild,

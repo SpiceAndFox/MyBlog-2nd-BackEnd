@@ -84,6 +84,26 @@ test("GapBridge deduplicates target overlap and never truncates a raw message", 
   assert.equal(result.messages[0].content, "第四条");
   assert.equal(result.diagnostics.length, 6);
   assert.equal(result.diagnostics[0].omittedUpperMessageId, fixture.expected.omittedUpperMessageId);
+  assert.equal(result.stats.truncated, true);
+});
+
+test("GapBridge retains every message when the raw character budget is not exceeded", () => {
+  const state = createInitialMemoryState();
+  const messages = [1, 2, 3, 4, 5].map((id) => ({
+    id,
+    role: id % 2 ? "user" : "assistant",
+    content: "x",
+  }));
+  const result = buildGapBridgeCoverage({
+    messages,
+    state,
+    recentWindowStartMessageId: 5,
+    maxRawChars: 100,
+    retainedMessages: 2,
+  });
+  assert.deepEqual(result.messages.map((row) => row.id), [1, 2, 3, 4]);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.stats.truncated, false);
 });
 
 test("context assembly persists omitted diagnostics and atomically emits recovery notifications", async () => {
@@ -139,8 +159,27 @@ test("health alert debounce suppresses only newly changed persisted failures", (
     : { targetKey, status: "healthy", updatedAt: changedAt });
   const duringDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:00.500Z"), alertDebounceMs: 1000 });
   const afterDebounce = aggregateMemoryHealth({ targetStatuses: statuses, now: new Date("2026-07-13T00:00:01.001Z"), alertDebounceMs: 1000 });
-  assert.equal(duringDebounce.status, "healthy");
+  assert.equal(duringDebounce.status, "degraded");
+  assert.equal(duringDebounce.alerts.length, 0);
   assert.equal(afterDebounce.status, "degraded");
+});
+
+test("diagnostic debounce hides only alert text, not degraded health", () => {
+  const statuses = TARGETS.map((targetKey) => ({ targetKey, status: "healthy" }));
+  const health = aggregateMemoryHealth({
+    targetStatuses: statuses,
+    diagnostics: [{
+      subjectKind: "target",
+      subjectKey: "scene",
+      diagnosticType: "scene_capacity_exceeded",
+      createdAt: "2026-07-13T00:00:00.000Z",
+      resolved: false,
+    }],
+    now: new Date("2026-07-13T00:00:00.500Z"),
+    alertDebounceMs: 1000,
+  });
+  assert.equal(health.status, "degraded");
+  assert.deepEqual(health.alerts, []);
 });
 
 test("projection lag diagnostic persists until the query boundary is covered", async () => {
@@ -202,6 +241,27 @@ test("missing or invalid authority state skips only the memory segment with an e
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 5]));
   const recovered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
   assert.equal(recovered.notifications.some((row) => row.subjectKind === "system" && row.subjectKey === "memory_state"), true);
+});
+
+test("production context initialization can create revision zero before state diagnosis", async () => {
+  const data = makeData();
+  data.state = null;
+  let initialized = 0;
+  const assemble = createMemoryContextAssembly({
+    repositories: data.repositories,
+    config: config(),
+    recentWindowMaxChars: fixture.recentWindowMaxChars,
+    async ensureState() {
+      initialized += 1;
+      data.state = createInitialMemoryState();
+      data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
+    },
+  });
+  const result = await assemble({ userId: 1, presetId: "new-preset", upToMessageId: 5 });
+  assert.equal(initialized, 1);
+  assert.match(result.memorySegment, /\[长期核心记忆\]/);
+  assert.equal(result.debug.memorySkipReason, null);
+  assert.equal(data.diagnostics.some((row) => row.subjectKey === "memory_state" && !row.resolved), false);
 });
 
 test("invalid authority schedules background state recovery without blocking context", async () => {
