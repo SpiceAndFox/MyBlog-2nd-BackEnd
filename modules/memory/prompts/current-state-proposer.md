@@ -55,7 +55,7 @@
 
 - `patches`：至少一个 scene 字段有明确、可证据支持的变化、失效或修正。
 - `noop`：已经理解 new batch，并能确认无需改变 scene。普通聊天、对当前状态没有持续影响的短暂动作，以及与基线语义相同的重复信息都属于 noop。
-- `unable_to_decide`：是否应改变 scene 取决于观察窗口之外的缺失信息，或关键指代/冲突无法消解。不要把“没有变化”写成 unable，也不要把“不确定”伪装成 noop。
+- `unable_to_decide`：信息不足，是否应改变 scene 取决于观察窗口之外的内容，或关键指代/冲突无法消解。不要把“没有变化”写成 unable，也不要把“不确定”伪装成 noop。
 
 ## 5. patch 与证据规则
 
@@ -64,6 +64,7 @@
 - 每个 patch 必须使用 Provider wire 字段 `evidenceRef`，其值是单个对象；不要输出 `evidenceRefs` 数组。
 - `evidenceRef.messageId` 必须等于某条 observedMessages 的 id。
 - `evidenceRef.quote` 必须逐字复制该消息中能够直接支持 patch 的最短连续片段，不要改写、拼接或补字，最长 200 Unicode code points。
+- 即使原话包含成人或敏感内容，也不得净化、替换或改写 quote；value 只客观记录当前状态，不写感官细节。
 - `setField` 必须输出非空 `value`。value 使用简洁关键词，不复述整句，不加入证据没有表达的推断。
 - `clearField` 不得输出 `value` 或 `value: null`。
 - `setField` 对象必须恰好包含 5 个键：`op`、`path`、`value`、`evidenceKind`、`evidenceRef`。

@@ -30,7 +30,7 @@ schema 作者注意：
 - `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：只有 `scene.setField`/`scene.clearField` 要求 `path`；`updateItem`/`forgetItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。所有 item section 由 `sectionResults` key 直接寻址，不使用 `path`。
 - `todos.addItem.value` 必须含 `text`、`actor`、`requester`，可选含 `dueAt`；`todos.updateItem.value` 必须含 `dueChange`。`dueChange` 用 `oneOf` 严格表达 `{ "mode": "keep" }`、`{ "mode": "clear" }`、`{ "mode": "set", "dueAt": ... }`，各分支禁止额外字段。`dueAt` 的 absolute/relative schema 与 relative 时长必填规则见 [state-contract.md](state-contract.md) §4。
 - `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
-- 普通 patch 的 `evidenceRefs[].quote` schema 设置 `maxLength: 200`；Reducer 仍按 Unicode code points 复核长度、信息量和匹配，不把 Provider schema 当作最终证据校验。
+- canonical 普通 patch 的 `evidenceRefs[].quote` schema 设置 `maxLength: 200`；Reducer 仍按 Unicode code points 复核长度、信息量和匹配，不把 Provider schema 当作最终证据校验。Provider wire 可以按 [state-contract.md](state-contract.md) §10 使用可逆的更窄表示；当前 scene wire 使用单个 `evidenceRef`，Adapter 必须在业务校验前归一化为 `evidenceRefs: [ref]`。
 
 ### 2.2 Prompt 设计原则
 
@@ -65,6 +65,7 @@ schema 作者注意：
    }
    ```
 10. Memory 业务层没有 proposal/envelope 总字符预算；不要为了猜测总字符上限而丢弃必要 patch。每个 `value.text` 仍应遵守高密度句法，最终 section 容量由 Reducer 按 `maxItems + maxRenderedChars` 校验。
+11. 专用 prompt 描述排除项时，只给出当前 target section 的决定，例如“不属于 todos → todos noop”。不要写“应归另一个 section”或“由另一个 Proposer 处理”，避免把不可输出的 section 暗示为本次调用的候选结果；其他 target 会独立判断。
 
 #### 高密度句法
 
@@ -134,7 +135,7 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 #### agreementProposer（standingAgreements）
 
-- standingAgreements 只记录持续互动约定、相处规则和长期承诺；取消使用 cancelAgreement。
+- standingAgreements 只记录持续互动约定、相处规则和具有明确承诺语义的长期承诺；单纯抒情或夸张不算约定。取消使用 cancelAgreement。
 
 #### episodeProposer（recentEpisodes, milestones）
 
@@ -389,7 +390,7 @@ LLM 只提取“两周”= 14 天。Reducer 以 message 130 的数据库 `create
     "dueAt": { "mode": "absolute", "date": "2026-07-10" }
   },
   "evidenceKind": "user_commitment",
-  "evidenceRefs": [{ "messageId": 133, "quote": "我们十号去玩吧" }]
+  "evidenceRefs": [{ "messageId": 133, "quote": "我们2026年7月10号去玩吧" }]
 }
 ```
 
@@ -494,7 +495,7 @@ assistant 是行动者兼发起者。
 }
 ```
 
-"以后沉默时先开口"是持续互动约定，应由 `agreementProposer` 写入 `standingAgreements`。
+"以后沉默时先开口"不是可完成的一次性事项，当前 `todos` 应输出 noop；其他 target 独立判断。
 
 ### 4.3 agreementProposer
 

@@ -72,6 +72,43 @@ test("each normal Proposer prompt contains self-check (最终自检) section", a
   }
 });
 
+test("each normal Proposer prompt distinguishes noop from unable_to_decide", async () => {
+  for (const proposer of NORMAL_PROPOSERS) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.match(prompt, /noop/, `${proposer} must define noop`);
+    assert.match(prompt, /确认.*无需|确认无变更/s, `${proposer} must define noop as a confirmed no-change result`);
+    assert.match(prompt, /unable_to_decide/, `${proposer} must define unable_to_decide`);
+    assert.match(prompt, /信息不足|指代不明|无法.*判断/s, `${proposer} must reserve unable_to_decide for insufficient information`);
+    assert.match(prompt, /不要把.*无法判断.*noop|不要把.*不确定.*noop/s, `${proposer} must not disguise uncertainty as noop`);
+  }
+});
+
+test("todo prompt covers overdue visibility and rescheduling", async () => {
+  const prompt = await loadProposerPrompt("todoProposer");
+  assert.match(prompt, /overdue items 只提供最近 N 条/, "todoProposer must disclose the partial overdue view");
+  assert.match(prompt, /overdue todo.*updateItem.*dueChange\.mode=set/s, "todoProposer must reschedule overdue todos through updateItem + set");
+  assert.match(prompt, /未出现在 writableState.*unable_to_decide/s, "todoProposer must not guess hidden overdue item ids");
+  assert.match(prompt, /status.*becameOverdueAt.*Reducer 管理.*不得输出或修改/s, "todoProposer must treat lifecycle fields as reducer-owned");
+});
+
+test("agreement prompt distinguishes explicit long-term commitments from emotional rhetoric", async () => {
+  const prompt = await loadProposerPrompt("agreementProposer");
+  assert.match(prompt, /明确承诺语义.*长期承诺|长期承诺.*明确承诺语义/s);
+  assert.match(prompt, /单纯抒情|情绪化宣誓/);
+});
+
+test("single-section prompts express exclusions only as local noop decisions", async () => {
+  const todo = await loadProposerPrompt("todoProposer");
+  const agreement = await loadProposerPrompt("agreementProposer");
+  const worldFact = await loadProposerPrompt("worldFactProposer");
+  assert.doesNotMatch(todo, /归 standingAgreements|由 agreementProposer 处理/);
+  assert.doesNotMatch(agreement, /归 relationship|归 todos|归 userProfile|归 relationship\/milestones|由 todoProposer 处理/);
+  assert.doesNotMatch(worldFact, /归 userProfile|归 assistantProfile|归 standingAgreements|scene\.note|scene\.mood|recentEpisode/);
+  for (const prompt of [todo, agreement, worldFact]) {
+    assert.match(prompt, /输出 noop/, "out-of-scope examples must resolve to the current section's noop");
+  }
+});
+
 test("each prompt has section × op × evidenceKind mapping", async () => {
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);

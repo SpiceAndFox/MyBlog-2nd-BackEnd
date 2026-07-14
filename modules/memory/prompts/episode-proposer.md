@@ -17,6 +17,12 @@
 - `writableState`：当前 recentEpisodes 和 milestones 的权威基线。每个 item 包含 `id` 和 `text`。只对确实需要新增或修改的 item 提出 patch；不要对与基线语义相同的内容重复 add。
 - `readOnlyContext`：只用于理解背景，不能作为证据，不能把其中未被 observedMessages 支持的内容写入 episode。
 
+### 结果状态
+
+- `patches`：该 section 存在明确、可证据支持的变更。
+- `noop`：已理解 new batch，并确认该 section 无需变化。
+- `unable_to_decide`：信息不足或关键指代/冲突无法消解，无法可靠判断该 section 是否应变化。不要把无法判断写成 noop。
+
 ## 2. section 含义
 
 ### recentEpisodes
