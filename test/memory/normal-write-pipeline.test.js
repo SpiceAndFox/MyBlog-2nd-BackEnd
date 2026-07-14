@@ -12,6 +12,8 @@ const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
   overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 }, sectionBudgets: budgets(),
+  providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
+  compaction: { retryMax: 1 },
 };
 const content = "我答应明天还书";
 const message = { id: 1, role: "user", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content, contentHash: `sha256:${crypto.createHash("sha256").update(content).digest("hex")}` };
@@ -34,10 +36,11 @@ function fakes() {
       },
       source: { getObservedWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
       runtime: {
-        createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, structuredClone(row)); return row; },
+        createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, { ...structuredClone(row), created_at: "2026-07-12T00:00:00.000Z" }); return tasks.get(row.task_id); },
         getTask: async (id) => tasks.get(id) || null,
         getTaskForUpdate: async (id) => tasks.get(id),
         updateTask: async (id, changes) => Object.assign(tasks.get(id), changes),
+        getTargetStatus: async (_u, _p, targetKey) => statuses.findLast((row) => row.targetKey === targetKey) || { targetKey, status: "healthy", consecutiveErrors: 0 },
         upsertTargetStatus: async (_u, _p, status) => statuses.push(structuredClone(status)),
         appendOpsLog: async () => {},
       },
@@ -101,7 +104,7 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   const metrics = createMemoryMetrics();
   const pipeline = createNormalWritePipeline({
     observer: {}, config, repositories: store.repositories, metrics,
-    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.001 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
     now: () => new Date("2026-07-12T00:01:00Z"), idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
   });
   const result = await pipeline.processIntent(1, "default", intent);
@@ -109,7 +112,12 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   assert.equal(result.status, "committed");
   assert.equal(envelope.task.userTimeZone, "Asia/Shanghai");
   assert.equal(store.inspect.state.working.todos[0].dueAt, "2026-07-13T16:00:00.000Z");
-  assert.equal(metrics.snapshot().counters["memory_quote_validation_total{result=accepted,targetKey=todos}"], 1);
+  const metricSnapshot = metrics.snapshot();
+  assert.equal(metricSnapshot.counters["memory_quote_validation_total{result=accepted,targetKey=todos}"], 1);
+  assert.equal(metricSnapshot.counters["memory_provider_results_total{proposer=todoProposer,result=ok,targetKey=todos}"], 1);
+  assert.equal(metricSnapshot.counters["memory_provider_observed_messages_total{proposer=todoProposer,targetKey=todos}"], 1);
+  assert.equal(metricSnapshot.observations["memory_provider_calls_per_message{proposer=todoProposer,targetKey=todos}"].average, 1);
+  assert.equal(metricSnapshot.observations["memory_provider_cost_usd{model=test,targetKey=todos}"].sum, 0.001);
 });
 
 test("repeated commit phase returns the existing revision without duplicate writes", async () => {
@@ -144,6 +152,26 @@ test("a persisted proposal is reused after recovery without another provider cal
   assert.equal(store.inspect.state.meta.targetCursors.todos, 1);
 });
 
+test("adapter metrics retain each bounded result reason without raw provider details", async () => {
+  for (const reason of ["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]) {
+    const store = fakes();
+    const metrics = createMemoryMetrics();
+    const pipeline = createNormalWritePipeline({
+      observer: {}, repositories: store.repositories, config, metrics,
+      providerAdapter: { async propose() { return { status: "error", reason, detail: { boundary: "input", raw: "must-not-be-a-label" } }; } },
+      now: () => new Date("2026-07-12T00:01:00.000Z"),
+    });
+    await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"] });
+    const key = `memory_provider_results_total{proposer=todoProposer,result=${reason},targetKey=todos}`;
+    assert.equal(metrics.snapshot().counters[key], 1, reason);
+    assert.equal(Object.keys(metrics.snapshot().counters).some((metric) => metric.includes("must-not-be-a-label")), false);
+    if (reason === "output_schema_invalid") {
+      assert.equal(metrics.snapshot().counters["memory_target_halted_total{reason=output_schema_invalid,targetKey=todos}"], 1);
+      assert.equal(metrics.snapshot().observations["memory_workflow_age_ms{targetKey=todos,workflow=halt}"].max, 60_000);
+    }
+  }
+});
+
 test("force-drain replay can validate historical suppressed evidence for a later correction chain", async () => {
   const store = fakes();
   store.inspect.tombstones.push({ message_id: message.id, content_hash: message.contentHash, reason: "correction" });
@@ -166,6 +194,7 @@ test("force-drain replay can validate historical suppressed evidence for a later
 
 test("unable_to_decide retry doubles overlap context and completes the same durable task", async () => {
   const store = fakes();
+  const localConfig = structuredClone(config);
   store.inspect.state.meta.targetCursors.todos = 1;
   const older = { ...message, id: 1, content: "之前提到过一本书", contentHash: "sha256:older" };
   const newer = { ...message, id: 2 };
@@ -182,9 +211,10 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
     .map((entry) => ({ ...entry, userId: 1, presetId: "default" }));
   const observedCounts = [];
   const pipeline = createNormalWritePipeline({
-    observer: {}, repositories: store.repositories, config,
+    observer: {}, repositories: store.repositories, config: localConfig,
     providerAdapter: { propose: async (envelope) => {
       observedCounts.push(envelope.observedMessages.length);
+      if (observedCounts.length === 1) localConfig.targets.todos.contextWindow = 99;
       return { status: "ok", output: {
         tickId: envelope.task.tickId,
         proposer: envelope.task.proposer,
@@ -195,10 +225,15 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1 };
   const first = await pipeline.processIntent(1, "default", intent);
   assert.equal(first.status, "context_expansion_required");
-  const envelope = [...store.inspect.tasks.values()][0].task_payload;
+  const task = [...store.inspect.tasks.values()][0];
+  const envelope = task.task_payload;
+  assert.equal(task.stage_payload.normalContextWindow, 2);
+  assert.deepEqual(task.stage_payload.expandedEnvelope.observedMessages.map((entry) => entry.id), [1, 2]);
+  store.repositories.source.getForceDrainWindow = async () => { throw new Error("durable expanded input must be reused"); };
   const second = await pipeline.processEnvelope(envelope);
   assert.equal(second.status, "committed");
   assert.deepEqual(observedCounts, [1, 2]);
   assert.deepEqual(expansionOptions, { newBatchSize: 1, contextWindow: 4 });
+  assert.deepEqual(task.stage_payload.expandedEnvelope.observedMessages.map((entry) => entry.id), [1, 2]);
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });

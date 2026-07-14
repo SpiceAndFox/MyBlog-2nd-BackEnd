@@ -31,16 +31,24 @@ function proposalItemIds(proposal) {
   return Object.values(proposal.sectionResults).flatMap((result) => (result.patches || []).flatMap((patch) => [patch.itemId, ...(patch.itemIds || [])].filter(Boolean)));
 }
 
-function createCapacityMaintenance({ repositories, providerAdapter, config, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages } = {}) {
+function createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages } = {}) {
   if (!repositories?.withTransaction || !repositories.runtime || !providerAdapter) throw new Error("Capacity maintenance dependencies are required");
 
   async function appendOps(envelope, outcome, attempt, detail, client) {
+    metrics?.increment("memory_ops_outcomes_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, outcome });
     return repositories.runtime.appendOpsLog({
       user_id: envelope.task.userId, preset_id: envelope.task.presetId,
       source_generation: envelope.task.sourceGeneration, task_id: envelope.task.taskId,
       tick_id: envelope.task.tickId, target_key: envelope.task.targetKey, section: envelope.task.targetSections[0],
       proposer: envelope.task.proposer, outcome, attempt, detail: detail ?? null,
     }, { client });
+  }
+
+  function observeWorkflowAge(task, workflow, targetKey) {
+    const createdAt = rowValue(task, "created_at", "createdAt");
+    if (!createdAt) return;
+    const age = now().getTime() - new Date(createdAt).getTime();
+    if (Number.isFinite(age)) metrics?.observe("memory_workflow_age_ms", { workflow, targetKey }, Math.max(0, age));
   }
 
   async function recordTransactionFailure(envelope, taskId, stage, error) {
@@ -76,6 +84,9 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       }
       return { status: "capacity_deferred", taskId: parentEnvelope.task.taskId, duplicate: true, maintenanceTaskId: payload.maintenanceTaskId };
     }
+    const parentTask = await repositories.runtime.getTaskForUpdate(parentEnvelope.task.taskId, { client });
+    observeWorkflowAge(parentTask, "deferred", parentEnvelope.task.targetKey);
+    metrics?.increment("memory_capacity_deferred_total", { targetKey: parentEnvelope.task.targetKey, section: reduction.capacityViolation.section });
     const child = await createChild(parentEnvelope, state, reduction.capacityViolation, 0, client);
     const maintenanceTaskId = child.task.taskId;
     const stagePayload = {
@@ -107,6 +118,8 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
       if (parent) await repositories.runtime.updateTask(taskId, { status: "failed", stage: "replay_failed", attempt, last_error_reason: reason }, { client });
       else await repositories.runtime.updateTask(taskId, { status: "failed", stage: "compaction_failed", attempt, last_error_reason: reason }, { client });
+      observeWorkflowAge(task, "halt", envelope.task.targetKey);
+      metrics?.increment("memory_target_halted_total", { targetKey: envelope.task.targetKey, reason });
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
         targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted",
         consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: taskId, nextRetryAt: null,
@@ -216,6 +229,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
           lastTaskId: envelope.task.taskId, nextRetryAt: null,
         }, { client });
         await appendOps(envelope, reason, attempt, { parentTaskId: envelope.task.parentTaskId }, client);
+        observeWorkflowAge(task, "compaction", envelope.task.targetKey);
         return { status: "halted", reason, taskId: envelope.task.taskId, events: reduction.events };
       }
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
@@ -226,6 +240,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       const parentPayload = structuredClone(rowValue(parent, "stage_payload", "stagePayload"));
       parentPayload.attemptedSections = [...new Set([...(parentPayload.attemptedSections || []), envelope.task.targetSections[0]])];
       await repositories.runtime.updateTask(envelope.task.parentTaskId, { status: "running", stage: "capacity_blocked", stage_payload: parentPayload, last_error_reason: "capacity_blocked" }, { client });
+      observeWorkflowAge(task, "compaction", envelope.task.targetKey);
       return { status: "compaction_applied", revision: reduction.state.meta.revision, events: reduction.events };
     });
   }
@@ -260,6 +275,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(parentEnvelope.task.userId, parentEnvelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(parentEnvelope.task.userId, parentEnvelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: payload, result_revision: reduction.state.meta.revision, last_error_reason: null }, { client });
+      observeWorkflowAge(parent, "replay", parentEnvelope.task.targetKey);
       if (repositories.runtime.recordSuccessfulTargetTask) {
         await repositories.runtime.recordSuccessfulTargetTask(parentEnvelope.task.userId, parentEnvelope.task.presetId, { targetKey: parentEnvelope.task.targetKey, sourceGeneration: parentEnvelope.task.sourceGeneration, taskId: parentEnvelope.task.taskId }, { client });
       } else {

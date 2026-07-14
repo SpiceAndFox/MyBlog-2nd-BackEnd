@@ -9,6 +9,7 @@ const { isDeepStrictEqual } = require("node:util");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
+const ADAPTER_METRIC_RESULTS = new Set(["ok", "llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const NORMAL_REDUCTION_STAGES = new Set([
   "proposing", "proposal_persisted", "provider_error", "schema_invalid_retry",
   "context_expansion", "resumed", "transaction_failed", "commit_outcome_unknown",
@@ -62,7 +63,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     return databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
   }
 
-  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, now, idFactory, recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages });
+  const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now, idFactory, recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages });
 
   async function createTask(userId, presetId, intent, options = {}) {
     const create = async (client) => {
@@ -81,7 +82,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         userId, presetId, state, intent: { ...intent, cursorBefore }, messages, now: now(),
         taskId: options.taskId, tickId: options.tickId, userTimeZone, config,
       });
-      const overrides = {};
+      const overrides = { stage_payload: { normalContextWindow: targetConfig.contextWindow } };
       if (options.predecessorTaskId) {
         overrides.predecessor_task_id = options.predecessorTaskId;
         overrides.dedupe_key = `${normalDedupeKey(envelope.task)}:predecessor:${options.predecessorTaskId}:revision:${state.meta.revision}`;
@@ -99,6 +100,13 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       task_id: envelope.task.taskId, tick_id: envelope.task.tickId, target_key: envelope.task.targetKey,
       section: null, proposer: envelope.task.proposer, outcome, attempt, detail: detail ?? null,
     }, { client });
+  }
+
+  function observeTaskAge(task, workflow, targetKey) {
+    const createdAt = rowValue(task, "created_at", "createdAt");
+    if (!createdAt) return;
+    const age = now().getTime() - new Date(createdAt).getTime();
+    if (Number.isFinite(age)) metrics?.observe("memory_workflow_age_ms", { workflow, targetKey }, Math.max(0, age));
   }
 
   async function recordAdapterError(envelope, adapterResult) {
@@ -127,6 +135,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         not_before: retryAt, last_error_reason: adapterResult.reason,
       }, { client });
       const targetStatus = halted ? "halted" : envelope.task.mode === "maintenance" ? "capacity_blocked" : "retry_wait";
+      if (halted) {
+        metrics?.increment("memory_target_halted_total", { targetKey: envelope.task.targetKey, reason: adapterResult.reason });
+        observeTaskAge(task, "halt", envelope.task.targetKey);
+      }
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
         targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration,
         status: targetStatus, consecutiveErrors,
@@ -164,14 +176,24 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       try { result = await providerAdapter.propose(envelope); }
       finally { metrics?.observe("memory_provider_latency_ms", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, monotonicNow() - startedAt); }
       metrics?.increment("memory_provider_calls_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, status: result.status });
+      metrics?.increment("memory_provider_observed_messages_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, envelope.observedMessages.length);
+      metrics?.observe("memory_provider_calls_per_message", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, 1 / Math.max(1, envelope.observedMessages.length));
       const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
       const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
+      const providerCost = Number(result.usage?.cost_usd ?? result.usage?.cost ?? result.costUsd ?? result.cost);
       if (Number.isFinite(inputTokens)) metrics?.observe("memory_provider_input_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, inputTokens);
       if (Number.isFinite(outputTokens)) metrics?.observe("memory_provider_output_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, outputTokens);
+      if (Number.isFinite(providerCost) && providerCost >= 0) metrics?.observe("memory_provider_cost_usd", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, providerCost);
       if (result.status !== "error") {
         const validation = validateProposerOutput(result.output, envelope.task);
         if (!validation.ok) result = { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validation.errors } };
       }
+      const metricResult = result.status === "error" ? result.reason : "ok";
+      metrics?.increment("memory_provider_results_total", {
+        targetKey: envelope.task.targetKey,
+        proposer: envelope.task.proposer,
+        result: ADAPTER_METRIC_RESULTS.has(metricResult) ? metricResult : "unknown",
+      });
       const retryableSchemaOutput = result.status === "error"
         && result.reason === "output_schema_invalid"
         && result.detail?.boundary === "output";
@@ -179,14 +201,16 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     }
   }
 
-  async function expandContextForRetry(envelope, persistedTask) {
-    const expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
-    if (expansionAttempt < 1 || envelope.task.mode !== "normal" || typeof repositories.source.getForceDrainWindow !== "function") return envelope;
+  async function buildExpandedEnvelope(envelope, client, normalContextWindow) {
+    if (envelope.task.mode !== "normal" || typeof repositories.source.getForceDrainWindow !== "function") return envelope;
     const targetConfig = config.targets[envelope.task.targetKey];
+    const contextWindow = Number.isSafeInteger(normalContextWindow) && normalContextWindow > 0
+      ? normalContextWindow
+      : targetConfig?.contextWindow;
     const newBatchSize = envelope.observedMessages.filter((message) => (
       message.id > envelope.task.cursorBefore && message.id <= envelope.task.targetMessageId
     )).length;
-    if (!targetConfig || newBatchSize < 1) return envelope;
+    if (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || newBatchSize < 1) return envelope;
     const messages = await repositories.source.getForceDrainWindow(
       envelope.task.userId,
       envelope.task.presetId,
@@ -194,8 +218,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       envelope.task.targetMessageId,
       {
         newBatchSize,
-        contextWindow: Math.max(targetConfig.contextWindow * 2, envelope.observedMessages.length + newBatchSize),
+        contextWindow: Math.max(contextWindow * 2, envelope.observedMessages.length + newBatchSize),
       },
+      { client },
     );
     if (!messages.length) return envelope;
     return {
@@ -205,11 +230,32 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     };
   }
 
+  async function expandContextForRetry(envelope, persistedTask) {
+    const expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
+    if (expansionAttempt < 1) return envelope;
+    const existing = rowValue(persistedTask, "stage_payload", "stagePayload")?.expandedEnvelope;
+    if (existing) return structuredClone(existing);
+    // Backward-compatible recovery for tasks created before expandedEnvelope
+    // became durable. The task row lock makes the first recovered expansion the
+    // canonical input for every later delivery.
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task not found while persisting expanded context");
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      if (payload.expandedEnvelope) return payload.expandedEnvelope;
+      const expandedEnvelope = await buildExpandedEnvelope(envelope, client, payload.normalContextWindow);
+      payload.expandedEnvelope = structuredClone(expandedEnvelope);
+      await repositories.runtime.updateTask(envelope.task.taskId, { stage_payload: payload }, { client });
+      return expandedEnvelope;
+    });
+  }
+
   async function recordStale(envelope, reason, { cancel = true } = {}) {
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found while recording stale result");
       if (!TERMINAL_TASK_STATUSES.has(task.status) && cancel) await repositories.runtime.updateTask(envelope.task.taskId, { status: "cancelled", stage: "stale", last_error_reason: reason }, { client });
+      metrics?.increment("memory_stale_results_total", { targetKey: envelope.task.targetKey, reason });
       await appendOps(envelope, "stale_result", numberValue(task, "attempt", "attempt"), { reason }, client);
       return { status: "stale", reason, taskId: envelope.task.taskId };
     });
@@ -225,8 +271,11 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const expansionAttempt = numberValue(task, "context_expansion_attempt", "contextExpansionAttempt");
       const attempt = numberValue(task, "attempt", "attempt") + 1;
       if (expansionAttempt === 0) {
+        const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+        stagePayload.persistedProposal = structuredClone(output);
+        stagePayload.expandedEnvelope = await buildExpandedEnvelope(envelope, client, stagePayload.normalContextWindow);
         await repositories.runtime.updateTask(envelope.task.taskId, {
-          status: "queued", stage: "context_expansion", stage_payload: { persistedProposal: output },
+          status: "queued", stage: "context_expansion", stage_payload: stagePayload,
           attempt, context_expansion_attempt: 1, not_before: null, last_error_reason: "unable_to_decide",
         }, { client });
         await appendOps(envelope, "unable_to_decide", attempt, { contextExpansionAttempt: 1 }, client);
@@ -250,7 +299,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         cursor_before: envelope.task.cursorBefore, cursor_after: envelope.task.targetMessageId, group_kind: "proposal",
       }, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: nextState.meta.sourceGeneration, revision: nextState.meta.revision, schemaVersion: SCHEMA_VERSION, state: nextState }, { client });
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "unable_cursor_committed", stage_payload: { persistedProposal: output }, attempt, result_revision: nextState.meta.revision, not_before: null, last_error_reason: null }, { client });
+      const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      stagePayload.persistedProposal = structuredClone(output);
+      await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "unable_cursor_committed", stage_payload: stagePayload, attempt, result_revision: nextState.meta.revision, not_before: null, last_error_reason: null }, { client });
       await recordSuccessfulTarget(repositories, envelope, client);
       return { status: "committed", taskId: envelope.task.taskId, revision: nextState.meta.revision, cursorOnly: true };
     });
@@ -296,7 +347,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch", taskId: envelope.task.taskId };
       if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== envelope.task.cursorBefore) return { status: "stale", reason: "cursor_mismatch", taskId: envelope.task.taskId };
       if (state.meta.revision !== envelope.task.baseRevision) return { status: "successor_required", taskId: envelope.task.taskId, currentRevision: state.meta.revision };
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "reducing", stage_payload: { persistedProposal: output } }, { client });
+      const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      stagePayload.persistedProposal = structuredClone(output);
+      await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "reducing", stage_payload: stagePayload }, { client });
       const effectiveDatabaseMessages = await loadEvidenceMessages(envelope, client);
       let reduction;
       try {
@@ -311,7 +364,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(envelope.task.userId, envelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: { persistedProposal: output }, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null }, { client });
+      await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: stagePayload, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null }, { client });
       await recordSuccessfulTarget(repositories, envelope, client);
       return { status: "committed", taskId: envelope.task.taskId, revision: reduction.state.meta.revision, events: reduction.events };
     });
@@ -371,6 +424,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         not_before: null, last_error_reason: outcome,
       }, { client });
       if (reducerFailed) {
+        metrics?.increment("memory_target_halted_total", { targetKey: envelope.task.targetKey, reason: outcome });
+        observeTaskAge(task, "halt", envelope.task.targetKey);
         const target = await repositories.runtime.getTargetStatus(envelope.task.userId, envelope.task.presetId, envelope.task.targetKey, { client, forUpdate: true });
         await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
           targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted",

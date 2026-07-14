@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { createNormalWritePipeline } = require("../../modules/memory/application/normalWritePipeline");
+const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
 const { createMemoryRecovery } = require("../../modules/memory/application/recovery");
 const { reduceProposal } = require("../../modules/memory/domain/reducer");
 
@@ -40,7 +41,7 @@ function store() {
     state: { getState: async () => structuredClone(state), writeState: async (_u, _p, value) => { state = structuredClone(value); } },
     source: { getObservedWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
     runtime: {
-      createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, structuredClone(row)); return tasks.get(row.task_id); },
+      createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, { ...structuredClone(row), created_at: row.created_at ?? "2026-07-13T00:00:00.000Z" }); return tasks.get(row.task_id); },
       getTask: async (id) => tasks.get(id) || null, getTaskForUpdate: async (id) => tasks.get(id) || null,
       updateTask: async (id, changes) => Object.assign(tasks.get(id), structuredClone(changes)),
       listTasksForTarget: async () => [...tasks.values()].reverse(),
@@ -60,9 +61,10 @@ function store() {
 
 test("capacity block persists deferred audit, compacts, and replays the original proposal", async () => {
   const data = store();
+  const metrics = createMemoryMetrics();
   const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];
   let normalCalls = 0;
-  const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, idFactory: () => ids.shift() || "unused", providerAdapter: { propose: async (envelope) => { if (envelope.task.mode === "normal") normalCalls += 1; return { status: "ok", output: envelope.task.mode === "maintenance" ? compactionOutput(envelope) : normalOutput(envelope) }; } } });
+  const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, metrics, now: () => new Date("2026-07-13T00:00:10.000Z"), idFactory: () => ids.shift() || "unused", providerAdapter: { propose: async (envelope) => { if (envelope.task.mode === "normal") normalCalls += 1; return { status: "ok", output: envelope.task.mode === "maintenance" ? compactionOutput(envelope) : normalOutput(envelope) }; } } });
   const result = await pipeline.processIntent(1, "default", intent);
   const groups = [...data.inspect.groups.values()].sort((a, b) => (a.result_revision ?? -1) - (b.result_revision ?? -1));
   const tasks = [...data.inspect.tasks.values()];
@@ -87,6 +89,11 @@ test("capacity block persists deferred audit, compacts, and replays the original
   assert.equal(duplicate.duplicate, true);
   assert.equal(normalCalls, 1, "recovery must replay persisted output without calling the normal Proposer again");
   assert.equal(data.inspect.state.meta.revision, fixture.expected.replayRevision);
+  const metricSnapshot = metrics.snapshot();
+  assert.equal(metricSnapshot.counters["memory_capacity_deferred_total{section=todos,targetKey=todos}"], 1);
+  for (const workflow of ["deferred", "compaction", "replay"]) {
+    assert.equal(metricSnapshot.observations[`memory_workflow_age_ms{targetKey=todos,workflow=${workflow}}`].max, 10_000);
+  }
 });
 
 test("maintenance proposer shares the single durable schema-invalid retry", async () => {

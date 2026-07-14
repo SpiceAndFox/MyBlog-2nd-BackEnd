@@ -48,6 +48,13 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     if (!projection || projection.queryHealth === "healthy") continue;
     if (projection.queryHealth === "rebuilding") status = "rebuilding";
     else if (status === "healthy") status = "degraded";
+    const persistedDiagnostic = diagnostics.find((row) => (
+      rowValue(row, "resolved") !== true
+      && rowValue(row, "subjectKind", "subject_kind") === "projection"
+      && rowValue(row, "subjectKey", "subject_key") === projection.projectionKey
+      && rowValue(row, "diagnosticType", "diagnostic_type") === "projection_lag"
+    ));
+    if (persistedDiagnostic && debounced(persistedDiagnostic)) continue;
     alerts.push({ subjectKind: "projection", subjectKey: projection.projectionKey, status: projection.queryHealth, message: projection.queryHealth === "rebuilding" ? `${projection.projectionKey} 上下文正在重建` : `${projection.projectionKey}：部分早期对话未在上下文中` });
   }
   return { status, alerts, chatBlocked: false };

@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage, aggregateMemoryHealth } = require("../../modules/memory/domain");
 const { createMemoryContextAssembly } = require("../../modules/memory/application/contextAssembly");
+const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
 const { buildMemorySegment } = require("../../services/chat/context/segments/memory");
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/fixtures/context/stage6-context-health.json"), "utf8"));
@@ -36,7 +37,7 @@ function makeData() {
     async upsertActiveDiagnostic(_user, _preset, diagnostic) {
       let row = data.diagnostics.find((item) => !item.resolved && item.subjectKey === diagnostic.subjectKey && item.diagnosticType === diagnostic.diagnosticType);
       if (row) Object.assign(row, diagnostic);
-      else { row = { id: data.nextId++, resolved: false, ...diagnostic }; data.diagnostics.push(row); }
+      else { row = { id: data.nextId++, resolved: false, createdAt: "2026-07-13T00:00:00.000Z", ...diagnostic }; data.diagnostics.push(row); }
       return row;
     },
     async resolveDiagnostic(id) { const row = data.diagnostics.find((item) => item.id === id && !item.resolved); if (row) row.resolved = true; return row || null; },
@@ -198,14 +199,37 @@ test("diagnostic debounce hides only alert text, not degraded health", () => {
   assert.deepEqual(health.alerts, []);
 });
 
+test("projection diagnostics apply the same alert debounce as target diagnostics", () => {
+  const statuses = TARGETS.map((targetKey) => ({ targetKey, status: "healthy" }));
+  const health = aggregateMemoryHealth({
+    targetStatuses: statuses,
+    diagnostics: [{
+      subjectKind: "projection",
+      subjectKey: "rag",
+      diagnosticType: "projection_lag",
+      createdAt: "2026-07-13T00:00:00.000Z",
+      resolved: false,
+    }],
+    projectionHealth: [{ projectionKey: "rag", queryHealth: "degraded", requiredBoundary: 4, processedBoundary: 2 }],
+    now: new Date("2026-07-13T00:00:00.500Z"),
+    alertDebounceMs: 1000,
+  });
+  assert.equal(health.status, "degraded");
+  assert.deepEqual(health.alerts, []);
+});
+
 test("projection lag diagnostic persists until the query boundary is covered", async () => {
   const data = makeData();
+  const metrics = createMemoryMetrics();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
   data.checkpoints = [{ projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 2 }, { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5 }];
-  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars, metrics });
   const degraded = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "projection-1" });
   assert.equal(degraded.health.status, "degraded");
   assert.equal(data.diagnostics.some((row) => row.subjectKind === "projection" && !row.resolved), true);
+  const metricSnapshot = metrics.snapshot();
+  assert.equal(metricSnapshot.observations["memory_projection_lag_messages{projectionKey=rag,status=degraded}"].max, 2);
+  assert.equal(metricSnapshot.observations["memory_health_state_duration_ms{status=degraded,subjectKey=rag,subjectKind=projection}"].count, 1);
 
   data.checkpoints[0].processed_boundary_message_id = 4;
   const recovered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "projection-2" });

@@ -1,4 +1,6 @@
 {
+  "name": "stage-5-capacity-replay",
+  "fixtureKind": "recovery",
   "initialRevision": 0,
   "initialCursor": 0,
   "targetMessageId": 3,

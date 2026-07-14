@@ -774,7 +774,7 @@ CREATE TABLE chat_memory_tasks (
   target_message_id          BIGINT,
   base_revision              BIGINT NOT NULL,
   task_payload               JSONB NOT NULL,    -- immutable proposal-time input/evidence metadata（创建后不可变）
-  stage_payload              JSONB,             -- 当前阶段运行数据：persistedProposal、maintenanceTaskId、compaction 进度等；可变
+  stage_payload              JSONB,             -- 当前阶段运行数据：normalContextWindow、persistedProposal、expandedEnvelope、maintenanceTaskId、identities、compaction 进度等；可变
   attempt                    INTEGER NOT NULL DEFAULT 0,
   context_expansion_attempt  INTEGER NOT NULL DEFAULT 0,
   not_before                 TIMESTAMPTZ,
@@ -817,7 +817,7 @@ Recovery 字段归属固定为：
 | 旧语义 | 新 authority |
 | --- | --- |
 | `consecutiveErrors` | per-target status |
-| `awaitingContextExpansion` | durable task 的 `context_expansion_attempt` |
+| `awaitingContextExpansion` | durable task 的 `context_expansion_attempt` + `stage_payload.expandedEnvelope` |
 | `lastErrorReason` / halt 原因 | per-target status + ops log |
 | `lastErrorTickId` | ops log 的 taskId/attempt；target status 保存 `last_task_id` |
 | retry attempt / notBefore | durable task |

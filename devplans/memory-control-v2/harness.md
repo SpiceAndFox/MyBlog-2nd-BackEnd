@@ -15,7 +15,7 @@
 
 ## 2. Fixture 形态
 
-每个 fixture 使用一个 JSON 文件表达，支持单 tick 和多 tick 场景。单 tick 即 `ticks` 数组只有一个元素。
+规范 Reducer/Pipeline fixture 使用一个 JSON 文件表达，支持单 tick 和多 tick 场景。单 tick 即 `ticks` 数组只有一个元素。`fixtureKind=reducer|pipeline` 的文件必须通过统一 catalog 校验和断言 matcher；Context/Recovery 可使用具名的 suite-support fixture，但必须声明 `fixtureKind` 并由对应测试显式消费，catalog 不得静默遗漏文件。
 
 ```json
 {
@@ -33,7 +33,7 @@
     },
     "working": { "todos": [], "standingAgreements": [], "recentEpisodes": [] },
     "longTerm": { "milestones": [], "worldFacts": [], "userProfile": [], "assistantProfile": [], "relationship": [] },
-    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": { "todos": 120 } }
+    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": {} }
   },
   "initialTargetStatuses": {
     "scene": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
@@ -56,14 +56,15 @@
           "sourceGeneration": 0,
           "baseRevision": 0,
           "targetKey": "todos",
-          "cursorBefore": 120,
-          "targetMessageId": 121,
+          "cursorBefore": 0,
+          "targetMessageId": 1,
           "proposer": "todoProposer",
           "mode": "normal",
           "targetSections": ["todos"],
-          "observedMessageIds": [121],
+          "observedMessageIds": [1],
           "trigger": { "type": "lagThreshold" },
-          "now": "2026-07-06T22:30:00Z"
+          "now": "2026-07-06T22:30:00Z",
+          "userTimeZone": "UTC"
         },
         "writableState": { "working": { "todos": [] } },
         "readOnlyContext": {
@@ -80,7 +81,7 @@
         },
         "observedMessages": [
           {
-            "id": 121,
+            "id": 1,
             "role": "user",
             "createdAt": "2026-07-06T22:30:00Z",
             "contentKind": "raw",
@@ -89,6 +90,17 @@
           }
         ]
       },
+      "databaseMessages": [
+        {
+          "id": 1,
+          "userId": 1,
+          "presetId": "default",
+          "role": "user",
+          "createdAt": "2026-07-06T22:30:00Z",
+          "content": "我明天会把橡皮还给她",
+          "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9"
+        }
+      ],
       "adapterMock": {
         "status": "ok",
         "output": {
@@ -102,7 +114,7 @@
                   "op": "addItem",
                   "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
                   "evidenceKind": "user_commitment",
-                  "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }]
+                  "evidenceRefs": [{ "messageId": 1, "quote": "我明天会把橡皮还给她" }]
                 }
               ]
             }
@@ -116,8 +128,8 @@
           "schema_version": 2,
           "base_revision": 0,
           "result_revision": 1,
-          "cursor_before": 120,
-          "cursor_after": 121,
+          "cursor_before": 0,
+          "cursor_after": 1,
           "group_kind": "proposal"
         },
         "events": [
@@ -136,8 +148,8 @@
               {
                 "id": { "_match": "string", "prefix": "todo:" },
                 "text": "归还橡皮",
-                "createdAtMessageId": 121,
-                "updatedAtMessageId": 121,
+                "createdAtMessageId": 1,
+                "updatedAtMessageId": 1,
                 "actor": "user",
                 "requester": "user",
                 "status": "active",
@@ -146,14 +158,14 @@
                 "evidenceGroups": [
                   {
                     "evidenceKind": "user_commitment",
-                    "refs": [{ "messageId": 121, "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9", "quote": "我明天会把橡皮还给她" }]
+                    "refs": [{ "messageId": 1, "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9", "quote": "我明天会把橡皮还给她" }]
                   }
                 ]
               }
             ]
           }
         },
-        "cursor": { "todos": 121 },
+        "cursor": { "todos": 1 },
         "snapshot": { "revision": 1, "schema_version": 2 },
         "task": {
           "task_id": "018f2f5e-7f2a-7b11-9c31-111111111111",
@@ -173,7 +185,7 @@
 
 Fixture 不应保存长篇聊天全文。证据 quote 保持短片段，长对话可用最小复现场景。
 
-Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 snapshot；需要模拟后续 generation 的 fixture 必须显式提供匹配的全局 revision 与 generation-boundary snapshot。测试不得只在内存中构造 state 而跳过 snapshot。`initialTargetStatuses` 独立于 `memory_state` 初始化，且必须为全部六个 normal target 各提供一行相同 generation 的初始 status。`initialState.meta.targetCursors` 只需列出本 fixture 涉及的 target key；未列出的 target cursor 默认为 0，表示该 target 尚未处理任何消息。
+Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 snapshot；revision 0 fixture 的所有 cursor 必须为 0。需要模拟已推进 cursor 或后续 generation 的 fixture 必须显式提供匹配的全局 revision 与 generation-boundary/anchor snapshot。测试不得只在内存中构造 state 而跳过 snapshot。`initialTargetStatuses` 独立于 `memory_state` 初始化，且必须为全部六个 normal target 各提供一行相同 generation 的合法初始 status；普通 Reducer fixture 通常从 healthy/0 开始，resume/recovery fixture 可以从 retry_wait/capacity_blocked/halted/rebuilding 开始。`initialState.meta.targetCursors` 只需列出本 fixture 涉及的 target key；未列出的 target cursor 默认为 0，表示该 target 尚未处理任何消息。
 
 ### Fixture 断言匹配规则
 
@@ -224,10 +236,10 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - normal task 必须携带 durable UUID `taskId` 与创建时 `baseRevision`；提交前二者关联的 task row 必须存在，并重新校验 `baseRevision === meta.revision`。若 revision 不匹配（且 `sourceGeneration` 仍匹配），不直接 apply，而是按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task 并重新调用 Proposer。`task.targetKey` 只能是六个合法 targetKey；每个 task 只有一个 `cursorBefore`、new batch 和一个 `targetMessageId`。
 - maintenance task 不携带 `cursorBefore`；其 `targetMessageId` 必须等于来源 normal proposal 的 `targetMessageId`，只用于关联、幂等和后续 replay，不得用于读取 raw messages 或推进 cursor。
 - maintenance task 的 `parent_task_id` 必须指向来源 normal task，并持久化 `resume_epoch`；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`、`maintenanceTaskId` 和 `resumeEpoch`。
-- normal/maintenance task 的 proposal-time envelope 与 evidence metadata 必须写入 immutable `task_payload`；retry/restart 不得从变化后的 recent window 临时重组同一个 task input。Proposer 返回后经 schema 校验并分配 patchId 的完整 proposal 写入可变的 `stage_payload.persistedProposal`，不写入 `task_payload`。
+- normal/maintenance task 的 proposal-time envelope 与 evidence metadata 必须写入 immutable `task_payload`；normal task 创建时还要在 stage payload 固化本 task 的 `normalContextWindow`。普通 retry/restart 不得从变化后的 recent window 临时重组同一个 task input。`unable_to_decide` 是显式例外：首次 unable 时必须使用该固化窗口计算并在 durable task 行中原子保存完整 `stage_payload.expandedEnvelope`，后续 attempt/restart 只复用该 envelope，不重新读取变化后的窗口或配置。Provider 返回并通过 schema 校验后的原始 proposal 写入可变的 `stage_payload.persistedProposal`，不写入 `task_payload`；patchId/itemId 仍由 Reducer 生成，只有进入 capacity/deferred 链时才把用于 replay 的 `identities` 与 proposal 一起持久化。
 - 同一 tick 多个 targets eligible 时只先排 intents；第一个 target 提交 revision 后，第二个 target 创建 task 时必须捕获新 revision，不得因共享 tick 初始 baseRevision 产生伪 `stale_result`。
 - 同一 Proposer、同一 target、同一 `memory_state` 下，即使 observed messages 内容不同，`readOnlyContext` 的 section 形状也必须一致；只允许 `task.observedMessageIds` 和 `observedMessages` 随消息窗口变化。
-- 固定范围内的 section 必须完整输入当前 items；不得做 last N、相似度筛选、关键词筛选或数量截断。
+- `readOnlyContext` 固定范围内的 section 必须完整输入当前 items；不得做 last N、相似度筛选、关键词筛选或数量截断。`todoProposer.writableState.working.todos` 是明确例外：active 全量，overdue 按 [state-contract.md](state-contract.md) §5.3 只取集中配置规定的最近 N 条。
 - `observedMessages` 按 `coveredUntilMessageId` 之后的分页规则组装：从 `coveredUntilMessageId` 后取最早未处理 batch，再补充 `coveredUntilMessageId` 及之前的 overlap；不得取全局最新 M 条跳过 backlog。
 - normal task 的 `task.targetMessageId` 必须等于本轮 new batch 的最大 messageId，不取 overlap 的 messageId。
 - `working.todos` 同时包含 active 与 overdue items；fixture 应覆盖 wall-clock 到期后 item 原位变 overdue，以及 complete/cancel/expire 终止后才从数组移除。非 todo Proposer 的 readOnlyContext 仍只接收 §5.3 规定的 active 子集。
@@ -260,7 +272,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `deferred` 阻止 cursor 推进：同 target 有任一 `deferred` 行则不推进，无论是否存在 `accepted` 行；无 `deferred` 时有任一 `accepted`/`noop`/`rejected` 即推进。
 - 混合 `accepted`+`deferred` 的非原子混合提交已被禁止：capacity-blocked 时本轮不 apply 任何 patch，只为触发容量阻塞的 patch 写 `deferred`（`result_revision=null` 审计 group），其他 patch 的最终 decision 延迟到 replay group；任何实际提交的 state revision 都必须拥有同号完整 snapshot，未提交 state/cursor 时不得伪造 revision。
 - Provider/schema `error` 由 tick orchestrator 截获，只原子更新 durable task、per-target status 与 ops log；不落 semantic events、不交 Reducer、不增加 revision/snapshot。
-- `unable_to_decide` 首次只把当前 task 的 `context_expansion_attempt` 置 1；下一 attempt 扩大窗口。二次仍无法判断时以 cursor-only revision 终结，写 snapshot/task/status。
+- `unable_to_decide` 首次把当前 task 的 `context_expansion_attempt` 置 1，并原子持久化完整 `expandedEnvelope`；下一 attempt 复用该 envelope。二次仍无法判断时以 cursor-only revision 终结，写 snapshot/task/status。
 - 瞬时 error 连续 3 次后只把对应 target status 置为 halted；`memory_state` 不出现 halt/recovery 字段，其他 targets 的 cursor/status 不变。
 - 长度预算首次阻塞时只为触发容量阻塞的 patch 写 `deferred`（`result_revision=null` 审计 group），触发 maintenance task，per-target status 进入 `capacity_blocked`，且不推进 cursor；一个 target `capacity_blocked` 不阻塞同 tick 其它 target。
 - compaction 成功释放容量后，replay 原 proposal（不重新调 Proposer），使用原稳定 `patchId` 写最终 replay group。
@@ -312,7 +324,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 配置加载覆盖已实现/未实现的 structured-output adapter：未知 adapter 必须启动失败，不能回退到裸文本 + `JSON.parse`；已实现 adapter 使用原生 schema/tool/function 并对返回值再做本地完整 schema 校验。真实 Provider preflight 顺序覆盖六个 Normal Proposer 与 Compaction schema，任一 schema 被端点拒绝、返回错误分支或本地验证失败均不通过。
 - mock adapter 返回合法 `status: "ok"` → output 交 Reducer；成功提交时 task/status/events/state/snapshot 同事务完成。
 - proposer/tickId 不匹配、`sectionResults` 残缺或非法 → 首次输出边界错误写 ops log=`output_schema_invalid_retry` 并持久化计数；第二次仍非法才 task failed、对应 target halted、ops log=`output_schema_invalid`。不交 Reducer，不推进 cursor，不增加 revision/snapshot。
-- `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，不修改 target 长期错误计数；二次仍 unable 才以 cursor-only revision 终结。
+- `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，并持久化完整 `stage_payload.expandedEnvelope`，不修改 target 长期错误计数；恢复和下一 attempt 必须复用该 envelope，二次仍 unable 才以 cursor-only revision 终结。
 - compactionProposer 返回 `unable_to_compact` → maintenance task failed、对应 target halted、写 ops log；不增加 revision/snapshot。
 - `safety_policy_blocked` / `llm_call_failed` → task `retry_wait`、attempt 递增、写 notBefore，target status=`retry_wait` 且 `consecutive_errors + 1`；第三次只 halt 对应 target。
 - provider 明确因最大输出长度停止时归类 `max_output_truncated`，不得落为 `output_schema_invalid`，即使响应残片可解析也不交 Reducer；它按有界 retry/backoff 处理并单独计数，且不得因此缩小 section 容量。
@@ -329,7 +341,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - scene `capacity_exceeded` event 由独立 diagnostic projector 转换为 active `target + scene + scene_capacity_exceeded`；同 group 其他字段 accepted 时告警仍存在，只有 `detail.rejectedPaths` 中对应字段后续 accepted 才移除，全部恢复后在同一投影事务 resolve 并创建 recovery notification。重复投影不重复 diagnostic/notification；故障时 checkpoint 不推进、normal task 成功结果不回滚，runtime/context 后续可重试。
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
-- 指标断言至少验证 per-target calls/message、eligible、tokens/latency/cost，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration 使用稳定标签且不含原始消息正文等高基数字段。
+- 指标断言至少验证 per-target calls 与 observed-message 总数（calls/message 由两者相除）、eligible、tokens/latency，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration；指标使用稳定标签且不含原始消息正文等高基数字段。只有 Provider 明确返回可信的 request cost 时才记录 `cost_usd`；否则费用由 token 指标和外部版本化价目表计算，运行时不得硬编码可能变化的单价。
 - 配置测试证明 capacity、scene/overdue、lagThreshold、GapBridge、quote threshold、retry/backoff、compaction/halt、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 
 ### 3.8 Renderer 稳定性（渲染回归基线）
@@ -390,7 +402,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 ## 4. 端到端 smoke
 
-端到端 smoke 只覆盖少量代表性路径：
+真实 Provider 的 schema/channel 能力由 `npm run probe:memory-v2-provider` 验证；最小语义链路由 `npm run smoke:memory-v2-provider` 验证，后者必须让真实 todoProposer 对明确承诺生成可经 Reducer 接受的 `todos.addItem`，不能只回显预制 JSON。它们属于显式联网验收，不并入离线 `test:memory-v2`。其余端到端 smoke 只覆盖少量代表性路径：
 
 - 新增 todo -> 完成 todo -> render 不再显示未完成待办。
 - 新增带 actor/requester/dueAt 的短期待办 -> evidence message createdAt 锚定期限 -> wall-clock 到期后原位 overdue -> 仍可完成/取消 -> 也可通过 updateItem 设置未来 dueAt 变回 active。

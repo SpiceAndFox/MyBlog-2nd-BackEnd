@@ -1,5 +1,6 @@
 {
   "name": "revision-zero-scene-noop",
+  "fixtureKind": "reducer",
   "initialState": {
     "version": 2,
     "current": { "scene": {
@@ -35,6 +36,14 @@
       }]
     },
     "adapterMock": { "status": "ok", "output": { "tickId": 1, "proposer": "currentStateProposer", "sectionResults": { "scene": { "status": "noop" } } } },
-    "expected": { "decision": "noop" }
+    "expected": {
+      "outcome": "committable",
+      "events": [{ "decision": "noop", "section": "scene", "targetKey": "scene", "patchId": null }],
+      "statePatch": { "meta": { "revision": 1, "targetCursors": { "scene": 4 } } },
+      "snapshot": { "sourceGeneration": 0, "revision": 1, "state": { "meta": { "revision": 1, "targetCursors": { "scene": 4 } } } },
+      "cursor": { "scene": 4 },
+      "meta": { "revision": 1, "targetCursors": { "scene": 4 } },
+      "renderEquals": "renderer-empty.txt"
+    }
   }]
 }

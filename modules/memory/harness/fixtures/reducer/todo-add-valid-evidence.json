@@ -1,5 +1,6 @@
 {
   "name": "todo-add-with-valid-evidence",
+  "fixtureKind": "reducer",
   "initialState": {
     "version": 2,
     "current": { "scene": {
@@ -10,7 +11,7 @@
     }, "previousScene": null },
     "working": { "todos": [], "standingAgreements": [], "recentEpisodes": [] },
     "longTerm": { "milestones": [], "worldFacts": [], "userProfile": [], "assistantProfile": [], "relationship": [] },
-    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": { "todos": 120 } }
+    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": {} }
   },
   "initialTargetStatuses": {
     "scene": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
@@ -22,7 +23,7 @@
   },
   "ticks": [{
     "input": {
-      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112", "tickId": 2, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 0, "targetKey": "todos", "cursorBefore": 120, "targetMessageId": 121, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [121], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:30:00Z", "userTimeZone": "UTC" },
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112", "tickId": 2, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 0, "targetKey": "todos", "cursorBefore": 0, "targetMessageId": 1, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [1], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:30:00Z", "userTimeZone": "UTC" },
       "writableState": { "working": { "todos": [] } },
       "readOnlyContext": {
         "current": { "scene": {
@@ -34,10 +35,104 @@
         "working": { "standingAgreements": [], "recentEpisodes": [] },
         "longTerm": { "userProfile": [], "assistantProfile": [] }
       },
-      "observedMessages": [{ "id": 121, "role": "user", "createdAt": "2026-07-06T22:30:00Z", "contentKind": "raw", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }]
+      "observedMessages": [{ "id": 1, "role": "user", "createdAt": "2026-07-06T22:30:00Z", "contentKind": "raw", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }]
     },
-    "databaseMessages": [{ "id": 121, "userId": 1, "presetId": "default", "role": "user", "createdAt": "2026-07-06T22:30:00Z", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }],
-    "adapterMock": { "status": "ok", "output": { "tickId": 2, "proposer": "todoProposer", "sectionResults": { "todos": { "status": "patches", "patches": [{ "op": "addItem", "value": { "text": "归还橡皮", "actor": "user", "requester": "user" }, "evidenceKind": "user_commitment", "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }] }] } } } },
-    "expected": { "outcome": "committable", "decision": "accepted", "stateText": "归还橡皮", "cursorAfter": 121 }
+    "databaseMessages": [{ "id": 1, "userId": 1, "presetId": "default", "role": "user", "createdAt": "2026-07-06T22:30:00Z", "content": "我明天会把橡皮还给她", "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9" }],
+    "adapterMock": { "status": "ok", "output": { "tickId": 2, "proposer": "todoProposer", "sectionResults": { "todos": { "status": "patches", "patches": [{ "op": "addItem", "value": { "text": "归还橡皮", "actor": "user", "requester": "user" }, "evidenceKind": "user_commitment", "evidenceRefs": [{ "messageId": 1, "quote": "我明天会把橡皮还给她" }] }] } } } },
+    "expected": {
+      "outcome": "committable",
+      "events": [{ "decision": "accepted", "op": "addItem", "patchId": { "_match": "string" }, "resultItemId": { "_match": "string", "prefix": "todo:" } }],
+      "statePatch": {
+        "working": { "todos": [{ "id": { "_match": "string", "prefix": "todo:" }, "text": "归还橡皮", "status": "active", "becameOverdueAt": null }] },
+        "meta": { "revision": 1, "targetCursors": { "todos": 1 } }
+      },
+      "cursor": { "todos": 1 },
+      "meta": { "revision": 1, "targetCursors": { "todos": 1 }, "sourceGeneration": 0 },
+      "renderContains": "归还橡皮"
+    }
+  }, {
+    "description": "a forged evidence id is rejected but advances the cursor",
+    "input": {
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111113", "tickId": 3, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 1, "targetKey": "todos", "cursorBefore": 1, "targetMessageId": 2, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [2], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:31:00Z", "userTimeZone": "UTC" },
+      "writableState": { "working": { "todos": [] } },
+      "readOnlyContext": {
+        "current": { "scene": {
+          "location": { "value": null, "updatedAtMessageId": null },
+          "time": { "value": null, "updatedAtMessageId": null },
+          "mood": { "value": null, "updatedAtMessageId": null },
+          "note": { "value": null, "updatedAtMessageId": null }
+        } },
+        "working": { "standingAgreements": [], "recentEpisodes": [] },
+        "longTerm": { "userProfile": [], "assistantProfile": [] }
+      },
+      "observedMessages": [{ "id": 2, "role": "user", "createdAt": "2026-07-06T22:31:00Z", "contentKind": "raw", "content": "没有相关承诺", "contentHash": "sha256:708ef1320c4adca026b6f7c913152a5171493459f81a415d36e5c4094aeabf5f" }]
+    },
+    "databaseMessages": [{ "id": 2, "userId": 1, "presetId": "default", "role": "user", "createdAt": "2026-07-06T22:31:00Z", "content": "没有相关承诺", "contentHash": "sha256:708ef1320c4adca026b6f7c913152a5171493459f81a415d36e5c4094aeabf5f" }],
+    "adapterMock": { "status": "ok", "output": { "tickId": 3, "proposer": "todoProposer", "sectionResults": { "todos": { "status": "patches", "patches": [{ "op": "addItem", "value": { "text": "伪造待办", "actor": "user", "requester": "user" }, "evidenceKind": "user_commitment", "evidenceRefs": [{ "messageId": 999, "quote": "并不存在" }] }] } } } },
+    "expected": {
+      "outcome": "committable",
+      "events": [{ "decision": "rejected", "op": "addItem", "rejectReason": "message_id_not_found", "patchId": { "_match": "string" } }],
+      "statePatch": {
+        "working": { "todos": [{ "id": { "_match": "string", "prefix": "todo:" }, "text": "归还橡皮" }] },
+        "meta": { "revision": 2, "targetCursors": { "todos": 2 } }
+      },
+      "cursor": { "todos": 2 },
+      "meta": { "revision": 2, "targetCursors": { "todos": 2 } }
+    }
+  }, {
+    "description": "adapter errors never reach the reducer",
+    "input": {
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111114", "tickId": 4, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 2, "targetKey": "todos", "cursorBefore": 2, "targetMessageId": 3, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [3], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:32:00Z", "userTimeZone": "UTC" },
+      "writableState": { "working": { "todos": [] } },
+      "readOnlyContext": {
+        "current": { "scene": {
+          "location": { "value": null, "updatedAtMessageId": null },
+          "time": { "value": null, "updatedAtMessageId": null },
+          "mood": { "value": null, "updatedAtMessageId": null },
+          "note": { "value": null, "updatedAtMessageId": null }
+        } },
+        "working": { "standingAgreements": [], "recentEpisodes": [] },
+        "longTerm": { "userProfile": [], "assistantProfile": [] }
+      },
+      "observedMessages": [{ "id": 3, "role": "user", "createdAt": "2026-07-06T22:32:00Z", "contentKind": "raw", "content": "Provider 会失败", "contentHash": "sha256:8792da5c9ce427287edd6f7f496c882cdeed9ec199d523f06439eae3453e610e" }]
+    },
+    "adapterMock": { "status": "error", "reason": "llm_call_failed", "detail": { "code": "timeout" } },
+    "expected": {
+      "outcome": "adapter_error",
+      "events": [],
+      "snapshot": null,
+      "cursor": { "todos": 2 },
+      "meta": { "revision": 2, "targetCursors": { "todos": 2 } },
+      "adapterError": { "reason": "llm_call_failed", "detail": { "code": "timeout" } }
+    }
+  }, {
+    "description": "a non-matching quote is rejected deterministically",
+    "input": {
+      "task": { "taskId": "018f2f5e-7f2a-7b11-9c31-111111111115", "tickId": 5, "userId": 1, "presetId": "default", "schemaVersion": 2, "sourceGeneration": 0, "baseRevision": 2, "targetKey": "todos", "cursorBefore": 2, "targetMessageId": 3, "proposer": "todoProposer", "mode": "normal", "targetSections": ["todos"], "observedMessageIds": [3], "trigger": { "type": "lagThreshold" }, "now": "2026-07-06T22:33:00Z", "userTimeZone": "UTC" },
+      "writableState": { "working": { "todos": [] } },
+      "readOnlyContext": {
+        "current": { "scene": {
+          "location": { "value": null, "updatedAtMessageId": null },
+          "time": { "value": null, "updatedAtMessageId": null },
+          "mood": { "value": null, "updatedAtMessageId": null },
+          "note": { "value": null, "updatedAtMessageId": null }
+        } },
+        "working": { "standingAgreements": [], "recentEpisodes": [] },
+        "longTerm": { "userProfile": [], "assistantProfile": [] }
+      },
+      "observedMessages": [{ "id": 3, "role": "user", "createdAt": "2026-07-06T22:32:00Z", "contentKind": "raw", "content": "Provider 会失败", "contentHash": "sha256:8792da5c9ce427287edd6f7f496c882cdeed9ec199d523f06439eae3453e610e" }]
+    },
+    "databaseMessages": [{ "id": 3, "userId": 1, "presetId": "default", "role": "user", "createdAt": "2026-07-06T22:32:00Z", "content": "Provider 会失败", "contentHash": "sha256:8792da5c9ce427287edd6f7f496c882cdeed9ec199d523f06439eae3453e610e" }],
+    "adapterMock": { "status": "ok", "output": { "tickId": 5, "proposer": "todoProposer", "sectionResults": { "todos": { "status": "patches", "patches": [{ "op": "addItem", "value": { "text": "错误引用", "actor": "user", "requester": "user" }, "evidenceKind": "user_commitment", "evidenceRefs": [{ "messageId": 3, "quote": "完全不匹配" }] }] } } } },
+    "expected": {
+      "outcome": "committable",
+      "events": [{ "decision": "rejected", "op": "addItem", "rejectReason": "quote_not_found", "patchId": { "_match": "string" } }],
+      "statePatch": {
+        "working": { "todos": [{ "id": { "_match": "string", "prefix": "todo:" }, "text": "归还橡皮" }] },
+        "meta": { "revision": 3, "targetCursors": { "todos": 3 } }
+      },
+      "cursor": { "todos": 3 },
+      "meta": { "revision": 3, "targetCursors": { "todos": 3 } }
+    }
   }]
 }

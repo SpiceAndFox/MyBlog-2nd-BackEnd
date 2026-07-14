@@ -1,4 +1,6 @@
 {
+  "name": "stage-7-rebuild-suppression",
+  "fixtureKind": "recovery",
   "scope": { "userId": 7, "presetId": "companion" },
   "oldSource": { "messageId": 10, "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
   "correctionSource": { "messageId": 20, "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },

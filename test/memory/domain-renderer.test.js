@@ -24,6 +24,8 @@ test("renderer consumes effective view and labels stale/rebuilding targets witho
   state.longTerm.milestones.push({ id: "milestone:1", text: "第一次互相信任", evidenceGroups: [{ evidenceKind: "relationship_milestone", refs: [ref] }], createdAtMessageId: 1, updatedAtMessageId: 1 });
   state.working.recentEpisodes.push({ id: "episode:1", text: "雨夜和解", evidenceGroups: [{ evidenceKind: "recent_episode", refs: [ref] }], createdAtMessageId: 1, updatedAtMessageId: 1 });
   const result = renderMemory({ state, lifecycleAnchors: { sceneAnchorCreatedAt: "2026-01-01T00:00:00.000Z" }, requestNow: "2026-01-01T00:01:00.000Z", config, targetStatuses: { episodes: "halted", scene: "rebuilding" } });
+  const golden = fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/golden/renderer-health-populated.txt"), "utf8").replace(/\r?\n$/, "");
+  assert.equal(result.renderedText, golden);
   assert.equal(result.needsHousekeeping, true);
   assert.match(result.renderedText, /\[已过期场景 \/ 上次已知场景\]\n- 地点: 屋顶/);
   assert.equal((result.renderedText.match(/\[该类记忆可能滞后\]/g) || []).length, 2);

@@ -9,6 +9,7 @@
     "migrate:memory-v2": "node scripts/migrate-memory-v2.js",
     "migrate:memory-v2-data": "node --use-env-proxy scripts/migrate-memory-v2-data.js",
     "probe:memory-v2-provider": "node --use-env-proxy scripts/probe-memory-v2-provider.js",
+    "smoke:memory-v2-provider": "node --use-env-proxy scripts/smoke-memory-v2-provider.js",
     "check:memory-schema": "node scripts/check-memory-schema.js",
     "resume:memory-v2": "node --use-env-proxy scripts/resume-memory-v2-target.js",
     "start": "node --use-env-proxy app.js",

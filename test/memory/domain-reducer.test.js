@@ -40,8 +40,8 @@ test("stage 2 reducer fixture produces accepted event, snapshot, provenance, and
   assert.equal(result.state.working.todos[0].id, "todo:1");
   assert.equal(result.state.working.todos[0].evidenceGroups[0].refs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
   assert.equal(result.events[0].normalizedOperation.evidenceRefs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
-  assert.equal(result.state.meta.targetCursors.todos, 121);
-  assert.deepEqual(result.snapshot, result.state);
+  assert.equal(result.state.meta.targetCursors.todos, 1);
+  assert.deepEqual(result.snapshot.state, result.state);
 });
 
 test("ordinary rejected and noop proposals still yield a cursor-only revision", () => {
@@ -147,6 +147,38 @@ test("overdue todo can only revive through a future set dueChange", () => {
   assert.equal(result.state.working.todos[0].becameOverdueAt, null);
   assert.equal(result.cleanupEvents[0].cleanupKind, "todo_revived_from_overdue");
   assert.equal(result.cleanupEvents[0].decision, "system_cleanup");
+});
+
+test("terminal field, todo, and agreement operations are applied, not merely schema-accepted", () => {
+  const cases = [
+    { targetKey: "scene", section: "scene", op: "clearField", evidenceKind: "user_correction", path: "location", seed(state) {
+      state.current.scene.location = { value: "旧地点", evidenceRef: { messageId: 1, contentHash: hash("旧地点"), quote: "旧地点" }, updatedAtMessageId: 1 };
+    }, assertState(state) { assert.equal(state.current.scene.location.value, null); } },
+    { targetKey: "todos", section: "todos", op: "completeTodo", evidenceKind: "todo_completion", itemId: "todo:complete", seed(state) { state.working.todos.push(item("todo:complete", "已完成", 1, true)); }, assertState(state) { assert.equal(state.working.todos.length, 0); } },
+    { targetKey: "todos", section: "todos", op: "cancelTodo", evidenceKind: "todo_cancel", itemId: "todo:cancel", seed(state) { state.working.todos.push(item("todo:cancel", "已取消", 1, true)); }, assertState(state) { assert.equal(state.working.todos.length, 0); } },
+    { targetKey: "todos", section: "todos", op: "expireTodo", evidenceKind: "todo_expiration", itemId: "todo:expire", seed(state) { state.working.todos.push({ ...item("todo:expire", "已失效", 1, true), dueAt: "2026-02-01T00:00:00.000Z" }); }, assertState(state) { assert.equal(state.working.todos.length, 0); } },
+    { targetKey: "standingAgreements", section: "standingAgreements", op: "cancelAgreement", evidenceKind: "agreement_cancel", itemId: "agreement:cancel", seed(state) { state.working.standingAgreements.push(item("agreement:cancel", "旧约定", 1)); }, assertState(state) { assert.equal(state.working.standingAgreements.length, 0); } },
+  ];
+  for (const entry of cases) {
+    const content = `执行 ${entry.op}`;
+    const database = message(2, "user", content);
+    const state = createInitialMemoryState();
+    entry.seed(state);
+    const patch = {
+      op: entry.op,
+      ...(entry.path ? { path: entry.path } : { itemId: entry.itemId }),
+      evidenceKind: entry.evidenceKind,
+      evidenceRefs: [{ messageId: 2, quote: content }],
+    };
+    const result = reduceProposal({
+      state, task: task(entry.targetKey), observedMessages: [observed(database)], databaseMessages: [database], config,
+      proposal: { sectionResults: { [entry.section]: { status: "patches", patches: [patch] } } },
+      idFactory: sequence(`patch-${entry.op}`),
+    });
+    assert.equal(result.events[0].decision, "accepted", entry.op);
+    assert.equal(result.events[0].op, entry.op);
+    entry.assertState(result.state);
+  }
 });
 
 test("maintenance merge is accepted for every compactable item section", () => {

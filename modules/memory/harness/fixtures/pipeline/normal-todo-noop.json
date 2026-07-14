@@ -1,5 +1,6 @@
 {
   "name": "normal-todo-noop-atomic-commit",
+  "fixtureKind": "pipeline",
   "initialState": {
     "version": 2,
     "current": {
@@ -77,6 +78,49 @@
       "content": "今晚随便聊聊",
       "contentHash": "sha256:5c4306be6a126bc961765d6b8af30de8eed8b660aa453640301b145b9ebd726d"
     }],
-    "expected": { "outcome": "committable", "revision": 1, "cursorAfter": 1, "decision": "noop" }
+    "expected": {
+      "outcome": "committable",
+      "revision": 1,
+      "cursorAfter": 1,
+      "decision": "noop",
+      "events": [{
+        "section": "todos",
+        "target_key": "todos",
+        "decision": "noop",
+        "patch_id": null
+      }],
+      "eventGroup": {
+        "task_id": "00000000-0000-4000-8000-000000000003",
+        "target_key": "todos",
+        "source_generation": 0,
+        "base_revision": 0,
+        "result_revision": 1,
+        "cursor_before": 0,
+        "cursor_after": 1,
+        "group_kind": "proposal"
+      },
+      "snapshot": {
+        "sourceGeneration": 0,
+        "revision": 1,
+        "state": { "meta": { "revision": 1, "sourceGeneration": 0, "targetCursors": { "todos": 1 } } }
+      },
+      "task": {
+        "status": "succeeded",
+        "stage": "committed",
+        "result_revision": 1,
+        "stage_payload": { "persistedProposal": { "tickId": 3, "proposer": "todoProposer" } }
+      },
+      "targetStatus": {
+        "targetKey": "todos",
+        "status": "healthy",
+        "consecutiveErrors": 0,
+        "lastErrorReason": null,
+        "nextRetryAt": null
+      },
+      "opsLog": [],
+      "cursor": { "todos": 1 },
+      "meta": { "revision": 1, "targetCursors": { "todos": 1 } },
+      "renderContains": ["[待办]\n(无)", "[当前状态]"]
+    }
   }]
 }

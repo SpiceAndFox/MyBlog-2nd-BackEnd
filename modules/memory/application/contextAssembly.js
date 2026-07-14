@@ -12,6 +12,7 @@ function camelDiagnostic(row) {
     subjectKind: row.subjectKind ?? row.subject_kind,
     subjectKey: row.subjectKey ?? row.subject_key,
     diagnosticType: row.diagnosticType ?? row.diagnostic_type,
+    healthStatus: row.healthStatus ?? row.health_status ?? null,
     sourceGeneration: row.sourceGeneration ?? (row.source_generation == null ? null : Number(row.source_generation)),
     targetCursor: row.targetCursor ?? (row.target_cursor == null ? null : Number(row.target_cursor)),
     processedBoundaryMessageId: row.processedBoundaryMessageId ?? (row.processed_boundary_message_id == null ? null : Number(row.processed_boundary_message_id)),
@@ -233,8 +234,40 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       }
     }
     if (state) await syncProjectionDiagnostics(userId, presetId, state, projectionHealth, activeDiagnostics, requestId, recentWindowStartMessageId);
-    const health = aggregateMemoryHealth({ targetStatuses, diagnostics: activeDiagnostics, projectionHealth, now: new Date(requestNow), alertDebounceMs: config.health?.alertDebounceMs ?? 0 });
+    const healthNow = new Date(requestNow);
+    const health = aggregateMemoryHealth({ targetStatuses, diagnostics: activeDiagnostics, projectionHealth, now: healthNow, alertDebounceMs: config.health?.alertDebounceMs ?? 0 });
     metrics?.increment("memory_context_health_total", { status: health.status });
+    for (const projection of projectionHealth) {
+      const lag = Math.max(0, Number(projection.requiredBoundary ?? 0) - Number(projection.processedBoundary ?? 0));
+      metrics?.observe("memory_projection_lag_messages", { projectionKey: projection.projectionKey, status: projection.queryHealth }, lag);
+    }
+    const durationRows = [
+      ...targetStatuses.flatMap((row) => {
+        const targetKey = row.targetKey ?? row.target_key;
+        const rebuilding = (row.rebuildBoundaryMessageId ?? row.rebuild_boundary_message_id) !== null
+          && (row.rebuildBoundaryMessageId ?? row.rebuild_boundary_message_id) !== undefined;
+        const internal = rebuilding ? "rebuilding" : row.status;
+        if (internal === "healthy") return [];
+        return [{ row, subjectKind: "target", subjectKey: targetKey, status: rebuilding ? "rebuilding" : "degraded" }];
+      }),
+      ...activeDiagnostics.filter((row) => !row.resolved).map((row) => ({
+        row,
+        subjectKind: row.subjectKind,
+        subjectKey: row.subjectKey,
+        status: row.healthStatus === "rebuilding"
+          || (row.subjectKind === "projection" && projectionHealth.find((projection) => projection.projectionKey === row.subjectKey)?.queryHealth === "rebuilding")
+          ? "rebuilding"
+          : "degraded",
+      })),
+    ];
+    for (const entry of durationRows) {
+      const startedAt = entry.row.createdAt ?? entry.row.created_at ?? entry.row.updatedAt ?? entry.row.updated_at;
+      if (!startedAt) continue;
+      const duration = healthNow.getTime() - new Date(startedAt).getTime();
+      if (Number.isFinite(duration)) metrics?.observe("memory_health_state_duration_ms", {
+        status: entry.status, subjectKind: entry.subjectKind, subjectKey: entry.subjectKey,
+      }, Math.max(0, duration));
+    }
     if (gapBridge.stats) {
       metrics?.observe("memory_gap_bridge_raw_chars", {}, Number(gapBridge.stats.selectedChars ?? gapBridge.stats.retainedChars ?? 0));
       metrics?.observe("memory_gap_bridge_omitted_messages", {}, Number(gapBridge.stats.omittedCount ?? 0));

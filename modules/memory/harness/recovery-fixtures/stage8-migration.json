@@ -1,4 +1,6 @@
 {
+  "name": "stage-8-migration",
+  "fixtureKind": "recovery",
   "scope": { "userId": 7, "presetId": "companion" },
   "history": { "messageCount": 20, "characterCount": 4096, "boundaryMessageId": 20 },
   "sourceGeneration": 1,
