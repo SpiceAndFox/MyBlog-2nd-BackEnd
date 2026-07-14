@@ -21,7 +21,7 @@ pending → proposing → proposal_persisted
 **Maintenance task stage**（`task_type=maintenance`）：
 
 ```text
-pending → compacting
+pending → proposing → proposal_persisted → compacting
 ├→ compaction_applied       # 至少一个 patch apply 成功（其他可能因保护而 reject，见步骤 5）
 └→ compaction_failed        # 全部 patch 被保护或无安全合并空间
 ```

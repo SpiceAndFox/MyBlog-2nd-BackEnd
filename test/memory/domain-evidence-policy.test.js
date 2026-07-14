@@ -16,6 +16,23 @@ test("all quote lengths use equal-window Levenshtein matching", () => {
   assert.equal(validateQuote("a".repeat(201), "a".repeat(201)).reason, "quote_too_long");
 });
 
+test("fuzzy quote matching fails closed after its deterministic candidate budget", () => {
+  const content = `${"abx".repeat(300)}near matcg`;
+  assert.equal(validateQuote("near match", content, {
+    threshold: 0.75,
+    fuzzyMaxCandidateWindows: 0,
+  }).reason, "quote_not_found");
+  assert.equal(validateQuote("near match", content, {
+    threshold: 0.75,
+    fuzzyMaxCandidateWindows: 256,
+  }).ok, true);
+  assert.equal(validateQuote("exact match", `${"x".repeat(30_000)}exact match`, {
+    threshold: 0.75,
+    fuzzyMaxContentCodePoints: 20_000,
+    fuzzyMaxCandidateWindows: 0,
+  }).ok, true, "the linear exact-match path is not subject to fuzzy work limits");
+});
+
 test("evidence validation rechecks task membership, database metadata, role, and hash", () => {
   const base = {
     patch: { evidenceKind: "user_correction", evidenceRefs: [{ messageId: 4, quote: "名字不是小王" }] },

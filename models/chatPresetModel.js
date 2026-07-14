@@ -270,14 +270,14 @@ const chatPresetModel = {
     return mapRow(rows[0]) || null;
   },
 
-  async deletePresetPermanently(userId, presetId) {
+  async deletePresetPermanently(userId, presetId, { client } = {}) {
     if (isBuiltinPresetId(presetId)) return false;
 
     const query = `
       DELETE FROM chat_prompt_presets
       WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NOT NULL
     `;
-    const { rowCount } = await db.query(query, [userId, presetId]);
+    const { rowCount } = await (client || db).query(query, [userId, presetId]);
     return rowCount > 0;
   },
 };

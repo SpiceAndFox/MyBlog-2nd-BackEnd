@@ -65,7 +65,7 @@ function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, u
       sourceGeneration: state.meta.sourceGeneration, baseRevision: state.meta.revision,
       targetKey: intent.targetKey, cursorBefore: intent.cursorBefore, targetMessageId,
       proposer: intent.proposer, mode: "normal", targetSections: intent.targetSections.slice(),
-      observedMessageIds, trigger: { type: "lagThreshold" }, now: new Date(now).toISOString(), userTimeZone,
+      observedMessageIds, trigger: structuredClone(intent.trigger || { type: "lagThreshold" }), now: new Date(now).toISOString(), userTimeZone,
     },
     writableState, readOnlyContext, observedMessages: messages,
   };

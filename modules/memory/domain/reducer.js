@@ -56,15 +56,23 @@ function resolvePatchDueAt(patch, refs, messagesById, timeZone) {
 function applyPatch(state, section, patch, refs, context, identityKey) {
   const normalized = structuredClone(patch);
   if (patch.op === "setField") {
+    const previous = state.current.scene[patch.path];
+    const tombstones = ["user_correction", "assistant_correction"].includes(patch.evidenceKind) && previous.evidenceRef
+      ? [{ messageId: previous.evidenceRef.messageId, contentHash: previous.evidenceRef.contentHash, reason: "correction", sourceItemId: `scene:${patch.path}`, sourceSection: "scene" }]
+      : [];
     const ref = refs[0];
     state.current.scene[patch.path] = { value: patch.value, evidenceRef: ref, updatedAtMessageId: ref.messageId };
     normalized.evidenceRefs = refs;
-    return { normalized };
+    return { normalized, tombstones };
   }
   if (patch.op === "clearField") {
+    const previous = state.current.scene[patch.path];
+    const tombstones = ["user_correction", "assistant_correction"].includes(patch.evidenceKind) && previous.evidenceRef
+      ? [{ messageId: previous.evidenceRef.messageId, contentHash: previous.evidenceRef.contentHash, reason: "correction", sourceItemId: `scene:${patch.path}`, sourceSection: "scene" }]
+      : [];
     state.current.scene[patch.path] = { value: null, evidenceRef: null, updatedAtMessageId: null };
     normalized.evidenceRefs = refs;
-    return { normalized };
+    return { normalized, tombstones };
   }
 
   const items = sectionItems(state, section);

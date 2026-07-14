@@ -55,6 +55,24 @@ test("event replay permits a validated zero-event cursor-only proposal revision"
   assert.equal(replayed.meta.targetCursors.todos, 1);
 });
 
+test("event replay applies terminal suppression cleanup revisions", () => {
+  const cleanupGroup = proposalGroup({
+    event_group_id: "group-2", task_id: "task-2", base_revision: 1, result_revision: 2,
+    cursor_before: null, cursor_after: null, group_kind: "system_cleanup",
+  });
+  const cleanupEvent = {
+    event_group_id: "group-2", event_index: 0, user_id: 1, preset_id: "default", task_id: "task-2",
+    target_key: "todos", section: "todos", event_kind: "system_cleanup", decision: "system_cleanup",
+    op: null, item_id: "todo:1", result_item_id: null, merged_from_item_ids: null, evidence_kind: null,
+    cleanup_type: "suppressed_item_removed",
+    normalized_operation: { cleanupKind: "suppressed_item_removed", itemId: "todo:1" },
+  };
+  const replayed = replayEventGroups(createInitialMemoryState(), [proposalGroup(), cleanupGroup], [addEvent(), cleanupEvent], { userId: 1, presetId: "default" });
+  assert.equal(replayed.meta.revision, 2);
+  assert.equal(replayed.meta.targetCursors.todos, 1);
+  assert.deepEqual(replayed.working.todos, []);
+});
+
 test("event replay rejects audit-only groups", () => {
   assert.throws(
     () => replayEventGroups(createInitialMemoryState(), [proposalGroup({ result_revision: null, cursor_after: 0 })], []),

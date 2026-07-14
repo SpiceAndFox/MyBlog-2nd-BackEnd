@@ -40,11 +40,14 @@ function filterRebuiltState(state, tombstones) {
       });
     }
   }
-  for (const field of Object.values(next.current.scene)) {
-    if (field.evidenceRef && refIsSuppressed(field.evidenceRef, keys)) {
-      field.value = null;
-      field.evidenceRef = null;
-      field.updatedAtMessageId = null;
+  for (const scene of [next.current.scene, next.current.previousScene].filter(Boolean)) {
+    for (const [path, field] of Object.entries(scene)) {
+      if (path === "expiredAt") continue;
+      if (field.evidenceRef && refIsSuppressed(field.evidenceRef, keys)) {
+        field.value = null;
+        field.evidenceRef = null;
+        field.updatedAtMessageId = null;
+      }
     }
   }
   assertMemoryState(next);

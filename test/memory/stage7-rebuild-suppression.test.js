@@ -24,6 +24,11 @@ test("rebuild terminal suppression removes forgotten candidates but preserves a 
   const filtered = filterRebuiltState(state, tombstones);
   assert.deepEqual(filtered.removedItemIds, ["forgotten"]);
   assert.deepEqual(filtered.state.longTerm.userProfile.map((entry) => entry.id), ["corrected"]);
+  state.current.previousScene = { ...structuredClone(state.current.scene), expiredAt: "2026-07-02T00:00:00.000Z" };
+  state.current.previousScene.location = { value: "旧地点", evidenceRef: ref(fixture.oldSource), updatedAtMessageId: fixture.oldSource.messageId };
+  const sceneFiltered = filterRebuiltState(state, tombstones);
+  assert.equal(sceneFiltered.state.current.previousScene.location.value, null);
+  assert.equal(sceneFiltered.state.current.previousScene.expiredAt, state.current.previousScene.expiredAt);
 
   const chunks = filterRagChunks([
     { id: 1, metadata: { sourceRefs: [fixture.oldSource] } },
@@ -169,6 +174,46 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
+test("target validation commits terminal suppression as a replayable cleanup revision", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  state.meta.revision = 5;
+  state.meta.targetCursors.worldFacts = 10;
+  state.longTerm.worldFacts.push(item("old-fact", [group("long_term_fact", fixture.oldSource)]));
+  const snapshots = new Map([[5, { revision: 5, source_generation: 1, state: structuredClone(state) }]]);
+  const groups = [];
+  const events = [];
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: {
+      async getState() { return structuredClone(state); },
+      async writeState(_u, _p, next) { Object.assign(state, structuredClone(next)); },
+    },
+    source: {},
+    runtime: {
+      async getTargetStatus() { return { source_generation: 1, rebuild_boundary_message_id: 10, status: "rebuilding", last_task_id: "00000000-0000-0000-0000-000000000010" }; },
+      async upsertTargetStatus() {},
+    },
+    audit: {
+      async getSnapshot(_u, _p, revision) { return snapshots.get(revision) || null; },
+      async listSnapshots() { return [...snapshots.values()]; },
+      async listRevisionGroups(_u, _p, _g, after) { return groups.filter((row) => row.result_revision > after); },
+      async insertEventGroup(row) { groups.push(structuredClone(row)); },
+      async insertEvents(rows) { events.push(...structuredClone(rows)); },
+      async insertSnapshot(_u, _p, row) { snapshots.set(row.revision, { ...structuredClone(row), source_generation: row.sourceGeneration }); },
+    },
+    sidecars: { async listTombstones() { return [{ ...fixture.oldSource, reason: "forget" }]; } },
+  };
+  const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: { createTask() {}, processEnvelope() {} }, config: { targets: {} } });
+  const result = await rebuild.validateTarget(7, "companion", "worldFacts", 1, 10);
+  assert.equal(result.status, "healthy");
+  assert.equal(state.longTerm.worldFacts.length, 0);
+  assert.equal(state.meta.revision, 6);
+  assert.equal(groups[0].group_kind, "system_cleanup");
+  assert.equal(events[0].cleanup_type, "suppressed_item_removed");
+  assert.equal(snapshots.get(6).state.longTerm.worldFacts.length, 0);
+});
+
 test("rebuild reconciliation honors a durable retry_wait boundary before invoking the provider", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
@@ -291,15 +336,24 @@ test("projection drain consumes new tombstones even when generation and source b
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {
   const calls = [];
   const sourceRebuild = {
-    async initializeGeneration(_u, _p, options) { await options.mutateSource({}); await options.purgeDerived({}); return { sourceGeneration: 3, boundaryMessageId: 20 }; },
+    async initializeGeneration(_u, _p, options) { await options.mutateSource({}); await options.purgeDerived({}, { sourceGeneration: 3, boundaryMessageId: 20 }); return { sourceGeneration: 3, boundaryMessageId: 20 }; },
     async forceDrainTo() { calls.push("drain"); return { status: "completed" }; },
   };
-  const repositories = { privacy: { async purgeDerivedHistory() { calls.push("memory-purge"); } } };
+  let operation;
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    privacy: {
+      async purgeDerivedHistory() { calls.push("memory-purge"); },
+      async upsertOperation(_u, _p, value) { operation = { ...value }; return operation; },
+      async updateOperation(_u, _p, value) { Object.assign(operation, value); return operation; },
+    },
+  };
   const stores = [{ name: "rag", async purge() { calls.push("rag-purge"); }, async verifyPurged() { return false; } }];
   const hardDelete = createPrivacyHardDelete({ repositories, sourceRebuild, stores });
   const result = await hardDelete.execute(7, "companion", { async deleteRawSource() { calls.push("raw-delete"); } });
   assert.equal(result.status, "incomplete");
   assert.deepEqual(calls, ["raw-delete", "rag-purge", "memory-purge"]);
+  assert.equal(operation.status, "purging");
 });
 
 test("retention promotes only a validated continuous anchor and preserves referenced runtime rows", async () => {

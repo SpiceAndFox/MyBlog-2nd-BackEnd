@@ -54,7 +54,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 }
 ```
 
-`memory_state.meta.sourceGeneration` 是 Memory、RAG 与 Recall 判断 raw source 是否仍有效的共享权威世代。任何有效 source 的编辑、删除、恢复、改变归属/可见性或排序语义变化都单调 `+1`；普通追加 User/Assistant message 不改变 generation。即使变更触及的 source 尚未被某个 Memory target cursor 覆盖，也必须 `+1`，因为 RAG/Recall 可能已经处理了 Memory 尚未处理的消息。`memory_state.meta` 不保存 `halted`、错误计数、retry 或 context-expansion 等运行恢复状态；这些状态的 authority 是 §9 的 durable task、per-target status 和 ops log。
+`memory_state.meta.sourceGeneration` 是 Memory 与 RAG 判断 raw source 是否仍有效的共享权威世代；查询时 Recall 继承 RAG 对该世代的 cutoff。任何有效 source 的编辑、删除、恢复、改变归属/可见性或排序语义变化都单调 `+1`；普通追加 User/Assistant message 不改变 generation。即使变更触及的 source 尚未被某个 Memory target cursor 覆盖，也必须 `+1`，因为 RAG 可能已经处理了 Memory 尚未处理的消息。`memory_state.meta` 不保存 `halted`、错误计数、retry 或 context-expansion 等运行恢复状态；这些状态的 authority 是 §9 的 durable task、per-target status 和 ops log。
 
 每个可追踪 item 结构：
 
@@ -875,15 +875,15 @@ Revision 事务、generation 初始化事务、无 revision 事务、phase ident
 
 调试信息只记录结构化元数据（taskId、targetKey、reason、attempt、reject_reason 等），用 `logger` 输出到应用日志，不进表。禁止将完整 raw prompt、完整 state diff 或完整 message content 写入 append-only 应用日志，因为这些日志无法按用户或消息精确删除，与 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md) 的 privacy hard delete 要求冲突。如需持久化完整调试 payload 用于离线分析，必须使用可按 `(user_id, preset_id)` 索引和删除的受控 debug 存储表，并在 privacy hard delete 时一并清除。
 
-### 9.7 RAG/Recall Projection Checkpoint
+### 9.7 RAG Projection Checkpoint
 
-RAG 与 Recall 是独立派生 projection，各自持久化 checkpoint；不得从 Memory target cursor 推定其处理进度：
+RAG 是持久化派生 projection；Recall/Scene Recall 是查询时 enrichment，继承 RAG cutoff，不建立独立 checkpoint。不得从 Memory target cursor 推定 RAG 处理进度：
 
 ```sql
 CREATE TABLE chat_context_projection_checkpoints (
   user_id                      BIGINT NOT NULL,
   preset_id                    TEXT NOT NULL,
-  projection_key               TEXT NOT NULL,  -- rag | recall
+  projection_key               TEXT NOT NULL,  -- rag
   processed_generation         BIGINT NOT NULL,
   processed_boundary_message_id BIGINT,
   processed_tombstone_id       BIGINT NOT NULL DEFAULT 0,
@@ -963,7 +963,7 @@ CREATE UNIQUE INDEX idx_context_diagnostics_one_active
 
 字段说明：
 
-- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted、scene capacity 等 per-target 诊断；`projection` + projectionKey（`rag` / `recall`）用于 projection lag；`system + memory_state` 用于无法归属具体 target/projection 的 authority-state 诊断。
+- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted、scene capacity 等 per-target 诊断；`projection + rag` 用于 projection lag；Recall 继承该健康状态；`system + memory_state` 用于无法归属具体 target/projection 的 authority-state 诊断。
 - `source_generation`：记录创建/最近更新该诊断时的 source generation。可在 state 尚不存在时为 `NULL`；generation 初始化后，旧的非空 generation active 诊断必须直接 resolve，且不得为这种失效诊断创建“已恢复”通知。
 - `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
 - `omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`target_cursor` 还被 `scene_capacity_exceeded` 用来记录最近处理 event group 的 `cursor_after`。`processed_boundary_message_id` 仅用于 `projection_lag`。GapBridge/projection 诊断保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
@@ -1015,9 +1015,29 @@ CREATE INDEX idx_recovery_notifications_pending
 
 恢复事务提交时同事务写入 notification 行（`delivered=FALSE`）。context compiler 在下次响应中读取未投递 notification 并把 notification ID/文案放入响应 payload；响应传输成功后，由响应层 best-effort 将对应行更新为 `delivered=TRUE, delivered_at=NOW()`。数据库事务不跨越网络响应边界。
 
-`subject_kind/subject_key` 与健康来源一致：Memory target 使用 `target + targetKey`，RAG/Recall 使用 `projection + rag|recall`，无法归属前两者的全局恢复使用 `system + <diagnosticKey>`。通知语义为 **best-effort once**：系统保证同一恢复事件只创建一行 notification（`UNIQUE` 约束）；存在下一次成功响应时至少尝试投递一次。不保证恰好一次 delivery——并发响应可能同时读到未投递行，或响应已成功但 `delivered` 更新前进程崩溃，因而允许重复投递。这是当前为降低复杂度明确接受的语义；如需恰好一次，需要另行引入客户端 ACK/幂等消费。Privacy hard delete 时 notification 行也必须清除。
+`subject_kind/subject_key` 与健康来源一致：Memory target 使用 `target + targetKey`，RAG 及其查询时 Recall 使用 `projection + rag`，无法归属前两者的全局恢复使用 `system + <diagnosticKey>`。通知语义为 **best-effort once**：系统保证同一恢复事件只创建一行 notification（`UNIQUE` 约束）；存在下一次成功响应时至少尝试投递一次。不保证恰好一次 delivery——并发响应可能同时读到未投递行，或响应已成功但 `delivered` 更新前进程崩溃，因而允许重复投递。这是当前为降低复杂度明确接受的语义；如需恰好一次，需要另行引入客户端 ACK/幂等消费。Privacy hard delete 时 notification 行也必须清除。
 
-### 9.11 Retention 不变量
+### 9.11 Privacy operation
+
+```sql
+CREATE TABLE chat_memory_privacy_operations (
+  user_id             BIGINT NOT NULL,
+  preset_id           TEXT NOT NULL,
+  operation_id        UUID NOT NULL,
+  operation_mode      TEXT NOT NULL, -- rebuild | delete_scope | reset_authority
+  source_generation   BIGINT,
+  boundary_message_id BIGINT,
+  status              TEXT NOT NULL, -- purging | verified | draining | completed
+  last_error_reason   TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, preset_id)
+);
+```
+
+该表不引用 preset 外键，使整个 preset 被物理删除后仍可恢复外部 store 的 purge verification。详细状态机见 [Suppression、Hard Delete 与 Retention](algorithms/suppression-and-retention.md) §5。
+
+### 9.12 Retention 不变量
 
 Snapshot/event/task/ops log 的 anchor 提升、连续 replay 链和可清理条件见 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md) §6。DDL 与外键/引用策略必须保证该算法不会删除仍被 active task 或 retained event group 依赖的数据。
 

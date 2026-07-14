@@ -16,6 +16,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   chat_context_quality_diagnostics: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "diagnostic_type", "source_generation", "request_id", "target_cursor", "processed_boundary_message_id", "omitted_upper_message_id", "recent_window_start", "original_gap_count", "original_gap_chars", "retained_boundary", "retained_count", "omitted_count", "omitted_chars", "truncated", "detail", "resolved", "resolved_at", "created_at", "updated_at"],
   chat_memory_diagnostic_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_event_id", "last_error_reason", "updated_at"],
   chat_memory_recovery_notifications: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "notification_type", "boundary_message_id", "source_generation", "delivered", "delivered_at", "created_at"],
+  chat_memory_privacy_operations: ["user_id", "preset_id", "operation_id", "operation_mode", "source_generation", "boundary_message_id", "status", "last_error_reason", "created_at", "updated_at"],
 });
 const REQUIRED_TABLES = Object.freeze(Object.keys(REQUIRED_COLUMNS));
 const REQUIRED_INDEXES = Object.freeze([
@@ -23,6 +24,7 @@ const REQUIRED_INDEXES = Object.freeze([
   "idx_memory_events_user_preset", "idx_memory_events_target_decision", "idx_memory_events_group_order", "idx_memory_events_group_patch",
   "idx_memory_tasks_recovery", "idx_memory_tasks_scope_dedupe", "idx_memory_ops_log_health", "idx_memory_ops_log_outcome",
   "idx_suppression_tombstones_lookup", "idx_context_diagnostics_active", "idx_context_diagnostics_one_active", "idx_recovery_notifications_pending",
+  "idx_memory_privacy_operations_pending",
 ]);
 
 function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, legacy }) {

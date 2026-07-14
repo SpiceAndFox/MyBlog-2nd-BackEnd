@@ -14,7 +14,13 @@ const CLEANUPS = Object.freeze({
   todo_became_overdue: { section: "todos", targetKey: "todos", keys: ["cleanupKind", "itemId", "becameOverdueAt"] },
   todo_revived_from_overdue: { section: "todos", targetKey: "todos", keys: ["cleanupKind", "itemId", "dueAt"] },
   recent_episode_evicted: { section: "recentEpisodes", targetKey: "episodes", keys: ["cleanupKind", "itemId"] },
+  suppressed_item_removed: { keys: ["cleanupKind", "itemId"] },
+  suppressed_scene_field_cleared: { section: "scene", targetKey: "scene", keys: ["cleanupKind", "sceneSlot", "path"] },
 });
+
+function targetForSection(section) {
+  return Object.entries(TARGETS).find(([, target]) => target.sections.includes(section))?.[0] ?? null;
+}
 
 function replayError(message) {
   const error = new Error(`Invalid Memory event replay: ${message}`);
@@ -143,7 +149,10 @@ function validateCleanupOperation(event, operation) {
   const definition = CLEANUPS[operation.cleanupKind];
   if (!definition) fail(`Unknown cleanup kind: ${operation.cleanupKind ?? "<missing>"}`);
   requireExactKeys(operation, definition.keys, `${operation.cleanupKind} operation`);
-  if (event.section !== definition.section || rowValue(event, "target_key", "targetKey") !== definition.targetKey) fail(`${operation.cleanupKind} has inconsistent section or target`);
+  const expectedSection = operation.cleanupKind === "suppressed_item_removed" ? event.section : definition.section;
+  const expectedTarget = operation.cleanupKind === "suppressed_item_removed" ? targetForSection(event.section) : definition.targetKey;
+  if (operation.cleanupKind === "suppressed_item_removed" && !ITEM_SECTIONS.has(event.section)) fail("suppressed_item_removed requires an item section");
+  if (!expectedTarget || event.section !== expectedSection || rowValue(event, "target_key", "targetKey") !== expectedTarget) fail(`${operation.cleanupKind} has inconsistent section or target`);
   if (rowValue(event, "cleanup_type", "cleanupKind") !== operation.cleanupKind) fail("event cleanup_type does not match normalized operation");
   requireNullish(rowValue(event, "op", "op"), "cleanup event op");
   requireNullish(rowValue(event, "result_item_id", "resultItemId"), "cleanup event result_item_id");
@@ -157,6 +166,8 @@ function validateCleanupOperation(event, operation) {
   if (operation.expiredAt) requireIsoTimestamp(operation.expiredAt, "scene_expired expiredAt");
   if (operation.becameOverdueAt) requireIsoTimestamp(operation.becameOverdueAt, "todo_became_overdue becameOverdueAt");
   if (operation.dueAt) requireIsoTimestamp(operation.dueAt, "todo_revived_from_overdue dueAt");
+  if (operation.cleanupKind === "suppressed_scene_field_cleared" && !SCENE_FIELDS.includes(operation.path)) fail("suppressed_scene_field_cleared path is invalid");
+  if (operation.cleanupKind === "suppressed_scene_field_cleared" && !["scene", "previousScene"].includes(operation.sceneSlot)) fail("suppressed_scene_field_cleared sceneSlot is invalid");
 }
 
 function validateEventForGroup(event, group, expectedIndex) {
@@ -246,6 +257,14 @@ function applySemanticEvent(state, event) {
     const index = state.working.recentEpisodes.findIndex((item) => item.id === operation.itemId);
     if (index < 0) fail(`Replay episode missing: ${operation.itemId}`);
     state.working.recentEpisodes.splice(index, 1);
+  } else if (operation.cleanupKind === "suppressed_item_removed") {
+    const items = sectionItems(state, event.section);
+    const index = items.findIndex((item) => item.id === operation.itemId);
+    if (index < 0) fail(`Replay suppressed item missing: ${operation.itemId}`);
+    items.splice(index, 1);
+  } else if (operation.cleanupKind === "suppressed_scene_field_cleared") {
+    if (!state.current[operation.sceneSlot]) fail(`Replay scene slot missing: ${operation.sceneSlot}`);
+    state.current[operation.sceneSlot][operation.path] = { value: null, evidenceRef: null, updatedAtMessageId: null };
   }
 }
 

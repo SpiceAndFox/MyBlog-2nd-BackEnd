@@ -150,6 +150,7 @@ Normal commit 以 durable task 行锁作为 phase 幂等入口：事务必须先
 1. Revision 事务：`memory_state` post-state、generation/revision、完整 snapshot、event group/events、cursor、task 终态和对应 target status 同事务提交。
 2. Generation 初始化事务：raw source mutation、generation/revision、空 state/cursors、完整 snapshot、旧 task 取消和六个 rebuilding target rows 同事务提交；不创建虚假 semantic event group。
 3. 无 revision 事务：Provider/schema 等运行失败只更新 durable task、per-target status 和 ops log；deferred group 还必须与原 task stage、派生 maintenance task 同事务提交。
+   Provider 返回并通过本地 schema 校验后，normal 与 maintenance task 必须先用独立短事务把完整输出写入 `stage_payload.persistedProposal` 并进入 `proposal_persisted`，随后才允许开始 Reducer/commit 事务。恢复扫描遇到 `proposal_persisted`（或已知 commit 事务失败但 proposal 仍在的恢复 stage）必须复用该输出，不得再次调用 Provider；创建 successor 或显式扩大上下文时除外。
 4. 语义恢复：从当前 generation 最新 schema-valid snapshot 开始，按 result_revision 连续 replay normalized operations；不得跨 generation。
 5. 运行恢复：从非终态 durable task、per-target status 与 ops log 恢复 retry/halt/context-expansion，不从 snapshot 推断运行状态。
 

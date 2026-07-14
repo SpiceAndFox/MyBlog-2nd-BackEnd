@@ -23,8 +23,9 @@ function fakes() {
   const events = [];
   const snapshots = [];
   const statuses = [];
+  const tombstones = [];
   return {
-    inspect: { get state() { return state; }, tasks, groups, events, snapshots, statuses },
+    inspect: { get state() { return state; }, tasks, groups, events, snapshots, statuses, tombstones },
     repositories: {
       withTransaction: async (work) => work({ query: async () => ({ rows: [] }) }),
       state: {
@@ -46,7 +47,10 @@ function fakes() {
         insertEvents: async (rows) => events.push(...structuredClone(rows)),
         insertSnapshot: async (_u, _p, snapshot) => snapshots.push(structuredClone(snapshot)),
       },
-      sidecars: { insertTombstone: async () => {} },
+      sidecars: {
+        insertTombstone: async (_u, _p, value) => tombstones.push(structuredClone(value)),
+        listTombstones: async () => structuredClone(tombstones),
+      },
     },
   };
 }
@@ -121,6 +125,43 @@ test("repeated commit phase returns the existing revision without duplicate writ
   assert.equal(store.inspect.groups.size, 1);
   assert.equal(store.inspect.snapshots.length, 1);
   assert.equal(store.inspect.state.meta.revision, 1);
+});
+
+test("a persisted proposal is reused after recovery without another provider call", async () => {
+  const store = fakes();
+  const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0 };
+  let providerCalls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: store.repositories, config,
+    providerAdapter: { async propose() { providerCalls += 1; throw new Error("provider must not be called"); } },
+  });
+  const envelope = await pipeline.createTask(1, "default", intent);
+  const output = { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "noop" } } };
+  await pipeline.persistProposal(envelope, output);
+  const result = await pipeline.processEnvelope(envelope);
+  assert.equal(result.status, "committed");
+  assert.equal(providerCalls, 0);
+  assert.equal(store.inspect.state.meta.targetCursors.todos, 1);
+});
+
+test("force-drain replay can validate historical suppressed evidence for a later correction chain", async () => {
+  const store = fakes();
+  store.inspect.tombstones.push({ message_id: message.id, content_hash: message.contentHash, reason: "correction" });
+  const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0, trigger: { type: "forceDrain" } };
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: store.repositories, config,
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", output: {
+      tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{
+        op: "addItem", value: { text: "归还书", actor: "user", requester: "user" }, evidenceKind: "user_commitment",
+        evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }],
+      }] } },
+    } }) },
+    idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  assert.equal(result.status, "committed");
+  assert.equal(store.inspect.events[0].decision, "accepted");
+  assert.equal(store.inspect.state.working.todos.length, 1);
 });
 
 test("unable_to_decide retry doubles overlap context and completes the same durable task", async () => {

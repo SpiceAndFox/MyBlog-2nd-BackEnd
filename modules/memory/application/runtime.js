@@ -25,7 +25,7 @@ function createKeyedExecutor() {
   };
 }
 
-function createDisabledRuntime(repositories) {
+function createDisabledRuntime(repositories, privacyStores = []) {
   const disabled = async () => ({ status: "disabled" });
   const stopProjectionPolling = () => {};
   const stopTaskPolling = () => {};
@@ -36,8 +36,12 @@ function createDisabledRuntime(repositories) {
       : await mutateSource(null);
     return { status: "memory_disabled", mutationResult };
   }
-  async function privacyHardDelete(_userId, _presetId, { deleteRawSource } = {}) {
-    return mutateSourceAndRebuild(_userId, _presetId, { mutateSource: deleteRawSource });
+  const privacyDelete = repositories?.privacy
+    ? createPrivacyHardDelete({ repositories, stores: privacyStores })
+    : null;
+  async function privacyHardDelete(userId, presetId, options = {}) {
+    if (!privacyDelete) throw new Error("Memory privacy hard delete is unavailable");
+    return privacyDelete.execute(userId, presetId, { ...options, resetAuthority: !options.deleteScope });
   }
   return Object.freeze({
     enabled: false,
@@ -49,6 +53,7 @@ function createDisabledRuntime(repositories) {
     privacyHardDelete,
     runRetentionScope: disabled,
     reconcileRebuilds: async () => ({}),
+    reconcilePrivacyDeletes: () => privacyDelete?.reconcilePending() ?? Promise.resolve({}),
     drainProjections: disabled,
     reconcileProjections: async () => ({}),
     startProjectionPolling: () => stopProjectionPolling,
@@ -63,7 +68,7 @@ function createDisabledRuntime(repositories) {
 }
 
 function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, privacyStores = [], metrics = createMemoryMetrics(), onBackgroundError } = {}) {
-  if (!config?.enabled) return createDisabledRuntime(repositories);
+  if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
@@ -106,7 +111,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     } catch (error) {
       if (error?.code !== "MEMORY_V2_STATE_INVALID" || !repositories.state.getRawState || !repositories.audit.getRecoveryHead || !repositories.audit.listSnapshotsForRecovery) throw error;
       const recovered = await stateRecovery.recoverScope(userId, presetId);
-      if (!["healthy", "snapshot_restored", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
+      if (!["healthy", "snapshot_restored", "events_replayed", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
       return recovered.state ?? repositories.state.getState(userId, presetId);
     }
   }
@@ -122,6 +127,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   async function drainProjectionsNow(userId, presetId) {
+    if (repositories.privacy?.hasIncompleteOperation
+      && await repositories.privacy.hasIncompleteOperation(userId, presetId)) {
+      return { privacy: { status: "skipped", reason: "privacy_delete_pending" } };
+    }
     const results = {};
     if (diagnosticProjection) {
       const startedAt = performance.now();
@@ -134,7 +143,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
         metrics.observe("memory_projection_duration_ms", { projectionKey: "diagnostics", status: "failed" }, performance.now() - startedAt);
       }
     }
-    for (const projectionKey of ["rag", "recall"]) {
+    for (const projectionKey of Object.keys(projectionDrains)) {
       const drain = projectionDrains[projectionKey];
       if (!drain?.drain) continue;
       const startedAt = performance.now();
@@ -182,6 +191,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
       if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
       results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, async () => {
+        if (repositories.privacy?.hasIncompleteOperation && await repositories.privacy.hasIncompleteOperation(userId, presetId)) {
+          return { status: "skipped", reason: "privacy_delete_pending" };
+        }
         const state = await ensureState(userId, presetId);
         const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
         const rebuilding = statuses.filter((row) => {
@@ -235,6 +247,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       if (taskPollRunning) return;
       taskPollRunning = true;
       runInBackground(async () => {
+        if (privacyDelete) await privacyDelete.reconcilePending();
         await recovery.recoverPending();
         await reconcileRebuilds();
       }).finally(() => { taskPollRunning = false; });
@@ -284,6 +297,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function recoverPending() {
     await initialize();
+    if (privacyDelete) await privacyDelete.reconcilePending();
     await reconcileRebuilds();
     const recovered = await recovery.recoverPending();
     await reconcileRebuilds();
@@ -315,6 +329,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return privacyDelete.execute(userId, presetId, options);
   }
 
+  function reconcilePrivacyDeletes() {
+    return privacyDelete ? runInBackground(() => privacyDelete.reconcilePending()) : Promise.resolve({});
+  }
+
   function runRetentionScope(userId, presetId) {
     if (!retention) throw new Error("Memory retention is not configured");
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => retention.runScope(userId, presetId)));
@@ -330,6 +348,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     privacyHardDelete,
     runRetentionScope,
     reconcileRebuilds,
+    reconcilePrivacyDeletes,
     drainProjections,
     reconcileProjections,
     startProjectionPolling,

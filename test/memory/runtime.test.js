@@ -25,6 +25,29 @@ test("disabled runtime still commits source mutations through the repository tra
   assert.deepEqual(result, { status: "memory_disabled", mutationResult: { changed: true } });
 });
 
+test("disabled runtime privacy delete purges legacy v2 authority and derived state", async () => {
+  const calls = [];
+  let operation = null;
+  const repositories = {
+    async withTransaction(work) { return work({ transaction: true }); },
+    privacy: {
+      async purgeDerivedHistory(_u, _p, options) { calls.push(["derived", options.preserveTombstones]); },
+      async purgeAuthorityState() { calls.push(["authority"]); },
+      async upsertOperation(_u, _p, value) { operation = { ...value }; return operation; },
+      async updateOperation(_u, _p, changes) { Object.assign(operation, changes); return operation; },
+      async listIncompleteOperations() { return []; },
+    },
+  };
+  const runtime = createMemoryRuntime({
+    config: { enabled: false }, repositories,
+    privacyStores: [{ name: "rag", async purge() { calls.push(["rag"]); }, async verifyPurged() { return true; } }],
+  });
+  const result = await runtime.privacyHardDelete(1, "default", { async deleteRawSource() { calls.push(["raw"]); return 1; } });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls, [["raw"], ["rag"], ["derived", true], ["authority"]]);
+  assert.equal(operation.status, "completed");
+});
+
 test("default runtime performs one complete Provider preflight before becoming ready", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
@@ -255,4 +278,29 @@ test("startup recovery resumes a persisted rebuilding boundary even when no task
   const runtime = createMemoryRuntime({ config: { enabled: true, targets, projections: { pollIntervalMs: 1000 }, providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 }, compaction: { retryMax: 1 } }, repositories, providerAdapter: { async propose() { throw new Error("no provider call expected"); } } });
   await runtime.recoverPending();
   assert.equal(Object.values(statuses).every((row) => row.status === "healthy" && row.rebuild_boundary_message_id === null), true);
+});
+
+test("generic rebuild reconciliation cannot bypass an incomplete privacy purge", async () => {
+  const state = createInitialMemoryState();
+  let targetReads = 0;
+  const repositories = {
+    state: { async listInitializedScopes() { return [{ userId: 1, presetId: "default" }]; }, async getState() { return state; }, async initializeRevisionZero() { return state; } },
+    source: {},
+    runtime: { async getTargetStatuses() { targetReads += 1; return []; } },
+    audit: {}, sidecars: {},
+    privacy: {
+      async purgeDerivedHistory() {}, async upsertOperation() {}, async updateOperation() {},
+      async hasIncompleteOperation() { return true; }, async listIncompleteOperations() { return []; },
+    },
+    async withTransaction(work) { return work({}); },
+  };
+  const runtime = createMemoryRuntime({
+    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {} }, repositories,
+    providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
+  });
+  const result = await runtime.reconcileRebuilds();
+  assert.deepEqual(result["1:default"], { status: "skipped", reason: "privacy_delete_pending" });
+  assert.equal(targetReads, 0);
+  const projections = await runtime.reconcileProjections();
+  assert.deepEqual(projections["1:default"], { privacy: { status: "skipped", reason: "privacy_delete_pending" } });
 });

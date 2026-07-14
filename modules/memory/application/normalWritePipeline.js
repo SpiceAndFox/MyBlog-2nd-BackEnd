@@ -5,6 +5,7 @@ const { buildNormalEnvelope, normalDedupeKey } = require("./envelope");
 const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
 const { sourceKey } = require("../domain/suppression");
 const { mapEventToRow } = require("./eventMapper");
+const { isDeepStrictEqual } = require("node:util");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
@@ -48,7 +49,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       envelope.task.observedMessageIds,
       { client },
     );
-    const tombstones = repositories.sidecars?.listTombstones
+    const tombstones = envelope.task.trigger?.type !== "forceDrain" && repositories.sidecars?.listTombstones
       ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, {
         messageIds: envelope.task.observedMessageIds,
         client,
@@ -316,6 +317,33 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
+  async function persistProposal(envelope, output) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task not found while persisting provider proposal");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return null;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      payload.persistedProposal = structuredClone(output);
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "proposal_persisted", stage_payload: payload,
+        not_before: null, last_error_reason: null,
+      }, { client });
+      return output;
+    });
+  }
+
+  async function persistProposalWithRecovery(envelope, output) {
+    try {
+      return await persistProposal(envelope, output);
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const task = await repositories.runtime.getTask(envelope.task.taskId);
+      const persisted = rowValue(task, "stage_payload", "stagePayload")?.persistedProposal;
+      if (rowValue(task, "stage", "stage") === "proposal_persisted" && isDeepStrictEqual(persisted, output)) return output;
+      return persistProposal(envelope, output);
+    }
+  }
+
   async function createSuccessor(envelope) {
     return repositories.withTransaction(async (client) => {
       const oldTask = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
@@ -384,9 +412,16 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
     const attemptEnvelope = await expandContextForRetry(envelope, persistedTask);
-    const adapterResult = await proposeWithSchemaRetry(attemptEnvelope);
-    if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
-    let result = await commitWithRecovery(attemptEnvelope, adapterResult.output);
+    let output = ["proposal_persisted", "transaction_failed", "commit_outcome_unknown"].includes(rowValue(persistedTask, "stage", "stage"))
+      ? rowValue(persistedTask, "stage_payload", "stagePayload")?.persistedProposal
+      : null;
+    if (!output) {
+      const adapterResult = await proposeWithSchemaRetry(attemptEnvelope);
+      if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
+      output = adapterResult.output;
+      await persistProposalWithRecovery(attemptEnvelope, output);
+    }
+    let result = await commitWithRecovery(attemptEnvelope, output);
     if (result.status === "successor_required") {
       const successor = await createSuccessor(attemptEnvelope);
       return processEnvelope(successor);
@@ -405,7 +440,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     for (const intent of observation.eligibleTasks) results.push(await processIntent(userId, presetId, intent));
     return results;
   }
-  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, recordAdapterError, capacity });
+  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, persistProposal, persistProposalWithRecovery, recordAdapterError, capacity });
 }
 
 module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent: mapEventToRow };

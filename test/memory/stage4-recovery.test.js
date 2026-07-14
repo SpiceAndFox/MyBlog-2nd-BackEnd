@@ -256,11 +256,11 @@ test("unknown COMMIT outcome reconciles the stable phase before any retry write"
   const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => fixedNow, providerAdapter });
   const envelope = await pipeline.createTask(1, "default", intent);
   const ordinaryTransaction = data.repositories.withTransaction;
-  let disconnectAfterCommit = true;
+  let transactionCount = 0;
   data.repositories.withTransaction = async (work) => {
     const result = await work({ query: async () => ({ rows: [] }) });
-    if (disconnectAfterCommit) {
-      disconnectAfterCommit = false;
+    transactionCount += 1;
+    if (transactionCount === 2) {
       const error = new Error("connection lost after COMMIT was sent");
       error.commitOutcomeUnknown = true;
       throw error;

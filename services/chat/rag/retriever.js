@@ -293,14 +293,14 @@ async function attachDialogueMessages(sources, { userId, presetId, beforeMessage
   );
 }
 
-async function attachSceneRecalls(sources, { userId, presetId, tombstones = [] } = {}) {
+async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, tombstones = [] } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length || !chatRagConfig.sceneRecallEnabled) return list;
 
   return Promise.all(
     list.map(async (source) => {
       try {
-        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, tombstones });
+        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, maxMessageId: beforeMessageId, tombstones });
         return sceneRecall ? { ...source, sceneRecall } : source;
       } catch (error) {
         logger.warn("chat_rag_scene_recall_failed", {
@@ -472,7 +472,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     beforeMessageId: normalizedBeforeMessageId,
     tombstones,
   });
-  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, tombstones });
+  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, beforeMessageId: normalizedBeforeMessageId, tombstones });
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {
     return {

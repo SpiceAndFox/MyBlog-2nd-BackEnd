@@ -205,7 +205,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - messageId 属于 observedMessages，但数据库中的 userId/presetId/role/createdAt/contentHash 任一项与 proposal-time task payload 不一致时 `rejected: evidence_source_mismatch`。
 - evidence 可以来自 newBatch 或 overlap；只有 overlap evidence 但其余校验通过时接受，不要求至少一条 evidence 来自 newBatch。
 - quote 精确命中时接受。
-- 所有 quote 长度都走相同归一化 + 等长窗口 Levenshtein 规则；轻微改写且相似度达到配置阈值时接受，不存在短 quote 精确匹配专用分支。
+- 所有 quote 长度都走相同归一化 + 等长窗口 Levenshtein 规则；轻微改写且相似度达到配置阈值时接受，不存在短 quote 精确匹配专用分支。exact-substring 快速路径不受模糊预算影响；模糊路径超过 content 或 candidate-window 的确定性预算时必须 fail closed，并覆盖对抗性重复输入不会造成无界同步 CPU 占用。
 - 大小写、Unicode whitespace 和 `QUOTE_IGNORABLE_PUNCTUATION` 明列标点的差异按统一归一化移除；未列入该集合的字符不得由调用点自行忽略，symbol 不作为信息字符。
 - quote 为空、纯 whitespace/punctuation/symbol，或归一化后只有 1-2 个信息字符时 `rejected: quote_too_short`；恰好 3 个信息字符继续进入模糊匹配。
 - quote 恰好 200 个 Unicode code points 时可进入匹配；201 个时 `rejected: quote_too_long`。用非 BMP 字符覆盖 code point 与 UTF-16 code unit 的差异，Reducer 不得自动裁剪。
@@ -349,7 +349,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `needsMemory=true` 但 `memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入，debug payload 记录明确原因，不得静默跳过。
 - recent window 可跨 session 且保留 user-boundary 裁剪；Memory Observer fixture 必须证明 Assistant 开头的 source 未被同一规则裁掉，且不注入 session boundary 控制标记。
 - 对每个 target 构造 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 的 gap；预算内完整 raw 注入，重复消息去重但保留 target keys。超预算只保留最近 N 条完整消息并恢复升序，单条超预算计入 omitted，不得截断或调用 LLM 压缩。
-- GapBridge omitted 必须产生 active 的持久化诊断记录（`subject_kind=target`、`subject_key` 为对应 targetKey），携带 `target_cursor` 与 `omitted_upper_message_id` 并触发 degraded；`target_cursor >= omitted_upper_message_id` 后才能 resolved。Projection lag 使用 `subject_kind=projection`、`subject_key=rag|recall` 和独立的 `processed_boundary_message_id`，不得复用 target cursor 字段。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
+- GapBridge omitted 必须产生 active 的持久化诊断记录（`subject_kind=target`、`subject_key` 为对应 targetKey），携带 `target_cursor` 与 `omitted_upper_message_id` 并触发 degraded；`target_cursor >= omitted_upper_message_id` 后才能 resolved。Projection lag 使用 `subject_kind=projection`、`subject_key=rag` 和独立的 `processed_boundary_message_id`，不得复用 target cursor 字段；查询时 Recall 继承 RAG 健康状态。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
 - Context assembly 在读取 active diagnostics 前 best-effort 同步 diagnostic projection；active scene capacity diagnostic 令 `[当前状态]` 出现“该类记忆可能滞后”，并在通过 `alertDebounceMs` 后令响应 `memory_health.alerts` 包含“长度超限未写入”。同步失败只记录 debug error 并继续使用最后成功投影状态，不阻断主聊天。
 - RAG context 与 `memory` segment 并列存在，不互相覆盖。
 - RAG chunk 保存全部 source `messageId + contentHash`；任一 source 命中 tombstone 时，已有 chunk 即使尚未异步删除也被查询末端过滤，重新分块跳过整条消息。多事实消息被整条排除的保守副作用应有固定 fixture。
@@ -368,7 +368,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 注入事务故障点覆盖 state、event group/events、snapshot、cursor、task 终态、target status 的每个写入位置；任一点失败都整体 rollback，不得出现半提交。
 - system cleanup 修改持久化 state 时必须写 `decision=system_cleanup`、具体 cleanup_type 和完整 normalized operation；覆盖 `scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`todo_revived_from_overdue`、`recent_episode_evicted` 五类。Proposal post-state 触发的 cleanup 与 proposal decisions 同 group/revision；独立后台 housekeeping 才断言 `group_kind=system_cleanup`。
 - 从当前 generation 最新合法 snapshot replay 后续 event groups 可恢复相同 state/cursors；replay 不调用 LLM，并拒绝 generation/revision 断层、cursor 不连续、schema 不兼容或 task/target 不一致的 event group。
-- Retention 清理必须保证 [state-contract.md](state-contract.md) §9.11 的不变量：每个活跃 generation 至少保留一个 schema-valid 完整 anchor snapshot；覆盖“校验新 snapshot → 原子提升 anchor → 清理旧 snapshot/events”的成功与逐故障点 rollback。只要求保留 `result_revision > anchor.revision` 的连续 event groups；从新 anchor replay后续 groups 必须恢复相同 state/cursors。终态 task 清理不得删除 active task 或 retained event groups 仍引用的 predecessor/parent/task。
+- Retention 清理必须保证 [state-contract.md](state-contract.md) §9.12 的不变量：每个活跃 generation 至少保留一个 schema-valid 完整 anchor snapshot；覆盖“校验新 snapshot → 原子提升 anchor → 清理旧 snapshot/events”的成功与逐故障点 rollback。只要求保留 `result_revision > anchor.revision` 的连续 event groups；从新 anchor replay 后续 groups 必须恢复相同 state/cursors。终态 task 清理不得删除 active task 或 retained event groups 仍引用的 predecessor/parent/task。
 - Retention 在删除任何 event 前先同步 diagnostic projection；同步失败时 retention 不进入清理事务，checkpoint 之后的 event 必须保留供后续重放。
 - snapshot/state 损坏时优先恢复当前 generation 最新合法 snapshot；必要时从 raw messages rebuild。
 - 进程重启会从数据库读取 queued/running/retry_wait task 并从持久化 stage 继续；进程内队列、计数器或 flag 丢失不影响恢复。
@@ -380,13 +380,13 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - generation 变化后，旧 normal/maintenance/compaction/replay 结果一律 stale 且不能提交；同 generation 内其他 target 导致的 revision 增长仍不单独使 replay stale。
 - rebuild 从当前有效 raw messages 重放，`forceDrainTo(capturedBoundaryMessageId)` 忽略 lagThreshold 并只使用既有 durable normal tasks；六个 cursor 与 state/snapshot/events 校验完成前保持 rebuilding，未追平不得宣告 healthy。
 - rebuild 期间再次改变 source 时，旧 rebuild 结果不得推进新 generation 的 state、cursor 或 status；worker 转而处理最新 generation/boundary。
-- RAG 与 Recall checkpoint 独立断言 `processedGeneration + processedBoundaryMessageId`；Memory targets 追平不代表 projection 追平。告警条件只基于 `requiredBoundary`（= `recentWindowStartMessageId - 1`）：`processedGeneration != sourceGeneration` → rebuilding；`processedBoundary < requiredBoundary` → degraded；`processedBoundary >= requiredBoundary` 且 generation 一致 → healthy（落后范围在 recent window 内不告警）。projection 只部分覆盖 requiredBoundary 时仍注入已处理部分并标记不完整，不因部分落后完全跳过。
+- RAG checkpoint 断言 `processedGeneration + processedBoundaryMessageId`；Recall/Scene Recall 不建立空操作 checkpoint并继承该 cutoff。Memory targets 追平不代表 projection 追平。告警条件只基于 `requiredBoundary`（= `recentWindowStartMessageId - 1`）：`processedGeneration != sourceGeneration` → rebuilding；`processedBoundary < requiredBoundary` → degraded；`processedBoundary >= requiredBoundary` 且 generation 一致 → healthy（落后范围在 recent window 内不告警）。projection 只部分覆盖 requiredBoundary 时仍注入已处理部分并标记不完整，不因部分落后完全跳过。
 - 一次性迁移 smoke 按“停服并冻结 raw boundary → 更新 → 确认 v1 派生数据已清除 → 从保留的 raw messages rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
 - rehearsal 必须可重复执行，不修改 v1 派生数据；如果 v1 已经通过独立清理退役，rehearsal 既不恢复也不依赖它。rehearsal 不返回可启服状态。每次报告至少记录 scope 数、每 scope 的 raw message 数、Unicode code point 字符数、captured boundary、总耗时、scope 耗时，以及九个正式 section 的 itemCount/textChars；scene 的 itemCount 表示是否存在任一已填字段，textChars 为全部已填 scene value 的 code point 总数。
 - cutover 必须要求显式停服确认；若 v1 派生数据尚有 residue，还必须显式确认并执行独立清理。v1 已提前清除时重复清理应幂等。后续 rebuild/校验失败必须返回 `canStartService=false`，不得因 v1 已退役而放宽启服门。
 - 迁移最终校验逐 scope 覆盖：raw boundary 未变化、六个 target 均为同 generation 的 healthy 且 cursor 追平、authority state 与当前 revision snapshot 完全一致、generation 内 event/snapshot revision chain 连续并到达 authority revision、RAG/Recall checkpoint 均为同 generation 且追平 captured boundary。任一失败都必须返回失败报告并保持 `canStartService=false`。
 - context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
-- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics 及其 projection checkpoint（§9.9）、recovery notifications（§9.10）、RAG/Recall 与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
+- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics 及其 RAG projection checkpoint（§9.9）、recovery notifications（§9.10）、RAG 派生数据与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
 
 ## 4. 端到端 smoke
 

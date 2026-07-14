@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage, aggregateMemoryHealth } = require("../../modules/memory/domain");
 const { createMemoryContextAssembly } = require("../../modules/memory/application/contextAssembly");
@@ -23,7 +24,10 @@ function config() {
 function makeData() {
   const state = createInitialMemoryState();
   state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 0]));
-  const data = { state, diagnostics: [], notifications: [], checkpoints: [
+  const data = { state, diagnostics: [], notifications: [], tombstones: [], sourceMessages: fixture.sourceMessages.map((message) => ({
+    ...message,
+    contentHash: `sha256:${crypto.createHash("sha256").update(message.content).digest("hex")}`,
+  })), checkpoints: [
     { projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
     { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
   ], nextId: 1 };
@@ -44,14 +48,15 @@ function makeData() {
     },
     async listPendingRecoveryNotifications() { return data.notifications.filter((row) => !row.delivered); },
     async listProjectionCheckpoints() { return data.checkpoints; },
+    async listTombstones() { return data.tombstones; },
   };
   data.repositories = {
     source: {
       async listUpTo(_userId, _presetId, upToMessageId) {
-        return upToMessageId == null ? fixture.sourceMessages : fixture.sourceMessages.filter((message) => message.id <= upToMessageId);
+        return upToMessageId == null ? data.sourceMessages : data.sourceMessages.filter((message) => message.id <= upToMessageId);
       },
       async hasAnyBetween(_userId, _presetId, lowerExclusive, upperInclusive) {
-        return fixture.sourceMessages.some((message) => message.id > lowerExclusive && message.id <= upperInclusive);
+        return data.sourceMessages.some((message) => message.id > lowerExclusive && message.id <= upperInclusive);
       },
     },
     state: { async getRawState() { return data.state; }, async getState() { return data.state; } },
@@ -123,6 +128,17 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   assert.equal(recovered.notifications.length, 6);
   assert.equal(recovered.notifications[0].message, fixture.expected.notificationMessage);
   assert.equal(data.diagnostics.every((row) => row.resolved), true);
+});
+
+test("recent window, GapBridge, and time candidates all exclude suppressed raw sources", async () => {
+  const data = makeData();
+  const suppressed = data.sourceMessages.find((message) => message.id === 4);
+  data.tombstones.push({ message_id: suppressed.id, content_hash: suppressed.contentHash, reason: "forget" });
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "suppressed-context" });
+  assert.equal(result.recent.messages.some((message) => message.content === suppressed.content), false);
+  assert.equal(result.gapBridge.messages.some((message) => message.id === suppressed.id), false);
+  assert.equal(result.timeCandidates.some((message) => message.id === suppressed.id), false);
 });
 
 test("historical context queries cannot falsely resolve a gap diagnostic outside their source slice", async () => {

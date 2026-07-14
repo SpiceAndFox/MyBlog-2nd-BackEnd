@@ -9,7 +9,6 @@ const db = require("../db");
 const memory = require("../modules/memory");
 const {
   createChatRagProjectionAdapter,
-  createQueryTimeRecallProjectionAdapter,
 } = require("../services/chat/rag/projectionAdapters");
 
 function parseArgs(argv) {
@@ -64,7 +63,7 @@ function printUsage() {
     "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--user <id> --preset <id>]",
     "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--user <id> --preset <id>]",
     "",
-    "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG/Recall and write authority data.",
+    "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG and write authority data; query-time Recall inherits the RAG cutoff.",
     "Run rehearsal only against a production-history copy. Cutover requires the public service to be stopped.",
     "",
   ].join("\n"));
@@ -95,7 +94,6 @@ function assertReportPathAvailable(reportPath) {
 function createMigration(config) {
   const projectionDrains = {
     rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
-    recall: memory.createDefaultProjectionDrain("recall", createQueryTimeRecallProjectionAdapter()),
   };
   return memory.createDefaultMemoryMigration({ config, projectionDrains });
 }

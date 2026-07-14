@@ -1,4 +1,5 @@
 const { validateMemoryState } = require("../contracts/state");
+const { replayEventGroups } = require("../domain/eventReplay");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 
@@ -18,10 +19,25 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
         const state = rowValue(row, "state", "state");
         const revision = Number(rowValue(row, "revision", "revision"));
         const generation = Number(rowValue(row, "source_generation", "sourceGeneration"));
-        if (revision !== head.revision || state?.meta?.revision !== revision || state?.meta?.sourceGeneration !== generation) continue;
+        if (generation !== head.sourceGeneration || revision > head.revision || state?.meta?.revision !== revision || state?.meta?.sourceGeneration !== generation) continue;
         if (!validateMemoryState(state).ok) continue;
-        await repositories.state.writeState(userId, presetId, state, { client });
-        return { status: "snapshot_restored", revision, sourceGeneration: generation, state };
+        if (revision === head.revision) {
+          await repositories.state.writeState(userId, presetId, state, { client });
+          return { status: "snapshot_restored", revision, sourceGeneration: generation, state };
+        }
+        if (typeof repositories.audit.listRevisionGroups !== "function" || typeof repositories.audit.listEventsForGroups !== "function") continue;
+        try {
+          const groups = await repositories.audit.listRevisionGroups(userId, presetId, generation, revision, { client });
+          if (!groups.length || Number(rowValue(groups.at(-1), "result_revision", "resultRevision")) !== head.revision) continue;
+          const groupIds = groups.map((group) => rowValue(group, "event_group_id", "eventGroupId"));
+          const events = await repositories.audit.listEventsForGroups(groupIds, { client });
+          const replayed = replayEventGroups(state, groups, events, { userId, presetId });
+          if (replayed.meta.revision !== head.revision || replayed.meta.sourceGeneration !== head.sourceGeneration) continue;
+          await repositories.state.writeState(userId, presetId, replayed, { client });
+          return { status: "events_replayed", revision: replayed.meta.revision, sourceGeneration: generation, state: replayed };
+        } catch (error) {
+          if (error?.code !== "MEMORY_V2_EVENT_REPLAY_INVALID") throw error;
+        }
       }
       return { status: "rebuild_required" };
     });

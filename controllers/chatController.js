@@ -711,8 +711,15 @@ const chatController = {
         return res.status(400).json({ error: "Builtin preset cannot be deleted" });
       }
 
-      const deleted = await chatPresetModel.deletePresetPermanently(userId, presetId);
+      const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
+        deleteScope: true,
+        deleteRawSource: (client) => chatPresetModel.deletePresetPermanently(userId, presetId, { client }),
+      });
+      const deleted = mutation.mutationResult;
       if (!deleted) return res.status(404).json({ error: "Preset not found" });
+      if (mutation.status !== "completed") {
+        return res.status(202).json({ presetId, privacy: { status: "purging" } });
+      }
 
       res.status(204).send();
     } catch (error) {
@@ -895,6 +902,9 @@ const chatController = {
       });
       const deletedSession = mutation.mutationResult;
       if (!deletedSession) return res.status(404).json({ error: "Session not found" });
+      if (mutation.status !== "completed") {
+        return res.status(202).json({ sessionId, privacy: { status: "purging" } });
+      }
 
       res.status(204).send();
     } catch (error) {
@@ -975,9 +985,8 @@ const chatController = {
         effectiveSettings.enableWebSearch = false;
       }
 
-      const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
-        reason: "message_edited",
-        mutateSource: async (client) => {
+      const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
+        deleteRawSource: async (client) => {
           if (truncate) await chatModel.deleteMessagesAfter(userId, sessionId, messageId, { client });
           const updated = await chatModel.updateMessageContent(userId, sessionId, messageId, content, { client });
           if (!updated) throw new Error("Message disappeared during edit");

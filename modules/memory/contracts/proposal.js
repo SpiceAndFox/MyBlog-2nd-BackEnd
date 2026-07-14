@@ -285,7 +285,7 @@ function validateTaskEnvelope(envelope) {
     if (task.mode === "normal") {
       if (!nonNegativeInteger(task.cursorBefore)) add(errors, "$.task.cursorBefore", "is required for normal mode");
       if (isPlainObject(task.trigger)) exactObject(task.trigger, ["type"], "$.task.trigger", errors);
-      if (task.trigger?.type !== "lagThreshold") add(errors, "$.task.trigger", "must be lagThreshold for normal mode");
+      if (!["lagThreshold", "forceDrain"].includes(task.trigger?.type)) add(errors, "$.task.trigger", "must be lagThreshold or forceDrain for normal mode");
       const definition = TARGETS[task.targetKey];
       if (definition && task.proposer !== definition.proposer) add(errors, "$.task.proposer", `must equal ${definition.proposer}`);
       if (definition && JSON.stringify(task.targetSections) !== JSON.stringify(definition.sections)) add(errors, "$.task.targetSections", "must exactly match target sections");

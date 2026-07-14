@@ -161,6 +161,36 @@ async function countChunks(userId, presetId, { client } = {}) {
   return Number(rows[0]?.count || 0);
 }
 
+async function countStaleChunks(userId, presetId, { client } = {}) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const { rows } = await (client || db).query(`
+    SELECT COUNT(*)::BIGINT AS count
+    FROM chat_rag_chunks c
+    WHERE c.user_id=$1 AND c.preset_id=$2
+      AND (
+        CASE WHEN jsonb_typeof(c.metadata->'sourceRefs')='array'
+          THEN jsonb_array_length(c.metadata->'sourceRefs') ELSE 0 END = 0
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(c.metadata->'sourceRefs')='array'
+              THEN c.metadata->'sourceRefs' ELSE '[]'::jsonb END
+          ) ref
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM chat_messages m
+            WHERE m.user_id=c.user_id
+              AND m.preset_id=c.preset_id
+              AND m.id::TEXT=ref->>'messageId'
+              AND ref->>'contentHash'='sha256:'||encode(sha256(convert_to(m.content,'UTF8')),'hex')
+          )
+        )
+      )
+  `, [normalizedUserId, normalizedPresetId]);
+  return Number(rows[0]?.count || 0);
+}
+
 async function deleteSuppressedChunks(userId, presetId, tombstones, { client } = {}) {
   let deleted = 0;
   for (const row of tombstones || []) {
@@ -367,6 +397,7 @@ module.exports = {
   upsertChunk,
   deleteAllChunks,
   countChunks,
+  countStaleChunks,
   deleteSuppressedChunks,
   deleteChunksFromMessageId,
   listExistingTurnKeys,

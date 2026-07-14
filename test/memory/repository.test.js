@@ -7,6 +7,7 @@ const { initializeRevisionZero } = require("../../modules/memory/infrastructure/
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
 const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
 const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
+const privacyRepository = require("../../modules/memory/infrastructure/repositories/privacyRepository");
 const { REQUIRED_TABLES, REQUIRED_COLUMNS, REQUIRED_INDEXES, evaluateInspection } = require("../../scripts/check-memory-schema");
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
@@ -69,6 +70,16 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
   assert.equal(evaluateInspection({ ...base, tables: base.tables.filter((table) => table !== "chat_memory_tasks") }).clean, false);
   assert.equal(evaluateInspection({ ...base, indexes: base.indexes.filter((index) => index !== "idx_memory_tasks_recovery") }).clean, false);
   assert.equal(evaluateInspection({ ...base, columns: base.columns.filter((column) => !(column.table_name === "chat_memory_events" && column.column_name === "normalized_operation")) }).clean, false);
+});
+
+test("partial privacy purge deletes only tombstones whose raw message no longer exists", async () => {
+  const statements = [];
+  const client = { async query(sql) { statements.push(sql); return { rows: [], rowCount: 0 }; } };
+  await privacyRepository.purgeDerivedHistory(1, "default", { client, preserveTombstones: true });
+  const tombstoneDelete = statements.find((sql) => sql.startsWith("DELETE FROM chat_context_suppression_tombstones"));
+  assert.match(tombstoneDelete, /NOT EXISTS \(SELECT 1 FROM chat_messages/);
+  assert.match(tombstoneDelete, /m\.id=t\.message_id/);
+  assert.match(tombstoneDelete, /t\.content_hash='sha256:'/);
 });
 
 test("target recovery status and notification commit in one transaction", async () => {
@@ -168,6 +179,16 @@ test("fresh RAG schema includes the embedding text required by the v2 projection
   const sql = fs.readFileSync(path.join(__dirname, "../../models/tableCreate/chat_rag_chunks.sql"), "utf8");
   assert.match(sql, /embedding_text\s+TEXT\s+NOT NULL/i);
   assert.doesNotMatch(sql, /^\s*#/m, "SQL comments must not use shell syntax");
+});
+
+test("privacy recovery schema survives preset deletion and RAG verification checks exact live source refs", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/007-privacy-operation-recovery.sql"), "utf8");
+  const ragRepository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_memory_privacy_operations/i);
+  assert.doesNotMatch(migration, /REFERENCES\s+chat_prompt_presets/i);
+  assert.match(ragRepository, /jsonb_array_elements/);
+  assert.match(ragRepository, /m\.id::TEXT=ref->>'messageId'/);
+  assert.match(ragRepository, /ref->>'contentHash'='sha256:'/);
 });
 
 test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {

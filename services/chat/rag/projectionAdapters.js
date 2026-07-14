@@ -1,11 +1,17 @@
-const db = require("../../../db");
-const { chatRagConfig } = require("../../../config");
-const { createEmbeddings } = require("../../llm/embeddings");
-const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
-const chatRagRepo = require("./repo");
 const { contentHash, sourceRefsAreSuppressed } = require("./suppression");
 
+function loadProjectionDependencies() {
+  return {
+    db: require("../../../db"),
+    chatRagConfig: require("../../../config").chatRagConfig,
+    createEmbeddings: require("../../llm/embeddings").createEmbeddings,
+    chunker: require("./chunker"),
+    chatRagRepo: require("./repo"),
+  };
+}
+
 async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
+  const { db } = loadProjectionDependencies();
   const { rows } = await db.query(`
     SELECT m.id, m.session_id, m.role, m.content, m.created_at
     FROM chat_messages m
@@ -37,6 +43,8 @@ function buildTurns(messages, { afterMessageId = 0 } = {}) {
 }
 
 async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
+  const { chatRagConfig, createEmbeddings, chunker } = loadProjectionDependencies();
+  const { buildTurnChunks, buildDocumentEmbeddingText } = chunker;
   if (!chatRagConfig.enabled) return { chunks: [] };
   const messages = await listSourceMessages(input);
   const staged = [];
@@ -69,19 +77,13 @@ function createChatRagProjectionAdapter() {
   return Object.freeze({
     rebuild: (input) => stageRagProjection(input),
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
-    suppress: ({ userId, presetId, tombstones, client }) => chatRagRepo.deleteSuppressedChunks(userId, presetId, tombstones, { client }),
+    suppress: ({ userId, presetId, tombstones, client }) => loadProjectionDependencies().chatRagRepo.deleteSuppressedChunks(userId, presetId, tombstones, { client }),
     async commit({ mode, staged, userId, presetId, client }) {
+      const { chatRagRepo } = loadProjectionDependencies();
       if (mode === "rebuild") await chatRagRepo.deleteAllChunks(userId, presetId, { client });
       for (const chunk of staged?.chunks || []) await chatRagRepo.upsertChunk(chunk, { client });
     },
   });
 }
 
-// Recall is generated at query time from the RAG hit and its raw dialogue window.
-// Its checkpoint records source coverage; it has no separate derived store to commit.
-function createQueryTimeRecallProjectionAdapter() {
-  const stage = async ({ sourceGeneration, boundaryMessageId }) => ({ sourceGeneration, boundaryMessageId });
-  return Object.freeze({ rebuild: stage, append: stage, async suppress() {}, async commit() {} });
-}
-
-module.exports = { createChatRagProjectionAdapter, createQueryTimeRecallProjectionAdapter, buildTurns };
+module.exports = { createChatRagProjectionAdapter, buildTurns };

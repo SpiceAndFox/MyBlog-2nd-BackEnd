@@ -41,7 +41,7 @@ RAG/Recall 查询截止点与 projection 告警边界使用以下三个术语：
 - `requiredBoundary`：本次主聊天查询需要 RAG/Recall 覆盖到的历史截止点，定义为 `recentWindowStartMessageId - 1`，因为 `messageId >= recentWindowStartMessageId` 的消息已由 recent window 完整覆盖，RAG/Recall 不再需要。
 - `processedBoundary`：projection checkpoint 中实际已处理到的 `processedBoundaryMessageId`。
 
-RAG/Recall 查询时，有效检索上界为 `min(processedBoundary, requiredBoundary)`。该上界约束完整检索结果，包括命中的 projection chunk、为 chunk 附加的前后 raw dialogue 和据此生成的 Scene Recall；enrichment 不得越过 cutoff 重新读取更晚消息。六个 Memory target cursor 与 RAG/Recall cutoff 相互独立：Memory cursor 追平不代表 RAG/Recall 追平，反之亦然。
+RAG 查询时，有效检索上界为 `min(rag.processedBoundary, requiredBoundary)`。Recall/Scene Recall 是命中 RAG chunk 后在查询时即时生成的 enrichment，没有独立派生 store 或 checkpoint，必须继承同一个 RAG 有效上界。该上界约束完整检索结果，包括命中的 chunk、为 chunk 附加的前后 raw dialogue 和据此生成的 Scene Recall；enrichment 的每次 raw 查询都必须显式携带 cutoff，不得重新读取更晚消息。六个 Memory target cursor 与 RAG/Recall cutoff 相互独立：Memory cursor 追平不代表 RAG/Recall 追平，反之亦然。
 
 Projection 告警条件：
 

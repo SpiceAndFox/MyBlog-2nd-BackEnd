@@ -105,6 +105,24 @@ test("correction preserves item identity, appends evidence, and suppresses repla
   assert.equal(result.tombstones.some((entry) => entry.messageId === 2), false);
 });
 
+test("scene correction suppresses the replaced field provenance", () => {
+  const database = message(2, "user", "更正一下，我们在上海");
+  const state = createInitialMemoryState();
+  state.current.scene.location = { value: "北京", evidenceRef: { messageId: 1, contentHash: hash("我们在北京"), quote: "我们在北京" }, updatedAtMessageId: 1 };
+  const result = reduceProposal({
+    state, task: task("scene"), observedMessages: [observed(database)], databaseMessages: [database], config,
+    proposal: { sectionResults: { scene: { status: "patches", patches: [{
+      op: "setField", path: "location", value: "上海", evidenceKind: "user_correction",
+      evidenceRefs: [{ messageId: 2, quote: "我们在上海" }],
+    }] } } }, idFactory: sequence("patch"),
+  });
+  assert.equal(result.state.current.scene.location.value, "上海");
+  assert.deepEqual(result.tombstones, [{
+    messageId: 1, contentHash: hash("我们在北京"), reason: "correction", sourceItemId: "scene:location",
+    sourceSection: "scene", userId: 1, presetId: "p", createdRevision: 1,
+  }]);
+});
+
 test("capacity violation atomically defers the triggering patch", () => {
   const database = message(2, "user", "我们约定以后不冷战");
   const state = createInitialMemoryState();

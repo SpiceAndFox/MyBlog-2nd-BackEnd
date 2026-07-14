@@ -148,11 +148,11 @@ test("stage 8 cutover opens the start gate only after full verification", async 
 });
 
 test("a stale projection keeps the service start gate closed", async () => {
-  const harness = makeHarness({ projectionFailure: "recall" });
+  const harness = makeHarness({ projectionFailure: "rag" });
   const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(report.status, "failed");
   assert.equal(report.canStartService, false);
-  assert.match(report.error.message, /Projection recall drain did not complete/);
+  assert.match(report.error.message, /Projection rag drain did not complete/);
 });
 
 for (const [failure, message] of [

@@ -3,6 +3,7 @@ const { SCHEMA_VERSION, validateProposerOutput } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
 const { mapEventToRow } = require("./eventMapper");
+const { isDeepStrictEqual } = require("node:util");
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -149,6 +150,33 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     });
   }
 
+  async function persistMaintenanceProposal(envelope, output) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Maintenance task not found while persisting provider proposal");
+      if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return null;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      payload.persistedProposal = structuredClone(output);
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "proposal_persisted", stage_payload: payload,
+        not_before: null, last_error_reason: null,
+      }, { client });
+      return output;
+    });
+  }
+
+  async function persistMaintenanceProposalWithRecovery(envelope, output) {
+    try {
+      return await persistMaintenanceProposal(envelope, output);
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const task = await repositories.runtime.getTask(envelope.task.taskId);
+      const persisted = rowValue(task, "stage_payload", "stagePayload")?.persistedProposal;
+      if (rowValue(task, "stage", "stage") === "proposal_persisted" && isDeepStrictEqual(persisted, output)) return output;
+      return persistMaintenanceProposal(envelope, output);
+    }
+  }
+
   async function commitCompaction(envelope, output) {
     return repositories.withTransaction(async (client) => {
       const groupId = stablePhaseId(envelope.task.taskId, "compaction_commit");
@@ -249,17 +277,24 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
       return { status: "retry_wait", taskId: envelope.task.taskId, notBefore };
     }
-    const adapterResult = proposeWithSchemaRetry
-      ? await proposeWithSchemaRetry(envelope)
-      : await providerAdapter.propose(envelope);
-    if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
-    const validation = validateProposerOutput(adapterResult.output, envelope.task);
+    let output = ["proposal_persisted", "compacting"].includes(rowValue(current, "stage", "stage"))
+      ? rowValue(current, "stage_payload", "stagePayload")?.persistedProposal
+      : null;
+    if (!output) {
+      const adapterResult = proposeWithSchemaRetry
+        ? await proposeWithSchemaRetry(envelope)
+        : await providerAdapter.propose(envelope);
+      if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
+      output = adapterResult.output;
+      await persistMaintenanceProposalWithRecovery(envelope, output);
+    }
+    const validation = validateProposerOutput(output, envelope.task);
     if (!validation.ok) return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });
-    const sectionResult = adapterResult.output.sectionResults[envelope.task.targetSections[0]];
+    const sectionResult = output.sectionResults[envelope.task.targetSections[0]];
     if (sectionResult.status === "unable_to_compact") return failUnable(envelope);
     let result;
     try {
-      result = await commitCompaction(envelope, adapterResult.output);
+      result = await commitCompaction(envelope, output);
     } catch (error) {
       if (error?.commitOutcomeUnknown) {
         const existing = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "compaction_commit"));
@@ -312,7 +347,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
     return createChild(parentEnvelope, state, violation, resumeEpoch, client);
   }
 
-  return Object.freeze({ deferNormal, processMaintenanceEnvelope, advanceParent, resumeParent, createResumeChild });
+  return Object.freeze({ deferNormal, processMaintenanceEnvelope, advanceParent, resumeParent, createResumeChild, persistMaintenanceProposal, persistMaintenanceProposalWithRecovery });
 }
 
 module.exports = { createCapacityMaintenance, stablePhaseId, maintenanceTaskRow, proposalItemIds };

@@ -54,7 +54,7 @@ function createMemoryMigration({
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
-  if (!projectionDrains?.rag?.drain || !projectionDrains?.recall?.drain) throw new Error("Memory migration requires rag and recall projection drains");
+  if (!projectionDrains?.rag?.drain) throw new Error("Memory migration requires the rag projection drain");
 
   async function inventory(scopes) {
     const selected = scopes
@@ -106,7 +106,7 @@ function createMemoryMigration({
 
     const checkpoints = await repositories.sidecars.listProjectionCheckpoints(userId, presetId);
     const byProjection = new Map(checkpoints.map((row) => [rowValue(row, "projection_key", "projectionKey"), row]));
-    for (const projectionKey of ["rag", "recall"]) {
+    for (const projectionKey of ["rag"]) {
       const checkpoint = byProjection.get(projectionKey);
       if (!checkpoint || rowValue(checkpoint, "status", "status") !== "healthy") throw new Error(`Projection ${projectionKey} is not healthy after migration`);
       if (Number(rowValue(checkpoint, "processed_generation", "processedGeneration")) !== generation
@@ -166,7 +166,7 @@ function createMemoryMigration({
     if (initialized.boundaryMessageId !== history.boundaryMessageId) throw new Error("Raw source boundary changed after migration inventory");
     const drained = await sourceRebuild.forceDrainTo(scope.userId, scope.presetId, initialized);
     if (drained.status !== "completed") throw forceDrainError(drained);
-    for (const projectionKey of ["rag", "recall"]) {
+    for (const projectionKey of ["rag"]) {
       const result = await projectionDrains[projectionKey].drain(scope.userId, scope.presetId);
       if (result.status !== "healthy") throw new Error(`Projection ${projectionKey} drain did not complete: ${result.status}`);
     }
