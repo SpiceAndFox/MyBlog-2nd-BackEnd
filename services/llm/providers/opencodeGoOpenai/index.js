@@ -142,7 +142,7 @@ function normalizeReasoningEffort(settings, modelId) {
   if (!raw) return allowed.includes("max") ? "max" : allowed[0];
   if (!allowed.includes(raw)) {
     throw new Error(
-      `Invalid reasoningEffort for model ${normalizeModelId(modelId)}: ${raw}. Allowed values: ${allowed.join(", ")}`
+      `Invalid reasoningEffort for model ${normalizeModelId(modelId)}: ${raw}. Allowed values: ${allowed.join(", ")}`,
     );
   }
   return raw;
@@ -175,9 +175,7 @@ function buildMiMoWebSearchTool({ settings } = {}) {
   const normalizedLimit = Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 5;
 
   const maxKeyword = Number(settings?.webSearchMaxKeyword);
-  const normalizedMaxKeyword = Number.isFinite(maxKeyword)
-    ? Math.min(10, Math.max(1, Math.trunc(maxKeyword)))
-    : 3;
+  const normalizedMaxKeyword = Number.isFinite(maxKeyword) ? Math.min(10, Math.max(1, Math.trunc(maxKeyword))) : 3;
 
   return {
     type: "web_search",
@@ -197,13 +195,22 @@ function buildBodyExtensions({ model, settings } = {}) {
   const body = {};
   const modelId = normalizeModelId(model);
   const thinkingMode = normalizeThinkingMode(settings);
+  const supportsThinking = modelSupportsThinking(modelId);
+  const supportsReasoningEffort = modelSupportsReasoningEffort(modelId);
 
-  if (modelSupportsThinking(modelId)) {
-    body.thinking = { type: thinkingMode };
-  }
-
-  if (modelSupportsReasoningEffort(modelId) && thinkingMode === "enabled") {
-    body.reasoning_effort = normalizeReasoningEffort(settings, modelId);
+  // OpenCode Go 网关拒绝同时携带 `thinking` 和 `reasoning_effort`（官方 GLM API 允许，但网关不允许）。
+  // 因此两者互斥：
+  //   - thinking enabled + 模型支持 reasoning_effort → 只发 reasoning_effort（网关据此推断思考开启）
+  //   - thinking enabled + 模型不支持 reasoning_effort → 只发 thinking: { type: "enabled" }
+  //   - thinking disabled → 只发 thinking: { type: "disabled" }，不发 reasoning_effort
+  if (thinkingMode === "enabled") {
+    if (supportsReasoningEffort) {
+      body.reasoning_effort = normalizeReasoningEffort(settings, modelId);
+    } else if (supportsThinking) {
+      body.thinking = { type: "enabled" };
+    }
+  } else if (supportsThinking) {
+    body.thinking = { type: "disabled" };
   }
 
   if (settings?.enableWebSearch && modelSupportsWebSearch(modelId)) {
@@ -336,16 +343,19 @@ module.exports = {
   ],
   models: MODELS,
   parameterPolicy: {
-    blockedBodyParams: [
-      "presence_penalty",
-      "frequency_penalty",
-      "tool_choice",
-      "parallel_tool_calls",
-    ],
+    blockedBodyParams: ["presence_penalty", "frequency_penalty", "tool_choice", "parallel_tool_calls"],
     isBodyParamAllowed: ({ model, paramName, settings }) => {
       if (paramName === "presence_penalty" || paramName === "frequency_penalty") return false;
       if (paramName === "tool_choice" || paramName === "parallel_tool_calls") return false;
-      if (paramName === "thinking") return modelSupportsThinking(model);
+      // thinking 与 reasoning_effort 互斥（网关约束），与 buildBodyExtensions 逻辑一致：
+      //   - thinking enabled + 支持 reasoning_effort → 只允许 reasoning_effort，不允许 thinking
+      //   - thinking disabled / 不支持 reasoning_effort → 只允许 thinking，不允许 reasoning_effort
+      if (paramName === "thinking") {
+        return (
+          modelSupportsThinking(model) &&
+          !(normalizeThinkingMode(settings) === "enabled" && modelSupportsReasoningEffort(model))
+        );
+      }
       if (paramName === "reasoning_effort") {
         return modelSupportsReasoningEffort(model) && normalizeThinkingMode(settings) === "enabled";
       }
