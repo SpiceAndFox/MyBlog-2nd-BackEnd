@@ -73,6 +73,23 @@ test("normal task atomically persists state, event group, snapshot, task and tar
   assert.equal(store.inspect.statuses.at(-1).status, "healthy");
 });
 
+test("proposal-triggered cleanup persists the target item id", async () => {
+  const store = fakes();
+  const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0, trigger: { type: "lagThreshold" } };
+  const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } });
+  const pipeline = createNormalWritePipeline({
+    observer: { observe: async () => ({ eligibleTasks: [intent] }) }, config, repositories: store.repositories,
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", output: outputFor(envelope) }) },
+    now: () => new Date("2026-07-14T00:01:00Z"), idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
+  });
+  const [result] = await pipeline.processScope(1, "default");
+  const cleanup = store.inspect.events.find((event) => event.cleanup_type === "todo_became_overdue");
+  assert.equal(result.status, "committed");
+  assert.equal(store.inspect.state.working.todos[0].status, "overdue");
+  assert.equal(cleanup.item_id, "todo:item");
+  assert.equal(cleanup.item_id, cleanup.normalized_operation.itemId);
+});
+
 test("task envelope freezes the User time zone and Reducer resolves calendar dates with it", async () => {
   const store = fakes();
   store.repositories.users = { getTimeZone: async () => "Asia/Shanghai" };

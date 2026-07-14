@@ -80,6 +80,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
     });
     items.push(item);
     normalized.value = structuredClone(item);
+    normalized.evidenceRefs = refs;
     return { normalized, resultItemId: itemId };
   }
 

@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const { SCHEMA_VERSION, validateProposerOutput } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
+const { mapEventToRow } = require("./eventMapper");
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -22,20 +23,6 @@ function maintenanceTaskRow(envelope) {
     status: "queued", stage: "pending", cursor_before: null, target_message_id: task.targetMessageId,
     base_revision: task.baseRevision, task_payload: envelope, stage_payload: null, attempt: 0,
     context_expansion_attempt: 0, not_before: null, last_error_reason: null, result_revision: null,
-  };
-}
-function mapEvent(event, envelope, groupId, index, maintenanceTaskId = null) {
-  const task = envelope.task;
-  return {
-    event_group_id: groupId, event_index: index, user_id: task.userId, preset_id: task.presetId,
-    task_id: task.taskId, tick_id: task.tickId, target_key: event.targetKey, section: event.section,
-    event_kind: event.eventKind,
-    decision: event.decision ?? (event.eventKind === "system_cleanup" ? "system_cleanup" : null),
-    patch_id: event.patchId, op: event.op,
-    item_id: event.itemId, result_item_id: event.resultItemId, merged_from_item_ids: event.mergedFromItemIds,
-    evidence_kind: event.evidenceKind, reject_reason: event.rejectReason,
-    maintenance_task_id: maintenanceTaskId, patch_summary: event.patchSummary ?? null,
-    normalized_operation: event.normalizedOperation, cleanup_type: event.cleanupKind ?? null,
   };
 }
 function proposalItemIds(proposal) {
@@ -101,7 +88,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       base_revision: state.meta.revision, result_revision: null, cursor_before: parentEnvelope.task.cursorBefore,
       cursor_after: parentEnvelope.task.cursorBefore, group_kind: "proposal",
     }, { client });
-    await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, parentEnvelope, groupId, index, maintenanceTaskId)), { client });
+    await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, parentEnvelope, groupId, index, { maintenanceTaskId })), { client });
     await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "running", stage: "capacity_blocked", stage_payload: stagePayload, last_error_reason: "capacity_blocked" }, { client });
     await repositories.runtime.upsertTargetStatus(parentEnvelope.task.userId, parentEnvelope.task.presetId, {
       targetKey: parentEnvelope.task.targetKey, sourceGeneration: parentEnvelope.task.sourceGeneration,
@@ -193,7 +180,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
         const reason = allProtected ? "unable_to_compact" : "compaction_failed";
         const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
         await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: null, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
-        await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
+        await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
         await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { persistedProposal: output }, attempt, last_error_reason: reason }, { client });
         await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
           targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration,
@@ -205,7 +192,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       }
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
-      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
+      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "compaction_applied", stage_payload: { persistedProposal: output }, result_revision: reduction.state.meta.revision, last_error_reason: null }, { client });
       const parentPayload = structuredClone(rowValue(parent, "stage_payload", "stagePayload"));
@@ -241,7 +228,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, now 
       await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "running", stage: "replaying_original_proposal", stage_payload: payload }, { client });
       await repositories.state.writeState(parentEnvelope.task.userId, parentEnvelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: replayGroupId, user_id: parentEnvelope.task.userId, preset_id: parentEnvelope.task.presetId, task_id: parentEnvelope.task.taskId, target_key: parentEnvelope.task.targetKey, source_generation: parentEnvelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: parentEnvelope.task.cursorBefore, cursor_after: parentEnvelope.task.targetMessageId, group_kind: "proposal" }, { client });
-      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, parentEnvelope, replayGroupId, index)), { client });
+      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, parentEnvelope, replayGroupId, index)), { client });
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(parentEnvelope.task.userId, parentEnvelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(parentEnvelope.task.userId, parentEnvelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: payload, result_revision: reduction.state.meta.revision, last_error_reason: null }, { client });

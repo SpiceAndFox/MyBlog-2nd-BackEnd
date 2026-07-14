@@ -306,16 +306,23 @@ test("retention promotes only a validated continuous anchor and preserves refere
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 2;
   state.meta.revision = 7;
+  state.meta.targetCursors.todos = 2;
   const old = "2026-05-01T00:00:00.000Z";
   const recent = "2026-07-12T00:00:00.000Z";
+  const revisionFive = structuredClone(state);
+  revisionFive.meta.revision = 5;
+  revisionFive.meta.targetCursors = {};
+  const revisionSix = structuredClone(state);
+  revisionSix.meta.revision = 6;
+  revisionSix.meta.targetCursors.todos = 1;
   const snapshots = [
-    { revision: 5, created_at: old, state: { ...structuredClone(state), meta: { ...state.meta, revision: 5 } } },
-    { revision: 6, created_at: old, state: { ...structuredClone(state), meta: { ...state.meta, revision: 6 } } },
+    { revision: 5, created_at: old, state: revisionFive },
+    { revision: 6, created_at: old, state: revisionSix },
     { revision: 7, created_at: recent, state: structuredClone(state) },
   ];
   const groups = [
-    { base_revision: 5, result_revision: 6, created_at: old },
-    { base_revision: 6, result_revision: 7, created_at: recent },
+    { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
+    { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: recent },
   ];
   let promoted = null;
   let runtimeAnchor = null;
@@ -353,11 +360,13 @@ test("retention rejects an anchor whose state cannot be reproduced from semantic
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 2;
   state.meta.revision = 7;
+  state.meta.targetCursors.todos = 2;
   const anchorFive = structuredClone(state);
   anchorFive.meta.revision = 5;
+  anchorFive.meta.targetCursors = {};
   const invalidAnchorSix = structuredClone(state);
   invalidAnchorSix.meta.revision = 6;
-  invalidAnchorSix.meta.targetCursors.todos = 1;
+  invalidAnchorSix.meta.targetCursors.todos = 2;
   const old = "2026-05-01T00:00:00.000Z";
   const repositories = {
     async withTransaction(work) { return work({}); },
@@ -369,8 +378,8 @@ test("retention rejects an anchor whose state cannot be reproduced from semantic
         { revision: 7, created_at: "2026-07-12T00:00:00.000Z", state: structuredClone(state) },
       ]; },
       async listRevisionGroups() { return [
-        { event_group_id: "g6", base_revision: 5, result_revision: 6, created_at: old },
-        { event_group_id: "g7", base_revision: 6, result_revision: 7, created_at: "2026-07-12T00:00:00.000Z" },
+        { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
+        { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: "2026-07-12T00:00:00.000Z" },
       ]; },
       async listEventsForGroups() { return []; },
       async promoteAnchor() { throw new Error("must not promote"); },

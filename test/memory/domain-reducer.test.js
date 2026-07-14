@@ -39,6 +39,7 @@ test("stage 2 reducer fixture produces accepted event, snapshot, provenance, and
   assert.equal(result.events[0].decision, "accepted");
   assert.equal(result.state.working.todos[0].id, "todo:1");
   assert.equal(result.state.working.todos[0].evidenceGroups[0].refs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
+  assert.equal(result.events[0].normalizedOperation.evidenceRefs[0].contentHash, fixture.ticks[0].databaseMessages[0].contentHash);
   assert.equal(result.state.meta.targetCursors.todos, 121);
   assert.deepEqual(result.snapshot, result.state);
 });

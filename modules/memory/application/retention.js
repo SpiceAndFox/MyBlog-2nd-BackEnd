@@ -34,7 +34,7 @@ function createMemoryRetention({ repositories, config, diagnosticProjection, now
       const oldAnchor = snapshots[0];
       const absorbedGroups = groups.filter((row) => Number(row.result_revision ?? row.resultRevision) > Number(oldAnchor.revision) && Number(row.result_revision ?? row.resultRevision) <= Number(anchor.revision));
       const absorbedEvents = await repositories.audit.listEventsForGroups(absorbedGroups.map((row) => row.event_group_id ?? row.eventGroupId), { client });
-      const replayedAnchor = replayEventGroups(oldAnchor.state, absorbedGroups, absorbedEvents);
+      const replayedAnchor = replayEventGroups(oldAnchor.state, absorbedGroups, absorbedEvents, { userId, presetId });
       if (!isDeepStrictEqual(replayedAnchor, anchor.state)) throw new Error("Retention anchor does not equal deterministic event replay");
       let expected = Number(anchor.revision) + 1;
       for (const group of groups.filter((row) => Number(row.result_revision ?? row.resultRevision) > Number(anchor.revision))) {

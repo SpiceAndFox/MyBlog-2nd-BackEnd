@@ -4,6 +4,7 @@ const { reduceProposal } = require("../domain/reducer");
 const { buildNormalEnvelope, normalDedupeKey } = require("./envelope");
 const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
 const { sourceKey } = require("../domain/suppression");
+const { mapEventToRow } = require("./eventMapper");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
@@ -37,21 +38,6 @@ async function recordSuccessfulTarget(repositories, envelope, client) {
   if (repositories.runtime.recordSuccessfulTargetTask) return repositories.runtime.recordSuccessfulTargetTask(envelope.task.userId, envelope.task.presetId, args, { client });
   return repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { ...args, lastTaskId: args.taskId, status: "healthy", consecutiveErrors: 0, lastErrorReason: null, nextRetryAt: null }, { client });
 }
-function mapEvent(event, envelope, eventGroupId, index) {
-  const task = envelope.task;
-  return {
-    event_group_id: eventGroupId, event_index: index, user_id: task.userId, preset_id: task.presetId,
-    task_id: task.taskId, tick_id: task.tickId, target_key: event.targetKey, section: event.section,
-    event_kind: event.eventKind,
-    decision: event.decision ?? (event.eventKind === "system_cleanup" ? "system_cleanup" : null),
-    patch_id: event.patchId, op: event.op,
-    item_id: event.itemId, result_item_id: event.resultItemId, merged_from_item_ids: event.mergedFromItemIds,
-    evidence_kind: event.evidenceKind, reject_reason: event.rejectReason, maintenance_task_id: null,
-    patch_summary: event.patchSummary ?? null, normalized_operation: event.normalizedOperation,
-    cleanup_type: event.cleanupKind ?? null,
-  };
-}
-
 function createNormalWritePipeline({ observer, providerAdapter, repositories, config, metrics, monotonicNow = () => performance.now(), now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
 
@@ -321,7 +307,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (reduction.outcome === "deferred") return capacity.deferNormal({ parentEnvelope: envelope, state, proposal: output, reduction, client });
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: envelope.task.cursorBefore, cursor_after: envelope.task.targetMessageId, group_kind: "proposal" }, { client });
-      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEvent(event, envelope, groupId, index)), { client });
+      await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
       for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(envelope.task.userId, envelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: { persistedProposal: output }, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null }, { client });
@@ -422,4 +408,4 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, recordAdapterError, capacity });
 }
 
-module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent };
+module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent: mapEventToRow };
