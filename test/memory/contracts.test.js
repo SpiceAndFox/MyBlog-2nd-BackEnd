@@ -68,6 +68,34 @@ test("todo due date rejects impossible calendar dates", () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.map((entry) => entry.message).join(" "), /valid YYYY-MM-DD/);
 });
+test("typed profile proposals require constrained classification fields", () => {
+  const base = { op: "addItem", evidenceKind: "long_term_fact", evidenceRefs: [{ messageId: 1, quote: "不要列表" }] };
+  const missing = validatePatch({ ...base, value: { text: "边界: 不要列表" } }, "userProfile", { proposer: "profileRelationshipProposer" });
+  assert.equal(missing.ok, false);
+  assert.match(missing.errors.map((entry) => entry.path).join(" "), /facet/);
+  const valid = validatePatch({ ...base, value: {
+    text: "边界: 不要列表", facet: "communicationBoundary", canonicalKey: "responseFormat", factBasis: "explicit",
+  } }, "userProfile", { proposer: "profileRelationshipProposer" });
+  assert.equal(valid.ok, true);
+});
+test("state validator prevents duplicate single-value profile canonical keys", () => {
+  const state = createInitialMemoryState();
+  const profileItem = (id, text) => ({
+    id, text, facet: "communicationBoundary", canonicalKey: "responseFormat", factBasis: "explicit",
+    evidenceGroups: [{ evidenceKind: "long_term_fact", refs: [{ messageId: 1, contentHash: `sha256:${"a".repeat(64)}`, quote: text }] }],
+    createdAtMessageId: 1, updatedAtMessageId: 1,
+  });
+  state.longTerm.userProfile.push(profileItem("userProfile:1", "不要列表"), profileItem("userProfile:2", "只用段落"));
+  const result = validateMemoryState(state);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.map((entry) => entry.message).join(" "), /canonicalKey/);
+  const multiValue = createInitialMemoryState();
+  multiValue.longTerm.userProfile.push(
+    { ...profileItem("userProfile:3", "从事软件开发"), facet: "background", canonicalKey: "background" },
+    { ...profileItem("userProfile:4", "曾经学习设计"), facet: "background", canonicalKey: "background" },
+  );
+  assert.equal(validateMemoryState(multiValue).ok, true);
+});
 test("output must exactly cover target sections", () => {
   const task = { tickId: 1, targetKey: "episodes", targetSections: ["recentEpisodes", "milestones"], mode: "normal" };
   const result = validateProposerOutput({ tickId: 1, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" } } }, task);

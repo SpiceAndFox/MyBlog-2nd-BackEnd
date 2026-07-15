@@ -215,7 +215,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 - messageId 不存在时 `rejected: message_id_not_found`。
 - messageId 属于 observedMessages，但数据库中的 userId/presetId/role/createdAt/contentHash 任一项与 proposal-time task payload 不一致时 `rejected: evidence_source_mismatch`。
-- evidence 可以来自 newBatch 或 overlap；只有 overlap evidence 但其余校验通过时接受，不要求至少一条 evidence 来自 newBatch。
+- evidence 可以来自 newBatch 或 overlap，但每个普通 patch 至少一条 evidenceRef 必须来自 newBatch；全部 evidence 仅来自 overlap 时以 `overlap_only_evidence` 拒绝。
 - quote 精确命中时接受。
 - 所有 quote 长度都走相同归一化 + 等长窗口 Levenshtein 规则；轻微改写且相似度达到配置阈值时接受，不存在短 quote 精确匹配专用分支。exact-substring 快速路径不受模糊预算影响；模糊路径超过 content 或 candidate-window 的确定性预算时必须 fail closed，并覆盖对抗性重复输入不会造成无界同步 CPU 占用。
 - 大小写、Unicode whitespace 和 `QUOTE_IGNORABLE_PUNCTUATION` 明列标点的差异按统一归一化移除；未列入该集合的字符不得由调用点自行忽略，symbol 不作为信息字符。
@@ -232,7 +232,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 ### 3.3 Proposer 输入 envelope
 
-- 普通模式必须使用 `task.trigger.type = "lagThreshold"`；维护模式必须使用 `task.trigger.type = "lengthBudget"`，并带 `dimension=maxItems|maxRenderedChars` 与对应配置 `limit`。
+- 普通模式必须使用 `task.trigger.type = "lagThreshold"`；维护模式允许 `lengthBudget`（带 `dimension=maxItems|maxRenderedChars` 与对应配置 `limit`）或 `hygiene`（带触发时 item count/maxItems/high-water percent）。
 - normal task 必须携带 durable UUID `taskId` 与创建时 `baseRevision`；提交前二者关联的 task row 必须存在，并重新校验 `baseRevision === meta.revision`。若 revision 不匹配（且 `sourceGeneration` 仍匹配），不直接 apply，而是按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task 并重新调用 Proposer。`task.targetKey` 只能是六个合法 targetKey；每个 task 只有一个 `cursorBefore`、new batch 和一个 `targetMessageId`。
 - maintenance task 不携带 `cursorBefore`；其 `targetMessageId` 必须等于来源 normal proposal 的 `targetMessageId`，只用于关联、幂等和后续 replay，不得用于读取 raw messages 或推进 cursor。
 - maintenance task 的 `parent_task_id` 必须指向来源 normal task，并持久化 `resume_epoch`；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`、`maintenanceTaskId` 和 `resumeEpoch`。
@@ -282,6 +282,8 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 缺少 target section 或包含非 target section 属于 `output_schema_invalid`，本 task 的 target cursor 不推进；其它 target 不受影响。
 - `episodeProposer` 的 `recentEpisodes` 与 `milestones` 共享 `episodes` cursor：一个 section accepted/noop、另一个 `unable_to_decide` 时整个 target 不推进；两者都形成可推进终局后只推进一次。
 - `profileRelationshipProposer` 的 `userProfile`、`assistantProfile`、`relationship` 三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 只推进独立的 `worldFacts` cursor。event 的 `section` 记录实际正式 section，`target_key` 记录共享 cursor 归属。
+- profile/relationship add/update 缺少 facet/canonicalKey/factBasis 时 schema 拒绝；`observedPattern` 少于 2 个不同 messageId 时 Reducer 以 `insufficient_pattern_evidence` 拒绝；全部 evidence 只来自 overlap 时以 `overlap_only_evidence` 拒绝。
+- 同 section Unicode 规范化 text 完全相同的 add/update 以 `duplicate_item` 拒绝；非 multi-value canonicalKey 冲突以 `duplicate_profile_key` 拒绝，multi-value/open key 仍允许不同 text 的多值项。
 - maintenance task 的 `targetKey` 仅关联来源 normal target；它不携带 `cursorBefore`，不读取或推进 raw-message cursor，也不拥有独立 `targetCursors` key。它完成后仍由被阻塞的原 normal target 决定 cursor。
 - ops_log 的 `task_id/target_key` 必填；可明确归属某个 `sectionResults` 的 outcome 填对应正式 section。task 级 outcome 的 `section` 必须为 null，且不得用 targetKey 代填。
 
@@ -342,7 +344,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls 与 observed-message 总数（calls/message 由两者相除）、eligible、tokens/latency，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration；指标使用稳定标签且不含原始消息正文等高基数字段。只有 Provider 明确返回可信的 request cost 时才记录 `cost_usd`；否则费用由 token 指标和外部版本化价目表计算，运行时不得硬编码可能变化的单价。
-- 配置测试证明 capacity、scene/overdue、lagThreshold、GapBridge、quote threshold、retry/backoff、compaction/halt、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
+- 配置测试证明 capacity、scene/overdue、lagThreshold/contextWindow（`profileRelationship=12/32`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 
 ### 3.8 Renderer 稳定性（渲染回归基线）
 

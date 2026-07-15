@@ -23,6 +23,13 @@ function item(id, text, messageId = 1, todo = false, evidenceKind = null) {
   const value = { id, text, evidenceGroups: [{ evidenceKind: inferredKind, refs: [{ messageId, contentHash: hash(text), quote: text }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
   return todo ? { ...value, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null } : value;
 }
+function profileProposal(userProfile) {
+  return { sectionResults: {
+    userProfile,
+    assistantProfile: { status: "noop" },
+    relationship: { status: "noop" },
+  } };
+}
 
 test("ordinary rejected and noop proposals still yield a cursor-only revision", () => {
   const database = message(2, "user", "只是普通的一天，没有里程碑");
@@ -173,4 +180,97 @@ test("maintenance merge is accepted for every compactable item section", () => {
     assert.deepEqual(result.events[0].mergedFromItemIds, [`${section}:1`, `${section}:2`]);
     assert.equal(result.events[0].resultItemId.endsWith(":merged"), true);
   }
+});
+
+test("profile compaction preserves compatible typed metadata deterministically", () => {
+  const state = createInitialMemoryState();
+  state.longTerm.userProfile.push(
+    { ...item("userProfile:1", "边界: 避免连续追问", 1), facet: "communicationBoundary", canonicalKey: "open", factBasis: "observedPattern" },
+    { ...item("userProfile:2", "偏好: 不要连续追问", 2), facet: "communicationBoundary", canonicalKey: "open", factBasis: "explicit" },
+  );
+  const maintenanceTask = task("profileRelationship", {
+    mode: "maintenance", proposer: "compactionProposer", targetSections: ["userProfile"],
+    observedMessageIds: [], cursorBefore: undefined,
+  });
+  const result = reduceProposal({
+    state, task: maintenanceTask, observedMessages: [], databaseMessages: [], config,
+    proposal: { sectionResults: { userProfile: { status: "patches", patches: [{
+      op: "mergeItems", itemIds: ["userProfile:1", "userProfile:2"],
+      value: { text: "沟通边界: 避免连续追问" }, evidenceKind: "memory_compaction",
+    }] } } }, idFactory: sequence("patch", "merged"),
+  });
+  assert.equal(result.events[0].decision, "accepted");
+  assert.deepEqual(
+    (({ facet, canonicalKey, factBasis }) => ({ facet, canonicalKey, factBasis }))(result.state.longTerm.userProfile[0]),
+    { facet: "communicationBoundary", canonicalKey: "open", factBasis: "explicit" },
+  );
+});
+
+test("normal patches cannot be justified only by overlap context", () => {
+  const oldMessage = message(1, "user", "请不要使用列表");
+  const newMessage = message(2, "user", "继续刚才的话题");
+  const result = reduceProposal({
+    state: createInitialMemoryState(),
+    task: task("profileRelationship", { cursorBefore: 1, observedMessageIds: [1, 2] }),
+    observedMessages: [observed(oldMessage), observed(newMessage)], databaseMessages: [oldMessage, newMessage], config,
+    proposal: profileProposal({ status: "patches", patches: [{
+      op: "addItem",
+      value: { text: "边界: 禁止列表格式回复", facet: "communicationBoundary", canonicalKey: "responseFormat", factBasis: "explicit" },
+      evidenceKind: "long_term_fact", evidenceRefs: [{ messageId: 1, quote: "不要使用列表" }],
+    }] }),
+    idFactory: sequence("patch"),
+  });
+  assert.equal(result.events[0].decision, "rejected");
+  assert.equal(result.events[0].rejectReason, "overlap_only_evidence");
+  assert.equal(result.state.longTerm.userProfile.length, 0);
+});
+
+test("typed profile add rejects exact text and canonical-key duplicates", () => {
+  const database = message(2, "user", "再次强调，请绝对不要用列表格式回复");
+  for (const [value, expected] of [
+    [{ text: "边界: 禁止列表格式回复", facet: "communicationBoundary", canonicalKey: "open", factBasis: "explicit" }, "duplicate_item"],
+    [{ text: "偏好纯文本段落回复", facet: "communicationBoundary", canonicalKey: "responseFormat", factBasis: "explicit" }, "duplicate_profile_key"],
+  ]) {
+    const state = createInitialMemoryState();
+    state.longTerm.userProfile.push({
+      ...item("userProfile:format", "边界: 禁止列表格式回复"),
+      facet: "communicationBoundary", canonicalKey: "responseFormat", factBasis: "explicit",
+    });
+    const result = reduceProposal({
+      state, task: task("profileRelationship"), observedMessages: [observed(database)], databaseMessages: [database], config,
+      proposal: profileProposal({ status: "patches", patches: [{
+        op: "addItem", value, evidenceKind: "long_term_fact", evidenceRefs: [{ messageId: 2, quote: "不要用列表格式回复" }],
+      }] }), idFactory: sequence("patch"),
+    });
+    assert.equal(result.events[0].rejectReason, expected);
+    assert.equal(result.state.longTerm.userProfile.length, 1);
+  }
+});
+
+test("observed profile patterns require two messages and persist typed metadata", () => {
+  const first = message(1, "user", "这个问题请认真回答");
+  const second = message(2, "user", "我希望技术问题保持严肃");
+  const patch = {
+    op: "addItem",
+    value: { text: "偏好: 技术讨论保持严肃", facet: "communicationBoundary", canonicalKey: "topicSeriousness", factBasis: "observedPattern" },
+    evidenceKind: "long_term_fact",
+  };
+  const run = (evidenceRefs) => reduceProposal({
+    state: createInitialMemoryState(),
+    task: task("profileRelationship", { cursorBefore: 1, observedMessageIds: [1, 2] }),
+    observedMessages: [observed(first), observed(second)], databaseMessages: [first, second], config,
+    proposal: profileProposal({ status: "patches", patches: [{ ...patch, evidenceRefs }] }),
+    idFactory: sequence("patch", "item"),
+  });
+  const rejected = run([{ messageId: 2, quote: "技术问题保持严肃" }]);
+  assert.equal(rejected.events[0].rejectReason, "insufficient_pattern_evidence");
+  const accepted = run([
+    { messageId: 1, quote: "问题请认真回答" },
+    { messageId: 2, quote: "技术问题保持严肃" },
+  ]);
+  assert.equal(accepted.events[0].decision, "accepted");
+  assert.deepEqual(
+    (({ facet, canonicalKey, factBasis }) => ({ facet, canonicalKey, factBasis }))(accepted.state.longTerm.userProfile[0]),
+    { facet: "communicationBoundary", canonicalKey: "topicSeriousness", factBasis: "observedPattern" },
+  );
 });

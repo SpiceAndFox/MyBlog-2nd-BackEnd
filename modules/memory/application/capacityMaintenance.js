@@ -4,10 +4,12 @@ const { reduceProposal } = require("../domain/reducer");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
+const { buildDeterministicExactMergeOutput, sectionItems } = require("../domain/profile");
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
+function isHygiene(envelope) { return envelope.task.trigger?.type === "hygiene"; }
 function stablePhaseId(taskId, phase) {
   const hex = crypto.createHash("sha256").update(`${taskId}:${phase}`).digest("hex").slice(0, 32).split("");
   hex[12] = "5";
@@ -52,6 +54,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
   }
 
   async function recordTransactionFailure(envelope, taskId, stage, error) {
+    if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, stage, { reason: stage, message: String(error?.message || stage).slice(0, 500) });
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(taskId, { client });
       const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
@@ -69,6 +72,15 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
 
   async function createChild(parentEnvelope, state, violation, resumeEpoch, client) {
     const envelope = buildMaintenanceEnvelope({ parentEnvelope, state, section: violation.section, violation, resumeEpoch, config });
+    const row = await repositories.runtime.createTask(maintenanceTaskRow(envelope), { client });
+    return rowValue(row, "task_payload", "taskPayload") || envelope;
+  }
+
+  async function createHygieneChild(parentEnvelope, state, section, client) {
+    const maxItems = config.sectionBudgets[section].maxItems;
+    const itemCount = (["todos", "standingAgreements", "recentEpisodes"].includes(section) ? state.working[section] : state.longTerm[section]).length;
+    const trigger = { type: "hygiene", itemCount, maxItems, highWatermarkPercent: config.hygiene?.highWatermarkPercent ?? 70 };
+    const envelope = buildMaintenanceEnvelope({ parentEnvelope, state, section, trigger, resumeEpoch: 0, config });
     const row = await repositories.runtime.createTask(maintenanceTaskRow(envelope), { client });
     return rowValue(row, "task_payload", "taskPayload") || envelope;
   }
@@ -141,6 +153,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
   }
 
   async function markStale(envelope, reason) {
+    if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_stale", { reason });
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (task && !TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) await repositories.runtime.updateTask(envelope.task.taskId, { status: "cancelled", stage: "stale", last_error_reason: reason }, { client });
@@ -152,6 +165,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
   }
 
   async function failUnable(envelope) {
+    if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_noop", { reason: "unable_to_compact" });
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: rowValue(task, "status", "status"), duplicate: true, taskId: envelope.task.taskId };
@@ -160,6 +174,24 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted", consecutiveErrors: 0, lastErrorReason: "unable_to_compact", lastTaskId: envelope.task.taskId, nextRetryAt: null }, { client });
       await appendOps(envelope, "unable_to_compact", attempt, { parentTaskId: envelope.task.parentTaskId }, client);
       return { status: "halted", reason: "unable_to_compact", taskId: envelope.task.taskId };
+    });
+  }
+
+  async function finishHygieneWithoutMutation(envelope, stage = "hygiene_noop", detail = {}) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Hygiene task not found");
+      if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: "hygiene_noop", duplicate: true, taskId: envelope.task.taskId };
+      const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      if (!payload.persistedProposal && detail.persistedProposal) payload.persistedProposal = structuredClone(detail.persistedProposal);
+      payload.resultItemCount = envelope.task.trigger.itemCount;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "succeeded", stage, stage_payload: payload, attempt,
+        not_before: null, last_error_reason: detail.reason || null,
+      }, { client });
+      await appendOps(envelope, stage, attempt, detail, client);
+      return { status: "hygiene_noop", reason: detail.reason || null, taskId: envelope.task.taskId };
     });
   }
 
@@ -192,6 +224,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
 
   async function commitCompaction(envelope, output) {
     return repositories.withTransaction(async (client) => {
+      const hygiene = isHygiene(envelope);
       const groupId = stablePhaseId(envelope.task.taskId, "compaction_commit");
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       const parent = await repositories.runtime.getTaskForUpdate(envelope.task.parentTaskId, { client });
@@ -199,8 +232,9 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const existing = await repositories.audit.getEventGroup(groupId, { client });
       if (existing) {
         if (existing.result_revision !== null && existing.result_revision !== undefined) {
-          return { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true };
+          return { status: hygiene ? "hygiene_applied" : "compaction_applied", revision: Number(existing.result_revision), duplicate: true };
         }
+        if (hygiene) return { status: "hygiene_noop", taskId: envelope.task.taskId, duplicate: true };
         return {
           status: "halted",
           reason: rowValue(task, "last_error_reason", "lastErrorReason") || "compaction_failed",
@@ -212,7 +246,11 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
       const parentEnvelope = rowValue(parent, "task_payload", "taskPayload");
-      if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== parentEnvelope.task.cursorBefore || TERMINAL_STATUSES.has(rowValue(parent, "status", "status"))) return { status: "stale", reason: "parent_not_active" };
+      if (hygiene) {
+        if (state.meta.revision !== envelope.task.baseRevision) return { status: "stale", reason: "revision_mismatch" };
+      } else if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== parentEnvelope.task.cursorBefore || TERMINAL_STATUSES.has(rowValue(parent, "status", "status"))) {
+        return { status: "stale", reason: "parent_not_active" };
+      }
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "compacting", stage_payload: { persistedProposal: output } }, { client });
       const reduction = reduceProposal({ state, task: envelope.task, proposal: output, observedMessages: [], databaseMessages: [], now: envelope.task.now, config, idFactory, protectedItemIds: await pendingProtectedIds(envelope, client) });
       const accepted = reduction.events.filter((event) => event.decision === "accepted");
@@ -222,6 +260,15 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
         const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
         await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: null, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
         await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
+        if (hygiene) {
+          await repositories.runtime.updateTask(envelope.task.taskId, {
+            status: "succeeded", stage: "hygiene_noop",
+            stage_payload: { persistedProposal: output, resultItemCount: envelope.task.trigger.itemCount },
+            attempt, last_error_reason: reason,
+          }, { client });
+          await appendOps(envelope, "hygiene_noop", attempt, { reason }, client);
+          return { status: "hygiene_noop", reason, taskId: envelope.task.taskId, events: reduction.events };
+        }
         await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { persistedProposal: output }, attempt, last_error_reason: reason }, { client });
         await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
           targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration,
@@ -236,12 +283,19 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: null, cursor_after: null, group_kind: "maintenance" }, { client });
       await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "compaction_applied", stage_payload: { persistedProposal: output }, result_revision: reduction.state.meta.revision, last_error_reason: null }, { client });
-      const parentPayload = structuredClone(rowValue(parent, "stage_payload", "stagePayload"));
-      parentPayload.attemptedSections = [...new Set([...(parentPayload.attemptedSections || []), envelope.task.targetSections[0]])];
-      await repositories.runtime.updateTask(envelope.task.parentTaskId, { status: "running", stage: "capacity_blocked", stage_payload: parentPayload, last_error_reason: "capacity_blocked" }, { client });
+      const resultItemCount = sectionItems(reduction.state, envelope.task.targetSections[0]).length;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "succeeded", stage: hygiene ? "hygiene_applied" : "compaction_applied",
+        stage_payload: { persistedProposal: output, resultItemCount },
+        result_revision: reduction.state.meta.revision, last_error_reason: null,
+      }, { client });
+      if (!hygiene) {
+        const parentPayload = structuredClone(rowValue(parent, "stage_payload", "stagePayload"));
+        parentPayload.attemptedSections = [...new Set([...(parentPayload.attemptedSections || []), envelope.task.targetSections[0]])];
+        await repositories.runtime.updateTask(envelope.task.parentTaskId, { status: "running", stage: "capacity_blocked", stage_payload: parentPayload, last_error_reason: "capacity_blocked" }, { client });
+      }
       observeWorkflowAge(task, "compaction", envelope.task.targetKey);
-      return { status: "compaction_applied", revision: reduction.state.meta.revision, events: reduction.events };
+      return { status: hygiene ? "hygiene_applied" : "compaction_applied", revision: reduction.state.meta.revision, events: reduction.events };
     });
   }
 
@@ -297,18 +351,30 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       ? rowValue(current, "stage_payload", "stagePayload")?.persistedProposal
       : null;
     if (!output) {
-      const adapterResult = proposeWithSchemaRetry
-        ? await proposeWithSchemaRetry(envelope)
-        : await providerAdapter.propose(envelope);
-      if (adapterResult.status === "deferred") {
-        return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
+      const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
+      output = buildDeterministicExactMergeOutput(state, envelope.task);
+      if (!output) {
+        const adapterResult = proposeWithSchemaRetry
+          ? await proposeWithSchemaRetry(envelope)
+          : await providerAdapter.propose(envelope);
+        if (adapterResult.status === "deferred") {
+          return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
+        }
+        if (adapterResult.status === "error") {
+          if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_skipped", { reason: adapterResult.reason });
+          return recordAdapterError(envelope, adapterResult);
+        }
+        output = adapterResult.output;
+      } else {
+        metrics?.increment("memory_deterministic_exact_merge_total", { targetKey: envelope.task.targetKey, section: envelope.task.targetSections[0] });
       }
-      if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
-      output = adapterResult.output;
       await persistMaintenanceProposalWithRecovery(envelope, output);
     }
     const validation = validateProposerOutput(output, envelope.task);
-    if (!validation.ok) return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });
+    if (!validation.ok) {
+      if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_skipped", { reason: "output_schema_invalid" });
+      return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });
+    }
     const sectionResult = output.sectionResults[envelope.task.targetSections[0]];
     if (sectionResult.status === "unable_to_compact") return failUnable(envelope);
     let result;
@@ -318,22 +384,25 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       if (error?.commitOutcomeUnknown) {
         const existing = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "compaction_commit"));
         if (existing?.result_revision !== null && existing?.result_revision !== undefined) {
-          result = { status: "compaction_applied", revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
+          result = { status: isHygiene(envelope) ? "hygiene_applied" : "compaction_applied", revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
         } else if (existing) {
           const task = await repositories.runtime.getTask(envelope.task.taskId);
-          result = {
-            status: "halted",
-            reason: rowValue(task, "last_error_reason", "lastErrorReason") || "compaction_failed",
-            taskId: envelope.task.taskId,
-            duplicate: true,
-            reconciledCommitOutcome: true,
-          };
+          result = isHygiene(envelope)
+            ? { status: "hygiene_noop", taskId: envelope.task.taskId, duplicate: true, reconciledCommitOutcome: true }
+            : {
+              status: "halted",
+              reason: rowValue(task, "last_error_reason", "lastErrorReason") || "compaction_failed",
+              taskId: envelope.task.taskId,
+              duplicate: true,
+              reconciledCommitOutcome: true,
+            };
         }
         else return recordTransactionFailure(envelope, envelope.task.taskId, "commit_outcome_unknown", error);
       } else return recordTransactionFailure(envelope, envelope.task.taskId, "transaction_failed", error);
     }
     if (result.status === "stale") return markStale(envelope, result.reason);
     if (result.status === "halted") return result;
+    if (isHygiene(envelope)) return result;
     const parent = await repositories.runtime.getTask(envelope.task.parentTaskId);
     let advanced;
     try {
@@ -366,7 +435,52 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     return createChild(parentEnvelope, state, violation, resumeEpoch, client);
   }
 
-  return Object.freeze({ deferNormal, processMaintenanceEnvelope, advanceParent, resumeParent, createResumeChild, persistMaintenanceProposal, persistMaintenanceProposalWithRecovery });
+  async function maybeRunHygiene(parentEnvelope) {
+    const highWatermarkPercent = config.hygiene?.highWatermarkPercent ?? 70;
+    const minItemDelta = config.hygiene?.minItemDelta ?? 5;
+    const created = [];
+    for (const section of parentEnvelope.task.targetSections) {
+      const budget = config.sectionBudgets[section];
+      if (!budget || section === "recentEpisodes") continue;
+      let child;
+      try {
+        child = await repositories.withTransaction(async (client) => {
+          const state = await repositories.state.getState(parentEnvelope.task.userId, parentEnvelope.task.presetId, { client, forUpdate: true });
+          if (!state || state.meta.sourceGeneration !== parentEnvelope.task.sourceGeneration) return null;
+          const itemCount = sectionItems(state, section).length;
+          const highWatermark = Math.ceil(budget.maxItems * highWatermarkPercent / 100);
+          if (itemCount < highWatermark) return null;
+          const tasks = await repositories.runtime.listTasksForTarget(parentEnvelope.task.userId, parentEnvelope.task.presetId, parentEnvelope.task.targetKey, { client });
+          const previous = tasks.find((row) => {
+            const payload = rowValue(row, "task_payload", "taskPayload");
+            return rowValue(row, "task_type", "taskType") === "maintenance"
+              && payload?.task?.sourceGeneration === parentEnvelope.task.sourceGeneration
+              && payload?.task?.trigger?.type === "hygiene"
+              && payload.task.targetSections?.[0] === section;
+          });
+          const previousPayload = rowValue(previous, "stage_payload", "stagePayload");
+          const previousTrigger = rowValue(previous, "task_payload", "taskPayload")?.task?.trigger;
+          const baseline = Number(previousPayload?.resultItemCount ?? previousTrigger?.itemCount);
+          if (Number.isFinite(baseline) && itemCount < baseline + minItemDelta) return null;
+          return createHygieneChild(parentEnvelope, state, section, client);
+        });
+      } catch (error) {
+        metrics?.increment("memory_hygiene_schedule_errors_total", { targetKey: parentEnvelope.task.targetKey, section });
+        created.push({ status: "hygiene_schedule_failed", section, reason: String(error?.message || "schedule_failed").slice(0, 200) });
+        continue;
+      }
+      if (!child) continue;
+      try {
+        created.push(await processMaintenanceEnvelope(child));
+      } catch (error) {
+        metrics?.increment("memory_hygiene_execution_errors_total", { targetKey: parentEnvelope.task.targetKey, section });
+        created.push({ status: "hygiene_queued", section, taskId: child.task.taskId, reason: String(error?.message || "execution_failed").slice(0, 200) });
+      }
+    }
+    return created;
+  }
+
+  return Object.freeze({ deferNormal, processMaintenanceEnvelope, advanceParent, resumeParent, createResumeChild, maybeRunHygiene, persistMaintenanceProposal, persistMaintenanceProposalWithRecovery });
 }
 
 module.exports = { createCapacityMaintenance, stablePhaseId, maintenanceTaskRow, proposalItemIds };

@@ -4,7 +4,9 @@
 
 ## 1. 触发边界
 
-`compactionProposer` 不是普通写入 Proposer，不由 lag 阈值调度。它只在 Reducer 的长度预算门发现 item patch 会超过上限时触发，用来释放容量或确认没有安全压缩空间。
+`compactionProposer` 不是普通写入 Proposer，不由 lag 阈值调度。维护有两个触发模式：长度预算门触发的 `lengthBudget` 用于容量恢复；成功 normal revision 后达到集中配置高水位并满足最小 item 增量的 `hygiene` 用于非阻塞主动整理。两种模式调用 LLM 前都先执行同 section 规范化 text 完全相同的确定性 merge。
+
+`hygiene` maintenance 使用已成功提交的 normal task 作为 parent 仅作审计关联，不推进或重放 parent cursor。`unable_to_compact`、Provider/schema 错误或全部 patch 被拒均只把 hygiene task 终结为 `hygiene_noop`/`hygiene_skipped` 并写 ops log，不改变 target healthy 状态；成功 merge 独立提交 revision/snapshot。只有 `lengthBudget` 模式沿用下述 capacity-blocked/halt/replay 状态机。
 
 状态分属两类 task 和 per-target status，不是单条链。`target_halted` 不是 task stage，只是 per-target status（`capacity_blocked` 或 `halted`）。maintenance task 必须持久化 `parent_task_id` 指向来源 normal task；normal task 的 `stage_payload` 持久化当前 `maintenance_task_id`。
 
@@ -25,6 +27,8 @@ pending → proposing → proposal_persisted → compacting
 ├→ compaction_applied       # 至少一个 patch apply 成功（其他可能因保护而 reject，见步骤 5）
 └→ compaction_failed        # 全部 patch 被保护或无安全合并空间
 ```
+
+`hygiene` 使用同一 durable maintenance task 类型，但终态 stage 为 `hygiene_applied | hygiene_noop | hygiene_skipped | hygiene_stale`；这些终态不转换 parent stage，也不写 target degraded/halted。
 
 ## 2. 权威流程
 

@@ -518,6 +518,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     if (result.status === "stale") result = await recordStale(attemptEnvelope, result.reason);
     if (result.maintenanceEnvelope) return capacity.processMaintenanceEnvelope(result.maintenanceEnvelope);
     if (result.status === "capacity_deferred") return capacity.resumeParent(envelope);
+    if (result.status === "committed" && !result.duplicate && !result.cursorOnly) {
+      const hygiene = await capacity.maybeRunHygiene(attemptEnvelope);
+      if (hygiene.length) result.hygiene = hygiene;
+    }
     metrics?.increment("memory_task_outcomes_total", { targetKey: envelope.task.targetKey, status: result.status, mode: envelope.task.mode });
     return result;
   }

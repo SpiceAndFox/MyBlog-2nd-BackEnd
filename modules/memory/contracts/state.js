@@ -1,6 +1,7 @@
 const {
   SCHEMA_VERSION, TARGET_KEYS, SCENE_FIELDS, ITEM_SECTIONS, EVIDENCE_KINDS,
   SECTION_EVIDENCE_KINDS, QUOTE_MAX_CODE_POINTS,
+  TYPED_PROFILE_SECTIONS, PROFILE_FACT_BASES, PROFILE_FACETS, PROFILE_CANONICAL_KEYS, MULTI_VALUE_PROFILE_KEYS,
 } = require("./constants");
 
 const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -84,7 +85,19 @@ function validateItem(item, section, path, errors) {
     "actor", "requester", "status", "becameOverdueAt", "dueAt",
   ];
   const keys = section === "todos" ? todoKeys : todoKeys.slice(0, 5);
-  if (!exactKeys(item, keys, path, errors)) return;
+  const typed = TYPED_PROFILE_SECTIONS.includes(section);
+  if (typed) {
+    if (!isPlainObject(item)) { push(errors, path, "must be an object"); return; }
+    const metadata = ["facet", "canonicalKey", "factBasis"];
+    const allowed = [...keys, ...metadata];
+    for (const key of Object.keys(item)) if (!allowed.includes(key)) push(errors, `${path}.${key}`, "is not allowed");
+    for (const key of keys) if (!Object.prototype.hasOwnProperty.call(item, key)) push(errors, `${path}.${key}`, "is required");
+    const present = metadata.filter((key) => Object.prototype.hasOwnProperty.call(item, key));
+    if (present.length > 0 && present.length < metadata.length) metadata.filter((key) => !present.includes(key)).forEach((key) => push(errors, `${path}.${key}`, "is required when typed profile metadata is present"));
+    if (item.facet !== undefined && !PROFILE_FACETS[section]?.includes(item.facet)) push(errors, `${path}.facet`, `is invalid for ${section}`);
+    if (item.canonicalKey !== undefined && !PROFILE_CANONICAL_KEYS[section]?.includes(item.canonicalKey)) push(errors, `${path}.canonicalKey`, `is invalid for ${section}`);
+    if (item.factBasis !== undefined && !PROFILE_FACT_BASES.includes(item.factBasis)) push(errors, `${path}.factBasis`, "is invalid");
+  } else if (!exactKeys(item, keys, path, errors)) return;
   if (typeof item.id !== "string" || !item.id.trim()) push(errors, `${path}.id`, "must be a non-empty string");
   if (typeof item.text !== "string" || !item.text.trim()) push(errors, `${path}.text`, "must be a non-empty string");
   validateEvidenceGroups(item.evidenceGroups, section, `${path}.evidenceGroups`, errors);
@@ -176,6 +189,14 @@ function validateMemoryStateV2(value) {
   }
   const duplicates = ids.filter((id, index) => typeof id === "string" && ids.indexOf(id) !== index);
   if (duplicates.length) push(errors, "$", `item ids must be globally unique: ${[...new Set(duplicates)].join(", ")}`);
+  for (const section of TYPED_PROFILE_SECTIONS) {
+    const seenKeys = new Set();
+    for (const item of value.longTerm?.[section] || []) {
+      if (!item?.canonicalKey || MULTI_VALUE_PROFILE_KEYS[section].includes(item.canonicalKey)) continue;
+      if (seenKeys.has(item.canonicalKey)) push(errors, `$.longTerm.${section}`, `canonicalKey must be unique: ${item.canonicalKey}`);
+      seenKeys.add(item.canonicalKey);
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 

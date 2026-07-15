@@ -238,3 +238,76 @@ test("maintenance retry_wait preserves capacity blocking and parent recovery hon
   assert.equal(recovered.status, "retry_wait");
   assert.equal(maintenanceCalls, 1, "parent recovery must not bypass the child backoff boundary");
 });
+
+test("deterministic exact merge runs before the compaction provider", async () => {
+  const data = store();
+  data.inspect.state.working.todos[1].text = data.inspect.state.working.todos[0].text;
+  let maintenanceCalls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config,
+    idFactory: (() => { const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"]; return () => ids.shift() || "unused"; })(),
+    providerAdapter: { propose: async (envelope) => {
+      if (envelope.task.mode === "maintenance") {
+        maintenanceCalls += 1;
+        throw new Error("exact duplicate compaction must not call the provider");
+      }
+      return { status: "ok", output: normalOutput(envelope) };
+    } },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  assert.equal(result.status, "committed");
+  assert.equal(maintenanceCalls, 0);
+  assert.equal(data.inspect.state.working.todos.length, 2);
+  assert.equal(data.inspect.ops.some((entry) => entry.outcome === "unable_to_compact"), false);
+});
+
+test("high-water hygiene compacts proactively without blocking a committed normal task", async () => {
+  const data = store();
+  const hygieneConfig = {
+    ...config,
+    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
+    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
+  };
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config: hygieneConfig,
+    idFactory: (() => { const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"]; return () => ids.shift() || "unused"; })(),
+    providerAdapter: { propose: async (envelope) => ({
+      status: "ok", output: envelope.task.mode === "maintenance" ? compactionOutput(envelope) : normalOutput(envelope),
+    }) },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  const parent = [...data.inspect.tasks.values()].find((task) => task.task_type === "normal");
+  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(result.status, "committed");
+  assert.equal(result.hygiene[0].status, "hygiene_applied");
+  assert.equal(parent.status, "succeeded");
+  assert.equal(child.stage, "hygiene_applied");
+  assert.equal(child.task_payload.task.trigger.type, "hygiene");
+  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
+  assert.equal(data.inspect.state.working.todos.length, 2);
+  assert.deepEqual(await pipeline.capacity.maybeRunHygiene(parent.task_payload), []);
+  assert.equal([...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance").length, 1);
+});
+
+test("failed high-water hygiene remains non-blocking", async () => {
+  const data = store();
+  const hygieneConfig = {
+    ...config,
+    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
+    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
+  };
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config: hygieneConfig,
+    providerAdapter: { propose: async (envelope) => envelope.task.mode === "maintenance"
+      ? { status: "error", reason: "llm_call_failed", detail: {} }
+      : { status: "ok", output: normalOutput(envelope) } },
+  });
+  const result = await pipeline.processIntent(1, "default", intent);
+  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(result.status, "committed");
+  assert.equal(result.hygiene[0].status, "hygiene_noop");
+  assert.equal(child.status, "succeeded");
+  assert.equal(child.stage, "hygiene_skipped");
+  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
+  assert.equal(data.inspect.state.working.todos.length, 3);
+});

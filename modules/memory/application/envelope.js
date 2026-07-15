@@ -12,6 +12,9 @@ function redactItem(item, writable) {
   for (const key of ["actor", "requester", "status", "becameOverdueAt", "dueAt"]) {
     if (Object.prototype.hasOwnProperty.call(item, key)) result[key] = item[key];
   }
+  for (const key of ["facet", "canonicalKey", "factBasis"]) {
+    if (Object.prototype.hasOwnProperty.call(item, key)) result[key] = item[key];
+  }
   return result;
 }
 function readPath(state, path, writable, overdueLimit) {
@@ -74,7 +77,7 @@ function normalDedupeKey(task) {
   return ["normal", task.sourceGeneration, task.targetKey, task.cursorBefore, task.targetMessageId].join(":");
 }
 
-function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
+function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, trigger, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
   const path = sectionPath(section);
   const writableState = {};
   const value = readPath(state, path, true, config.overdueTodos.maxRenderedItems);
@@ -94,7 +97,7 @@ function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, t
       mode: "maintenance",
       targetSections: [section],
       observedMessageIds: [],
-      trigger: { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit },
+      trigger: structuredClone(trigger || { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit }),
       now: new Date(parentEnvelope.task.now).toISOString(),
       userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
       parentTaskId: parentEnvelope.task.taskId,
@@ -107,6 +110,7 @@ function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, t
 }
 
 function maintenanceDedupeKey(task) {
+  if (task.trigger?.type === "hygiene") return ["maintenance", "hygiene", task.sourceGeneration, task.parentTaskId, task.targetSections[0], task.baseRevision].join(":");
   return ["maintenance", task.sourceGeneration, task.parentTaskId, task.targetSections[0], task.resumeEpoch].join(":");
 }
 

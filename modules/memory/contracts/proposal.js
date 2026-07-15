@@ -13,6 +13,10 @@ const {
   QUOTE_MAX_CODE_POINTS,
   ITEM_SECTIONS,
   READ_ONLY_CONTEXT_PATHS,
+  TYPED_PROFILE_SECTIONS,
+  PROFILE_FACT_BASES,
+  PROFILE_FACETS,
+  PROFILE_CANONICAL_KEYS,
 } = require("./constants");
 const { isValidIanaTimeZone } = require("../../../utils/timeZone");
 const { isPlainObject, isIsoTimestamp } = require("./state");
@@ -41,6 +45,13 @@ function exactObject(value, keys, path, errors) {
   keys.forEach((key) => { if (!Object.prototype.hasOwnProperty.call(value, key)) add(errors, `${path}.${key}`, "is required"); });
   return true;
 }
+function objectWithOptional(value, required, optional, path, errors) {
+  if (!isPlainObject(value)) { add(errors, path, "must be an object"); return false; }
+  const allowed = [...required, ...optional];
+  Object.keys(value).forEach((key) => { if (!allowed.includes(key)) add(errors, `${path}.${key}`, "is not allowed"); });
+  required.forEach((key) => { if (!Object.prototype.hasOwnProperty.call(value, key)) add(errors, `${path}.${key}`, "is required"); });
+  return true;
+}
 function positiveText(value) { return typeof value === "string" && value.trim().length > 0; }
 function nonNegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0; }
 function positiveInteger(value) { return Number.isSafeInteger(value) && value > 0; }
@@ -59,6 +70,14 @@ function validateValue(value, section, op, path, errors) {
   if (op === "mergeItems") {
     if (!exactObject(value, ["text"], path, errors)) return;
     if (!positiveText(value.text)) add(errors, `${path}.text`, "must be a non-empty string");
+    return;
+  }
+  if (TYPED_PROFILE_SECTIONS.includes(section)) {
+    if (!exactObject(value, ["text", "facet", "canonicalKey", "factBasis"], path, errors)) return;
+    if (!positiveText(value.text)) add(errors, `${path}.text`, "must be a non-empty string");
+    if (!PROFILE_FACETS[section]?.includes(value.facet)) add(errors, `${path}.facet`, `is invalid for ${section}`);
+    if (!PROFILE_CANONICAL_KEYS[section]?.includes(value.canonicalKey)) add(errors, `${path}.canonicalKey`, `is invalid for ${section}`);
+    if (!PROFILE_FACT_BASES.includes(value.factBasis)) add(errors, `${path}.factBasis`, "is invalid");
     return;
   }
   if (section !== "todos") {
@@ -195,11 +214,22 @@ function validateRedactedItem(item, section, writable, path, errors, { maintenan
   const keys = section === "todos"
     ? [...baseKeys, "actor", "requester", "status", "becameOverdueAt", "dueAt"]
     : baseKeys;
-  if (!exactObject(item, keys, path, errors)) return;
+  const typed = TYPED_PROFILE_SECTIONS.includes(section);
+  if (!(typed
+    ? objectWithOptional(item, keys, ["facet", "canonicalKey", "factBasis"], path, errors)
+    : exactObject(item, keys, path, errors))) return;
   if (writable && !positiveText(item.id)) add(errors, `${path}.id`, "must be a non-empty string");
   if (!positiveText(item.text)) add(errors, `${path}.text`, "must be a non-empty string");
   if (!nonNegativeInteger(item.createdAtMessageId)) add(errors, `${path}.createdAtMessageId`, "must be a non-negative safe integer");
   if (!nonNegativeInteger(item.updatedAtMessageId)) add(errors, `${path}.updatedAtMessageId`, "must be a non-negative safe integer");
+  if (typed) {
+    const metadata = ["facet", "canonicalKey", "factBasis"];
+    const present = metadata.filter((key) => Object.prototype.hasOwnProperty.call(item, key));
+    if (present.length > 0 && present.length < metadata.length) metadata.filter((key) => !present.includes(key)).forEach((key) => add(errors, `${path}.${key}`, "is required when typed profile metadata is present"));
+    if (item.facet !== undefined && !PROFILE_FACETS[section]?.includes(item.facet)) add(errors, `${path}.facet`, `is invalid for ${section}`);
+    if (item.canonicalKey !== undefined && !PROFILE_CANONICAL_KEYS[section]?.includes(item.canonicalKey)) add(errors, `${path}.canonicalKey`, `is invalid for ${section}`);
+    if (item.factBasis !== undefined && !PROFILE_FACT_BASES.includes(item.factBasis)) add(errors, `${path}.factBasis`, "is invalid");
+  }
   if (section !== "todos") return;
   if (!["user", "assistant", "both"].includes(item.actor)) add(errors, `${path}.actor`, "is invalid");
   if (!["user", "assistant"].includes(item.requester)) add(errors, `${path}.requester`, "is invalid");
@@ -281,8 +311,16 @@ function validateTaskEnvelope(envelope) {
       if (!nonNegativeInteger(task.resumeEpoch)) add(errors, "$.task.resumeEpoch", "must be a non-negative safe integer");
       if (!Array.isArray(task.targetSections) || task.targetSections.length !== 1 || !ITEM_SECTIONS.includes(task.targetSections[0]) || task.targetSections[0] === "recentEpisodes") add(errors, "$.task.targetSections", "maintenance requires one compactable item section");
       if (TARGETS[task.targetKey] && !TARGETS[task.targetKey].sections.includes(task.targetSections?.[0])) add(errors, "$.task.targetSections", "must belong to targetKey");
-      if (task.trigger?.type !== "lengthBudget" || !["maxItems", "maxRenderedChars"].includes(task.trigger?.dimension) || !Number.isSafeInteger(task.trigger?.limit) || task.trigger.limit <= 0) add(errors, "$.task.trigger", "must be a valid lengthBudget trigger");
-      else exactObject(task.trigger, ["type", "dimension", "limit"], "$.task.trigger", errors);
+      if (task.trigger?.type === "lengthBudget") {
+        if (!["maxItems", "maxRenderedChars"].includes(task.trigger?.dimension) || !Number.isSafeInteger(task.trigger?.limit) || task.trigger.limit <= 0) add(errors, "$.task.trigger", "must be a valid lengthBudget trigger");
+        else exactObject(task.trigger, ["type", "dimension", "limit"], "$.task.trigger", errors);
+      } else if (task.trigger?.type === "hygiene") {
+        if (!Number.isSafeInteger(task.trigger?.itemCount) || task.trigger.itemCount < 1
+            || !Number.isSafeInteger(task.trigger?.maxItems) || task.trigger.maxItems < 1
+            || !Number.isSafeInteger(task.trigger?.highWatermarkPercent) || task.trigger.highWatermarkPercent < 1 || task.trigger.highWatermarkPercent > 100) {
+          add(errors, "$.task.trigger", "must be a valid hygiene trigger");
+        } else exactObject(task.trigger, ["type", "itemCount", "maxItems", "highWatermarkPercent"], "$.task.trigger", errors);
+      } else add(errors, "$.task.trigger", "must be lengthBudget or hygiene for maintenance mode");
     }
   }
   if (isPlainObject(task) && TARGET_KEYS.includes(task.targetKey) && Array.isArray(task.targetSections)) {

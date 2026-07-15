@@ -27,6 +27,23 @@ const TARGETS = Object.freeze({
 const TARGET_KEYS = Object.freeze(Object.keys(TARGETS));
 const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));
+const TYPED_PROFILE_SECTIONS = Object.freeze(["userProfile", "assistantProfile", "relationship"]);
+const PROFILE_FACT_BASES = Object.freeze(["explicit", "observedPattern"]);
+const PROFILE_FACETS = Object.freeze({
+  userProfile: Object.freeze(["identity", "background", "preference", "communicationBoundary", "communicationStyle", "interactionPattern", "interest"]),
+  assistantProfile: Object.freeze(["identity", "personaTrait", "communicationStyle", "behavioralTendency", "value", "limitation"]),
+  relationship: Object.freeze(["status", "address", "trust", "interactionPattern", "sharedBoundary"]),
+});
+const PROFILE_CANONICAL_KEYS = Object.freeze({
+  userProfile: Object.freeze(["identity", "background", "location", "expertise", "communicationTone", "responseFormat", "responseLength", "followUpQuestions", "roleplay", "serviceTreatment", "topicSeriousness", "correctionStyle", "emotionalExpression", "humorStyle", "interest", "open"]),
+  assistantProfile: Object.freeze(["identity", "persona", "communicationTone", "responseFormat", "followUpQuestions", "roleplayIdentity", "emotionalStance", "value", "limitation", "open"]),
+  relationship: Object.freeze(["relationshipStatus", "userToAssistantAddress", "assistantToUserAddress", "trust", "roleStructure", "interactionPattern", "sharedBoundary", "open"]),
+});
+const MULTI_VALUE_PROFILE_KEYS = Object.freeze({
+  userProfile: Object.freeze(["background", "expertise", "interest", "open"]),
+  assistantProfile: Object.freeze(["persona", "value", "open"]),
+  relationship: Object.freeze(["interactionPattern", "open"]),
+});
 
 const EVIDENCE_KINDS = Object.freeze([
   "user_request",
@@ -112,6 +129,11 @@ module.exports = {
   TARGET_KEYS,
   SCENE_FIELDS,
   ITEM_SECTIONS,
+  TYPED_PROFILE_SECTIONS,
+  PROFILE_FACT_BASES,
+  PROFILE_FACETS,
+  PROFILE_CANONICAL_KEYS,
+  MULTI_VALUE_PROFILE_KEYS,
   EVIDENCE_KINDS,
   PATCH_OPS,
   PROPOSER_EVIDENCE_KINDS,

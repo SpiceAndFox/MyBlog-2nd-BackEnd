@@ -143,6 +143,14 @@
 - roadmap 阶段 8 的代码退役已完成；生产历史副本上的正式 rehearsal/cutover 仍未执行。当前已有历史规模与 section 容量/耗时报告、全 target/snapshot/event/projection 校验，以及“校验失败不得启服”的硬门。
 - 真实 RAG projection adapter 与 query-time Recall checkpoint adapter 已接入运行时；尚需提供生产历史数据库副本和 migration CLI 装配入口，之后执行全量 rehearsal、容量/耗时记录及端到端业务 smoke。v2 生产切换手册暂存于 [Memory v2 生产切换执行手册（Deferred）](deferred/memory-v2-production-migration-runbook.md)；通过前不开放生产启服门。
 
+## 2026-07-15：Memory v2 Profile/Relationship 去重与主动整理
+
+- `profileRelationship` 调度改为 `lagThreshold=12`、`contextWindow=32`；Profile 新增/更新使用 section 专属 `facet + canonicalKey + factBasis`，非 multi-value canonicalKey 在 section 内唯一，observedPattern 至少需要两个不同 messageId。
+- Reducer 新增 new-batch evidence gate、Unicode 规范化 exact-text gate 与 canonicalKey gate，阻止 overlap 重提取、完全重复项和单值语义槽重复写入。
+- maintenance 调用 LLM 前先确定性合并安全的 exact duplicates；新增 high-water hygiene，在 normal task 提交后按 70%/最少 5 item 增量主动整理。hygiene 独立提交且 unable/provider/schema/stale 不改变 normal task 与 target healthy 状态。
+- 收紧 profileRelationship/compaction prompts，明确 AssistantProfile 只记录稳定身份、人格、价值与行为特征，不把一次模型错误、临时调试目标、单次态度或角色动作固化为长期档案。
+- Windows Node 下 `npm run test:memory-v2` 262/262、`npm test` 265/265 通过；只读 schema 检查 clean。既有 `userId=1/default` authority 仍处于旧 rebuild/halted 状态，未在本次代码修改中自动写库或恢复。
+
 ## 2026-07-15：Memory v2 上线审计 Stage 6 生命周期修复
 
 - 启动改为先执行完整 Provider preflight 和 strict pending recovery，再启动 task/projection worker 并监听业务端口；privacy/rebuild/task/projection 仍存在 incomplete、retry、pending 或非健康投影时 fail closed，不进入 ready。

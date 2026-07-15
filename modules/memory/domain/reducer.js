@@ -7,6 +7,12 @@ const { isPolicyAllowed } = require("./policy");
 const { resolveDueAt } = require("./calendar");
 const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
+const {
+  copyTypedProfileMetadata,
+  findDeterministicDuplicate,
+  mergedProfileMetadata,
+} = require("./profile");
+const { TYPED_PROFILE_SECTIONS } = require("../contracts/constants");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target]))
@@ -82,6 +88,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
     const first = Math.min(...refs.map((ref) => ref.messageId));
     const last = newestMessageId(refs);
     const item = { id: itemId, text: patch.value.text, evidenceGroups: [evidenceGroup(patch, refs)], createdAtMessageId: first, updatedAtMessageId: last };
+    if (TYPED_PROFILE_SECTIONS.includes(section)) Object.assign(item, copyTypedProfileMetadata(patch.value));
     if (section === "todos") Object.assign(item, {
       actor: patch.value.actor, requester: patch.value.requester, status: "active", becameOverdueAt: null,
       dueAt: patch.value.dueAt ? resolvePatchDueAt(patch, refs, context.messagesById, context.timeZone) : null,
@@ -98,6 +105,8 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
     if (section === "todos" && sources.some((item) => item.status !== "active" || item.actor !== sources[0].actor || item.requester !== sources[0].requester || item.dueAt !== sources[0].dueAt)) {
       return { rejectReason: "invalid_state_transition" };
     }
+    const profileMetadata = mergedProfileMetadata(section, sources);
+    if (!profileMetadata.ok) return { rejectReason: "invalid_state_transition" };
     const itemId = context.itemIds[identityKey] || `${SECTION_PREFIX[section]}:${context.idFactory()}`;
     context.itemIds[identityKey] = itemId;
     const messageIds = allEvidenceMessageIds(sources);
@@ -107,6 +116,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
       createdAtMessageId: Math.min(...sources.map((item) => item.createdAtMessageId)),
       updatedAtMessageId: Math.max(...messageIds),
     };
+    Object.assign(item, profileMetadata.value);
     if (section === "todos") Object.assign(item, {
       actor: sources[0].actor, requester: sources[0].requester, status: "active", becameOverdueAt: null, dueAt: sources[0].dueAt,
     });
@@ -152,6 +162,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
       });
     }
     if (patch.value.text !== undefined) item.text = patch.value.text;
+    if (TYPED_PROFILE_SECTIONS.includes(section)) Object.assign(item, copyTypedProfileMetadata(patch.value));
     if (section === "todos") {
       if (patch.value.actor !== undefined) item.actor = patch.value.actor;
       if (patch.value.requester !== undefined) item.requester = patch.value.requester;
@@ -214,6 +225,16 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
         } });
         if (!evidence.ok) { events.push(rejected(section, patch, patchId, evidence.reason)); continue; }
         refs = evidence.refs;
+        if (task.mode === "normal" && !refs.some((ref) => ref.messageId > task.cursorBefore && ref.messageId <= task.targetMessageId)) {
+          events.push(rejected(section, patch, patchId, "overlap_only_evidence"));
+          continue;
+        }
+        if (TYPED_PROFILE_SECTIONS.includes(section) && ["addItem", "updateItem"].includes(patch.op)
+            && patch.value.factBasis === "observedPattern"
+            && new Set(refs.map((ref) => ref.messageId)).size < 2) {
+          events.push(rejected(section, patch, patchId, "insufficient_pattern_evidence"));
+          continue;
+        }
       }
       if (!isPolicyAllowed(section, patch.op, patch.evidenceKind)) { events.push(rejected(section, patch, patchId, "policy_not_allowed")); continue; }
       if (patch.op === "mergeItems" && patch.itemIds.some((itemId) => protectedIds.has(itemId))) {
@@ -222,6 +243,10 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
       }
       const keys = [].concat(conflictKey(section, patch) || []);
       if (keys.some((key) => seen.has(key))) { events.push(rejected(section, patch, patchId, "invalid_state_transition")); continue; }
+      if (["addItem", "updateItem"].includes(patch.op)) {
+        const duplicateReason = findDeterministicDuplicate(sectionItems(working, section), section, patch.value, { excludeItemId: patch.itemId || null });
+        if (duplicateReason) { events.push(rejected(section, patch, patchId, duplicateReason)); continue; }
+      }
       const previousSceneField = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
       const applied = applyPatch(working, section, patch, refs, context, identityKey);
       if (applied.rejectReason) { events.push(rejected(section, patch, patchId, applied.rejectReason)); continue; }

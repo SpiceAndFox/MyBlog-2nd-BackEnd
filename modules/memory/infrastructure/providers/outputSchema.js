@@ -1,8 +1,24 @@
-const { TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS } = require("../../contracts");
+const {
+  TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS,
+  TYPED_PROFILE_SECTIONS, PROFILE_FACT_BASES, PROFILE_FACETS, PROFILE_CANONICAL_KEYS,
+} = require("../../contracts");
 const { buildDueAtSchema } = require("../../contracts/dueAt");
 
 const refSchema = { type: "object", additionalProperties: false, required: ["messageId", "quote"], properties: { messageId: { type: "integer", minimum: 0 }, quote: { type: "string", minLength: 1, maxLength: 200 } } };
 const textValue = { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", minLength: 1 } } };
+function typedProfileValue(section) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["text", "facet", "canonicalKey", "factBasis"],
+    properties: {
+      text: { type: "string", minLength: 1 },
+      facet: { enum: PROFILE_FACETS[section] },
+      canonicalKey: { enum: PROFILE_CANONICAL_KEYS[section] },
+      factBasis: { enum: PROFILE_FACT_BASES },
+    },
+  };
+}
 const dueAt = buildDueAtSchema();
 const dueChange = { oneOf: [
   { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "keep" } } },
@@ -32,6 +48,7 @@ function patchSchema(proposer, section, op) {
     if (op === "setField") properties.value = { type: "string", minLength: 1 };
     else if (section === "todos" && op === "addItem") properties.value = { type: "object", additionalProperties: false, required: ["text", "actor", "requester"], properties: { text: { type: "string", minLength: 1 }, actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] }, dueAt } };
     else if (section === "todos") properties.value = { type: "object", additionalProperties: false, required: ["dueChange"], properties: { text: { type: "string", minLength: 1 }, actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] }, dueChange } };
+    else if (TYPED_PROFILE_SECTIONS.includes(section)) properties.value = typedProfileValue(section);
     else properties.value = textValue;
     required.push("value");
   }

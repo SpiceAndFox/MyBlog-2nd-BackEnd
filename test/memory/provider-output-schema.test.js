@@ -51,3 +51,12 @@ test("compaction output schema is maintenance-only and section-specific", () => 
   assert.equal(resultVariants[1].properties.status.const, "unable_to_compact");
 });
 
+test("profile output schema requires typed profile classification", () => {
+  const schema = buildOutputSchema("profileRelationshipProposer").schema;
+  const patches = schema.properties.sectionResults.properties.userProfile.oneOf[0].properties.patches.items.oneOf;
+  const add = patches.find((variant) => variant.properties.op.const === "addItem");
+  assert.deepEqual(add.properties.value.required, ["text", "facet", "canonicalKey", "factBasis"]);
+  assert.deepEqual(add.properties.value.properties.facet.enum, [
+    "identity", "background", "preference", "communicationBoundary", "communicationStyle", "interactionPattern", "interest",
+  ]);
+});

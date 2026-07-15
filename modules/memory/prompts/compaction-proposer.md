@@ -7,12 +7,12 @@
 ## 1. 输入语义
 
 - `task.tickId`：原样复制到输出 `tickId`。
-- `task.targetSections`：被预算阻塞的单个 section，本任务只处理它。
+- `task.targetSections`：需要容量恢复或主动整理的单个 section，本任务只处理它。
 - `writableState`：目标 section 的既有 items 全集。每个 item 包含 `id` 和 `text`。
   - 对于 todos，还可看到 `actor`、`requester`、`status`、`dueAt`。
 - `readOnlyContext`：空对象 `{}`。维护任务只在目标 source items 内判断合并。
 - `observedMessages`：空数组 `[]`。维护任务不读取 raw messages。
-- `task.trigger`：`{ type: "lengthBudget", dimension, limit }`，说明触发容量阻塞的维度和限值。
+- `task.trigger`：容量恢复时为 `{ type: "lengthBudget", dimension, limit }`；主动整理时为 `{ type: "hygiene", itemCount, maxItems, highWatermarkPercent }`。触发模式不改变合并安全标准。
 
 ## 2. 核心约束
 
@@ -73,11 +73,13 @@
 
 **userProfile / assistantProfile：**
 - 只能合并同一属性维度的 items。
+- 新式 typed items 只有 facet 和 canonicalKey 分别相同时才能合并；factBasis 由 Reducer 确定性继承（存在 explicit 时取 explicit）。
 - 不能把不同偏好揉成模糊的人格标签（如把"喜欢安静"和"不喜欢被打断"合并成"内向"）。
 - 不能把不同层次的个性特征无差别合并。
 
 **relationship：**
 - 只能合并同一关系维度的重复表达。
+- 新式 typed items 只有 facet 和 canonicalKey 分别相同时才能合并。
 - 不能把不同阶段的关系事实压成一个无时间层次的结论。
 
 **worldFacts：**

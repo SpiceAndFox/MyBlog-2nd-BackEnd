@@ -4,7 +4,7 @@
 
 ## 1. 适用范围
 
-Reducer 校验普通非 `mergeItems` patch 的 evidence source 与 quote。普通模式下，patch evidence 可以来自 newBatch 或 overlap，但每个 `evidenceRefs.messageId` 都必须属于本 task 的 `observedMessages`；不要求至少一条 evidence 来自 newBatch。add/update item 校验通过后，Reducer 为 refs 补入数据库 `contentHash`，再连同 `patch.evidenceKind` 包装为新的 `evidenceGroup` 追加到 item；forget evidence 只证明指令，不追加到被移除 item。item 派生字段（`createdAtMessageId`/`updatedAtMessageId`）的维护规则见 [状态契约](../state-contract.md) §1。
+Reducer 校验普通非 `mergeItems` patch 的 evidence source 与 quote。普通模式下，patch evidence 可以来自 newBatch 或 overlap，每个 `evidenceRefs.messageId` 都必须属于本 task 的 `observedMessages`，且至少一条必须满足 `cursorBefore < messageId <= targetMessageId`；全部 evidence 仅来自 overlap 时以 `overlap_only_evidence` 拒绝。add/update item 校验通过后，Reducer 为 refs 补入数据库 `contentHash`，再连同 `patch.evidenceKind` 包装为新的 `evidenceGroup` 追加到 item；forget evidence 只证明指令，不追加到被移除 item。item 派生字段（`createdAtMessageId`/`updatedAtMessageId`）的维护规则见 [状态契约](../state-contract.md) §1。
 
 `mergeItems` 不接收 Proposer 输出的 `evidenceRefs`。Reducer 校验 source items 存在且带有结构合法的 `evidenceGroups`，继承到 merged item 并保留 group 边界；merged item 派生字段见 [状态契约](../state-contract.md) §1。source evidence 已在写入 source item 时通过 quote 校验。
 
