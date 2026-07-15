@@ -1,0 +1,1301 @@
+{
+  "status": "completed",
+  "mode": "rehearsal",
+  "startedAt": "2026-07-15T15:47:02.939Z",
+  "completedAt": "2026-07-15T15:56:41.935Z",
+  "durationMs": 578996,
+  "scopeCount": 3,
+  "results": [
+    {
+      "userId": 1,
+      "presetId": "Alice",
+      "messageCount": 160,
+      "characterCount": 4535,
+      "boundaryMessageId": 1155,
+      "sourceFingerprint": "sha256:b5326ee3b52edcb407d26ca07f6e5af6c4cce809998e7234443c88a5a337ba66",
+      "sourceGeneration": 1,
+      "revision": 146,
+      "sectionUsage": {
+        "scene": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "todos": {
+          "itemCount": 4,
+          "textChars": 17
+        },
+        "standingAgreements": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "recentEpisodes": {
+          "itemCount": 2,
+          "textChars": 181
+        },
+        "milestones": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "worldFacts": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "userProfile": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "assistantProfile": {
+          "itemCount": 1,
+          "textChars": 19
+        },
+        "relationship": {
+          "itemCount": 1,
+          "textChars": 38
+        }
+      },
+      "verification": {
+        "rawBoundaryStable": true,
+        "healthyTargetCount": 6,
+        "targetCursorsAtBoundary": true,
+        "authoritySnapshotEqual": true,
+        "eventSnapshotChainContinuous": true,
+        "healthyProjections": [
+          "rag"
+        ]
+      },
+      "normalTaskCount": 129,
+      "providerUsage": {
+        "callCount": 130,
+        "inputTokens": 1056235,
+        "cachedInputTokens": 694400,
+        "outputTokens": 15139,
+        "totalTokens": 1071374,
+        "costUsd": 0.056840134,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0,
+        "retryCallCount": 1,
+        "retryClassificationMissingCallCount": 0,
+        "retryClassificationCoverageComplete": true,
+        "providerDurationMs": 177692,
+        "tokenUsageCoverageComplete": true,
+        "costCoverageComplete": true,
+        "pricing": {
+          "version": "deepseek-v4-flash-2026-07-15",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "effectiveAt": "2026-07-15T00:00:00Z",
+          "currency": "USD",
+          "model": "deepseek-v4-flash",
+          "inputUsdPerMillionTokens": 0.14,
+          "cachedInputUsdPerMillionTokens": 0.0028,
+          "outputUsdPerMillionTokens": 0.28
+        },
+        "byTarget": {
+          "scene": {
+            "callCount": 32,
+            "inputTokens": 141456,
+            "cachedInputTokens": 106496,
+            "outputTokens": 3085,
+            "totalTokens": 144541,
+            "costUsd": 0.006056376,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todos": {
+            "callCount": 27,
+            "inputTokens": 328707,
+            "cachedInputTokens": 255744,
+            "outputTokens": 2862,
+            "totalTokens": 331569,
+            "costUsd": 0.011732274,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "standingAgreements": {
+            "callCount": 20,
+            "inputTokens": 126300,
+            "cachedInputTokens": 71680,
+            "outputTokens": 1854,
+            "totalTokens": 128154,
+            "costUsd": 0.00836662,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodes": {
+            "callCount": 17,
+            "inputTokens": 127150,
+            "cachedInputTokens": 67456,
+            "outputTokens": 3679,
+            "totalTokens": 130829,
+            "costUsd": 0.00957615,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationship": {
+            "callCount": 14,
+            "inputTokens": 179837,
+            "cachedInputTokens": 111104,
+            "outputTokens": 1807,
+            "totalTokens": 181644,
+            "costUsd": 0.010439674,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFacts": {
+            "callCount": 20,
+            "inputTokens": 152785,
+            "cachedInputTokens": 81920,
+            "outputTokens": 1852,
+            "totalTokens": 154637,
+            "costUsd": 0.01066904,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byProposer": {
+          "currentStateProposer": {
+            "callCount": 32,
+            "inputTokens": 141456,
+            "cachedInputTokens": 106496,
+            "outputTokens": 3085,
+            "totalTokens": 144541,
+            "costUsd": 0.006056376,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todoProposer": {
+            "callCount": 27,
+            "inputTokens": 328707,
+            "cachedInputTokens": 255744,
+            "outputTokens": 2862,
+            "totalTokens": 331569,
+            "costUsd": 0.011732274,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "agreementProposer": {
+            "callCount": 20,
+            "inputTokens": 126300,
+            "cachedInputTokens": 71680,
+            "outputTokens": 1854,
+            "totalTokens": 128154,
+            "costUsd": 0.00836662,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodeProposer": {
+            "callCount": 17,
+            "inputTokens": 127150,
+            "cachedInputTokens": 67456,
+            "outputTokens": 3679,
+            "totalTokens": 130829,
+            "costUsd": 0.00957615,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationshipProposer": {
+            "callCount": 14,
+            "inputTokens": 179837,
+            "cachedInputTokens": 111104,
+            "outputTokens": 1807,
+            "totalTokens": 181644,
+            "costUsd": 0.010439674,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFactProposer": {
+            "callCount": 20,
+            "inputTokens": 152785,
+            "cachedInputTokens": 81920,
+            "outputTokens": 1852,
+            "totalTokens": 154637,
+            "costUsd": 0.01066904,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byModel": {
+          "deepseek-v4-flash": {
+            "callCount": 130,
+            "inputTokens": 1056235,
+            "cachedInputTokens": 694400,
+            "outputTokens": 15139,
+            "totalTokens": 1071374,
+            "costUsd": 0.056840134,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byMode": {
+          "normal": {
+            "callCount": 130,
+            "inputTokens": 1056235,
+            "cachedInputTokens": 694400,
+            "outputTokens": 15139,
+            "totalTokens": 1071374,
+            "costUsd": 0.056840134,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byResult": {
+          "ok": {
+            "callCount": 129,
+            "inputTokens": 1048642,
+            "cachedInputTokens": 690432,
+            "outputTokens": 14673,
+            "totalTokens": 1063315,
+            "costUsd": 0.056191044,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "output_schema_invalid": {
+            "callCount": 1,
+            "inputTokens": 7593,
+            "cachedInputTokens": 3968,
+            "outputTokens": 466,
+            "totalTokens": 8059,
+            "costUsd": 0.00064909,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        }
+      },
+      "durationMs": 183260
+    },
+    {
+      "userId": 1,
+      "presetId": "default",
+      "messageCount": 278,
+      "characterCount": 30523,
+      "boundaryMessageId": 1149,
+      "sourceFingerprint": "sha256:58c6eb3e0c1ebd3bbbdb6ab5335528cb600b0173e905cdd73ba099c13a7cc5ab",
+      "sourceGeneration": 1,
+      "revision": 240,
+      "sectionUsage": {
+        "scene": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "todos": {
+          "itemCount": 4,
+          "textChars": 63
+        },
+        "standingAgreements": {
+          "itemCount": 2,
+          "textChars": 27
+        },
+        "recentEpisodes": {
+          "itemCount": 20,
+          "textChars": 981
+        },
+        "milestones": {
+          "itemCount": 1,
+          "textChars": 34
+        },
+        "worldFacts": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "userProfile": {
+          "itemCount": 1,
+          "textChars": 6
+        },
+        "assistantProfile": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "relationship": {
+          "itemCount": 2,
+          "textChars": 80
+        }
+      },
+      "verification": {
+        "rawBoundaryStable": true,
+        "healthyTargetCount": 6,
+        "targetCursorsAtBoundary": true,
+        "authoritySnapshotEqual": true,
+        "eventSnapshotChainContinuous": true,
+        "healthyProjections": [
+          "rag"
+        ]
+      },
+      "normalTaskCount": 239,
+      "providerUsage": {
+        "callCount": 241,
+        "inputTokens": 2315269,
+        "cachedInputTokens": 1255040,
+        "outputTokens": 29216,
+        "totalTokens": 2344485,
+        "costUsd": 0.160126636,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0,
+        "retryCallCount": 2,
+        "retryClassificationMissingCallCount": 0,
+        "retryClassificationCoverageComplete": true,
+        "providerDurationMs": 358772,
+        "tokenUsageCoverageComplete": true,
+        "costCoverageComplete": true,
+        "pricing": {
+          "version": "deepseek-v4-flash-2026-07-15",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "effectiveAt": "2026-07-15T00:00:00Z",
+          "currency": "USD",
+          "model": "deepseek-v4-flash",
+          "inputUsdPerMillionTokens": 0.14,
+          "cachedInputUsdPerMillionTokens": 0.0028,
+          "outputUsdPerMillionTokens": 0.28
+        },
+        "byTarget": {
+          "scene": {
+            "callCount": 70,
+            "inputTokens": 338915,
+            "cachedInputTokens": 232960,
+            "outputTokens": 6690,
+            "totalTokens": 345605,
+            "costUsd": 0.01735916,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todos": {
+            "callCount": 47,
+            "inputTokens": 639719,
+            "cachedInputTokens": 445184,
+            "outputTokens": 4606,
+            "totalTokens": 644325,
+            "costUsd": 0.029771114,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "standingAgreements": {
+            "callCount": 35,
+            "inputTokens": 274993,
+            "cachedInputTokens": 125440,
+            "outputTokens": 3349,
+            "totalTokens": 278342,
+            "costUsd": 0.022226365,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodes": {
+            "callCount": 30,
+            "inputTokens": 309719,
+            "cachedInputTokens": 117632,
+            "outputTokens": 8244,
+            "totalTokens": 317963,
+            "costUsd": 0.029529858,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationship": {
+            "callCount": 24,
+            "inputTokens": 391605,
+            "cachedInputTokens": 190464,
+            "outputTokens": 3079,
+            "totalTokens": 394684,
+            "costUsd": 0.029555164,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFacts": {
+            "callCount": 35,
+            "inputTokens": 360318,
+            "cachedInputTokens": 143360,
+            "outputTokens": 3248,
+            "totalTokens": 363566,
+            "costUsd": 0.031684975,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byProposer": {
+          "currentStateProposer": {
+            "callCount": 70,
+            "inputTokens": 338915,
+            "cachedInputTokens": 232960,
+            "outputTokens": 6690,
+            "totalTokens": 345605,
+            "costUsd": 0.01735916,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todoProposer": {
+            "callCount": 47,
+            "inputTokens": 639719,
+            "cachedInputTokens": 445184,
+            "outputTokens": 4606,
+            "totalTokens": 644325,
+            "costUsd": 0.029771114,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "agreementProposer": {
+            "callCount": 35,
+            "inputTokens": 274993,
+            "cachedInputTokens": 125440,
+            "outputTokens": 3349,
+            "totalTokens": 278342,
+            "costUsd": 0.022226365,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodeProposer": {
+            "callCount": 30,
+            "inputTokens": 309719,
+            "cachedInputTokens": 117632,
+            "outputTokens": 8244,
+            "totalTokens": 317963,
+            "costUsd": 0.029529858,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationshipProposer": {
+            "callCount": 24,
+            "inputTokens": 391605,
+            "cachedInputTokens": 190464,
+            "outputTokens": 3079,
+            "totalTokens": 394684,
+            "costUsd": 0.029555164,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFactProposer": {
+            "callCount": 35,
+            "inputTokens": 360318,
+            "cachedInputTokens": 143360,
+            "outputTokens": 3248,
+            "totalTokens": 363566,
+            "costUsd": 0.031684975,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byModel": {
+          "deepseek-v4-flash": {
+            "callCount": 241,
+            "inputTokens": 2315269,
+            "cachedInputTokens": 1255040,
+            "outputTokens": 29216,
+            "totalTokens": 2344485,
+            "costUsd": 0.160126636,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byMode": {
+          "normal": {
+            "callCount": 241,
+            "inputTokens": 2315269,
+            "cachedInputTokens": 1255040,
+            "outputTokens": 29216,
+            "totalTokens": 2344485,
+            "costUsd": 0.160126636,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byResult": {
+          "ok": {
+            "callCount": 239,
+            "inputTokens": 2294707,
+            "cachedInputTokens": 1247104,
+            "outputTokens": 27988,
+            "totalTokens": 2322695,
+            "costUsd": 0.157992936,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "output_schema_invalid": {
+            "callCount": 2,
+            "inputTokens": 20562,
+            "cachedInputTokens": 7936,
+            "outputTokens": 1228,
+            "totalTokens": 21790,
+            "costUsd": 0.0021337,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        }
+      },
+      "durationMs": 368945
+    },
+    {
+      "userId": 1,
+      "presetId": "Rabbit",
+      "messageCount": 23,
+      "characterCount": 1641,
+      "boundaryMessageId": 876,
+      "sourceFingerprint": "sha256:3cfb5406de1fb58c69d4da2a28b897b80c2de0127f4ea30475bf57d23e59502e",
+      "sourceGeneration": 1,
+      "revision": 22,
+      "sectionUsage": {
+        "scene": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "todos": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "standingAgreements": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "recentEpisodes": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "milestones": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "worldFacts": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "userProfile": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "assistantProfile": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "relationship": {
+          "itemCount": 0,
+          "textChars": 0
+        }
+      },
+      "verification": {
+        "rawBoundaryStable": true,
+        "healthyTargetCount": 6,
+        "targetCursorsAtBoundary": true,
+        "authoritySnapshotEqual": true,
+        "eventSnapshotChainContinuous": true,
+        "healthyProjections": [
+          "rag"
+        ]
+      },
+      "normalTaskCount": 21,
+      "providerUsage": {
+        "callCount": 21,
+        "inputTokens": 151830,
+        "cachedInputTokens": 108672,
+        "outputTokens": 2120,
+        "totalTokens": 153950,
+        "costUsd": 0.00694,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0,
+        "retryCallCount": 0,
+        "retryClassificationMissingCallCount": 0,
+        "retryClassificationCoverageComplete": true,
+        "providerDurationMs": 25221,
+        "tokenUsageCoverageComplete": true,
+        "costCoverageComplete": true,
+        "pricing": {
+          "version": "deepseek-v4-flash-2026-07-15",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "effectiveAt": "2026-07-15T00:00:00Z",
+          "currency": "USD",
+          "model": "deepseek-v4-flash",
+          "inputUsdPerMillionTokens": 0.14,
+          "cachedInputUsdPerMillionTokens": 0.0028,
+          "outputUsdPerMillionTokens": 0.28
+        },
+        "byTarget": {
+          "scene": {
+            "callCount": 6,
+            "inputTokens": 27491,
+            "cachedInputTokens": 19968,
+            "outputTokens": 542,
+            "totalTokens": 28033,
+            "costUsd": 0.001260888,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todos": {
+            "callCount": 4,
+            "inputTokens": 46485,
+            "cachedInputTokens": 37888,
+            "outputTokens": 362,
+            "totalTokens": 46847,
+            "costUsd": 0.001411028,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "standingAgreements": {
+            "callCount": 3,
+            "inputTokens": 17920,
+            "cachedInputTokens": 10752,
+            "outputTokens": 282,
+            "totalTokens": 18202,
+            "costUsd": 0.001112585,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodes": {
+            "callCount": 3,
+            "inputTokens": 19755,
+            "cachedInputTokens": 11904,
+            "outputTokens": 318,
+            "totalTokens": 20073,
+            "costUsd": 0.00122151,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationship": {
+            "callCount": 2,
+            "inputTokens": 20964,
+            "cachedInputTokens": 15872,
+            "outputTokens": 336,
+            "totalTokens": 21300,
+            "costUsd": 0.000851402,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFacts": {
+            "callCount": 3,
+            "inputTokens": 19215,
+            "cachedInputTokens": 12288,
+            "outputTokens": 280,
+            "totalTokens": 19495,
+            "costUsd": 0.001082587,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byProposer": {
+          "currentStateProposer": {
+            "callCount": 6,
+            "inputTokens": 27491,
+            "cachedInputTokens": 19968,
+            "outputTokens": 542,
+            "totalTokens": 28033,
+            "costUsd": 0.001260888,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "todoProposer": {
+            "callCount": 4,
+            "inputTokens": 46485,
+            "cachedInputTokens": 37888,
+            "outputTokens": 362,
+            "totalTokens": 46847,
+            "costUsd": 0.001411028,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "agreementProposer": {
+            "callCount": 3,
+            "inputTokens": 17920,
+            "cachedInputTokens": 10752,
+            "outputTokens": 282,
+            "totalTokens": 18202,
+            "costUsd": 0.001112585,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "episodeProposer": {
+            "callCount": 3,
+            "inputTokens": 19755,
+            "cachedInputTokens": 11904,
+            "outputTokens": 318,
+            "totalTokens": 20073,
+            "costUsd": 0.00122151,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "profileRelationshipProposer": {
+            "callCount": 2,
+            "inputTokens": 20964,
+            "cachedInputTokens": 15872,
+            "outputTokens": 336,
+            "totalTokens": 21300,
+            "costUsd": 0.000851402,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          },
+          "worldFactProposer": {
+            "callCount": 3,
+            "inputTokens": 19215,
+            "cachedInputTokens": 12288,
+            "outputTokens": 280,
+            "totalTokens": 19495,
+            "costUsd": 0.001082587,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byModel": {
+          "deepseek-v4-flash": {
+            "callCount": 21,
+            "inputTokens": 151830,
+            "cachedInputTokens": 108672,
+            "outputTokens": 2120,
+            "totalTokens": 153950,
+            "costUsd": 0.00694,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byMode": {
+          "normal": {
+            "callCount": 21,
+            "inputTokens": 151830,
+            "cachedInputTokens": 108672,
+            "outputTokens": 2120,
+            "totalTokens": 153950,
+            "costUsd": 0.00694,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        },
+        "byResult": {
+          "ok": {
+            "callCount": 21,
+            "inputTokens": 151830,
+            "cachedInputTokens": 108672,
+            "outputTokens": 2120,
+            "totalTokens": 153950,
+            "costUsd": 0.00694,
+            "tokenUsageMissingCallCount": 0,
+            "costMissingCallCount": 0
+          }
+        }
+      },
+      "durationMs": 26775
+    }
+  ],
+  "providerUsage": {
+    "callCount": 392,
+    "inputTokens": 3523334,
+    "cachedInputTokens": 2058112,
+    "outputTokens": 46475,
+    "totalTokens": 3569809,
+    "costUsd": 0.22390677,
+    "tokenUsageMissingCallCount": 0,
+    "costMissingCallCount": 0,
+    "retryCallCount": 3,
+    "retryClassificationMissingCallCount": 0,
+    "retryClassificationCoverageComplete": true,
+    "providerDurationMs": 561686,
+    "tokenUsageCoverageComplete": true,
+    "costCoverageComplete": true,
+    "pricing": {
+      "version": "deepseek-v4-flash-2026-07-15",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "effectiveAt": "2026-07-15T00:00:00Z",
+      "currency": "USD",
+      "model": "deepseek-v4-flash",
+      "inputUsdPerMillionTokens": 0.14,
+      "cachedInputUsdPerMillionTokens": 0.0028,
+      "outputUsdPerMillionTokens": 0.28
+    },
+    "byTarget": {
+      "scene": {
+        "callCount": 108,
+        "inputTokens": 507862,
+        "cachedInputTokens": 359424,
+        "outputTokens": 10317,
+        "totalTokens": 518179,
+        "costUsd": 0.024676424,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "todos": {
+        "callCount": 78,
+        "inputTokens": 1014911,
+        "cachedInputTokens": 738816,
+        "outputTokens": 7830,
+        "totalTokens": 1022741,
+        "costUsd": 0.042914416,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "standingAgreements": {
+        "callCount": 58,
+        "inputTokens": 419213,
+        "cachedInputTokens": 207872,
+        "outputTokens": 5485,
+        "totalTokens": 424698,
+        "costUsd": 0.03170557,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "episodes": {
+        "callCount": 50,
+        "inputTokens": 456624,
+        "cachedInputTokens": 196992,
+        "outputTokens": 12241,
+        "totalTokens": 468865,
+        "costUsd": 0.040327518,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "profileRelationship": {
+        "callCount": 40,
+        "inputTokens": 592406,
+        "cachedInputTokens": 317440,
+        "outputTokens": 5222,
+        "totalTokens": 597628,
+        "costUsd": 0.04084624,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "worldFacts": {
+        "callCount": 58,
+        "inputTokens": 532318,
+        "cachedInputTokens": 237568,
+        "outputTokens": 5380,
+        "totalTokens": 537698,
+        "costUsd": 0.043436602,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      }
+    },
+    "byProposer": {
+      "currentStateProposer": {
+        "callCount": 108,
+        "inputTokens": 507862,
+        "cachedInputTokens": 359424,
+        "outputTokens": 10317,
+        "totalTokens": 518179,
+        "costUsd": 0.024676424,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "todoProposer": {
+        "callCount": 78,
+        "inputTokens": 1014911,
+        "cachedInputTokens": 738816,
+        "outputTokens": 7830,
+        "totalTokens": 1022741,
+        "costUsd": 0.042914416,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "agreementProposer": {
+        "callCount": 58,
+        "inputTokens": 419213,
+        "cachedInputTokens": 207872,
+        "outputTokens": 5485,
+        "totalTokens": 424698,
+        "costUsd": 0.03170557,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "episodeProposer": {
+        "callCount": 50,
+        "inputTokens": 456624,
+        "cachedInputTokens": 196992,
+        "outputTokens": 12241,
+        "totalTokens": 468865,
+        "costUsd": 0.040327518,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "profileRelationshipProposer": {
+        "callCount": 40,
+        "inputTokens": 592406,
+        "cachedInputTokens": 317440,
+        "outputTokens": 5222,
+        "totalTokens": 597628,
+        "costUsd": 0.04084624,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "worldFactProposer": {
+        "callCount": 58,
+        "inputTokens": 532318,
+        "cachedInputTokens": 237568,
+        "outputTokens": 5380,
+        "totalTokens": 537698,
+        "costUsd": 0.043436602,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      }
+    },
+    "byModel": {
+      "deepseek-v4-flash": {
+        "callCount": 392,
+        "inputTokens": 3523334,
+        "cachedInputTokens": 2058112,
+        "outputTokens": 46475,
+        "totalTokens": 3569809,
+        "costUsd": 0.22390677,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      }
+    },
+    "byMode": {
+      "normal": {
+        "callCount": 392,
+        "inputTokens": 3523334,
+        "cachedInputTokens": 2058112,
+        "outputTokens": 46475,
+        "totalTokens": 3569809,
+        "costUsd": 0.22390677,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      }
+    },
+    "byResult": {
+      "ok": {
+        "callCount": 389,
+        "inputTokens": 3495179,
+        "cachedInputTokens": 2046208,
+        "outputTokens": 44781,
+        "totalTokens": 3539960,
+        "costUsd": 0.22112398,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      },
+      "output_schema_invalid": {
+        "callCount": 3,
+        "inputTokens": 28155,
+        "cachedInputTokens": 11904,
+        "outputTokens": 1694,
+        "totalTokens": 29849,
+        "costUsd": 0.00278279,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0
+      }
+    }
+  },
+  "sourceInventory": {
+    "before": {
+      "scopeCount": 3,
+      "messageCount": 461,
+      "characterCount": 36699,
+      "sha256": "sha256:a9a3e5b0bed75b034c77d8ac0b4f6fd3f8a47cfd6fefb3c4383ca4fd9398af2c",
+      "contentFingerprintCoverageComplete": true,
+      "scopes": [
+        {
+          "userId": 1,
+          "presetId": "Alice",
+          "messageCount": 160,
+          "characterCount": 4535,
+          "boundaryMessageId": 1155,
+          "sourceFingerprint": "sha256:b5326ee3b52edcb407d26ca07f6e5af6c4cce809998e7234443c88a5a337ba66"
+        },
+        {
+          "userId": 1,
+          "presetId": "default",
+          "messageCount": 278,
+          "characterCount": 30523,
+          "boundaryMessageId": 1149,
+          "sourceFingerprint": "sha256:58c6eb3e0c1ebd3bbbdb6ab5335528cb600b0173e905cdd73ba099c13a7cc5ab"
+        },
+        {
+          "userId": 1,
+          "presetId": "Rabbit",
+          "messageCount": 23,
+          "characterCount": 1641,
+          "boundaryMessageId": 876,
+          "sourceFingerprint": "sha256:3cfb5406de1fb58c69d4da2a28b897b80c2de0127f4ea30475bf57d23e59502e"
+        }
+      ]
+    },
+    "after": {
+      "scopeCount": 3,
+      "messageCount": 461,
+      "characterCount": 36699,
+      "sha256": "sha256:a9a3e5b0bed75b034c77d8ac0b4f6fd3f8a47cfd6fefb3c4383ca4fd9398af2c",
+      "contentFingerprintCoverageComplete": true,
+      "scopes": [
+        {
+          "userId": 1,
+          "presetId": "Alice",
+          "messageCount": 160,
+          "characterCount": 4535,
+          "boundaryMessageId": 1155,
+          "sourceFingerprint": "sha256:b5326ee3b52edcb407d26ca07f6e5af6c4cce809998e7234443c88a5a337ba66"
+        },
+        {
+          "userId": 1,
+          "presetId": "default",
+          "messageCount": 278,
+          "characterCount": 30523,
+          "boundaryMessageId": 1149,
+          "sourceFingerprint": "sha256:58c6eb3e0c1ebd3bbbdb6ab5335528cb600b0173e905cdd73ba099c13a7cc5ab"
+        },
+        {
+          "userId": 1,
+          "presetId": "Rabbit",
+          "messageCount": 23,
+          "characterCount": 1641,
+          "boundaryMessageId": 876,
+          "sourceFingerprint": "sha256:3cfb5406de1fb58c69d4da2a28b897b80c2de0127f4ea30475bf57d23e59502e"
+        }
+      ]
+    },
+    "unchanged": true
+  },
+  "canStartService": false,
+  "evidence": {
+    "reportFormatVersion": 2,
+    "code": {
+      "gitCommit": "2519f5a1bc0b19e327b975ab69a9f84106bbd6f0",
+      "gitTree": "9596c0b7830b799e403135a7030a42909f278ee0",
+      "workingTreeDirty": true,
+      "workingTreeStateHash": "sha256:74c29ffc1677db6e40b2310f47329e0d2f902f1625441463f64ca9ef85674005"
+    },
+    "schema": {
+      "sha256": "sha256:605ee7998934dce127639ff2d462773a7cf7226e3193270e60b8b2fea731534e",
+      "files": [
+        {
+          "name": "001-memory-v2.sql",
+          "sha256": "sha256:643e6fada9542bc90e96a6b3df7f2925b188757b06f9a6f25f09188e4b47f7ae"
+        },
+        {
+          "name": "002-drop-memory-v1.sql",
+          "sha256": "sha256:a71dc8e72f4c1ceb92ac5a0fcef4dc251310955fa4c42f7a79fd8586024680a7"
+        },
+        {
+          "name": "003-add-user-time-zone.sql",
+          "sha256": "sha256:80e0ad02c69a148454858010f11eed44816df00de15acc65f6cf8cca57cd51da"
+        },
+        {
+          "name": "004-add-diagnostic-projection-checkpoints.sql",
+          "sha256": "sha256:06e955e58e0340557bd0279e7ceb30b1548d0c907d45d2703290d1b1178167cc"
+        },
+        {
+          "name": "005-runtime-correctness.sql",
+          "sha256": "sha256:2929e90dbced29f1cfee66007c0986e129ecbc3f271d013830ab154a95c25e80"
+        },
+        {
+          "name": "006-backfill-event-replay-integrity.sql",
+          "sha256": "sha256:7e63da84d4130356cb604d1c225a687bd6472fbb95f0418ec1a66f7c2a38bf34"
+        },
+        {
+          "name": "007-privacy-operation-recovery.sql",
+          "sha256": "sha256:6ea78d2e44e4a5160081de9b0ac244c207cb04b5f2fdba5d3098c20afc07e4ed"
+        },
+        {
+          "name": "008-chat-turns-and-async-privacy.sql",
+          "sha256": "sha256:3529f0d430a15b3ffe5a4626fd2bf3c65b6917659f4f5f5dc5177b2b9fe14a78"
+        },
+        {
+          "name": "009-launch-gate-legacy-projections.sql",
+          "sha256": "sha256:f697d4519908dd5ddbc6614b7c2b10fc165d7aadccf9a85fba13f3e61e5a4e60"
+        }
+      ]
+    },
+    "config": {
+      "sha256": "sha256:719d1f11b9ad7ed961f95e57d75a7b776d9194d5dc990081d0ab180f2a978df7",
+      "values": {
+        "memory": {
+          "enabled": true,
+          "schemaVersion": 2,
+          "sectionBudgets": {
+            "todos": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "standingAgreements": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "recentEpisodes": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "milestones": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "worldFacts": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "userProfile": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "assistantProfile": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            },
+            "relationship": {
+              "maxItems": 20,
+              "maxRenderedChars": 2000
+            }
+          },
+          "targets": {
+            "scene": {
+              "lagThreshold": 4,
+              "contextWindow": 8
+            },
+            "todos": {
+              "lagThreshold": 6,
+              "contextWindow": 24
+            },
+            "standingAgreements": {
+              "lagThreshold": 8,
+              "contextWindow": 24
+            },
+            "episodes": {
+              "lagThreshold": 10,
+              "contextWindow": 32
+            },
+            "profileRelationship": {
+              "lagThreshold": 12,
+              "contextWindow": 48
+            },
+            "worldFacts": {
+              "lagThreshold": 8,
+              "contextWindow": 32
+            }
+          },
+          "scene": {
+            "maxRenderedChars": 1000,
+            "ttlMs": 86400000
+          },
+          "overdueTodos": {
+            "maxRenderedItems": 10,
+            "maxRenderedChars": 1000
+          },
+          "gapBridge": {
+            "maxRawChars": 10000,
+            "retainedMessages": 10
+          },
+          "quote": {
+            "algorithm": "work_bounded_equal_window_levenshtein",
+            "threshold": 0.75,
+            "maxCodePoints": 200,
+            "fuzzyMaxContentCodePoints": 20000,
+            "fuzzyMaxCandidateWindows": 256
+          },
+          "providerRecovery": {
+            "retryMax": 2,
+            "schemaInvalidRetryMax": 1,
+            "backoffBaseMs": 1000,
+            "backoffMaxMs": 10000,
+            "haltAfterConsecutiveErrors": 3
+          },
+          "compaction": {
+            "retryMax": 2
+          },
+          "hygiene": {
+            "highWatermarkPercent": 70,
+            "minItemDelta": 5
+          },
+          "retention": {
+            "snapshotDays": 30,
+            "eventDays": 30,
+            "taskDays": 30,
+            "opsLogDays": 30,
+            "debugDays": 7
+          },
+          "health": {
+            "alertDebounceMs": 0,
+            "recoveryStableMs": 0
+          },
+          "tasks": {
+            "pollIntervalMs": 1000
+          },
+          "projections": {
+            "pollIntervalMs": 60000
+          },
+          "admission": {
+            "concurrency": 2,
+            "queueMax": 32
+          },
+          "provider": {
+            "adapter": "deepseek-strict-tools",
+            "baseUrl": "https://api.deepseek.com/beta",
+            "apiKey": {
+              "configured": true
+            },
+            "model": "deepseek-v4-flash",
+            "timeoutMs": 60000,
+            "maxInputTokens": 1000000,
+            "maxOutputTokens": 8192,
+            "thinkingMode": "disabled"
+          }
+        },
+        "rag": {
+          "enabled": true,
+          "embeddingProvider": "openai-compatible",
+          "embeddingBaseUrl": "https://api.siliconflow.cn/v1/",
+          "embeddingApiKey": {
+            "configured": true
+          },
+          "embeddingModel": "Qwen/Qwen3-Embedding-8B",
+          "embeddingDimensions": 4096,
+          "embeddingIncludeDimensionsParam": true,
+          "embeddingTimeoutMs": 30000,
+          "queryTimeoutMs": 5000,
+          "embeddingBatchSize": 1,
+          "embeddingRawBody": {},
+          "queryEmbeddingTemplate": "query: {{query}}",
+          "documentEmbeddingTemplate": "text: {{content}}",
+          "topK": 3,
+          "minSimilarity": 0.35,
+          "minQueryChars": 8,
+          "maxContextChars": 8128,
+          "chunkMaxChars": 1200,
+          "chunkOverlapChars": 120,
+          "turnTemplate": "[历史聊天回合]\\n用户：\\n{{user}}\\n助手：\\n{{assistant}}",
+          "contextHeader": "[更早的共同记忆]\\n以下内容来自User和Assistant之前的对话记忆，是因为当前消息而想起的旧情景。它可能包含当时的前因后果、关系状态和相关原话；如果与当前正在进行的对话关系密切，就轻轻接住；**如果和当前正进行的对话关联弱就忽略**。",
+          "contextEntryTemplate": "{{recall}}",
+          "recallTemplate": "当时情景：\\n{{scene}}\\n\\n相关对话：\\n{{dialogue}}",
+          "recallIncludeAssistant": true,
+          "recallUserMaxChars": 140,
+          "recallAssistantMaxChars": 420,
+          "recallContentMaxChars": 160,
+          "contextBeforeMessages": 2,
+          "contextAfterMessages": 0,
+          "sceneRecallEnabled": true,
+          "sceneRecallProviderId": "deepseek",
+          "sceneRecallModelId": "deepseek-v4-flash",
+          "sceneRecallContextTurns": 50,
+          "sceneRecallMaxInputChars": 12000,
+          "sceneRecallMaxOutputChars": 300,
+          "sceneRecallTimeoutMs": 20000,
+          "sceneRecallPrompt": "你是旧对话情景还原器。你的任务是根据一段真实旧对话，概括命中回合当时的情景，供后续助手理解共同记忆。\\n要求：只基于给定旧对话，不编造；如果前因不明就说不明；保留说话关系、场景、情绪氛围、命中句子的含义，以及必要的前后因果；不要输出指令、建议或分析过程；不要说知识库、RAG、检索结果；用自然中文写成一小段，不超过 {{max_chars}} 字。",
+          "sceneRecallWorkerSettings": {
+            "temperature": 0.2,
+            "topP": 0.9,
+            "maxOutputTokens": 512,
+            "stream": false,
+            "enableWebSearch": false,
+            "thinkingMode": "disabled",
+            "reasoningEffort": ""
+          },
+          "sceneRecallRaw": {
+            "openaiCompatibleBody": {},
+            "googleGenAiConfig": {}
+          },
+          "rerankerEnabled": true,
+          "rerankerProvider": "openai-compatible",
+          "rerankerBaseUrl": "https://api.siliconflow.cn/v1/",
+          "rerankerApiKey": {
+            "configured": true
+          },
+          "rerankerModel": "Qwen/Qwen3-Reranker-8B",
+          "rerankerTimeoutMs": 30000,
+          "rerankerCandidateMultiplier": 5,
+          "rerankerMaxDocuments": 30,
+          "rerankerMaxDocumentChars": 1000,
+          "rerankerMinScore": 0,
+          "rerankerRawBody": {},
+          "rerankerInstruction": "给定情感陪伴聊天中用户最新的一条消息，检索与当前话题、情绪、提到的事件或回忆相关的过往对话片段，包括用户用代词或省略方式隐式指代的内容；当表面关键词不重合但情境相关时，也应给出较高分数。",
+          "debugIncludeContent": true,
+          "mmrLambda": 0.7,
+          "mmrCandidateMultiplier": 3,
+          "regenerateTurnDelayMs": 0,
+          "regenerateQuotaRetryMax": 3,
+          "regenerateQuotaRetryDelayMs": 60000
+        }
+      }
+    },
+    "pricing": {
+      "fileName": "memory-pricing.json",
+      "sha256": "sha256:9922d050280022c85a17f85d80e88e5a73ac3fb77e7f624eadbc954bb9e12c8b"
+    }
+  },
+  "evidenceGate": {
+    "status": "passed",
+    "issues": []
+  }
+}
