@@ -15,10 +15,17 @@ function validEnv() {
     env[`CHAT_MEMORY_V2_${section}_MAX_ITEMS`] = "20";
     env[`CHAT_MEMORY_V2_${section}_MAX_RENDERED_CHARS`] = "2000";
   }
-  const targets = ["SCENE", "TODOS", "STANDING_AGREEMENTS", "EPISODES", "PROFILE_RELATIONSHIP", "WORLD_FACTS"];
-  for (const target of targets) {
-    env[`CHAT_MEMORY_V2_${target}_LAG_THRESHOLD`] = target === "PROFILE_RELATIONSHIP" ? "12" : "2";
-    env[`CHAT_MEMORY_V2_${target}_CONTEXT_WINDOW`] = target === "PROFILE_RELATIONSHIP" ? "32" : "6";
+  const targets = {
+    SCENE: [4, 8],
+    TODOS: [6, 24],
+    STANDING_AGREEMENTS: [8, 24],
+    EPISODES: [10, 32],
+    PROFILE_RELATIONSHIP: [12, 48],
+    WORLD_FACTS: [8, 32],
+  };
+  for (const [target, [lagThreshold, contextWindow]] of Object.entries(targets)) {
+    env[`CHAT_MEMORY_V2_${target}_LAG_THRESHOLD`] = String(lagThreshold);
+    env[`CHAT_MEMORY_V2_${target}_CONTEXT_WINDOW`] = String(contextWindow);
   }
   Object.assign(env, {
     CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS: "1000", CHAT_MEMORY_V2_SCENE_TTL_MS: "86400000",
@@ -46,7 +53,14 @@ test("v2 config requires an explicit structured-output adapter", () => {
   const config = loadMemoryV2Config(env);
   assert.equal(config.provider.model, "structured-model");
   assert.equal(config.provider.adapter, "openai-json-schema");
-  assert.deepEqual(config.targets.profileRelationship, { lagThreshold: 12, contextWindow: 32 });
+  assert.deepEqual(config.targets, {
+    scene: { lagThreshold: 4, contextWindow: 8 },
+    todos: { lagThreshold: 6, contextWindow: 24 },
+    standingAgreements: { lagThreshold: 8, contextWindow: 24 },
+    episodes: { lagThreshold: 10, contextWindow: 32 },
+    profileRelationship: { lagThreshold: 12, contextWindow: 48 },
+    worldFacts: { lagThreshold: 8, contextWindow: 32 },
+  });
   assert.deepEqual(config.hygiene, { highWatermarkPercent: 70, minItemDelta: 5 });
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "prompt-and-parse";
   assert.throws(() => loadMemoryV2Config(env), /PROVIDER_ADAPTER must be one of/);

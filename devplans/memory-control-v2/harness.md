@@ -344,7 +344,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls 与 observed-message 总数（calls/message 由两者相除）、eligible、tokens/latency，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration；指标使用稳定标签且不含原始消息正文等高基数字段。只有 Provider 明确返回可信的 request cost 时才记录 `cost_usd`；否则费用由 token 指标和外部版本化价目表计算，运行时不得硬编码可能变化的单价。
-- 配置测试证明 capacity、scene/overdue、lagThreshold/contextWindow（`profileRelationship=12/32`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
+- 配置测试证明 capacity、scene/overdue、六组 lagThreshold/contextWindow（`scene=4/8`、`todos=6/24`、`standingAgreements=8/24`、`episodes=10/32`、`profileRelationship=12/48`、`worldFacts=8/32`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 
 ### 3.8 Renderer 稳定性（渲染回归基线）
 

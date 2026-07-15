@@ -9,9 +9,9 @@ const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
 const {
   copyTypedProfileMetadata,
-  findDeterministicDuplicate,
   mergedProfileMetadata,
-} = require("./profile");
+} = require("./profileMetadata");
+const { findDeterministicDuplicate } = require("./itemDeduplication");
 const { TYPED_PROFILE_SECTIONS } = require("../contracts/constants");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(

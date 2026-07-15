@@ -4,7 +4,7 @@ const { reduceProposal } = require("../domain/reducer");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
-const { buildDeterministicExactMergeOutput, sectionItems } = require("../domain/profile");
+const { buildDeterministicExactMergeOutput, sectionItems } = require("../domain/itemDeduplication");
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
