@@ -145,6 +145,19 @@ test("migration rehearsal is repeatable and never opens the service start gate",
   assert.equal(second.canStartService, false);
 });
 
+test("an explicitly forced scoped rebuild starts a new generation after a completed run", async () => {
+  const harness = makeHarness();
+  const first = await harness.migration.run({ mode: "rehearsal" });
+  assert.equal(first.status, "completed");
+  assert.equal(harness.getInitializeCount(), 1);
+
+  const [history] = await harness.migration.inventory([fixture.scope]);
+  const rebuilt = await harness.migration.rebuildScope(fixture.scope, history, { forceNewGeneration: true });
+
+  assert.equal(rebuilt.verification.healthyTargetCount, TARGET_KEYS.length);
+  assert.equal(harness.getInitializeCount(), 2);
+});
+
 test("migration resumes an incomplete force drain without resetting its generation", async () => {
   const harness = makeHarness({ forceDrainFailureOnce: true });
   const first = await harness.migration.run({ mode: "cutover", serviceStopped: true });

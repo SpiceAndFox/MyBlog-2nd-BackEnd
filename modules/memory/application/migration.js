@@ -191,13 +191,15 @@ function createMemoryMigration({
     return error;
   }
 
-  async function rebuildScope(scope, history) {
+  async function rebuildScope(scope, history, { forceNewGeneration = false } = {}) {
     const started = monotonicNow();
     const providerMark = providerTelemetry?.mark?.() ?? 0;
     let state = await repositories.state.getState(scope.userId, scope.presetId);
     if (!state) state = await repositories.state.initializeRevisionZero(scope.userId, scope.presetId);
-    const initialized = await findResumableGeneration(scope, history)
-      ?? await sourceRebuild.initializeGeneration(scope.userId, scope.presetId, { reason: "memory_v2_migration" });
+    const initialized = (forceNewGeneration ? null : await findResumableGeneration(scope, history))
+      ?? await sourceRebuild.initializeGeneration(scope.userId, scope.presetId, {
+        reason: forceNewGeneration ? "manual_cli_rebuild" : "memory_v2_migration",
+      });
     if (initialized.boundaryMessageId !== history.boundaryMessageId) throw new Error("Raw source boundary changed after migration inventory");
     const drained = await sourceRebuild.forceDrainTo(scope.userId, scope.presetId, initialized);
     if (drained.status !== "completed") throw forceDrainError(drained);
