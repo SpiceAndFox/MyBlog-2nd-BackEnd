@@ -136,6 +136,40 @@ test("overdue todo can only revive through a future set dueChange", () => {
   assert.equal(result.cleanupEvents[0].decision, "system_cleanup");
 });
 
+test("every terminal todo operation can resolve an overdue item", () => {
+  for (const [op, evidenceKind] of [
+    ["completeTodo", "todo_completion"],
+    ["cancelTodo", "todo_cancel"],
+    ["expireTodo", "todo_expiration"],
+  ]) {
+    const content = `处理逾期待办 ${op}`;
+    const database = message(2, "user", content);
+    const state = createInitialMemoryState();
+    state.working.todos.push({
+      ...item(`todo:${op}`, "逾期待办", 1, true),
+      status: "overdue",
+      dueAt: "2025-12-31T00:00:00.000Z",
+      becameOverdueAt: "2025-12-31T00:00:00.000Z",
+    });
+    const result = reduceProposal({
+      state,
+      task: task("todos"),
+      observedMessages: [observed(database)],
+      databaseMessages: [database],
+      config,
+      proposal: { sectionResults: { todos: { status: "patches", patches: [{
+        op,
+        itemId: `todo:${op}`,
+        evidenceKind,
+        evidenceRefs: [{ messageId: 2, quote: content }],
+      }] } } },
+      idFactory: sequence(`patch-${op}`),
+    });
+    assert.equal(result.events[0].decision, "accepted", op);
+    assert.equal(result.state.working.todos.length, 0, op);
+  }
+});
+
 test("terminal field, todo, and agreement operations are applied, not merely schema-accepted", () => {
   const cases = [
     { targetKey: "scene", section: "scene", op: "clearField", evidenceKind: "user_correction", path: "location", seed(state) {

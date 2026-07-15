@@ -130,7 +130,6 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
   if (index < 0) return { rejectReason: "item_not_found" };
   const item = items[index];
   if (["completeTodo", "cancelTodo", "expireTodo", "cancelAgreement", "forgetItem"].includes(patch.op)) {
-    if (patch.op === "expireTodo" && item.status === "overdue") return { rejectReason: "invalid_state_transition" };
     items.splice(index, 1);
     normalized.evidenceRefs = refs;
     const tombstones = patch.op === "forgetItem" ? item.evidenceGroups.flatMap((group) => group.refs.map((ref) => ({
