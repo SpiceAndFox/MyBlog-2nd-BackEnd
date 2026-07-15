@@ -70,6 +70,7 @@ function startChatTrashCleanup({ retentionDays, intervalMs, batchSize } = {}) {
   }
 
   let running = false;
+  let activeTick = null;
 
   async function tick() {
     if (running) return;
@@ -92,14 +93,22 @@ function startChatTrashCleanup({ retentionDays, intervalMs, batchSize } = {}) {
     }
   }
 
-  void tick();
+  activeTick = tick();
+  void activeTick.finally(() => { activeTick = null; });
 
-  const timer = setInterval(() => void tick(), intervalMs);
+  const timer = setInterval(() => {
+    if (activeTick) return;
+    activeTick = tick();
+    void activeTick.finally(() => { activeTick = null; });
+  }, intervalMs);
   timer.unref?.();
 
   logger.info("chat_trash_cleanup_started", { retentionDays, intervalMs, batchSize });
 
-  return () => clearInterval(timer);
+  return async () => {
+    clearInterval(timer);
+    if (activeTick) await activeTick;
+  };
 }
 
 module.exports = {

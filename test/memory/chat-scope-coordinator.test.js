@@ -46,3 +46,21 @@ test("source mutation cancels both active and queued generations before taking t
   assert.equal(mutation, "mutated");
   assert.deepEqual(queuedRan, []);
 });
+
+test("shutdown cancellation aborts every active scope and waitForIdle observes their release", async () => {
+  const coordinator = createScopeCoordinator();
+  const first = coordinator.enqueueByKey("7:companion", ({ signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }), { cancellable: true });
+  const second = coordinator.enqueueByKey("8:companion", ({ signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }), { cancellable: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const reason = Object.assign(new Error("shutdown"), { code: "SERVICE_SHUTTING_DOWN" });
+  assert.equal(coordinator.cancelAll(reason), 2);
+  await Promise.all([
+    assert.rejects(first, { code: "SERVICE_SHUTTING_DOWN" }),
+    assert.rejects(second, { code: "SERVICE_SHUTTING_DOWN" }),
+    coordinator.waitForIdle(),
+  ]);
+});

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createMemoryRuntime } = require("../../modules/memory/application/runtime");
+const { createMemoryRuntime, startupRecoveryIssues } = require("../../modules/memory/application/runtime");
 const { createInitialMemoryState, TARGET_KEYS } = require("../../modules/memory/contracts");
 
 test("startup recovery reconciles projections for initialized scopes using the public repository method", async () => {
@@ -46,6 +46,8 @@ test("startup recovery reconciles projections for initialized scopes using the p
 
   assert.deepEqual(await runtime.recoverPending(), []);
   assert.deepEqual(projectionCalls, [["rag", 1, "default"]]);
+  assert.deepEqual(await runtime.recoverPending({ requireComplete: true }), []);
+  assert.deepEqual(projectionCalls, [["rag", 1, "default"], ["rag", 1, "default"]]);
   const stop = runtime.startProjectionPolling();
   assert.equal(typeof stop, "function");
   assert.equal(runtime.startProjectionPolling(), runtime.stopProjectionPolling);
@@ -96,6 +98,28 @@ test("diagnostic projection failure does not starve the RAG projection during re
     rag: { status: "failed", reason: "RAG_FAILED" },
   });
   assert.deepEqual(errors, ["DIAGNOSTICS_FAILED", "RAG_FAILED"]);
+});
+
+test("strict startup recovery classifies durable and projection work that cannot open readiness", () => {
+  assert.deepEqual(startupRecoveryIssues({
+    privacy: { "1:default": { status: "incomplete" } },
+    rebuildBefore: { "1:default": { status: "skipped" } },
+    tasks: [{ status: "retry_wait", taskId: "task-1" }, { status: "committed", taskId: "task-2" }],
+    pendingTasks: [{ status: "retry_wait", task_id: "task-future" }],
+    rebuildAfter: { "1:default": { status: "incomplete" } },
+    projections: {
+      "1:default": {
+        diagnostics: { status: "synced" },
+        rag: { status: "failed" },
+      },
+    },
+  }), [
+    { kind: "privacy", scope: "1:default", status: "incomplete" },
+    { kind: "rebuild_after", scope: "1:default", status: "incomplete" },
+    { kind: "task", taskId: "task-1", status: "retry_wait" },
+    { kind: "pending_task", taskId: "task-future", status: "retry_wait" },
+    { kind: "projection", scope: "1:default", projectionKey: "rag", status: "failed" },
+  ]);
 });
 
 test("runtime rejects the retired recall projection drain", () => {

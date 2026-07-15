@@ -47,8 +47,7 @@ test("disabled runtime privacy delete purges legacy v2 authority and derived sta
   assert.equal(result.status, "purging");
   assert.equal(result.rawMutationCommitted, true);
   assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"]]);
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.shutdown();
   assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"], ["rag"]]);
   assert.equal(operation.status, "completed");
 });

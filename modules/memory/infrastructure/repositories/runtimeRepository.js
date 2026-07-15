@@ -29,6 +29,10 @@ async function listRecoverableTasks({ now = new Date(), client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE status IN ('queued','running','retry_wait') AND (not_before IS NULL OR not_before <= $1) ORDER BY updated_at,created_at`, [now]);
   return rows;
 }
+async function listPendingTasks({ client } = {}) {
+  const { rows } = await executor(client).query(`SELECT task_id,status,not_before,user_id,preset_id,target_key FROM chat_memory_tasks WHERE status IN ('queued','running','retry_wait') ORDER BY updated_at,created_at`);
+  return rows;
+}
 async function getTargetStatus(userId, presetId, targetKey, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
   if (!TARGET_KEYS.includes(targetKey)) throw new Error("Invalid target key");
@@ -93,4 +97,4 @@ async function recordSuccessfulTargetTask(userId, presetId, { targetKey, sourceG
     consecutiveErrors: 0, lastErrorReason: null, lastTaskId: taskId, nextRetryAt: null,
   }, { client });
 }
-module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime };
+module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime };

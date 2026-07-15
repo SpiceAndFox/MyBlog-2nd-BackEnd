@@ -27,6 +27,39 @@ function createKeyedExecutor() {
   };
 }
 
+function startupRecoveryIssues({ privacy = {}, rebuildBefore = {}, tasks = [], pendingTasks = [], rebuildAfter = {}, projections = {} } = {}) {
+  const issues = [];
+  const inspectMap = (kind, values, accepted) => {
+    for (const [scope, result] of Object.entries(values || {})) {
+      const status = String(result?.status || "unknown");
+      if (!accepted.has(status)) issues.push({ kind, scope, status });
+    }
+  };
+  inspectMap("privacy", privacy, new Set(["completed"]));
+  inspectMap("rebuild_before", rebuildBefore, new Set(["completed", "skipped"]));
+  inspectMap("rebuild_after", rebuildAfter, new Set(["completed", "skipped"]));
+  const failedTaskStatuses = new Set(["dispatch_failed", "failed", "queued", "retry_wait", "incomplete", "stale", "error"]);
+  for (const result of tasks || []) {
+    const status = String(result?.status || "unknown");
+    if (failedTaskStatuses.has(status)) issues.push({ kind: "task", taskId: result?.taskId ?? null, status });
+  }
+  for (const task of pendingTasks || []) {
+    issues.push({
+      kind: "pending_task",
+      taskId: task?.task_id ?? task?.taskId ?? null,
+      status: String(task?.status || "unknown"),
+    });
+  }
+  for (const [scope, result] of Object.entries(projections || {})) {
+    for (const [projectionKey, projection] of Object.entries(result || {})) {
+      const status = String(projection?.status || "unknown");
+      const accepted = projectionKey === "diagnostics" ? status === "synced" : status === "healthy";
+      if (!accepted) issues.push({ kind: "projection", scope, projectionKey, status });
+    }
+  }
+  return issues;
+}
+
 function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = createKeyedExecutor()) {
   const disabled = async () => ({ status: "disabled" });
   const stopProjectionPolling = () => {};
@@ -70,6 +103,12 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     scheduleStateRecovery: disabled,
     resumeTarget: disabled,
     recoverPending: async () => [],
+    shutdown: async () => {
+      stopProjectionPolling();
+      stopTaskPolling();
+      await privacyDelete?.waitForIdle?.();
+      return { status: "stopped" };
+    },
   });
 }
 
@@ -119,6 +158,8 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   let taskPollTimer = null;
   let taskPollRunning = false;
   const activeRebuilds = new Map();
+  const backgroundOperations = new Set();
+  let shuttingDown = false;
 
   async function ensureState(userId, presetId) {
     try {
@@ -137,9 +178,34 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   function runInBackground(work) {
+    if (shuttingDown) {
+      const error = new Error("Memory runtime is shutting down");
+      error.code = "MEMORY_RUNTIME_SHUTTING_DOWN";
+      const rejected = Promise.reject(error);
+      if (typeof onBackgroundError === "function") rejected.catch(onBackgroundError);
+      return rejected;
+    }
     const promise = Promise.resolve().then(work);
+    backgroundOperations.add(promise);
+    void promise.finally(() => backgroundOperations.delete(promise)).catch(() => {});
     if (typeof onBackgroundError === "function") promise.catch(onBackgroundError);
     return promise;
+  }
+
+  async function shutdown() {
+    if (shuttingDown) {
+      while (backgroundOperations.size) await Promise.allSettled([...backgroundOperations]);
+      await privacyDelete?.waitForIdle?.();
+      return { status: "stopped" };
+    }
+    shuttingDown = true;
+    stopTaskPolling();
+    stopProjectionPolling();
+    const initialization = providerInitialization;
+    if (initialization) await Promise.allSettled([initialization]);
+    while (backgroundOperations.size) await Promise.allSettled([...backgroundOperations]);
+    await privacyDelete?.waitForIdle?.();
+    return { status: "stopped" };
   }
 
   async function drainProjectionsNow(userId, presetId) {
@@ -320,13 +386,25 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return { status: "rebuilding", ...initialized };
   }
 
-  async function recoverPending() {
+  async function recoverPending({ requireComplete = false } = {}) {
     await initialize();
-    if (privacyDelete) await privacyDelete.reconcilePending();
-    await reconcileRebuilds();
+    const privacy = privacyDelete ? await privacyDelete.reconcilePending() : {};
+    const rebuildBefore = await reconcileRebuilds();
     const recovered = await recovery.recoverPending();
-    await reconcileRebuilds();
-    await reconcileProjections();
+    const rebuildAfter = await reconcileRebuilds();
+    const projections = await reconcileProjections();
+    if (requireComplete) {
+      const pendingTasks = typeof repositories.runtime.listPendingTasks === "function"
+        ? await repositories.runtime.listPendingTasks()
+        : [];
+      const issues = startupRecoveryIssues({ privacy, rebuildBefore, tasks: recovered, pendingTasks, rebuildAfter, projections });
+      if (issues.length) {
+        const error = new Error("Memory startup recovery did not complete");
+        error.code = "MEMORY_STARTUP_RECOVERY_INCOMPLETE";
+        error.detail = { issues };
+        throw error;
+      }
+    }
     return recovered;
   }
 
@@ -396,8 +474,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     metrics,
     getProviderAdmissionSnapshot: () => admission.snapshot(),
     getMetricsSnapshot: () => metrics.snapshot(),
-    recoverPending: () => runInBackground(recoverPending),
+    recoverPending: (options) => runInBackground(() => recoverPending(options)),
+    shutdown,
   });
 }
 
-module.exports = { createMemoryRuntime, createKeyedExecutor };
+module.exports = { createMemoryRuntime, createKeyedExecutor, startupRecoveryIssues };

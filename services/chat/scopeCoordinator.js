@@ -64,13 +64,29 @@ function createScopeCoordinator() {
     return cancelled;
   }
 
+  function cancelAll(reason = new Error("Service is shutting down")) {
+    let cancelled = 0;
+    for (const controllers of cancellable.values()) {
+      for (const controller of controllers) {
+        if (controller.signal.aborted) continue;
+        controller.abort(reason);
+        cancelled += 1;
+      }
+    }
+    return cancelled;
+  }
+
+  async function waitForIdle() {
+    while (lanes.size) await Promise.allSettled([...lanes.values()]);
+  }
+
   function buildKey(userId, presetId) {
     const normalizedPresetId = String(presetId || "").trim();
     if (!userId || !normalizedPresetId) throw new Error("Scope userId and presetId are required");
     return `${userId}:${normalizedPresetId}`;
   }
 
-  return Object.freeze({ enqueueByKey, cancelByKey, buildKey });
+  return Object.freeze({ enqueueByKey, cancelByKey, cancelAll, waitForIdle, buildKey });
 }
 
 module.exports = Object.freeze({ ...createScopeCoordinator(), createScopeCoordinator });

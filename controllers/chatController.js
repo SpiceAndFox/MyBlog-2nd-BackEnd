@@ -16,6 +16,7 @@ const {
 const { logger, withRequestContext } = require("../logger");
 const scopeCoordinator = require("../services/chat/scopeCoordinator");
 const { deleteAvatarByUrl } = require("../services/chat/avatarStorage");
+const { isChatModelAllowed } = require("../services/chat/productionModelPolicy");
 
 const {
   getProviderDefinition,
@@ -336,9 +337,11 @@ function resolveProviderModelForSettings(settings) {
   const providerId = candidateProviderId;
   const providerDefinition = getProviderDefinition(providerId);
   const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
-  const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+  const selectableModels = listModelsForProvider(providerId).filter((model) => isChatModelAllowed(providerId, model.id));
+  const fallbackModelId = selectableModels[0]?.id || "";
   const defaultModelId =
     (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+      && isChatModelAllowed(providerId, configuredDefaultModelId)
       ? configuredDefaultModelId.trim()
       : fallbackModelId) || "";
 
@@ -349,6 +352,9 @@ function resolveProviderModelForSettings(settings) {
   const requestedModelId = String(settings?.modelId || "").trim();
   if (requestedModelId && !isSupportedModel(providerId, requestedModelId)) {
     return { status: 400, error: `Unsupported model for provider ${providerId}: ${requestedModelId}` };
+  }
+  if (requestedModelId && !isChatModelAllowed(providerId, requestedModelId)) {
+    return { status: 400, error: `Model is not approved for production context capacity: ${providerId}/${requestedModelId}` };
   }
 
   return {
@@ -526,9 +532,10 @@ const chatController = {
 
       function resolveDefaultModelId(providerId) {
         const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
-        const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+        const fallbackModelId = listModelsForProvider(providerId).find((model) => isChatModelAllowed(providerId, model.id))?.id || "";
         const defaultModelId =
           (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+            && isChatModelAllowed(providerId, configuredDefaultModelId)
             ? configuredDefaultModelId.trim()
             : fallbackModelId) || "";
         return defaultModelId;
@@ -538,7 +545,7 @@ const chatController = {
         .map((provider) => {
           const id = String(provider?.id || "").trim();
           const name = String(provider?.name || "").trim();
-          const models = listModelsForProvider(id);
+          const models = listModelsForProvider(id).filter((model) => isChatModelAllowed(id, model.id));
           const definition = getProviderDefinition(id);
 
           const defaultModelId = resolveDefaultModelId(id);
@@ -573,7 +580,8 @@ const chatController = {
       let defaultModelId = "";
       if (defaultProviderId) {
         const desiredModelId = chatConfig.defaultModelByProvider?.[defaultProviderId];
-        if (typeof desiredModelId === "string" && isSupportedModel(defaultProviderId, desiredModelId)) {
+        if (typeof desiredModelId === "string" && isSupportedModel(defaultProviderId, desiredModelId)
+          && isChatModelAllowed(defaultProviderId, desiredModelId)) {
           defaultModelId = desiredModelId.trim();
         } else {
           defaultModelId = providers.find((provider) => provider.id === defaultProviderId)?.models?.[0]?.id || "";
@@ -581,7 +589,7 @@ const chatController = {
       }
 
       const selectedProviderDefinition = getProviderDefinition(defaultProviderId);
-      const defaultProviderModels = listModelsForProvider(defaultProviderId);
+      const defaultProviderModels = listModelsForProvider(defaultProviderId).filter((model) => isChatModelAllowed(defaultProviderId, model.id));
       const defaultModelEntry = defaultProviderModels.find((m) => String(m?.id || "").trim() === defaultModelId);
       const defaults = {
         ...((chatConfig.defaultSettingsByProvider || {})[defaultProviderId] || chatConfig.defaultSettings || {}),

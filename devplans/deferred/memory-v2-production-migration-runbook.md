@@ -8,7 +8,7 @@
 
 - 尚未提供隔离的生产历史数据库副本；
 - 尚未在隔离历史副本上完成两次全量 rehearsal 并确认调用量、容量和耗时；
-- 尚未形成经验证的服务停启入口与失败恢复操作；
+- 应用已经具备 readiness/liveness、严格启动恢复与 SIGTERM/SIGINT graceful shutdown，但尚未在实际部署平台验证停启入口、单实例约束与失败恢复操作；
 - 尚无经过非生产环境验证的停服、失败处置和恢复命令。
 
 迁移算法与验收门以 [Source Rebuild 与 Projection](../memory-control-v2/algorithms/source-rebuild-and-projection.md) §5 和 [Harness 验收契约](../memory-control-v2/harness.md) §3.10 为准。
@@ -27,7 +27,7 @@
 3. RAG/Recall 均提供 staged rebuild、事务提交和 generation/boundary checkpoint adapter；
 4. migration CLI 通过 Memory 模块公共接口完成正式装配；（已完成）
 5. rehearsal 报告可稳定落盘并包含规模、section 容量、实际 Provider 调用量/tokens/cost coverage、耗时、全部验证结果、迁移前后全局 source inventory，以及 code/schema/config/价目表指纹；（代码已完成，待真实历史演练取证）
-6. 运维侧提供可验证的停服、raw boundary 冻结和重新启服入口；
+6. 运维侧提供可验证的停服、raw boundary 冻结和重新启服入口；（应用生命周期代码已完成，待实际部署取证）
 7. 数据库备份、失败处置责任人与维护窗口已经明确。
 
 ## 3. 正式手册必须包含
@@ -41,6 +41,14 @@
 - v2 state 初始化、force drain、RAG/Recall drain 和逐项验证命令；
 - `canStartService=false` 时保持停服、保存诊断及选择修复续跑或数据库恢复的步骤；
 - 成功启服后的观察窗口与健康指标。
+
+### 3.1 应用启动与停机契约
+
+- 应用依次完成 Memory Provider preflight、pending privacy/rebuild/task/projection 严格恢复和 worker 启动，之后才监听业务端口并进入 ready；任一恢复结果仍为 incomplete/retry/pending 或 projection 非 healthy 时启动失败，不能对外提供业务流量。
+- `GET /health/live` 只证明进程仍存活；`GET /health/ready` 只有在上述启动门完成后返回 `200`，starting/recovering/draining/failed 均返回 `503`。部署平台只能使用 readiness endpoint 接流量，不能用 liveness 代替。
+- 收到首次 `SIGTERM`/`SIGINT` 后立即撤销 readiness、停止 Memory polling 和 trash cleanup、取消在途 chat Provider 请求，等待 HTTP、scope lane、Memory/Privacy 后台工作收口，再关闭数据库连接；第二次信号强制以非零状态退出。
+- `SERVER_SHUTDOWN_TIMEOUT_MS` 默认 `90000`，部署平台的 termination grace period 必须大于该值；超时会强制关闭 HTTP 连接并以非 graceful 状态结束，不能视为正常停服证明。
+- `NODE_ENV=production` 时应用拒绝 v2-off、拒绝 `APP_REPLICA_COUNT` 不是显式 `1`，并要求 `LOG_DEBUG_FULL_ENABLED=false`、`LOG_DEBUG_GIST_ENABLED=false`。此外必须用 `CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON` 分别声明已独立验证约 1M context capability 的 chat provider/model 与 Memory model；默认模型、用户请求模型和 Memory 模型不在 allowlist 时均 fail closed。allowlist 是验证结果的执行边界，不能替代 Provider 官方能力证据和真实 preflight。`APP_REPLICA_COUNT=1` 只是应用侧声明，仍须在部署平台关闭 autoscaling 并证明没有新旧实例重叠。
 
 当前已实际装配并验证以下只读/能力检查命令：
 
@@ -67,6 +75,15 @@ npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --rep
 
 每次 apply 都在开始和结束重新枚举全局 raw source inventory，并保存逐 scope message/code-point/boundary、按消息 id/session/role/content/createdAt/turn identity 计算的流式 SHA-256，以及整体 hash。这样同字符数编辑也会令迁移失败并保持 `canStartService=false`，因此 `--service-stopped` 不再是唯一的 raw boundary 证据。Provider 报告按 target/proposer/model/mode/result 聚合；同 task 的额外 schema retry、恢复重试和 `compactionProposer` 调用都会计入实际调用量。
 失败后修复代码或 Provider 配置，再使用新的报告路径重跑同一 cutover 命令；若 raw boundary 未变化且现有 target generation 仍满足 rebuilding/healthy 边界约束，迁移器续跑该 generation 和未完成 task，不重复初始化已经开始的 rebuild。新报告中的错误明细会包含失败 target、task、内部 outcome 和本轮已完成 task 数。
+
+重新启服后必须先确认：
+
+```text
+GET /health/live  -> 200
+GET /health/ready -> 200, {"status":"ready","ready":true}
+```
+
+若进程以 `MEMORY_STARTUP_RECOVERY_INCOMPLETE` 启动失败，必须保留错误中的 task/scope/projection 定位摘要并继续停服；不得绕过 strict recovery 或临时关闭 Memory v2 启动。
 
 ## 4. 禁止行为
 

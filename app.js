@@ -8,9 +8,18 @@ require("module-alias/register");
 // 引入配置文件
 dotenv.config();
 
-const { chatConfig } = require("./config");
+const { chatConfig, memoryV2Config } = require("./config");
 const { logger } = require("./logger");
+const db = require("./db");
 const memoryRuntime = require("./services/chat/memoryRuntime");
+const scopeCoordinator = require("./services/chat/scopeCoordinator");
+const {
+  createHealthState,
+  installHealthEndpoints,
+  parseShutdownTimeout,
+  createServerLifecycle,
+  installProcessHandlers,
+} = require("./services/serverLifecycle");
 const requestLogger = require("./middleware/requestLogger");
 const errorHandler = require("./middleware/errorHandler");
 
@@ -27,18 +36,12 @@ const { startChatTrashCleanup } = require("./services/chat/trashCleanup");
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = String(process.env.HOST || "127.0.0.1").trim();
-
-process.on("unhandledRejection", (reason) => {
-  logger.error("unhandled_rejection", { error: reason });
-});
-
-process.on("uncaughtException", (error) => {
-  logger.error("uncaught_exception", { error });
-});
+const health = createHealthState();
 
 app.use(cors());
 app.use(requestLogger);
 app.use(express.json());
+installHealthEndpoints(app, health);
 
 // 开放静态资源，如 /uploads/articles/...
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -56,26 +59,35 @@ app.use("/api/admin/articles", adminArticlesRouter);
 
 app.use(errorHandler);
 
-async function startServer() {
-  if (memoryRuntime.enabled) await memoryRuntime.initialize();
-
-  startChatTrashCleanup({
+const lifecycle = createServerLifecycle({
+  app,
+  memoryRuntime,
+  database: db,
+  logger,
+  health,
+  host: HOST,
+  port: PORT,
+  shutdownTimeoutMs: parseShutdownTimeout(process.env.SERVER_SHUTDOWN_TIMEOUT_MS),
+  productionModels: {
+    memoryModel: memoryV2Config.provider?.model,
+    defaultChatProviderId: chatConfig.defaultProviderId,
+    defaultChatModelId: chatConfig.defaultModelByProvider?.[chatConfig.defaultProviderId],
+  },
+  startCleanup: () => startChatTrashCleanup({
     retentionDays: chatConfig.trashRetentionDays,
     intervalMs: chatConfig.trashCleanupIntervalMs,
     batchSize: chatConfig.trashPurgeBatchSize,
-  });
+  }),
+  cancelInFlight: (reason) => scopeCoordinator.cancelAll(reason),
+  waitForInFlight: () => scopeCoordinator.waitForIdle(),
+});
 
-  const server = app.listen(PORT, HOST);
-  if (memoryRuntime.enabled) {
-    void memoryRuntime.recoverPending();
-    memoryRuntime.startTaskPolling();
-    memoryRuntime.startProjectionPolling();
-  }
-  server.on("listening", () => logger.info("server_started", { port: PORT, host: HOST }));
-  server.on("error", (error) => logger.error("server_listen_failed", { port: PORT, host: HOST, error }));
+if (require.main === module) {
+  installProcessHandlers({ lifecycle, logger });
+  void lifecycle.start().catch((error) => {
+    logger.error("server_startup_failed", { port: PORT, host: HOST, error });
+    process.exitCode = 1;
+  });
 }
 
-void startServer().catch((error) => {
-  logger.error("server_startup_failed", { port: PORT, host: HOST, error });
-  process.exitCode = 1;
-});
+module.exports = { app, lifecycle, health };

@@ -6,6 +6,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
   const privacy = repositories?.privacy;
   if (!privacy?.purgeDerivedHistory || !privacy?.upsertOperation || !privacy?.updateOperation) throw new Error("Privacy hard delete repository is required");
   if (stores.some((store) => typeof store?.purge !== "function" || typeof store?.verifyPurged !== "function")) throw new Error("Every privacy store requires purge and verifyPurged");
+  const backgroundOperations = new Set();
 
   async function purgeStores(userId, presetId, operation, client) {
     for (const store of stores) await store.purge({ userId, presetId, operation, client });
@@ -54,6 +55,8 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
       if (!latest || rowValue(latest, "status", "status") === "completed") return latest;
       return continueOperation(userId, presetId, latest, { repurge: true });
     }));
+    backgroundOperations.add(promise);
+    void promise.finally(() => backgroundOperations.delete(promise)).catch(() => {});
     promise.catch(async (error) => {
       try {
         const latest = typeof privacy.getOperation === "function"
@@ -71,6 +74,12 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
       }
       onBackgroundError?.(error);
     });
+  }
+
+  async function waitForIdle() {
+    while (backgroundOperations.size) {
+      await Promise.allSettled([...backgroundOperations]);
+    }
   }
 
   async function execute(userId, presetId, {
@@ -163,7 +172,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
     return results;
   }
 
-  return Object.freeze({ execute, continueOperation, reconcilePending });
+  return Object.freeze({ execute, continueOperation, reconcilePending, waitForIdle });
 }
 
 module.exports = { createPrivacyHardDelete };
