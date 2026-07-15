@@ -28,7 +28,12 @@ function envName(value) { return value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpp
 
 function loadMemoryV2Config(env = process.env) {
   const enabled = parseBool(env, "CHAT_MEMORY_V2_ENABLED", false);
-  if (!enabled) return Object.freeze({ enabled: false });
+  if (!enabled) {
+    if (String(env.NODE_ENV || "").trim().toLowerCase() === "production") {
+      throw new Error("CHAT_MEMORY_V2_ENABLED=false is not a supported production or rollback mode");
+    }
+    return Object.freeze({ enabled: false });
+  }
   const sectionBudgets = {};
   for (const section of ITEM_SECTIONS) {
     const prefix = `CHAT_MEMORY_V2_${envName(section)}`;
@@ -59,6 +64,10 @@ function loadMemoryV2Config(env = process.env) {
     health: Object.freeze({ alertDebounceMs: requiredInt(env, "CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS"), recoveryStableMs: requiredInt(env, "CHAT_MEMORY_V2_RECOVERY_STABLE_MS") }),
     tasks: Object.freeze({ pollIntervalMs: requiredInt(env, "CHAT_MEMORY_V2_TASK_POLL_INTERVAL_MS", { min: 250 }) }),
     projections: Object.freeze({ pollIntervalMs: requiredInt(env, "CHAT_MEMORY_V2_PROJECTION_POLL_INTERVAL_MS", { min: 1000 }) }),
+    admission: Object.freeze({
+      concurrency: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_CONCURRENCY", { min: 1 }),
+      queueMax: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_QUEUE_MAX", { min: 1 }),
+    }),
     provider: loadMemoryProviderConfig(env),
   });
 }

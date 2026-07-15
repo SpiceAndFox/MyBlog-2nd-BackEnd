@@ -23,6 +23,7 @@ const { createDeepSeekStrictToolsTransport } = require("./infrastructure/provide
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
 const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("./prompts");
+const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 
 let defaultMemoryRuntime = null;
 
@@ -50,10 +51,12 @@ module.exports = Object.freeze({
   createMemoryMigration,
   createDefaultMemoryMigration({ config, projectionDrains, providerAdapter, now, monotonicNow } = {}) {
     if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
-    const adapter = providerAdapter || createMemoryProviderAdapter({
+    const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
+    const rawAdapter = providerAdapter || createMemoryProviderAdapter({
       invokeStructured: createStructuredTransport(config.provider),
       promptLoader: loadProposerPrompt,
     });
+    const adapter = admissionControlledAdapter(rawAdapter, admission);
     const observer = createObserver({
       sourceRepository: repositories.source,
       stateRepository: repositories.state,
@@ -66,6 +69,7 @@ module.exports = Object.freeze({
   },
   createMemoryRuntime,
   createMemoryMetrics,
+  createProviderAdmission,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
     return defaultMemoryRuntime;

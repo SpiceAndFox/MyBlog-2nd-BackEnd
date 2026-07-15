@@ -637,6 +637,9 @@ const chatRagConfig = (() => {
   const embeddingTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_EMBEDDING_TIMEOUT_MS"), {
     name: "CHAT_RAG_EMBEDDING_TIMEOUT_MS",
   });
+  const queryTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_QUERY_TIMEOUT_MS"), {
+    name: "CHAT_RAG_QUERY_TIMEOUT_MS",
+  });
   const embeddingBatchSize = ensurePositiveInt(readRequiredIntEnv("CHAT_RAG_EMBEDDING_BATCH_SIZE"), {
     name: "CHAT_RAG_EMBEDDING_BATCH_SIZE",
   });
@@ -809,6 +812,7 @@ rerankerMinScore = ensureNumberInRange(readRequiredFloatEnv("CHAT_RAG_RERANKER_M
     embeddingDimensions,
     embeddingIncludeDimensionsParam,
     embeddingTimeoutMs,
+    queryTimeoutMs,
     embeddingBatchSize,
     embeddingRawBody,
     queryEmbeddingTemplate,

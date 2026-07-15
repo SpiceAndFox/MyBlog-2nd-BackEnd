@@ -111,7 +111,7 @@ function normalizeSceneRecall(rawText) {
   return clipText(cleaned, chatRagConfig.sceneRecallMaxOutputChars);
 }
 
-async function generateSceneRecallForSource({ userId, presetId, source, maxMessageId, tombstones = [] } = {}) {
+async function generateSceneRecallForSource({ userId, presetId, source, maxMessageId, tombstones = [], signal } = {}) {
   if (!chatRagConfig.sceneRecallEnabled) return "";
 
   const contextTurns = Number(chatRagConfig.sceneRecallContextTurns) || 0;
@@ -152,6 +152,7 @@ async function generateSceneRecallForSource({ userId, presetId, source, maxMessa
     settings: chatRagConfig.sceneRecallWorkerSettings,
     rawBody: chatRagConfig.sceneRecallRaw?.openaiCompatibleBody,
     rawConfig: chatRagConfig.sceneRecallRaw?.googleGenAiConfig,
+    signal,
   });
 
   const normalized = normalizeSceneRecall(response?.content);

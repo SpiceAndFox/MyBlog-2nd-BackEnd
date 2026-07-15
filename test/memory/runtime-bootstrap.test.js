@@ -141,3 +141,23 @@ test("ensureScope initializes revision zero before context assembly", async () =
   await runtime.ensureScope({ userId: 1, presetId: "new-preset" });
   assert.equal(initializations, 1);
 });
+
+test("manual rebuild requests for one active scope return the same operation identity", async () => {
+  const never = new Promise(() => {});
+  const repositories = {
+    state: { getState: () => never },
+    source: {}, runtime: {}, audit: {}, sidecars: {},
+    async withTransaction(work) { return work({}); },
+  };
+  const runtime = createMemoryRuntime({
+    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {}, admission: { concurrency: 1, queueMax: 1 } },
+    repositories,
+    providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
+  });
+  const first = await runtime.rebuildScope(1, "default", { reason: "manual_rebuild" });
+  const duplicate = await runtime.rebuildScope(1, "default", { reason: "manual_rebuild" });
+  assert.equal(first.status, "queued");
+  assert.equal(first.deduplicated, false);
+  assert.equal(duplicate.deduplicated, true);
+  assert.equal(duplicate.operationId, first.operationId);
+});

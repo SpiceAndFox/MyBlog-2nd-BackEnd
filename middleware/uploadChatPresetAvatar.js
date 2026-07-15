@@ -12,10 +12,9 @@ const storage = multer.diskStorage({
     cb(null, avatarDir);
   },
   filename(req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext);
+    const ext = path.extname(file.originalname).toLowerCase().slice(0, 10);
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${base}-${uniqueSuffix}${ext}`);
+    cb(null, `avatar-${uniqueSuffix}${ext}`);
   },
 });
 
@@ -31,8 +30,11 @@ const upload = multer({
   fileFilter,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
+    files: 1,
+    fields: 0,
+    parts: 1,
+    fieldNestingDepth: 0,
   },
 });
 
 module.exports = upload;
-

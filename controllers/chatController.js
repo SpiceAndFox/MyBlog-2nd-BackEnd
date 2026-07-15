@@ -388,10 +388,9 @@ function requestMemoryUpdate({ userId, presetId } = {}) {
   return true;
 }
 
-function requestMemoryRebuild({ userId, presetId, reason } = {}) {
-  if (!memoryRuntime.enabled) return false;
-  void memoryRuntime.rebuildScope(userId, presetId, { reason });
-  return true;
+async function requestMemoryRebuild({ userId, presetId, reason } = {}) {
+  if (!memoryRuntime.enabled) return null;
+  return memoryRuntime.rebuildScope(userId, presetId, { reason });
 }
 
 
@@ -427,6 +426,13 @@ function attachContextHealth(payload, context, res) {
   const notifications = Array.isArray(context?.memoryRecoveryNotifications) ? context.memoryRecoveryNotifications : [];
   const next = { ...payload };
   if (context?.memoryHealth) next.memory_health = context.memoryHealth;
+  if (context?.rag?.stats?.degraded) {
+    next.rag_health = {
+      status: "degraded",
+      reason: context.rag.stats.reason,
+      failure: context.rag.stats.failure,
+    };
+  }
   if (notifications.length) next.memory_recovery_notifications = notifications;
   const ids = notifications.map((entry) => Number(entry.id)).filter(Number.isSafeInteger);
   if (ids.length) {
@@ -698,13 +704,14 @@ const chatController = {
       const preset = await chatPresetModel.getPreset(userId, presetId);
       if (!preset) return res.status(404).json({ error: "Preset not found" });
 
-      if (!requestMemoryRebuild({ userId, presetId: preset.id, reason: "manual_rebuild" })) {
+      const rebuild = await requestMemoryRebuild({ userId, presetId: preset.id, reason: "manual_rebuild" });
+      if (!rebuild) {
         return res.status(503).json({ error: "Memory Control v2 is disabled" });
       }
 
       res.status(202).json({
         presetId: preset.id,
-        memory: { version: 2, status: "queued" },
+        memory: { version: 2, ...rebuild },
       });
     } catch (error) {
       logger.error("chat_preset_memory_rebuild_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
@@ -1217,6 +1224,7 @@ const chatController = {
         presetId,
         systemPrompt: effectiveSettings.systemPrompt,
         upToMessageId: userMessage.id,
+        signal: scopeSignal,
       });
       const messages = context.messages;
 

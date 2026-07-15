@@ -175,6 +175,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       let result;
       try { result = await providerAdapter.propose(envelope); }
       finally { metrics?.observe("memory_provider_latency_ms", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, monotonicNow() - startedAt); }
+      if (result.status === "deferred") {
+        metrics?.increment("memory_provider_admission_deferred_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer });
+        return result;
+      }
       metrics?.increment("memory_provider_calls_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, status: result.status });
       metrics?.increment("memory_provider_observed_messages_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, envelope.observedMessages.length);
       metrics?.observe("memory_provider_calls_per_message", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, 1 / Math.max(1, envelope.observedMessages.length));
@@ -472,6 +476,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       : null;
     if (!output) {
       const adapterResult = await proposeWithSchemaRetry(attemptEnvelope);
+      if (adapterResult.status === "deferred") {
+        return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
+      }
       if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
       output = adapterResult.output;
       await persistProposalWithRecovery(attemptEnvelope, output);

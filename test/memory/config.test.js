@@ -35,6 +35,7 @@ function validEnv() {
     CHAT_MEMORY_V2_PROVIDER_ADAPTER: "openai-json-schema", CHAT_MEMORY_V2_PROVIDER_BASE_URL: "https://example.test/v1/", CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
     CHAT_MEMORY_V2_PROVIDER_MODEL: "structured-model", CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS: "60000",
     CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000", CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS: "8192",
+    CHAT_MEMORY_V2_PROVIDER_CONCURRENCY: "2", CHAT_MEMORY_V2_PROVIDER_QUEUE_MAX: "32",
   });
   return env;
 }
@@ -77,4 +78,12 @@ test("schema-invalid retry is strictly bounded to at most one", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX = "2";
   assert.throws(() => loadMemoryV2Config(env), /must be 0 or 1/);
+});
+
+test("v2-off is rejected as a production or rollback mode", () => {
+  assert.throws(
+    () => loadMemoryV2Config({ NODE_ENV: "production", CHAT_MEMORY_V2_ENABLED: "false" }),
+    /not a supported production or rollback mode/,
+  );
+  assert.deepEqual(loadMemoryV2Config({ NODE_ENV: "test", CHAT_MEMORY_V2_ENABLED: "false" }), { enabled: false });
 });

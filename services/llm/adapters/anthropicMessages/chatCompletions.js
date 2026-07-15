@@ -1,6 +1,7 @@
 const { getProviderConfig, isBodyParamAllowed } = require("../../providers");
 const { llmConfig } = require("../../../../config");
 const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../../settingsSchema");
+const { iterateSseData } = require("../../sse");
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -323,57 +324,32 @@ async function createChatCompletionStreamResponse({
 }
 
 async function* streamChatCompletionDeltas({ response }) {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-
-    while (true) {
-      const boundaryIndex = buffer.indexOf("\n\n");
-      if (boundaryIndex === -1) break;
-
-      const frame = buffer.slice(0, boundaryIndex);
-      buffer = buffer.slice(boundaryIndex + 2);
-
-      const lines = frame.split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-
-        const dataPart = trimmed.slice("data:".length).trim();
-        if (!dataPart || dataPart === "[DONE]") continue;
-
-        let parsed;
-        try {
-          parsed = JSON.parse(dataPart);
-        } catch (error) {
-          throw new Error(`Invalid Anthropic stream JSON: ${error.message}`);
-        }
-
-        if (parsed?.type === "error") {
-          throw new Error(pickErrorMessage({ status: 500, json: parsed, text: "" }));
-        }
-
-        if (parsed?.type === "message_delta" && parsed?.delta?.stop_reason === "pause_turn") {
-          throw new Error("Model paused while executing server tools, but pause_turn continuation is not implemented yet.");
-        }
-
-        if (parsed?.type === "content_block_start" && parsed?.content_block?.type === "text") {
-          const text = parsed.content_block.text;
-          if (typeof text === "string" && text.length) yield { type: "delta", delta: text };
-        }
-
-        if (parsed?.type === "content_block_start" && parsed?.content_block?.type === "tool_use") {
-          const name = String(parsed.content_block.name || "").trim();
-          throw new Error(`Model requested tool use (${name || "unknown"}), but tool calls are not implemented yet.`);
-        }
-
-        const delta = parsed?.delta;
-        if (delta?.type === "text_delta" && typeof delta.text === "string" && delta.text.length) {
-          yield { type: "delta", delta: delta.text };
-        }
-      }
+  for await (const dataPart of iterateSseData(response.body)) {
+    const normalized = dataPart.trim();
+    if (!normalized || normalized === "[DONE]") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(dataPart);
+    } catch (error) {
+      throw new Error(`Invalid Anthropic stream JSON: ${error.message}`);
+    }
+    if (parsed?.type === "error") {
+      throw new Error(pickErrorMessage({ status: 500, json: parsed, text: "" }));
+    }
+    if (parsed?.type === "message_delta" && parsed?.delta?.stop_reason === "pause_turn") {
+      throw new Error("Model paused while executing server tools, but pause_turn continuation is not implemented yet.");
+    }
+    if (parsed?.type === "content_block_start" && parsed?.content_block?.type === "text") {
+      const text = parsed.content_block.text;
+      if (typeof text === "string" && text.length) yield { type: "delta", delta: text };
+    }
+    if (parsed?.type === "content_block_start" && parsed?.content_block?.type === "tool_use") {
+      const name = String(parsed.content_block.name || "").trim();
+      throw new Error(`Model requested tool use (${name || "unknown"}), but tool calls are not implemented yet.`);
+    }
+    const delta = parsed?.delta;
+    if (delta?.type === "text_delta" && typeof delta.text === "string" && delta.text.length) {
+      yield { type: "delta", delta: delta.text };
     }
   }
 }

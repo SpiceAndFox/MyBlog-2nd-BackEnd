@@ -1,6 +1,7 @@
 const { getProviderConfig, getProviderDefinition, isBodyParamAllowed } = require("../../providers");
 const { llmConfig } = require("../../../../config");
 const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../../settingsSchema");
+const { iterateSseData } = require("../../sse");
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -278,40 +279,18 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
 }
 
 async function* streamChatCompletionDeltas({ response }) {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-
-    while (true) {
-      const boundaryIndex = buffer.indexOf("\n\n");
-      if (boundaryIndex === -1) break;
-
-      const frame = buffer.slice(0, boundaryIndex);
-      buffer = buffer.slice(boundaryIndex + 2);
-
-      const lines = frame.split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const dataPart = trimmed.slice("data:".length).trim();
-        if (!dataPart) continue;
-        if (dataPart === "[DONE]") return;
-
-        let parsed;
-        try {
-          parsed = JSON.parse(dataPart);
-        } catch {
-          continue;
-        }
-
-        const delta = parsed?.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length) {
-          yield delta;
-        }
-      }
+  for await (const dataPart of iterateSseData(response.body)) {
+    const normalized = dataPart.trim();
+    if (!normalized) continue;
+    if (normalized === "[DONE]") return;
+    let parsed;
+    try {
+      parsed = JSON.parse(dataPart);
+    } catch {
+      continue;
     }
+    const delta = parsed?.choices?.[0]?.delta?.content;
+    if (typeof delta === "string" && delta.length) yield delta;
   }
 }
 

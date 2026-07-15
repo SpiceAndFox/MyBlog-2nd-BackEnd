@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const { createObserver } = require("./observer");
 const { createNormalWritePipeline } = require("./normalWritePipeline");
 const { createMemoryRecovery } = require("./recovery");
@@ -12,6 +13,7 @@ const { createMemoryMetrics } = require("./metrics");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
 const { createPrivacyHardDelete } = require("./privacyHardDelete");
 const { createMemoryRetention } = require("./retention");
+const { createProviderAdmission, admissionControlledAdapter } = require("./providerAdmission");
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -78,12 +80,17 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     throw new Error("Memory runtime repositories are required");
   }
 
-  const invokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
-  const adapter = providerAdapter || createMemoryProviderAdapter({ invokeStructured, promptLoader: loadProposerPrompt });
+  const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
+  const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
+  const rawAdapter = providerAdapter || createMemoryProviderAdapter({ invokeStructured: rawInvokeStructured, promptLoader: loadProposerPrompt });
+  const adapter = admissionControlledAdapter(rawAdapter, admission);
   let providerInitialization = providerAdapter ? Promise.resolve([]) : null;
   function initialize() {
     if (!providerInitialization) {
-      providerInitialization = runStructuredOutputPreflight({ invokeStructured, promptLoader: loadProposerPrompt });
+      providerInitialization = runStructuredOutputPreflight({
+        invokeStructured: (request) => admission.run(() => rawInvokeStructured(request)),
+        promptLoader: loadProposerPrompt,
+      });
     }
     return providerInitialization;
   }
@@ -109,6 +116,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   let projectionPollRunning = false;
   let taskPollTimer = null;
   let taskPollRunning = false;
+  const activeRebuilds = new Map();
 
   async function ensureState(userId, presetId) {
     try {
@@ -274,7 +282,11 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   function rebuildScope(userId, presetId, { reason = "source_mutation" } = {}) {
-    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
+    const key = `${userId}:${presetId}`;
+    const active = activeRebuilds.get(key);
+    if (active) return Promise.resolve({ status: "queued", operationId: active.operationId, deduplicated: true });
+    const operationId = crypto.randomUUID();
+    const promise = runInBackground(() => enqueueByKey(key, async () => {
       await initialize();
       const startedAt = performance.now();
       await ensureState(userId, presetId);
@@ -284,6 +296,11 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
       return { ...initialized, ...drained, projections };
     }));
+    activeRebuilds.set(key, { operationId, promise });
+    void promise.finally(() => {
+      if (activeRebuilds.get(key)?.promise === promise) activeRebuilds.delete(key);
+    }).catch(() => {});
+    return Promise.resolve({ status: "queued", operationId, deduplicated: false });
   }
 
   async function mutateSourceAndRebuild(userId, presetId, { mutateSource, purgeDerived = null, reason = "source_mutation" } = {}) {
@@ -375,6 +392,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     scheduleStateRecovery,
     resumeTarget,
     metrics,
+    getProviderAdmissionSnapshot: () => admission.snapshot(),
     getMetricsSnapshot: () => metrics.snapshot(),
     recoverPending: () => runInBackground(recoverPending),
   });

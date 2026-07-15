@@ -19,4 +19,14 @@ const fileFilter = (req, file, cb) => {
   cb(null, true);
 };
 
-module.exports = multer({ storage, fileFilter, limits: { fileSize: 20 * 1024 * 1024 } });
+module.exports = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 20 * 1024 * 1024,
+    files: 1,
+    fields: 0,
+    parts: 1,
+    fieldNestingDepth: 0,
+  },
+});

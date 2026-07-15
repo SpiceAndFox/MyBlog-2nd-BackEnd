@@ -70,6 +70,16 @@ function normalizeQuery(value) {
   return String(value || "").trim();
 }
 
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason || new Error("Request cancelled");
+}
+
+function failureKind(error) {
+  if (error?.code) return String(error.code).slice(0, 80);
+  if (error?.status) return `http_${error.status}`;
+  return String(error?.name || "retrieval_failed").slice(0, 80);
+}
+
 function buildQueryEmbeddingText(query) {
   const rendered = renderTemplate(chatRagConfig.queryEmbeddingTemplate, { query }).trim();
   if (!rendered) throw new Error("CHAT_RAG_QUERY_EMBEDDING_TEMPLATE cannot render empty");
@@ -268,7 +278,7 @@ function serializeSource(source) {
   return serialized;
 }
 
-async function attachDialogueMessages(sources, { userId, presetId, beforeMessageId, tombstones = [] } = {}) {
+async function attachDialogueMessages(sources, { userId, presetId, beforeMessageId, tombstones = [], signal } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length) return [];
 
@@ -277,6 +287,7 @@ async function attachDialogueMessages(sources, { userId, presetId, beforeMessage
 
   return Promise.all(
     list.map(async (source) => {
+      throwIfAborted(signal);
       let dialogueMessages = await chatRagRepo.listMessagesAroundChunk({
         userId,
         presetId,
@@ -287,22 +298,25 @@ async function attachDialogueMessages(sources, { userId, presetId, beforeMessage
         afterMessages,
         maxMessageId: beforeMessageId,
       });
+      throwIfAborted(signal);
       dialogueMessages = filterSuppressedMessages(dialogueMessages, tombstones);
       return { ...source, dialogueMessages };
     })
   );
 }
 
-async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, tombstones = [] } = {}) {
+async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, tombstones = [], signal } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length || !chatRagConfig.sceneRecallEnabled) return list;
 
   return Promise.all(
     list.map(async (source) => {
       try {
-        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, maxMessageId: beforeMessageId, tombstones });
+        throwIfAborted(signal);
+        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, maxMessageId: beforeMessageId, tombstones, signal });
         return sceneRecall ? { ...source, sceneRecall } : source;
       } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
         logger.warn("chat_rag_scene_recall_failed", {
           error,
           userId,
@@ -317,7 +331,7 @@ async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, 
   );
 }
 
-async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId } = {}) {
+async function retrieveChatRagContextUnsafe({ userId, presetId, query, beforeMessageId, signal } = {}) {
   if (!chatRagConfig.enabled) {
     return { enabled: false, messages: [], sources: [], stats: { reason: "rag_disabled" } };
   }
@@ -352,7 +366,9 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     };
   }
 
-  const [embedding] = await createEmbeddings({ texts: [buildQueryEmbeddingText(normalizedQuery)] });
+  throwIfAborted(signal);
+  const [embedding] = await createEmbeddings({ texts: [buildQueryEmbeddingText(normalizedQuery)], signal });
+  throwIfAborted(signal);
   const rerankerEnabled = Boolean(chatRagConfig.rerankerEnabled);
   const candidateLimit = rerankerEnabled
     ? Math.min(
@@ -369,8 +385,10 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     minSimilarity: chatRagConfig.minSimilarity,
     candidateLimit,
   });
+  throwIfAborted(signal);
 
   const tombstones = await memory.listSuppressionTombstones(userId, presetId);
+  throwIfAborted(signal);
   const eligibleRows = filterRagChunks(rows, tombstones, { requireSourceRefs: memoryV2Config.enabled });
 
   if (!eligibleRows.length) {
@@ -404,6 +422,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
       const scored = await rerankDocuments({
         query: normalizedQuery,
         documents: rerankInput.map((row) => row.content),
+        signal,
       });
       const scoreByIndex = new Map(scored.map((entry) => [entry.index, entry.relevanceScore]));
       const withScores = rerankInput.map((row, index) => ({
@@ -442,6 +461,7 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
 
       rerankerStats.used = true;
     } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
       logger.error("chat_rag_rerank_failed", {
         error,
         userId,
@@ -471,8 +491,11 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
     presetId,
     beforeMessageId: normalizedBeforeMessageId,
     tombstones,
+    signal,
   });
-  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, beforeMessageId: normalizedBeforeMessageId, tombstones });
+  throwIfAborted(signal);
+  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, beforeMessageId: normalizedBeforeMessageId, tombstones, signal });
+  throwIfAborted(signal);
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {
     return {
@@ -506,6 +529,49 @@ async function retrieveChatRagContext({ userId, presetId, query, beforeMessageId
       ...(rerankerStats ? { reranker: rerankerStats } : {}),
     },
   };
+}
+
+async function retrieveChatRagContext(options = {}) {
+  if (!chatRagConfig.enabled) return retrieveChatRagContextUnsafe(options);
+  const parentSignal = options.signal;
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason || new Error("Request cancelled"));
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  const timeout = setTimeout(() => {
+    const error = Object.assign(new Error("RAG query deadline exceeded"), { code: "RAG_QUERY_TIMEOUT" });
+    controller.abort(error);
+  }, chatRagConfig.queryTimeoutMs);
+
+  try {
+    const aborted = new Promise((_, reject) => {
+      const rejectFromAbort = () => reject(controller.signal.reason || new Error("RAG query cancelled"));
+      if (controller.signal.aborted) rejectFromAbort();
+      else controller.signal.addEventListener("abort", rejectFromAbort, { once: true });
+    });
+    return await Promise.race([
+      retrieveChatRagContextUnsafe({ ...options, signal: controller.signal }),
+      aborted,
+    ]);
+  } catch (error) {
+    if (parentSignal?.aborted) throw parentSignal.reason || error;
+    const failure = failureKind(error);
+    logger.warn("chat_rag_query_degraded", {
+      error,
+      userId: options.userId,
+      presetId: options.presetId,
+      failure,
+    });
+    return {
+      enabled: true,
+      messages: [],
+      sources: [],
+      stats: { reason: "retrieval_degraded", degraded: true, failure },
+    };
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
 }
 
 module.exports = {

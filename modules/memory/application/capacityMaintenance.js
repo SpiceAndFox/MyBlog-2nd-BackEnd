@@ -300,6 +300,9 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const adapterResult = proposeWithSchemaRetry
         ? await proposeWithSchemaRetry(envelope)
         : await providerAdapter.propose(envelope);
+      if (adapterResult.status === "deferred") {
+        return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
+      }
       if (adapterResult.status === "error") return recordAdapterError(envelope, adapterResult);
       output = adapterResult.output;
       await persistMaintenanceProposalWithRecovery(envelope, output);

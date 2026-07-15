@@ -91,7 +91,7 @@ function buildOpenAiCompatibleBody(texts) {
   return body;
 }
 
-async function createEmbeddings({ texts } = {}) {
+async function createEmbeddings({ texts, signal } = {}) {
   if (!chatRagConfig.enabled) throw new Error("Chat RAG is disabled");
   if (chatRagConfig.embeddingProvider !== "openai-compatible") {
     throw new Error(`Unsupported embedding provider: ${chatRagConfig.embeddingProvider}`);
@@ -107,6 +107,9 @@ async function createEmbeddings({ texts } = {}) {
     () => abortController.abort(new Error("Embedding request timeout")),
     chatRagConfig.embeddingTimeoutMs
   );
+  const abortFromParent = () => abortController.abort(signal?.reason || new Error("Request cancelled"));
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
 
   const url = buildUrl(chatRagConfig.embeddingBaseUrl, "embeddings");
 
@@ -149,6 +152,7 @@ async function createEmbeddings({ texts } = {}) {
     throw wrapped;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 

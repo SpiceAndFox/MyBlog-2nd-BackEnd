@@ -23,7 +23,7 @@ function readCurrentUserContent({ recent } = {}) {
   return normalizeText(last.content).trim();
 }
 
-async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
+async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId, signal } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId) throw new Error("Missing userId");
@@ -48,6 +48,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
         presetId: normalizedPresetId,
         query: readCurrentUserContent({ recent }),
         beforeMessageId: ragBoundary,
+        signal,
       });
     if (ragProjection && ragProjection.queryHealth !== "healthy" && ragContext?.messages?.length) {
       ragContext.messages = ragContext.messages.map((message) => ({ ...message, content: `[检索范围不完整]\n${message.content}` }));
@@ -107,6 +108,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     presetId: normalizedPresetId,
     query: readCurrentUserContent({ recent }),
     beforeMessageId: recentWindowStartMessageId === null ? null : Math.max(0, recentWindowStartMessageId - 1),
+    signal,
   });
 
   const compiled = buildContextSegments({

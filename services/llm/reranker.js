@@ -96,7 +96,7 @@ function normalizeScoredResults(results, documentCount) {
   return scored;
 }
 
-async function rerankDocuments({ query, documents } = {}) {
+async function rerankDocuments({ query, documents, signal } = {}) {
   if (!chatRagConfig.enabled) throw new Error("Chat RAG is disabled");
   if (!chatRagConfig.rerankerEnabled) throw new Error("Chat RAG reranker is disabled");
   if (chatRagConfig.rerankerProvider !== "openai-compatible") {
@@ -117,6 +117,9 @@ async function rerankDocuments({ query, documents } = {}) {
     () => abortController.abort(new Error("Reranker request timeout")),
     chatRagConfig.rerankerTimeoutMs
   );
+  const abortFromParent = () => abortController.abort(signal?.reason || new Error("Request cancelled"));
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
 
   const url = buildUrl(chatRagConfig.rerankerBaseUrl, "rerank");
 
@@ -153,6 +156,7 @@ async function rerankDocuments({ query, documents } = {}) {
     throw wrapped;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 
