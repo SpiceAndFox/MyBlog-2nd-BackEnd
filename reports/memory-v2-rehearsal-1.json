@@ -1,25 +1,117 @@
 {
   "status": "failed",
   "mode": "rehearsal",
-  "startedAt": "2026-07-15T08:55:29.333Z",
-  "failedAt": "2026-07-15T08:57:25.068Z",
-  "durationMs": 115735,
+  "startedAt": "2026-07-15T15:28:46.118Z",
+  "failedAt": "2026-07-15T15:28:53.284Z",
+  "durationMs": 7166,
   "scopeCount": 3,
-  "results": [],
+  "results": [
+    {
+      "userId": 1,
+      "presetId": "Alice",
+      "messageCount": 160,
+      "characterCount": 4535,
+      "boundaryMessageId": 1155,
+      "sourceFingerprint": "sha256:b5326ee3b52edcb407d26ca07f6e5af6c4cce809998e7234443c88a5a337ba66",
+      "sourceGeneration": 1,
+      "revision": 485,
+      "sectionUsage": {
+        "scene": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "todos": {
+          "itemCount": 5,
+          "textChars": 25
+        },
+        "standingAgreements": {
+          "itemCount": 1,
+          "textChars": 10
+        },
+        "recentEpisodes": {
+          "itemCount": 19,
+          "textChars": 1077
+        },
+        "milestones": {
+          "itemCount": 1,
+          "textChars": 35
+        },
+        "worldFacts": {
+          "itemCount": 0,
+          "textChars": 0
+        },
+        "userProfile": {
+          "itemCount": 2,
+          "textChars": 48
+        },
+        "assistantProfile": {
+          "itemCount": 6,
+          "textChars": 182
+        },
+        "relationship": {
+          "itemCount": 6,
+          "textChars": 238
+        }
+      },
+      "verification": {
+        "rawBoundaryStable": true,
+        "healthyTargetCount": 6,
+        "targetCursorsAtBoundary": true,
+        "authoritySnapshotEqual": true,
+        "eventSnapshotChainContinuous": true,
+        "healthyProjections": [
+          "rag"
+        ]
+      },
+      "normalTaskCount": 0,
+      "providerUsage": {
+        "callCount": 0,
+        "inputTokens": 0,
+        "cachedInputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0,
+        "tokenUsageMissingCallCount": 0,
+        "costMissingCallCount": 0,
+        "retryCallCount": 0,
+        "retryClassificationMissingCallCount": 0,
+        "retryClassificationCoverageComplete": true,
+        "providerDurationMs": 0,
+        "tokenUsageCoverageComplete": true,
+        "costCoverageComplete": true,
+        "pricing": {
+          "version": "deepseek-v4-flash-2026-07-15",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "effectiveAt": "2026-07-15T00:00:00Z",
+          "currency": "USD",
+          "model": "deepseek-v4-flash",
+          "inputUsdPerMillionTokens": 0.14,
+          "cachedInputUsdPerMillionTokens": 0.0028,
+          "outputUsdPerMillionTokens": 0.28
+        },
+        "byTarget": {},
+        "byProposer": {},
+        "byModel": {},
+        "byMode": {},
+        "byResult": {}
+      },
+      "durationMs": 873
+    }
+  ],
   "canStartService": false,
   "providerUsage": {
-    "callCount": 94,
-    "inputTokens": 654439,
-    "cachedInputTokens": 550784,
-    "outputTokens": 9001,
-    "totalTokens": 663440,
-    "costUsd": 0.018574145,
+    "callCount": 2,
+    "inputTokens": 34586,
+    "cachedInputTokens": 2176,
+    "outputTokens": 311,
+    "totalTokens": 34897,
+    "costUsd": 0.004630573,
     "tokenUsageMissingCallCount": 0,
     "costMissingCallCount": 0,
-    "retryCallCount": 2,
+    "retryCallCount": 0,
     "retryClassificationMissingCallCount": 0,
     "retryClassificationCoverageComplete": true,
-    "providerDurationMs": 114072,
+    "providerDurationMs": 4811,
     "tokenUsageCoverageComplete": true,
     "costCoverageComplete": true,
     "pricing": {
@@ -33,91 +125,61 @@
       "outputUsdPerMillionTokens": 0.28
     },
     "byTarget": {
-      "scene": {
-        "callCount": 64,
-        "inputTokens": 269876,
-        "cachedInputTokens": 209536,
-        "outputTokens": 5973,
-        "totalTokens": 275849,
-        "costUsd": 0.010706716,
-        "tokenUsageMissingCallCount": 0,
-        "costMissingCallCount": 0
-      },
-      "todos": {
-        "callCount": 30,
-        "inputTokens": 384563,
-        "cachedInputTokens": 341248,
-        "outputTokens": 3028,
-        "totalTokens": 387591,
-        "costUsd": 0.007867429,
+      "profileRelationship": {
+        "callCount": 2,
+        "inputTokens": 34586,
+        "cachedInputTokens": 2176,
+        "outputTokens": 311,
+        "totalTokens": 34897,
+        "costUsd": 0.004630573,
         "tokenUsageMissingCallCount": 0,
         "costMissingCallCount": 0
       }
     },
     "byProposer": {
-      "currentStateProposer": {
-        "callCount": 64,
-        "inputTokens": 269876,
-        "cachedInputTokens": 209536,
-        "outputTokens": 5973,
-        "totalTokens": 275849,
-        "costUsd": 0.010706716,
-        "tokenUsageMissingCallCount": 0,
-        "costMissingCallCount": 0
-      },
-      "todoProposer": {
-        "callCount": 30,
-        "inputTokens": 384563,
-        "cachedInputTokens": 341248,
-        "outputTokens": 3028,
-        "totalTokens": 387591,
-        "costUsd": 0.007867429,
+      "profileRelationshipProposer": {
+        "callCount": 2,
+        "inputTokens": 34586,
+        "cachedInputTokens": 2176,
+        "outputTokens": 311,
+        "totalTokens": 34897,
+        "costUsd": 0.004630573,
         "tokenUsageMissingCallCount": 0,
         "costMissingCallCount": 0
       }
     },
     "byModel": {
       "deepseek-v4-flash": {
-        "callCount": 94,
-        "inputTokens": 654439,
-        "cachedInputTokens": 550784,
-        "outputTokens": 9001,
-        "totalTokens": 663440,
-        "costUsd": 0.018574145,
+        "callCount": 2,
+        "inputTokens": 34586,
+        "cachedInputTokens": 2176,
+        "outputTokens": 311,
+        "totalTokens": 34897,
+        "costUsd": 0.004630573,
         "tokenUsageMissingCallCount": 0,
         "costMissingCallCount": 0
       }
     },
     "byMode": {
       "normal": {
-        "callCount": 94,
-        "inputTokens": 654439,
-        "cachedInputTokens": 550784,
-        "outputTokens": 9001,
-        "totalTokens": 663440,
-        "costUsd": 0.018574145,
+        "callCount": 2,
+        "inputTokens": 34586,
+        "cachedInputTokens": 2176,
+        "outputTokens": 311,
+        "totalTokens": 34897,
+        "costUsd": 0.004630573,
         "tokenUsageMissingCallCount": 0,
         "costMissingCallCount": 0
       }
     },
     "byResult": {
       "ok": {
-        "callCount": 91,
-        "inputTokens": 615950,
-        "cachedInputTokens": 514176,
-        "outputTokens": 8388,
-        "totalTokens": 624338,
-        "costUsd": 0.018036663,
-        "tokenUsageMissingCallCount": 0,
-        "costMissingCallCount": 0
-      },
-      "output_schema_invalid": {
-        "callCount": 3,
-        "inputTokens": 38489,
-        "cachedInputTokens": 36608,
-        "outputTokens": 613,
-        "totalTokens": 39102,
-        "costUsd": 0.000537482,
+        "callCount": 2,
+        "inputTokens": 34586,
+        "cachedInputTokens": 2176,
+        "outputTokens": 311,
+        "totalTokens": 34897,
+        "costUsd": 0.004630573,
         "tokenUsageMissingCallCount": 0,
         "costMissingCallCount": 0
       }
@@ -197,23 +259,23 @@
     "message": "Memory force drain did not complete: incomplete",
     "detail": {
       "sourceGeneration": 1,
-      "targetKey": "todos",
+      "targetKey": "profileRelationship",
       "result": {
-        "status": "error",
-        "outcome": null,
-        "reason": "output_schema_invalid",
-        "taskId": "720be5eb-2b91-4799-aab0-9f5418ba3b47"
+        "status": "queued",
+        "outcome": "transaction_failed",
+        "reason": null,
+        "taskId": "e2418863-3e8a-4054-baed-d5e42bcd26b7"
       },
-      "completedTaskCount": 92
+      "completedTaskCount": 2
     }
   },
   "evidence": {
     "reportFormatVersion": 2,
     "code": {
-      "gitCommit": "fea1cca650f16053aaed85791bf769dd1163b1db",
-      "gitTree": "65b448ef74ddc1fc832356d71fac70087d3230f0",
+      "gitCommit": "3ed92950402f1fc6331b52b1f64a8019be3793e4",
+      "gitTree": "d4898dcb31154562eefee9998f60a6069046f925",
       "workingTreeDirty": true,
-      "workingTreeStateHash": "sha256:129a2a6290553a19c3666a3cae44fc030da59c5805cc30d391ada5793d2e107b"
+      "workingTreeStateHash": "sha256:e4423370fe64c0933fdf0b9dbbaad718ec8c1ed4ff9f94619694d2af04e59396"
     },
     "schema": {
       "sha256": "sha256:605ee7998934dce127639ff2d462773a7cf7226e3193270e60b8b2fea731534e",
@@ -257,7 +319,7 @@
       ]
     },
     "config": {
-      "sha256": "sha256:fd5c4b6d389eabe546e731acd39dd09995fd8f2818d72ff87a19e5ea82daa4a9",
+      "sha256": "sha256:719d1f11b9ad7ed961f95e57d75a7b776d9194d5dc990081d0ab180f2a978df7",
       "values": {
         "memory": {
           "enabled": true,
@@ -298,28 +360,28 @@
           },
           "targets": {
             "scene": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 4,
+              "contextWindow": 8
             },
             "todos": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 6,
+              "contextWindow": 24
             },
             "standingAgreements": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 8,
+              "contextWindow": 24
             },
             "episodes": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 10,
+              "contextWindow": 32
             },
             "profileRelationship": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 12,
+              "contextWindow": 48
             },
             "worldFacts": {
-              "lagThreshold": 2,
-              "contextWindow": 6
+              "lagThreshold": 8,
+              "contextWindow": 32
             }
           },
           "scene": {
@@ -350,6 +412,10 @@
           },
           "compaction": {
             "retryMax": 2
+          },
+          "hygiene": {
+            "highWatermarkPercent": 70,
+            "minItemDelta": 5
           },
           "retention": {
             "snapshotDays": 30,

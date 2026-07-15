@@ -1,7 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { prepareValue } = require("pg/lib/utils");
 const db = require("../../db");
 const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
+const { insertEvents } = require("../../modules/memory/infrastructure/repositories/auditRepository");
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
 const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
 const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
@@ -36,6 +38,37 @@ test("revision zero initialization atomically creates snapshot and six target st
     assert.ok(statements.includes("BEGIN"));
     assert.ok(statements.includes("COMMIT"));
   } finally { db.getClient = originalGetClient; }
+});
+
+test("merge event arrays are encoded as JSONB rather than PostgreSQL arrays", async () => {
+  const mergedFromItemIds = ["userProfile:first", "userProfile:second"];
+  let insertedParams;
+  const client = {
+    async query(_sql, params) {
+      insertedParams = params;
+      return { rows: [{}], rowCount: 1 };
+    },
+  };
+  await insertEvents([{
+    event_group_id: "00000000-0000-0000-0000-000000000001",
+    event_index: 0,
+    user_id: 1,
+    preset_id: "default",
+    task_id: "00000000-0000-0000-0000-000000000002",
+    target_key: "profileRelationship",
+    section: "userProfile",
+    event_kind: "proposal_decision",
+    decision: "accepted",
+    op: "mergeItems",
+    merged_from_item_ids: mergedFromItemIds,
+    patch_summary: { op: "mergeItems", itemIds: mergedFromItemIds },
+    normalized_operation: { op: "mergeItems", itemIds: mergedFromItemIds },
+  }], { client });
+
+  assert.equal(typeof insertedParams[14], "string");
+  assert.deepEqual(JSON.parse(prepareValue(insertedParams[14])), mergedFromItemIds);
+  assert.deepEqual(JSON.parse(prepareValue(insertedParams[18])).itemIds, mergedFromItemIds);
+  assert.deepEqual(JSON.parse(prepareValue(insertedParams[19])).itemIds, mergedFromItemIds);
 });
 test("partial privacy purge deletes only tombstones whose raw message no longer exists", async () => {
   const statements = [];
