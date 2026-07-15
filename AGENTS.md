@@ -1,5 +1,14 @@
 # Repository Agent Instructions
 
+## 示例
+
+```
+  powershell.exe -NoProfile -Command "
+  Set-Location 'E:\Code\Blog\BlogBackEnd'
+  npm.cmd run check:memory-schema
+  "
+```
+
 ## Calling Windows Node from WSL
 
 Use the native WSL `node`/`npm` by default. Use Windows Node only when the command must reach a service that is available exclusively through Windows `localhost`, requires a Windows-native executable/runtime, or the user explicitly requests the Windows environment.
