@@ -79,6 +79,8 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
+  const unsupportedProjectionKeys = Object.keys(projectionDrains).filter((projectionKey) => projectionKey !== "rag");
+  if (unsupportedProjectionKeys.length) throw new Error(`Unsupported Memory projection drain: ${unsupportedProjectionKeys.join(",")}`);
 
   const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
   const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);

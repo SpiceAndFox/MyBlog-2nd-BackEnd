@@ -161,7 +161,9 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
         onBackgroundError?.(error);
       }
     }
-    let activeDiagnostics = (await repositories.sidecars.listActiveDiagnostics(userId, presetId)).map(camelDiagnostic);
+    let activeDiagnostics = (await repositories.sidecars.listActiveDiagnostics(userId, presetId))
+      .map(camelDiagnostic)
+      .filter((row) => row.subjectKind !== "projection" || row.subjectKey === "rag");
     const stateDiagnosticTypes = new Set(["state_missing", "state_read_failed", "state_schema_invalid", "version_unsupported"]);
     if (!state && debug.memorySkipReason && stateDiagnosticTypes.has(debug.memorySkipReason)) {
       const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, {
@@ -222,10 +224,12 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     } else if (!recent.needsMemory) debug.memorySkipReason = "not_needed";
 
     const checkpoints = state ? await repositories.sidecars.listProjectionCheckpoints(userId, presetId) : [];
-    const projectionHealth = state ? checkpoints.map((checkpoint) => ({
-      projectionKey: checkpoint.projection_key ?? checkpoint.projectionKey,
-      ...assessProjectionCoverage(checkpoint, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }),
-    })) : [];
+    const projectionHealth = state ? checkpoints
+      .filter((checkpoint) => (checkpoint.projection_key ?? checkpoint.projectionKey) === "rag")
+      .map((checkpoint) => ({
+        projectionKey: checkpoint.projection_key ?? checkpoint.projectionKey,
+        ...assessProjectionCoverage(checkpoint, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }),
+      })) : [];
     if (state) {
       for (const projectionKey of ["rag"]) {
         if (!projectionHealth.some((entry) => entry.projectionKey === projectionKey)) {
@@ -276,6 +280,9 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     const recoveryStableMs = config.health?.recoveryStableMs ?? 0;
     const requestTimestamp = new Date(requestNow).getTime();
     const notifications = (await repositories.sidecars.listPendingRecoveryNotifications(userId, presetId)).filter((row) => {
+      const subjectKind = row.subject_kind ?? row.subjectKind;
+      const subjectKey = row.subject_key ?? row.subjectKey;
+      if (subjectKind === "projection" && subjectKey !== "rag") return false;
       const createdAt = row.created_at ?? row.createdAt;
       return !createdAt || requestTimestamp - new Date(createdAt).getTime() >= recoveryStableMs;
     });

@@ -53,6 +53,20 @@ test("chat turn migration persists identity, idempotency, generation fences, and
   assert.match(migration, /idx_memory_privacy_operations_active_scope/i);
 });
 
+test("launch-gate migration repairs duplicate diagnostics before the unique index and retires recall checkpoints", () => {
+  const baseMigration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/001-memory-v2.sql"), "utf8");
+  const dedupePosition = baseMigration.indexOf("WITH ranked AS");
+  const uniqueIndexPosition = baseMigration.indexOf("CREATE UNIQUE INDEX IF NOT EXISTS idx_context_diagnostics_one_active");
+  assert.equal(dedupePosition >= 0 && dedupePosition < uniqueIndexPosition, true);
+  assert.match(baseMigration, /ROW_NUMBER\(\) OVER[\s\S]*WHERE resolved=FALSE[\s\S]*SET resolved=TRUE/i);
+
+  const launchGateMigration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/009-launch-gate-legacy-projections.sql"), "utf8");
+  assert.match(launchGateMigration, /DELETE FROM chat_context_projection_checkpoints\s+WHERE projection_key<>'rag'/i);
+  assert.match(launchGateMigration, /DELETE FROM chat_context_quality_diagnostics\s+WHERE subject_kind='projection' AND subject_key<>'rag'/i);
+  assert.match(launchGateMigration, /DELETE FROM chat_memory_recovery_notifications\s+WHERE subject_kind='projection' AND subject_key<>'rag'/i);
+  assert.match(launchGateMigration, /ADD CONSTRAINT chk_context_projection_key CHECK \(projection_key='rag'\)/i);
+});
+
 test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {
   const retriever = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/retriever.js"), "utf8");
   const repository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");

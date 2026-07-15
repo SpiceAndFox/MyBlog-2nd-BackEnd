@@ -46,7 +46,7 @@ test("retention promotes only a validated continuous anchor and preserves refere
       async getTargetStatuses() { return fixture.targets.map((targetKey) => ({ targetKey, sourceGeneration: 2, status: "healthy" })); },
       async deleteRetainedRuntime(_u, _p, options) { runtimeAnchor = options.anchorRevision; return { tasks: 1, ops: 1 }; },
     },
-    sidecars: { async listProjectionCheckpoints() { return ["rag", "recall"].map((projectionKey) => ({ projectionKey, processedGeneration: 2, status: "healthy" })); } },
+    sidecars: { async listProjectionCheckpoints() { return [{ projectionKey: "rag", processedGeneration: 2, status: "healthy" }]; } },
   };
   const retention = createMemoryRetention({
     repositories,
@@ -99,4 +99,3 @@ test("retention rejects an anchor whose state cannot be reproduced from semantic
   });
   await assert.rejects(() => retention.runScope(7, "companion"), /does not equal deterministic event replay/);
 });
-

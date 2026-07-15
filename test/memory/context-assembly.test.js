@@ -128,6 +128,28 @@ test("projection lag diagnostic persists until the query boundary is covered", a
   assert.equal(recovered.notifications.some((row) => row.subjectKind === "projection" && row.subjectKey === "rag"), true);
 });
 
+test("legacy recall checkpoints never participate in projection health", async () => {
+  const data = makeData();
+  data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
+  data.checkpoints = [
+    { projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
+    { projection_key: "recall", processed_generation: -1, processed_boundary_message_id: 0, status: "rebuilding" },
+  ];
+  data.diagnostics.push({
+    id: data.nextId++, subjectKind: "projection", subjectKey: "recall", diagnosticType: "projection_lag",
+    sourceGeneration: 0, recentWindowStart: 5, resolved: false,
+  });
+  data.notifications.push({
+    id: data.nextId++, subjectKind: "projection", subjectKey: "recall", boundaryMessageId: 0,
+    sourceGeneration: 0, delivered: false,
+  });
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "legacy-recall" });
+  assert.equal(result.health.status, "healthy");
+  assert.deepEqual(result.projectionCoverage.map((entry) => entry.projectionKey), ["rag"]);
+  assert.equal(result.notifications.some((row) => row.subjectKey === "recall"), false);
+});
+
 test("scene capacity rejection diagnostic is user-visible until the rejected field later recovers", async () => {
   const data = makeData();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
@@ -205,4 +227,3 @@ test("invalid authority schedules background state recovery without blocking con
   assert.equal(result.debug.memorySkipReason, "state_schema_invalid");
   assert.equal(recoveries, 1);
 });
-

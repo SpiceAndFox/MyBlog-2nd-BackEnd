@@ -29,8 +29,18 @@ const REQUIRED_INDEXES = Object.freeze([
   "idx_memory_privacy_operations_active_scope",
   "idx_chat_messages_scope_idempotency", "idx_chat_messages_one_assistant_per_parent", "idx_chat_messages_turn_id",
 ]);
+const REQUIRED_CONSTRAINTS = Object.freeze(["chk_context_projection_key"]);
 
-function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, legacy }) {
+function evaluateInspection({
+  tables,
+  columns,
+  indexes,
+  constraints = [],
+  userTimeZoneColumn,
+  legacy,
+  duplicateActiveDiagnostics = [],
+  unsupportedProjectionCheckpoints = [],
+}) {
   const tableSet = new Set(tables);
   const columnMap = new Map();
   for (const column of columns) {
@@ -46,6 +56,8 @@ function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, lega
   }
   const indexSet = new Set(indexes);
   const missingIndexes = REQUIRED_INDEXES.filter((index) => !indexSet.has(index));
+  const constraintSet = new Set(constraints);
+  const missingConstraints = REQUIRED_CONSTRAINTS.filter((constraint) => !constraintSet.has(constraint));
   const memoryState = columnMap.get("chat_preset_memory")?.get("memory_state");
   const keyDefinitionsValid = memoryState?.data_type === "jsonb"
     && userTimeZoneColumn?.data_type === "text" && userTimeZoneColumn?.is_nullable === "NO"
@@ -61,9 +73,19 @@ function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, lega
     && columnMap.get("chat_memory_privacy_operations")?.get("operation_payload")?.is_nullable === "NO"
     && columnMap.get("chat_memory_diagnostic_projection_checkpoints")?.get("processed_event_id")?.is_nullable === "NO"
     && String(columnMap.get("chat_memory_diagnostic_projection_checkpoints")?.get("processed_event_id")?.column_default ?? "").includes("0");
-  const clean = missingTables.length === 0 && missingColumns.length === 0 && missingIndexes.length === 0
-    && keyDefinitionsValid && !legacy.checkpointTable && legacy.columns.length === 0;
-  return { clean, missingTables, missingColumns, missingIndexes, keyDefinitionsValid };
+  const clean = missingTables.length === 0 && missingColumns.length === 0 && missingIndexes.length === 0 && missingConstraints.length === 0
+    && keyDefinitionsValid && !legacy.checkpointTable && legacy.columns.length === 0
+    && duplicateActiveDiagnostics.length === 0 && unsupportedProjectionCheckpoints.length === 0;
+  return {
+    clean,
+    missingTables,
+    missingColumns,
+    missingIndexes,
+    missingConstraints,
+    keyDefinitionsValid,
+    duplicateActiveDiagnostics,
+    unsupportedProjectionCheckpoints,
+  };
 }
 
 function inspectionReport(result) {
@@ -73,12 +95,16 @@ function inspectionReport(result) {
     tableCount: result.tables.length,
     columnCount: result.columns.length,
     indexCount: result.indexes.length,
+    constraintCount: result.constraints.length,
     missingTables: result.missingTables,
     missingColumns: result.missingColumns,
     missingIndexes: result.missingIndexes,
+    missingConstraints: result.missingConstraints,
     keyDefinitionsValid: result.keyDefinitionsValid,
     userTimeZoneColumn: result.userTimeZoneColumn,
     legacy: result.legacy,
+    duplicateActiveDiagnostics: result.duplicateActiveDiagnostics,
+    unsupportedProjectionCheckpoints: result.unsupportedProjectionCheckpoints,
   };
 }
 
@@ -137,26 +163,48 @@ async function inspect(url) {
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = current_schema()
-        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_preset_memory','chat_preset_memory_checkpoints'))
+        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints'))
       ORDER BY table_name
     `);
     const columns = await pool.query(`
       SELECT table_name, column_name, data_type, is_nullable, column_default
       FROM information_schema.columns
       WHERE table_schema = current_schema()
-        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name = 'chat_preset_memory')
+        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory'))
       ORDER BY table_name, ordinal_position
     `);
     const indexes = await pool.query(`
       SELECT indexname FROM pg_indexes
       WHERE schemaname = current_schema()
-        AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename = 'chat_preset_memory')
+        AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory'))
       ORDER BY indexname
+    `);
+    const constraints = await pool.query(`
+      SELECT c.conname
+      FROM pg_constraint c
+      JOIN pg_class r ON r.oid=c.conrelid
+      JOIN pg_namespace n ON n.oid=r.relnamespace
+      WHERE n.nspname=current_schema() AND r.relname='chat_context_projection_checkpoints'
+      ORDER BY c.conname
     `);
     const userColumns = await pool.query(`
       SELECT column_name, data_type, is_nullable, column_default
       FROM information_schema.columns
       WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'time_zone'
+    `);
+    const duplicateActiveDiagnostics = await pool.query(`
+      SELECT user_id,preset_id,subject_kind,subject_key,diagnostic_type,COUNT(*)::BIGINT AS active_count
+      FROM chat_context_quality_diagnostics
+      WHERE resolved=FALSE
+      GROUP BY user_id,preset_id,subject_kind,subject_key,diagnostic_type
+      HAVING COUNT(*) > 1
+      ORDER BY user_id,preset_id,subject_kind,subject_key,diagnostic_type
+    `);
+    const unsupportedProjectionCheckpoints = await pool.query(`
+      SELECT user_id,preset_id,projection_key,processed_generation,status
+      FROM chat_context_projection_checkpoints
+      WHERE projection_key<>'rag'
+      ORDER BY user_id,preset_id,projection_key
     `);
     const oldColumnNames = new Set([
       "rolling_summary", "rolling_summary_updated_at", "summarized_until_message_id",
@@ -169,8 +217,11 @@ async function inspect(url) {
       tables: tables.rows.map((row) => row.table_name),
       columns: columns.rows,
       indexes: indexes.rows.map((row) => row.indexname),
+      constraints: constraints.rows.map((row) => row.conname),
       userTimeZoneColumn: userColumns.rows[0] || null,
       legacy: { checkpointTable: legacyCheckpointTable, columns: legacyColumns },
+      duplicateActiveDiagnostics: duplicateActiveDiagnostics.rows,
+      unsupportedProjectionCheckpoints: unsupportedProjectionCheckpoints.rows,
     };
     return { ...result, ...evaluateInspection(result) };
   } finally {
@@ -194,12 +245,15 @@ function inspectThroughWindowsPsql(url) {
   const port = url.port || "5432";
   const sql = `
     SELECT json_build_object(
-      'tables', COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_preset_memory','chat_preset_memory_checkpoints'))), '[]'::json),
-      'columns', COALESCE((SELECT json_agg(json_build_object('table_name',table_name,'column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name='chat_preset_memory')), '[]'::json),
-      'indexes', COALESCE((SELECT json_agg(indexname ORDER BY indexname) FROM pg_indexes WHERE schemaname=current_schema() AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename='chat_preset_memory')), '[]'::json),
+      'tables', COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints'))), '[]'::json),
+      'columns', COALESCE((SELECT json_agg(json_build_object('table_name',table_name,'column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory'))), '[]'::json),
+      'indexes', COALESCE((SELECT json_agg(indexname ORDER BY indexname) FROM pg_indexes WHERE schemaname=current_schema() AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory'))), '[]'::json),
+      'constraints', COALESCE((SELECT json_agg(c.conname ORDER BY c.conname) FROM pg_constraint c JOIN pg_class r ON r.oid=c.conrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname=current_schema() AND r.relname='chat_context_projection_checkpoints'), '[]'::json),
       'userTimeZoneColumn', (SELECT json_build_object('column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='time_zone'),
       'legacyCheckpointTable', EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='chat_preset_memory_checkpoints'),
-      'legacyColumns', COALESCE((SELECT json_agg(column_name ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='chat_preset_memory' AND column_name IN ('rolling_summary','rolling_summary_updated_at','summarized_until_message_id','dirty_since_message_id','rebuild_required','core_memory')), '[]'::json)
+      'legacyColumns', COALESCE((SELECT json_agg(column_name ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='chat_preset_memory' AND column_name IN ('rolling_summary','rolling_summary_updated_at','summarized_until_message_id','dirty_since_message_id','rebuild_required','core_memory')), '[]'::json),
+      'duplicateActiveDiagnostics', COALESCE((SELECT json_agg(row_to_json(diagnostic_duplicates)) FROM (SELECT user_id,preset_id,subject_kind,subject_key,diagnostic_type,COUNT(*)::BIGINT AS active_count FROM chat_context_quality_diagnostics WHERE resolved=FALSE GROUP BY user_id,preset_id,subject_kind,subject_key,diagnostic_type HAVING COUNT(*)>1 ORDER BY user_id,preset_id,subject_kind,subject_key,diagnostic_type) diagnostic_duplicates), '[]'::json),
+      'unsupportedProjectionCheckpoints', COALESCE((SELECT json_agg(row_to_json(projection_checkpoints)) FROM (SELECT user_id,preset_id,projection_key,processed_generation,status FROM chat_context_projection_checkpoints WHERE projection_key<>'rag' ORDER BY user_id,preset_id,projection_key) projection_checkpoints), '[]'::json)
     )::text;
   `;
   const result = spawnSync(psql, [
@@ -224,8 +278,11 @@ function inspectThroughWindowsPsql(url) {
     tables: parsed.tables,
     columns: parsed.columns,
     indexes: parsed.indexes,
+    constraints: parsed.constraints,
     userTimeZoneColumn: parsed.userTimeZoneColumn,
     legacy: { checkpointTable: parsed.legacyCheckpointTable, columns: parsed.legacyColumns },
+    duplicateActiveDiagnostics: parsed.duplicateActiveDiagnostics,
+    unsupportedProjectionCheckpoints: parsed.unsupportedProjectionCheckpoints,
   };
   return { ...normalized, ...evaluateInspection(normalized) };
 }
@@ -267,4 +324,4 @@ if (require.main === module) main().catch((error) => {
   process.exitCode = 1;
 });
 
-module.exports = { REQUIRED_TABLES, REQUIRED_COLUMNS, REQUIRED_INDEXES, evaluateInspection, inspectionReport };
+module.exports = { REQUIRED_TABLES, REQUIRED_COLUMNS, REQUIRED_INDEXES, REQUIRED_CONSTRAINTS, evaluateInspection, inspectionReport };

@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS chat_context_projection_checkpoints (
   processed_generation BIGINT NOT NULL, processed_boundary_message_id BIGINT,
   processed_tombstone_id BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL,
   last_error_reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chk_context_projection_key CHECK (projection_key='rag'),
   PRIMARY KEY (user_id, preset_id, projection_key)
 );
 
@@ -104,6 +105,23 @@ CREATE TABLE IF NOT EXISTS chat_context_quality_diagnostics (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_context_diagnostics_active ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, resolved, created_at DESC);
+
+-- This file is intentionally rerunnable. Older deployments may have created
+-- duplicate active rows before the partial unique index existed, so repair
+-- those rows before attempting to create the index.
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY user_id,preset_id,subject_kind,subject_key,diagnostic_type
+    ORDER BY updated_at DESC,id DESC
+  ) AS position
+  FROM chat_context_quality_diagnostics
+  WHERE resolved=FALSE
+)
+UPDATE chat_context_quality_diagnostics d
+SET resolved=TRUE,resolved_at=NOW(),updated_at=NOW()
+FROM ranked r
+WHERE d.id=r.id AND r.position>1;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_context_diagnostics_one_active ON chat_context_quality_diagnostics(user_id,preset_id,subject_kind,subject_key,diagnostic_type) WHERE resolved=FALSE;
 
 CREATE TABLE IF NOT EXISTS chat_memory_recovery_notifications (

@@ -2,7 +2,7 @@ const { normalizeScope, executor } = require("./helpers");
 
 async function upsertProjectionCheckpoint(userId, presetId, checkpoint, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  if (!["rag", "recall"].includes(checkpoint.projectionKey)) throw new Error("Invalid projectionKey");
+  if (checkpoint.projectionKey !== "rag") throw new Error("Invalid projectionKey");
   if (!["healthy", "degraded", "rebuilding"].includes(checkpoint.status)) throw new Error("Invalid projection status");
   const { rows } = await executor(client).query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,processed_tombstone_id,status,last_error_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET processed_generation=EXCLUDED.processed_generation,processed_boundary_message_id=EXCLUDED.processed_boundary_message_id,processed_tombstone_id=EXCLUDED.processed_tombstone_id,status=EXCLUDED.status,last_error_reason=EXCLUDED.last_error_reason,updated_at=NOW() RETURNING *`, [scope.userId,scope.presetId,checkpoint.projectionKey,checkpoint.processedGeneration,checkpoint.processedBoundaryMessageId??null,checkpoint.processedTombstoneId??0,checkpoint.status,checkpoint.lastErrorReason??null]);
   return rows[0];
@@ -22,7 +22,7 @@ async function createDiagnostic(userId, presetId, diagnostic, { client } = {}) {
 }
 async function listActiveDiagnostics(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const { rows } = await executor(client).query(`SELECT * FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2 AND resolved=FALSE ORDER BY created_at,id`, [scope.userId, scope.presetId]);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2 AND resolved=FALSE AND (subject_kind<>'projection' OR subject_key='rag') ORDER BY created_at,id`, [scope.userId, scope.presetId]);
   return rows;
 }
 async function upsertActiveDiagnostic(userId, presetId, diagnostic, { client } = {}) {
@@ -69,7 +69,7 @@ async function createRecoveryNotification(userId, presetId, notification, { clie
 }
 async function listPendingRecoveryNotifications(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_recovery_notifications WHERE user_id=$1 AND preset_id=$2 AND delivered=FALSE ORDER BY created_at,id`, [scope.userId,scope.presetId]);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_recovery_notifications WHERE user_id=$1 AND preset_id=$2 AND delivered=FALSE AND (subject_kind<>'projection' OR subject_key='rag') ORDER BY created_at,id`, [scope.userId,scope.presetId]);
   return rows;
 }
 async function markRecoveryNotificationsDelivered(ids, { client } = {}) {
@@ -79,12 +79,12 @@ async function markRecoveryNotificationsDelivered(ids, { client } = {}) {
 }
 async function listProjectionCheckpoints(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 ORDER BY projection_key`, [scope.userId,scope.presetId]);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 AND projection_key='rag' ORDER BY projection_key`, [scope.userId,scope.presetId]);
   return rows;
 }
 async function getProjectionCheckpoint(userId, presetId, projectionKey, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
-  if (!["rag", "recall"].includes(projectionKey)) throw new Error("Invalid projectionKey");
+  if (projectionKey !== "rag") throw new Error("Invalid projectionKey");
   const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 AND projection_key=$3${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId, projectionKey]);
   return rows[0] || null;
 }

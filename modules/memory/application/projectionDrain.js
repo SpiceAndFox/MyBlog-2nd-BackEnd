@@ -6,7 +6,7 @@ function errorReason(error) {
 }
 
 function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
-  if (!["rag", "recall"].includes(projectionKey)) throw new Error("projectionKey must be rag or recall");
+  if (projectionKey !== "rag") throw new Error("projectionKey must be rag");
   if (!repositories?.state || !repositories?.source || !repositories?.sidecars || !repositories?.withTransaction) throw new Error("Projection drain repositories are required");
   if (!adapter?.rebuild || !adapter?.append || !adapter?.commit || !adapter?.suppress) throw new Error("Projection adapter requires staged rebuild, append, suppression, and transactional commit");
 

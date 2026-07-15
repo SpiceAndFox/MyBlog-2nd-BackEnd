@@ -25,7 +25,7 @@ test("startup recovery reconciles projections for initialized scopes using the p
     sidecars: {},
     async withTransaction(work) { return work({}); },
   };
-  const projectionDrains = Object.fromEntries(["rag", "recall"].map((key) => [key, {
+  const projectionDrains = Object.fromEntries(["rag"].map((key) => [key, {
     async drain(userId, presetId) {
       projectionCalls.push([key, userId, presetId]);
       return { status: "healthy" };
@@ -45,14 +45,14 @@ test("startup recovery reconciles projections for initialized scopes using the p
   });
 
   assert.deepEqual(await runtime.recoverPending(), []);
-  assert.deepEqual(projectionCalls, [["rag", 1, "default"], ["recall", 1, "default"]]);
+  assert.deepEqual(projectionCalls, [["rag", 1, "default"]]);
   const stop = runtime.startProjectionPolling();
   assert.equal(typeof stop, "function");
   assert.equal(runtime.startProjectionPolling(), runtime.stopProjectionPolling);
   stop();
 });
 
-test("one projection failure does not starve the other projection during reconciliation", async () => {
+test("diagnostic projection failure does not starve the RAG projection during reconciliation", async () => {
   const state = createInitialMemoryState();
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
   const errors = [];
@@ -86,7 +86,6 @@ test("one projection failure does not starve the other projection during reconci
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
     projectionDrains: {
       rag: { async drain() { throw Object.assign(new Error("rag failed"), { code: "RAG_FAILED" }); } },
-      recall: { async drain() { return { status: "healthy" }; } },
     },
     onBackgroundError(error) { errors.push(error.code); },
   });
@@ -95,9 +94,29 @@ test("one projection failure does not starve the other projection during reconci
   assert.deepEqual(results["1:default"], {
     diagnostics: { status: "failed", reason: "DIAGNOSTICS_FAILED" },
     rag: { status: "failed", reason: "RAG_FAILED" },
-    recall: { status: "healthy" },
   });
   assert.deepEqual(errors, ["DIAGNOSTICS_FAILED", "RAG_FAILED"]);
+});
+
+test("runtime rejects the retired recall projection drain", () => {
+  const state = createInitialMemoryState();
+  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
+  assert.throws(() => createMemoryRuntime({
+    config: {
+      enabled: true,
+      targets,
+      projections: { pollIntervalMs: 1000 },
+      providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 },
+      compaction: { retryMax: 1 },
+    },
+    repositories: {
+      state: { async getState() { return state; } },
+      source: {},
+      runtime: {},
+    },
+    providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
+    projectionDrains: { recall: { async drain() {} } },
+  }), /Unsupported Memory projection drain: recall/);
 });
 test("startup recovery resumes a persisted rebuilding boundary even when no task is pending", async () => {
   const state = createInitialMemoryState();
@@ -148,4 +167,3 @@ test("generic rebuild reconciliation cannot bypass an incomplete privacy purge",
   const projections = await runtime.reconcileProjections();
   assert.deepEqual(projections["1:default"], { privacy: { status: "skipped", reason: "privacy_delete_pending" } });
 });
-

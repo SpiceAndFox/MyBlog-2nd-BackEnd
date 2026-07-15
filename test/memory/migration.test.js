@@ -80,7 +80,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       return { status: "completed" };
     },
   };
-  const projectionDrains = Object.fromEntries(["rag", "recall"].map((projectionKey) => [projectionKey, {
+  const projectionDrains = Object.fromEntries(["rag"].map((projectionKey) => [projectionKey, {
     async drain() {
       if (projectionFailure === projectionKey) return { status: "stale" };
       checkpoints.push({

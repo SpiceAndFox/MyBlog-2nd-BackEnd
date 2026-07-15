@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const db = require("../../db");
 const { initializeRevisionZero } = require("../../modules/memory/infrastructure/repositories/stateRepository");
 const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repositories/runtimeRepository");
-const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
+const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
 const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
 const privacyRepository = require("../../modules/memory/infrastructure/repositories/privacyRepository");
 
@@ -116,3 +116,9 @@ test("migration source inventory reads raw messages without mutating them", asyn
   assert.equal(statements.some((sql) => /(?:DELETE FROM|UPDATE) chat_messages\b/i.test(sql)), false);
 });
 
+test("projection checkpoint reads exclude retired recall rows", async () => {
+  let statement = "";
+  const client = { async query(sql) { statement = sql; return { rows: [] }; } };
+  await listProjectionCheckpoints(1, "default", { client });
+  assert.match(statement, /projection_key='rag'/);
+});
