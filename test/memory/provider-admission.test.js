@@ -61,3 +61,40 @@ test("a saturated admission queue defers excess durable work without calling the
     { status: "ok", output: 2 },
   ]);
 });
+
+test("global admission composes with per-scope lanes without reordering any scope after failures", async () => {
+  const admission = createProviderAdmission({ concurrency: 4, queueMax: 200 });
+  const lanes = new Map();
+  const orderByScope = new Map();
+  let active = 0;
+  let maxActive = 0;
+
+  function enqueueScope(scope, work) {
+    const previous = lanes.get(scope) || Promise.resolve();
+    const current = previous.catch(() => {}).then(work);
+    lanes.set(scope, current);
+    return current;
+  }
+
+  const work = [];
+  for (let scopeIndex = 0; scopeIndex < 20; scopeIndex += 1) {
+    const scope = `scope-${scopeIndex}`;
+    orderByScope.set(scope, []);
+    for (let sequence = 0; sequence < 5; sequence += 1) {
+      work.push(enqueueScope(scope, () => admission.run(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        orderByScope.get(scope).push(sequence);
+        await new Promise((resolve) => setImmediate(resolve));
+        active -= 1;
+        if (scopeIndex === 7 && sequence === 2) throw new Error("injected Provider failure");
+      })));
+    }
+  }
+
+  const settled = await Promise.allSettled(work);
+  assert.equal(maxActive, 4);
+  assert.equal(settled.filter((entry) => entry.status === "rejected").length, 1);
+  for (const observed of orderByScope.values()) assert.deepEqual(observed, [0, 1, 2, 3, 4]);
+  assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, concurrency: 4, queueMax: 200 });
+});
