@@ -38,11 +38,20 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         return { status: "error", reason: "llm_call_failed", detail: { code: error?.code ?? null, message: error instanceof Error ? error.message : String(error), ...(error?.detail || {}) } };
       }
       const { task } = envelope;
-      if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) return { status: "error", reason: "safety_policy_blocked", detail: null };
-      if (isTruncationSignal(response?.finishReason)) return { status: "error", reason: "max_output_truncated", detail: null };
+      if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) {
+        return { status: "error", reason: "safety_policy_blocked", detail: null, usage: response?.usage ?? null, model: response?.model ?? null };
+      }
+      if (isTruncationSignal(response?.finishReason)) {
+        return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null };
+      }
       const output = normalizeProviderOutput(response?.output, task);
       const validated = validateProposerOutput(output, task);
-      if (!validated.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors } };
+      if (!validated.ok) {
+        return {
+          status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors },
+          usage: response?.usage ?? null, model: response?.model ?? null,
+        };
+      }
       return { status: "ok", output, usage: response?.usage ?? null, model: response?.model ?? null };
     },
   });

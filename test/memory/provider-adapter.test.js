@@ -37,3 +37,15 @@ test("mock Adapter preserves explicit error fixtures", async () => {
   const adapter = createMockMemoryProviderAdapter({ outputs: [{ status: "error", reason: "safety_policy_blocked" }] });
   assert.deepEqual(await adapter.propose(envelope()), { status: "error", reason: "safety_policy_blocked" });
 });
+
+test("Provider Adapter preserves billed usage for unsuccessful structured responses", async () => {
+  const usage = { prompt_tokens: 100, completion_tokens: 20, cost_usd: 0.001 };
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "prompt",
+    invokeStructured: async () => ({ finishReason: "length", model: "deepseek-v4-flash", usage }),
+  });
+  const result = await adapter.propose(envelope());
+  assert.equal(result.reason, "max_output_truncated");
+  assert.equal(result.model, "deepseek-v4-flash");
+  assert.deepEqual(result.usage, usage);
+});

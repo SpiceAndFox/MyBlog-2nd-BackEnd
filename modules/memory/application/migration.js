@@ -1,4 +1,5 @@
 const { isDeepStrictEqual } = require("node:util");
+const crypto = require("node:crypto");
 const { assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../contracts");
 
 function rowValue(row, snake, camel) {
@@ -42,10 +43,26 @@ function summarizeCapacity(state) {
   };
 }
 
+function sourceInventorySnapshot(rows) {
+  const scopes = rows.map((row) => ({ ...row })).sort((left, right) => (
+    left.userId - right.userId || left.presetId.localeCompare(right.presetId)
+  ));
+  const serialized = JSON.stringify(scopes);
+  return {
+    scopeCount: scopes.length,
+    messageCount: scopes.reduce((sum, scope) => sum + Number(scope.messageCount ?? 0), 0),
+    characterCount: scopes.reduce((sum, scope) => sum + Number(scope.characterCount ?? 0), 0),
+    sha256: `sha256:${crypto.createHash("sha256").update(serialized).digest("hex")}`,
+    contentFingerprintCoverageComplete: scopes.every((scope) => /^sha256:[a-f0-9]{64}$/.test(scope.sourceFingerprint)),
+    scopes,
+  };
+}
+
 function createMemoryMigration({
   repositories,
   sourceRebuild,
   projectionDrains,
+  providerTelemetry = null,
   now = () => new Date(),
   monotonicNow = () => Date.now(),
 } = {}) {
@@ -62,7 +79,11 @@ function createMemoryMigration({
       : (await repositories.migration.listSourceScopes()).map(normalizeScope);
     const rows = [];
     for (const scope of selected) {
-      rows.push({ ...scope, ...(await repositories.source.getHistoryMetrics(scope.userId, scope.presetId)) });
+      const history = await repositories.source.getHistoryMetrics(scope.userId, scope.presetId);
+      const sourceFingerprint = repositories.source.getHistoryFingerprint
+        ? await repositories.source.getHistoryFingerprint(scope.userId, scope.presetId)
+        : null;
+      rows.push({ ...scope, ...history, sourceFingerprint });
     }
     return rows;
   }
@@ -114,7 +135,20 @@ function createMemoryMigration({
         throw new Error(`Projection ${projectionKey} did not reach the captured generation/boundary`);
       }
     }
-    return { sourceGeneration: generation, revision: state.meta.revision, boundaryMessageId: boundary, sectionUsage: summarizeCapacity(state) };
+    return {
+      sourceGeneration: generation,
+      revision: state.meta.revision,
+      boundaryMessageId: boundary,
+      sectionUsage: summarizeCapacity(state),
+      verification: {
+        rawBoundaryStable: true,
+        healthyTargetCount: TARGET_KEYS.length,
+        targetCursorsAtBoundary: true,
+        authoritySnapshotEqual: true,
+        eventSnapshotChainContinuous: true,
+        healthyProjections: ["rag"],
+      },
+    };
   }
 
   async function findResumableGeneration(scope, history) {
@@ -159,6 +193,7 @@ function createMemoryMigration({
 
   async function rebuildScope(scope, history) {
     const started = monotonicNow();
+    const providerMark = providerTelemetry?.mark?.() ?? 0;
     let state = await repositories.state.getState(scope.userId, scope.presetId);
     if (!state) state = await repositories.state.initializeRevisionZero(scope.userId, scope.presetId);
     const initialized = await findResumableGeneration(scope, history)
@@ -176,6 +211,7 @@ function createMemoryMigration({
       ...history,
       ...verified,
       normalTaskCount: Array.isArray(drained.results) ? drained.results.length : 0,
+      providerUsage: providerTelemetry?.snapshot?.(providerMark) ?? null,
       durationMs: Math.max(0, monotonicNow() - started),
     };
   }
@@ -185,21 +221,45 @@ function createMemoryMigration({
     if (mode === "cutover" && !serviceStopped) throw new Error("Cutover requires serviceStopped=true");
     const startedAt = now().toISOString();
     const started = monotonicNow();
-    const histories = await inventory(scopes);
+    const providerMark = providerTelemetry?.mark?.() ?? 0;
+    let beforeSourceInventory = null;
+    let afterSourceInventory = null;
+    let histories = [];
     const results = [];
     try {
+      const globalBefore = await inventory();
+      beforeSourceInventory = sourceInventorySnapshot(globalBefore);
+      histories = scopes ? await inventory(scopes) : globalBefore;
       for (const history of histories) {
         const scope = { userId: history.userId, presetId: history.presetId };
         results.push(await rebuildScope(scope, history));
       }
+      afterSourceInventory = sourceInventorySnapshot(await inventory());
+      if (!isDeepStrictEqual(beforeSourceInventory.scopes, afterSourceInventory.scopes)) {
+        throw new Error("Global raw source inventory changed during migration");
+      }
       return {
         status: "completed", mode, startedAt, completedAt: now().toISOString(), durationMs: Math.max(0, monotonicNow() - started),
-        scopeCount: histories.length, results, canStartService: mode === "cutover",
+        scopeCount: histories.length, results,
+        providerUsage: providerTelemetry?.snapshot?.(providerMark) ?? null,
+        sourceInventory: { before: beforeSourceInventory, after: afterSourceInventory, unchanged: true },
+        canStartService: mode === "cutover",
       };
     } catch (error) {
+      if (!afterSourceInventory && beforeSourceInventory) {
+        try { afterSourceInventory = sourceInventorySnapshot(await inventory()); }
+        catch { afterSourceInventory = null; }
+      }
       return {
         status: "failed", mode, startedAt, failedAt: now().toISOString(), durationMs: Math.max(0, monotonicNow() - started),
         scopeCount: histories.length, results, canStartService: false,
+        providerUsage: providerTelemetry?.snapshot?.(providerMark) ?? null,
+        sourceInventory: {
+          before: beforeSourceInventory,
+          after: afterSourceInventory,
+          unchanged: Boolean(beforeSourceInventory && afterSourceInventory
+            && isDeepStrictEqual(beforeSourceInventory.scopes, afterSourceInventory.scopes)),
+        },
         error: {
           name: error?.name || "Error",
           message: String(error?.message || error),

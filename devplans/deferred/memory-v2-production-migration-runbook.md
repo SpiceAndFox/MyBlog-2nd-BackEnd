@@ -26,7 +26,7 @@
 2. 获得与生产 raw history 等价、与线上写入隔离的 rehearsal 数据库副本；
 3. RAG/Recall 均提供 staged rebuild、事务提交和 generation/boundary checkpoint adapter；
 4. migration CLI 通过 Memory 模块公共接口完成正式装配；（已完成）
-5. rehearsal 报告可稳定落盘并包含规模、section 容量、Provider 调用量、耗时和全部验证结果；
+5. rehearsal 报告可稳定落盘并包含规模、section 容量、实际 Provider 调用量/tokens/cost coverage、耗时、全部验证结果、迁移前后全局 source inventory，以及 code/schema/config/价目表指纹；（代码已完成，待真实历史演练取证）
 6. 运维侧提供可验证的停服、raw boundary 冻结和重新启服入口；
 7. 数据库备份、失败处置责任人与维护窗口已经明确。
 
@@ -53,16 +53,19 @@ npm run migrate:memory-v2-data -- --mode cutover
 后者不带 `--apply` 时只输出计划并返回 `apply_required`，不会写数据库。待隔离历史副本可用后，rehearsal 使用：
 
 ```text
-npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <new-report-path>
+npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <new-report-path> --pricing <versioned-pricing.json>
 ```
 
 正式 cutover 只能在完成停服与 raw boundary 冻结后执行：
 
 ```text
-npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <new-report-path>
+npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <new-report-path> --pricing <versioned-pricing.json>
 ```
 
 报告文件使用独占创建，已存在时拒绝覆盖。命令返回 `canStartService=false` 或非零退出码时必须保持停服。
+`--pricing` 文件必须声明 `version/source/effectiveAt/currency/model`，以及 `inputUsdPerMillionTokens`、`cachedInputUsdPerMillionTokens`、`outputUsdPerMillionTokens`。模型必须与本次 Memory Provider 配置完全一致；报告保存价目表文件名和内容 hash，不保存 API key。若 Provider 响应明确返回可信 cost，则优先记录 Provider cost；否则按该版本化价目表和真实 usage 计算。任何实际调用缺少 usage/cost 时，报告以 coverage 不完整明确标出、返回 `status=evidence_incomplete` 并保持 `canStartService=false`，不能用任务数估算冒充费用证据。cutover 还要求 Git working tree 为 clean；rehearsal 可保留 dirty 状态指纹用于开发排查，但不构成正式 cutover 证据。
+
+每次 apply 都在开始和结束重新枚举全局 raw source inventory，并保存逐 scope message/code-point/boundary、按消息 id/session/role/content/createdAt/turn identity 计算的流式 SHA-256，以及整体 hash。这样同字符数编辑也会令迁移失败并保持 `canStartService=false`，因此 `--service-stopped` 不再是唯一的 raw boundary 证据。Provider 报告按 target/proposer/model/mode/result 聚合；同 task 的额外 schema retry、恢复重试和 `compactionProposer` 调用都会计入实际调用量。
 失败后修复代码或 Provider 配置，再使用新的报告路径重跑同一 cutover 命令；若 raw boundary 未变化且现有 target generation 仍满足 rebuilding/healthy 边界约束，迁移器续跑该 generation 和未完成 task，不重复初始化已经开始的 rebuild。新报告中的错误明细会包含失败 target、task、内部 outcome 和本轮已完成 task 数。
 
 ## 4. 禁止行为

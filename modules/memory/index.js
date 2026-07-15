@@ -24,6 +24,8 @@ const { createStructuredTransport } = require("./infrastructure/providers/struct
 const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("./prompts");
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
+const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
+const { buildMigrationEvidence, loadPricingFile } = require("./application/migrationEvidence");
 
 let defaultMemoryRuntime = null;
 
@@ -49,14 +51,22 @@ module.exports = Object.freeze({
   createMemoryRetention,
   createPrivacyHardDelete,
   createMemoryMigration,
-  createDefaultMemoryMigration({ config, projectionDrains, providerAdapter, now, monotonicNow } = {}) {
+  createDefaultMemoryMigration({ config, projectionDrains, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
     if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
     const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
     const rawAdapter = providerAdapter || createMemoryProviderAdapter({
       invokeStructured: createStructuredTransport(config.provider),
       promptLoader: loadProposerPrompt,
     });
-    const adapter = admissionControlledAdapter(rawAdapter, admission);
+    const trackedAdapter = providerTelemetry?.wrapAdapter
+      ? providerTelemetry.wrapAdapter(rawAdapter, {
+        loadTaskAttempt: async (envelope) => {
+          const task = await repositories.runtime.getTask(envelope?.task?.taskId);
+          return task?.attempt;
+        },
+      })
+      : rawAdapter;
+    const adapter = admissionControlledAdapter(trackedAdapter, admission);
     const observer = createObserver({
       sourceRepository: repositories.source,
       stateRepository: repositories.state,
@@ -65,11 +75,14 @@ module.exports = Object.freeze({
     });
     const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config });
     const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
-    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now, monotonicNow });
+    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow });
   },
   createMemoryRuntime,
   createMemoryMetrics,
   createProviderAdmission,
+  createMigrationProviderTelemetry,
+  buildMigrationEvidence,
+  loadPricingFile,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
     return defaultMemoryRuntime;

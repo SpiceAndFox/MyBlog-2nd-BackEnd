@@ -53,6 +53,7 @@ function resolveOptions(args) {
     apply: args.apply === true,
     serviceStopped: args["service-stopped"] === true || args.serviceStopped === true,
     reportPath: typeof args.report === "string" && args.report.trim() ? path.resolve(args.report.trim()) : null,
+    pricingPath: typeof args.pricing === "string" && args.pricing.trim() ? path.resolve(args.pricing.trim()) : null,
   };
 }
 
@@ -60,8 +61,8 @@ function printUsage() {
   process.stdout.write([
     "Usage:",
     "  npm run migrate:memory-v2-data -- --mode inventory [--user <id> --preset <id>]",
-    "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--user <id> --preset <id>]",
-    "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--pricing <versioned-pricing.json>] [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--pricing <versioned-pricing.json>] [--user <id> --preset <id>]",
     "",
     "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG and write authority data; query-time Recall inherits the RAG cutoff.",
     "Run rehearsal only against a production-history copy. Cutover requires the public service to be stopped.",
@@ -91,11 +92,39 @@ function assertReportPathAvailable(reportPath) {
   if (fs.existsSync(reportPath)) throw new Error(`Report path already exists: ${reportPath}`);
 }
 
-function createMigration(config) {
+function createMigration(config, providerTelemetry) {
   const projectionDrains = {
     rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
   };
-  return memory.createDefaultMemoryMigration({ config, projectionDrains });
+  return memory.createDefaultMemoryMigration({ config, projectionDrains, providerTelemetry });
+}
+
+function attachEvidence(report, evidence) {
+  return { ...report, evidence };
+}
+
+function enforceEvidenceGate(report, evidence) {
+  const withEvidence = attachEvidence(report, evidence);
+  if (report.status !== "completed") return withEvidence;
+  const issues = [];
+  if (!evidence?.code?.gitCommit || !evidence?.code?.gitTree) issues.push("code_fingerprint_unavailable");
+  if (report.mode === "cutover" && evidence?.code?.workingTreeDirty !== false) issues.push("cutover_working_tree_not_clean");
+  if (!evidence?.schema?.sha256 || !evidence?.schema?.files?.length) issues.push("schema_fingerprint_unavailable");
+  if (!evidence?.config?.sha256) issues.push("config_fingerprint_unavailable");
+  if (!report.providerUsage?.tokenUsageCoverageComplete) issues.push("provider_token_usage_incomplete");
+  if (!report.providerUsage?.costCoverageComplete) issues.push("provider_cost_coverage_incomplete");
+  if (!report.providerUsage?.retryClassificationCoverageComplete) issues.push("provider_retry_classification_incomplete");
+  if (!report.sourceInventory?.before?.contentFingerprintCoverageComplete
+    || !report.sourceInventory?.after?.contentFingerprintCoverageComplete) issues.push("source_content_fingerprint_incomplete");
+  if (!report.sourceInventory?.unchanged) issues.push("source_inventory_not_stable");
+  if (!issues.length) return { ...withEvidence, evidenceGate: { status: "passed", issues: [] } };
+  return {
+    ...withEvidence,
+    status: "evidence_incomplete",
+    migrationStatus: report.status,
+    canStartService: false,
+    evidenceGate: { status: "failed", issues },
+  };
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -106,17 +135,28 @@ async function main(argv = process.argv.slice(2)) {
   }
   const options = resolveOptions(args);
   const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
-  const migration = createMigration(config);
+  const { pricing, evidence: pricingEvidence } = memory.loadPricingFile(options.pricingPath);
+  const providerTelemetry = memory.createMigrationProviderTelemetry({
+    pricing,
+    expectedModel: config.provider.model,
+  });
+  const evidence = memory.buildMigrationEvidence({
+    rootDir: path.join(__dirname, ".."),
+    memoryConfig: config,
+    ragConfig: require("../config").chatRagConfig,
+    pricingEvidence,
+  });
+  const migration = createMigration(config, providerTelemetry);
   const inventory = withCallEstimates(await migration.inventory(options.scopes), config);
 
   if (options.mode === "inventory") {
-    const report = { status: "inventory", scopeCount: inventory.length, scopes: inventory };
+    const report = attachEvidence({ status: "inventory", scopeCount: inventory.length, scopes: inventory }, evidence);
     emitReport(report, options.reportPath);
     return report;
   }
 
   if (!options.apply) {
-    const report = {
+    const report = attachEvidence({
       status: "apply_required",
       mode: options.mode,
       scopeCount: inventory.length,
@@ -124,7 +164,7 @@ async function main(argv = process.argv.slice(2)) {
       requiredFlag: "--apply",
       requiredReportFlag: "--report <path>",
       ...(options.mode === "cutover" ? { requiredCutoverFlag: "--service-stopped" } : {}),
-    };
+    }, evidence);
     emitReport(report, options.reportPath);
     return report;
   }
@@ -134,11 +174,11 @@ async function main(argv = process.argv.slice(2)) {
   }
   assertReportPathAvailable(options.reportPath);
 
-  const report = await migration.run({
+  const report = enforceEvidenceGate(await migration.run({
     mode: options.mode,
     serviceStopped: options.serviceStopped,
     scopes: options.scopes,
-  });
+  }), evidence);
   emitReport(report, options.reportPath);
   if (report.status !== "completed") process.exitCode = 2;
   return report;
@@ -153,4 +193,4 @@ if (require.main === module) {
     .finally(() => db.end());
 }
 
-module.exports = { parseArgs, resolveOptions, withCallEstimates, emitReport, assertReportPathAvailable, main };
+module.exports = { parseArgs, resolveOptions, withCallEstimates, enforceEvidenceGate, emitReport, assertReportPathAvailable, attachEvidence, main };

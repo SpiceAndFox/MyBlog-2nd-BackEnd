@@ -6,6 +6,7 @@ const { upsertTargetStatus } = require("../../modules/memory/infrastructure/repo
 const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../modules/memory/infrastructure/repositories/sidecarRepository");
 const migrationRepository = require("../../modules/memory/infrastructure/repositories/migrationRepository");
 const privacyRepository = require("../../modules/memory/infrastructure/repositories/privacyRepository");
+const { getHistoryFingerprint } = require("../../modules/memory/infrastructure/repositories/sourceRepository");
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
   const originalGetClient = db.getClient;
@@ -114,6 +115,26 @@ test("migration source inventory reads raw messages without mutating them", asyn
   await migrationRepository.listSourceScopes({ client });
   assert.equal(statements.some((sql) => sql.includes("FROM chat_messages")), true);
   assert.equal(statements.some((sql) => /(?:DELETE FROM|UPDATE) chat_messages\b/i.test(sql)), false);
+});
+
+test("migration source fingerprint detects same-length content and turn-identity changes without exposing raw text", async () => {
+  async function fingerprint(overrides = {}) {
+    const client = {
+      async query() {
+        return { rows: [{
+          id: "10", session_id: "3", role: "user", content: "abcd",
+          created_at: "2026-07-15T00:00:00Z", turn_id: "turn-a", parent_user_message_id: null,
+          ...overrides,
+        }] };
+      },
+    };
+    return getHistoryFingerprint(1, "default", { client });
+  }
+  const original = await fingerprint();
+  assert.match(original, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(await fingerprint({ content: "wxyz" }), original);
+  assert.notEqual(await fingerprint({ turn_id: "turn-b" }), original);
+  assert.doesNotMatch(original, /abcd/);
 });
 
 test("projection checkpoint reads exclude retired recall rows", async () => {

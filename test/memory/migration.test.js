@@ -7,7 +7,7 @@ const { createMemoryMigration } = require("../../modules/memory/application/migr
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/migration.json"), "utf8"));
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false } = {}) {
+function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, inventoryChanges = false, providerTelemetry = null } = {}) {
   let state = null;
   let snapshots = [];
   let statuses = [];
@@ -22,7 +22,13 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async initializeRevisionZero() { state = createInitialMemoryState(); return structuredClone(state); },
     },
     source: {
-      async getHistoryMetrics() { return { ...fixture.history }; },
+      async getHistoryMetrics() {
+        return {
+          ...fixture.history,
+          ...(inventoryChanges && forceDrainCount > 0 ? { messageCount: fixture.history.messageCount + 1 } : {}),
+        };
+      },
+      async getHistoryFingerprint() { return `sha256:${"f".repeat(64)}`; },
       async getBoundary() { return fixture.history.boundaryMessageId + (verificationFailure === "boundary" ? 1 : 0); },
     },
     runtime: { async getTargetStatuses() { return structuredClone(statuses); } },
@@ -92,7 +98,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       return { status: "healthy" };
     },
   }]));
-  const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
+  const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
   return { migration, getInitializeCount: () => initializeCount };
 }
 
@@ -107,7 +113,27 @@ test("migration rehearsal rebuilds every raw-history scope", async () => {
   assert.equal(report.results[0].boundaryMessageId, fixture.history.boundaryMessageId);
   assert.deepEqual(report.results[0].sectionUsage.scene, { itemCount: 1, textChars: 3 });
   assert.deepEqual(report.results[0].sectionUsage.todos, { itemCount: 0, textChars: 0 });
+  assert.deepEqual(report.results[0].verification, {
+    rawBoundaryStable: true,
+    healthyTargetCount: TARGET_KEYS.length,
+    targetCursorsAtBoundary: true,
+    authoritySnapshotEqual: true,
+    eventSnapshotChainContinuous: true,
+    healthyProjections: ["rag"],
+  });
+  assert.equal(report.sourceInventory.unchanged, true);
+  assert.equal(report.sourceInventory.before.contentFingerprintCoverageComplete, true);
+  assert.equal(report.sourceInventory.before.sha256, report.sourceInventory.after.sha256);
   assert.equal(report.results[0].durationMs > 0, true);
+});
+
+test("migration closes the service gate when the global raw-source inventory changes", async () => {
+  const harness = makeHarness({ inventoryChanges: true });
+  const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
+  assert.equal(report.status, "failed");
+  assert.equal(report.canStartService, false);
+  assert.equal(report.sourceInventory.unchanged, false);
+  assert.match(report.error.message, /Global raw source inventory changed/);
 });
 
 test("migration rehearsal is repeatable and never opens the service start gate", async () => {

@@ -61,6 +61,42 @@ async function getHistoryMetrics(userId, presetId, { client } = {}) {
   const row = rows[0];
   return { messageCount: Number(row.message_count), characterCount: Number(row.character_count), boundaryMessageId: Number(row.boundary_message_id) };
 }
+async function getHistoryFingerprint(userId, presetId, { client, batchSize = 1000 } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) {
+    throw new Error("Memory source fingerprint batchSize must be between 1 and 10000");
+  }
+  const db = executor(client);
+  const hash = crypto.createHash("sha256");
+  let cursor = 0;
+  while (true) {
+    const { rows } = await db.query(`
+      SELECT m.id,m.session_id,m.role,m.content,m.created_at,m.turn_id,m.parent_user_message_id
+      FROM chat_messages m
+      JOIN chat_sessions s ON s.id=m.session_id
+      WHERE ${SOURCE_WHERE} AND m.id>$3
+      ORDER BY m.id ASC
+      LIMIT $4
+    `, [scope.userId, scope.presetId, cursor, batchSize]);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const id = Number(row.id);
+      if (!Number.isSafeInteger(id) || id <= cursor) throw new Error("Memory source fingerprint rows are not strictly ordered safe ids");
+      const createdAt = new Date(row.created_at);
+      if (Number.isNaN(createdAt.getTime())) throw new Error(`Memory source message ${id} has invalid createdAt`);
+      hash.update(JSON.stringify([
+        String(row.id), String(row.session_id), String(row.role), String(row.content ?? ""), createdAt.toISOString(),
+        row.turn_id === null || row.turn_id === undefined ? null : String(row.turn_id),
+        row.parent_user_message_id === null || row.parent_user_message_id === undefined
+          ? null
+          : String(row.parent_user_message_id),
+      ])).update("\n");
+      cursor = id;
+    }
+    if (rows.length < batchSize) break;
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
 async function getForceDrainWindow(userId, presetId, cursor, boundary, { newBatchSize, contextWindow }, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   if (![cursor, boundary, newBatchSize, contextWindow].every(Number.isSafeInteger) || cursor < 0 || boundary < cursor || newBatchSize < 1 || contextWindow < newBatchSize) throw new Error("Invalid force-drain window parameters");
@@ -75,4 +111,4 @@ async function getForceDrainWindow(userId, presetId, cursor, boundary, { newBatc
   }
   return [...overlap, ...batch].map(mapRow);
 }
-module.exports = { countAfter, getObservedWindow, getByIds, listUpTo, getBoundary, hasAnyBetween, getHistoryMetrics, getForceDrainWindow };
+module.exports = { countAfter, getObservedWindow, getByIds, listUpTo, getBoundary, hasAnyBetween, getHistoryMetrics, getHistoryFingerprint, getForceDrainWindow };
