@@ -39,6 +39,17 @@ test("Provider admission releases a permit after synchronous failure", async () 
   assert.equal(await admission.run(() => "recovered"), "recovered");
 });
 
+test("Provider admission preserves schema repair options", async () => {
+  const admission = createProviderAdmission({ concurrency: 1, queueMax: 1 });
+  let received;
+  const adapter = admissionControlledAdapter({
+    async propose(_envelope, options) { received = options; return { status: "ok" }; },
+  }, admission);
+  const repairFeedback = { attempt: 1, errors: [{ path: "$.dueAt", message: "invalid" }] };
+  assert.deepEqual(await adapter.propose({ id: 1 }, { repairFeedback }), { status: "ok" });
+  assert.deepEqual(received, { repairFeedback });
+});
+
 test("a saturated admission queue defers excess durable work without calling the Provider", async () => {
   const admission = createProviderAdmission({ concurrency: 1, queueMax: 1 });
   let release;

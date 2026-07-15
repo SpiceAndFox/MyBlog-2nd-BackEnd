@@ -79,6 +79,20 @@ test("migration telemetry makes missing token and cost coverage explicit after a
   assert.equal(report.byResult.thrown.callCount, 1);
 });
 
+test("migration telemetry preserves schema repair options", async () => {
+  const telemetry = createMigrationProviderTelemetry({ expectedModel: "deepseek-v4-flash" });
+  let received;
+  const adapter = telemetry.wrapAdapter({
+    async propose(_envelope, options) {
+      received = options;
+      return { status: "ok", model: "deepseek-v4-flash", usage: { input_tokens: 1, output_tokens: 1, cost_usd: 0.0001 } };
+    },
+  });
+  const repairFeedback = { attempt: 1, errors: [{ path: "$.dueAt", message: "invalid" }] };
+  await adapter.propose(envelope(), { repairFeedback });
+  assert.deepEqual(received, { repairFeedback });
+});
+
 test("migration pricing is versioned and must match the configured model", () => {
   assert.equal(normalizePricing(pricing, "deepseek-v4-flash").currency, "USD");
   assert.throws(

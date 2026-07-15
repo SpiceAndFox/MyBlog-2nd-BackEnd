@@ -4,12 +4,12 @@
 
 ## 1. 时间输入与日历运算
 
-Todo 的 `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或 `{ "mode": "relative", "days"?: N, "months"?: N, "years"?: N }`。relative 的三个时长字段至少出现一个，计算顺序为 `years → months → days`。
+Todo 的 `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或只含一个单位的 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days` 允许大于等于 0，`months` / `years` 必须大于 0；今天规范表示为 `days=0`。absolute 与 relative 都解析为目标日期结束后的首个用户时区日界线。
 
 - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区从 User 字段读取并在 task 创建时固化，默认 UTC。
-- relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按用户时区做日历运算。
+- relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，先取得该 instant 在用户时区下的本地日历日期，再增加唯一的 relative 单位。
 - relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。
-- 日历运算保留 anchor 的本地时、分、秒和毫秒。结果落入 DST overlap 时选择较早 instant；落入 DST gap 时按 transition gap 向后顺延，采用 Temporal `compatible` 的确定性 disambiguation。
+- relative 运算不保留 anchor 的时、分、秒和毫秒，统一解析为目标日期结束后的首个日界线。该日界线落入 DST overlap 时选择较早 instant；落入 DST gap 时按 transition gap 向后顺延，采用 Temporal `compatible` 的确定性 disambiguation。
 - 禁止使用 task/worker 执行时间作 anchor。
 - Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
 

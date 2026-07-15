@@ -12,9 +12,19 @@ const item = (id, text, messageId) => ({ id, text, evidenceGroups: [{ evidenceKi
 
 test("dueAt calendar arithmetic honors user time zone and month-end clamping", () => {
   assert.equal(resolveDueAt({ mode: "absolute", date: "2026-07-07" }, null, "Asia/Shanghai"), "2026-07-07T16:00:00.000Z");
-  assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-01-31T04:00:00.000Z", "Asia/Shanghai"), "2026-02-28T04:00:00.000Z");
-  assert.equal(resolveDueAt({ mode: "relative", days: 1 }, "2026-02-07T07:30:00.500Z", "America/New_York"), "2026-02-08T07:30:00.500Z");
-  assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-02-08T07:30:00.000Z", "America/New_York"), "2026-03-08T07:30:00.000Z");
+  assert.equal(resolveDueAt({ mode: "relative", days: 0 }, "2026-07-15T02:30:00.000Z", "Asia/Shanghai"), "2026-07-15T16:00:00.000Z");
+  assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-01-31T04:00:00.000Z", "Asia/Shanghai"), "2026-02-28T16:00:00.000Z");
+  assert.equal(resolveDueAt({ mode: "relative", days: 1 }, "2026-02-07T07:30:00.500Z", "America/New_York"), "2026-02-09T05:00:00.000Z");
+  assert.equal(resolveDueAt({ mode: "relative", months: 1 }, "2026-02-08T07:30:00.000Z", "America/New_York"), "2026-03-09T04:00:00.000Z");
+});
+
+test("today todo stays active until the user's next local day boundary", () => {
+  const state = createInitialMemoryState();
+  state.working.todos.push({ id: "todo:today", text: "今天完成", evidenceGroups: [{ evidenceKind: "user_commitment", refs: [ref] }], createdAtMessageId: 1, updatedAtMessageId: 1, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: "2026-07-15T16:00:00.000Z" });
+  assert.equal(normalizeLifecycle(state, {}, "2026-07-15T15:59:59.999Z", config).state.working.todos[0].status, "active");
+  const overdue = normalizeLifecycle(state, {}, "2026-07-15T16:00:00.000Z", config);
+  assert.equal(overdue.state.working.todos[0].status, "overdue");
+  assert.equal(overdue.events[0].cleanupKind, "todo_became_overdue");
 });
 
 test("scene expiration preserves provenance, evicts previous scene, and is idempotent", () => {

@@ -139,7 +139,7 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
   function wrapAdapter(adapter, { loadTaskAttempt = null } = {}) {
     if (!adapter?.propose) throw new Error("Migration Provider adapter is required");
     return Object.freeze({
-      async propose(envelope) {
+      async propose(envelope, options) {
         let durableAttempt = null;
         if (typeof loadTaskAttempt === "function") {
           try {
@@ -152,7 +152,7 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
         }
         const started = monotonicNow();
         try {
-          const result = await adapter.propose(envelope);
+          const result = await adapter.propose(envelope, options);
           record(envelope, result, monotonicNow() - started, null, durableAttempt);
           return result;
         } catch (error) {

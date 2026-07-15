@@ -49,3 +49,22 @@ test("Provider Adapter preserves billed usage for unsuccessful structured respon
   assert.equal(result.model, "deepseek-v4-flash");
   assert.deepEqual(result.usage, usage);
 });
+
+test("Provider Adapter appends bounded schema repair feedback without replaying invalid output", async () => {
+  let request;
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "base prompt",
+    invokeStructured: async (value) => {
+      request = value;
+      return { output: { tickId: 7, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } } } };
+    },
+  });
+  const result = await adapter.propose(envelope(), {
+    repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.patches[0].value.dueAt", message: "days must be non-negative" }] },
+  });
+  assert.equal(result.status, "ok");
+  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR\]/);
+  assert.match(request.systemPrompt, /dueAt.*days must be non-negative/s);
+  assert.doesNotMatch(request.systemPrompt, /rawInvalidOutput/);
+  assert.deepEqual(request.userPayload, envelope());
+});

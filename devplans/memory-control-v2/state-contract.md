@@ -184,8 +184,8 @@ Evidence role 使用数据库真实消息校验：带 `user_` / `assistant_` 发
 - `value`：对 `setField`/`addItem`/`updateItem` 必填。普通 item 的 `addItem`/`updateItem` value 至少包含 `text`。Todo 使用更窄的结构：
   - `todos.addItem`：`value` 必须包含 `text`、`actor`、`requester`；可选 `dueAt` 表达式，缺省时持久化为 `null`。
   - `todos.updateItem`：`value` 至少包含 `dueChange`，并可包含 `text`、`actor`、`requester`。`dueChange` 是显式判别 union：`{ "mode": "keep" }`、`{ "mode": "clear" }` 或 `{ "mode": "set", "dueAt": <表达式> }`；禁止用字段省略同时表达“不修改”和“清空”。
-  - `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或 `{ "mode": "relative", "days"?: N, "months"?: N, "years"?: N }`。relative 的三个时长字段至少出现一个，计算顺序为 `years → months → days`。
-  - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，在 anchor 基础上按该固化时区做日历运算。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。日历运算保留 anchor 的本地时、分、秒和毫秒；结果落入 DST overlap 时选择较早 instant，落入 DST gap 时按 transition gap 向后顺延（Temporal `compatible` 语义）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
+  - `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或只含一个单位的 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days` 允许大于等于 0，`months` / `years` 必须大于 0；今天规范表示为 `days=0`，禁止同时携带多个单位或未使用的零值单位。
+  - absolute date 和 relative date 的 deadline 都是目标日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，只使用 anchor 的本地日历日期，不保留其时、分、秒和毫秒。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。结果日界线落入 DST overlap 时选择较早 instant，落入 DST gap 时按 transition gap 向后顺延（Temporal `compatible` 语义）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
 - `evidenceRefs`：除 `mergeItems` 外，Proposer patch 至少包含一个 `{ messageId, quote }`。Reducer 自行触发的 todo/scene lifecycle 变化不是 Proposer patch，使用 system cleanup event。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `observedMessages`（见 §5）。对会写入 item 的普通 patch，Reducer 将该数组连同 `patch.evidenceKind` 包装成一个新的 `evidenceGroup`，并为持久化 refs 补入已校验的数据库 `contentHash`。`forgetItem` 的 evidenceRefs 证明本次 forget 指令；被 suppress 的 source 则从目标 item 的既有完整 `evidenceGroups` 收集，不能由 Proposer 自报。
 - `scene.setField`/`scene.clearField` 的 `evidenceRefs` 必须恰好 1 条。`setField` 将已校验 ref 写入目标字段的 `evidenceRef`；`clearField` 将当前字段重置为 `{ value:null, evidenceRef:null, updatedAtMessageId:null }`，clear 指令证据保留在 accepted event 的 `patch_summary/normalized_operation` 中，不作为“当前空值”的 provenance。
 - `quote`：必须是能够支持 patch 的最短连续原文片段，最多 200 个 Unicode code points；Reducer 不自动裁剪，完整校验见 §7。
@@ -774,7 +774,7 @@ CREATE TABLE chat_memory_tasks (
   target_message_id          BIGINT,
   base_revision              BIGINT NOT NULL,
   task_payload               JSONB NOT NULL,    -- immutable proposal-time input/evidence metadata（创建后不可变）
-  stage_payload              JSONB,             -- 当前阶段运行数据：normalContextWindow、persistedProposal、expandedEnvelope、maintenanceTaskId、identities、compaction 进度等；可变
+  stage_payload              JSONB,             -- 当前阶段运行数据：normalContextWindow、persistedProposal、expandedEnvelope、schemaInvalidAttempts、schemaRepairFeedback、maintenanceTaskId、identities、compaction 进度等；可变
   attempt                    INTEGER NOT NULL DEFAULT 0,
   context_expansion_attempt  INTEGER NOT NULL DEFAULT 0,
   not_before                 TIMESTAMPTZ,
@@ -855,11 +855,11 @@ CREATE INDEX idx_memory_ops_log_outcome
   ON chat_memory_ops_log(user_id, preset_id, outcome, created_at DESC);
 ```
 
-`target_key` 和 `task_id` 是 ops log 的必填归属。`section` 只在 outcome 能明确归属某个正式 section 时填写；task 级 outcome 填 `NULL`，禁止用 targetKey 代填。ops log 保存完整错误历史但不单独决定当前 status；当前运行状态以 task/target status 为准。
+`target_key` 和 `task_id` 是 ops log 的必填归属。`section` 只在 outcome 能明确归属某个正式 section 时填写；task 级 outcome 填 `NULL`，禁止用 targetKey 代填。ops log 保存完整的分类与有界诊断历史但不保存 Provider 非法输出原文，也不单独决定当前 status；当前运行状态以 task/target status 为准。
 
 通用 outcome 至少包括：
 
-- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid_retry`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 schema invalid 分开统计，即使残片可解析也不作为完整 proposal。前三者按退避策略可重试；`output_schema_invalid_retry` 表示首次 Provider 输出边界失败获得的唯一即时重试，最终 `output_schema_invalid` 表示输入边界错误或输出重试耗尽；
+- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid_retry`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 schema invalid 分开统计，即使残片可解析也不作为完整 proposal。前三者按退避策略可重试；`output_schema_invalid_retry` 表示首次 Provider 输出边界失败获得的唯一即时修复重试，其 detail 只含 boundary、经过字符白名单及条数/长度限制的 validation path/message 和同一 `schemaRepairFeedback`；最终 `output_schema_invalid` 表示输入边界错误或输出重试耗尽；
 - `unable_to_decide`：Proposer 自认信息不足，扩窗口 attempt 属于 task；
 - `unable_to_compact`：compactionProposer 判定无安全合并空间，对应 maintenance task/target 进入失败或 halt；
 - `stale_result`：revision/cursor/generation 校验失败后丢弃旧执行结果；
@@ -1054,14 +1054,14 @@ Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。
 { status: "ok", output: { /* §5.5 的 Proposer 输出结构 */ } }
 
 // 失败
-{ status: "error", reason: "llm_call_failed" | "safety_policy_blocked" | "max_output_truncated" | "output_schema_invalid", detail: { /* finish_reason / 错误消息 / 原始响应片段 */ } }
+{ status: "error", reason: "llm_call_failed" | "safety_policy_blocked" | "max_output_truncated" | "output_schema_invalid", detail: { /* finish_reason / 有界错误分类或校验 path/message；不得含原始响应正文 */ } }
 ```
 
 识别规则：
 
 - `safety_policy_blocked`：provider 返回 `finish_reason`/`stop_reason` 含 `content_filter`，或返回 refusal 标记，或输入被 provider 拒绝。此错误必须显式记录，不得伪装成 noop 或静默跳过（见 [write-protocol.md](write-protocol.md) §6）。
 - `max_output_truncated`：provider 明确因 max tokens/max output length 停止，或响应元数据表明 structured payload 被输出上限截断。即使残片碰巧能被解析，也不得作为完整 proposal 交给 Reducer；该原因必须与一般 schema invalid 分开统计。
-- `output_schema_invalid`：输入 envelope 不符合契约，或 provider 返回了内容但 adapter/tick orchestrator 无法验证为 §5.5 schema。命名上与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前。输入边界错误立即 halt；输出边界错误最多获得一次持久化即时重试，首次记录为 `output_schema_invalid_retry`，耗尽后才记录最终错误并 halt。
+- `output_schema_invalid`：输入 envelope 不符合契约，或 provider 返回了内容但 adapter/tick orchestrator 无法验证为 §5.5 schema。命名上与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前。输入边界错误立即 halt；输出边界错误最多获得一次持久化即时修复重试，首次记录为 `output_schema_invalid_retry` 并持久化有界 `schemaRepairFeedback`，耗尽后才记录最终错误并 halt。非法输出原文不得写入 task、ops log 或修复 prompt。
 - `llm_call_failed`：网络异常、超时、provider 5xx、其它未归类异常。
 
 Provider/model 的物理 context window、最大输出和 schema/tool 限制由 Adapter 在请求前校验并按上述统一结果处理；这些上限不得折算、复用或写回为 §8 的 Memory section `maxItems/maxRenderedChars` 容量规则。

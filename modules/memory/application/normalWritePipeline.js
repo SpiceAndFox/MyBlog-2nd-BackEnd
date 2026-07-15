@@ -35,6 +35,21 @@ function taskRow(envelope, overrides = {}) {
 }
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function numberValue(row, snake, camel, fallback = 0) { return Number(rowValue(row, snake, camel) ?? fallback); }
+function safeRepairPath(value) {
+  return String(value || "$").slice(0, 240).replace(/[^A-Za-z0-9_$.[\]-]/g, "?");
+}
+function schemaRepairFeedback(detail, attempt) {
+  const source = Array.isArray(detail?.errors) ? detail.errors : [];
+  const errors = source.slice(0, 8).map((error) => ({
+    path: safeRepairPath(error?.path),
+    message: String(error?.message || "does not satisfy the local output contract").replace(/[\r\n]+/g, " ").slice(0, 240),
+  }));
+  if (!errors.length) errors.push({ path: "$", message: "does not satisfy the local output contract" });
+  return { attempt, errors };
+}
+function schemaErrorLogDetail(detail, feedback) {
+  return { boundary: detail?.boundary ?? null, errors: feedback.errors };
+}
 async function recordSuccessfulTarget(repositories, envelope, client) {
   const args = { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, taskId: envelope.task.taskId };
   if (repositories.runtime.recordSuccessfulTargetTask) return repositories.runtime.recordSuccessfulTargetTask(envelope.task.userId, envelope.task.presetId, args, { client });
@@ -144,7 +159,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         status: targetStatus, consecutiveErrors,
         lastErrorReason: adapterResult.reason, lastTaskId: envelope.task.taskId, nextRetryAt: retryAt,
       }, { client });
-      await appendOps(envelope, adapterResult.reason, attempt, adapterResult.detail, client);
+      const detail = adapterResult.reason === "output_schema_invalid"
+        ? schemaErrorLogDetail(adapterResult.detail, schemaRepairFeedback(adapterResult.detail, 0))
+        : adapterResult.detail;
+      await appendOps(envelope, adapterResult.reason, attempt, detail, client);
       return { ...adapterResult, taskId: envelope.task.taskId, halted, attempt, consecutiveErrors, notBefore: retryAt };
     });
   }
@@ -160,20 +178,26 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (used >= limit) return false;
       const attempt = numberValue(task, "attempt", "attempt") + 1;
       stagePayload.schemaInvalidAttempts = used + 1;
+      stagePayload.schemaRepairFeedback = schemaRepairFeedback(adapterResult.detail, stagePayload.schemaInvalidAttempts);
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running", stage: "schema_invalid_retry", stage_payload: stagePayload,
         attempt, not_before: null, last_error_reason: "output_schema_invalid",
       }, { client });
-      await appendOps(envelope, "output_schema_invalid_retry", attempt, adapterResult.detail, client);
-      return true;
+      await appendOps(envelope, "output_schema_invalid_retry", attempt, {
+        ...schemaErrorLogDetail(adapterResult.detail, stagePayload.schemaRepairFeedback),
+        repairFeedback: stagePayload.schemaRepairFeedback,
+      }, client);
+      return stagePayload.schemaRepairFeedback;
     });
   }
 
   async function proposeWithSchemaRetry(envelope) {
+    const persisted = repositories.runtime.getTask ? await repositories.runtime.getTask(envelope.task.taskId) : null;
+    let repairFeedback = rowValue(persisted, "stage_payload", "stagePayload")?.schemaRepairFeedback ?? null;
     while (true) {
       const startedAt = monotonicNow();
       let result;
-      try { result = await providerAdapter.propose(envelope); }
+      try { result = await providerAdapter.propose(envelope, { repairFeedback }); }
       finally { metrics?.observe("memory_provider_latency_ms", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, monotonicNow() - startedAt); }
       if (result.status === "deferred") {
         metrics?.increment("memory_provider_admission_deferred_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer });
@@ -201,7 +225,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const retryableSchemaOutput = result.status === "error"
         && result.reason === "output_schema_invalid"
         && result.detail?.boundary === "output";
-      if (!retryableSchemaOutput || !(await reserveSchemaInvalidRetry(envelope, result))) return result;
+      if (!retryableSchemaOutput) return result;
+      const reservedFeedback = await reserveSchemaInvalidRetry(envelope, result);
+      if (!reservedFeedback) return result;
+      repairFeedback = reservedFeedback;
     }
   }
 

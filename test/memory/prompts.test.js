@@ -89,6 +89,8 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
   assert.match(prompt, /overdue todo.*updateItem.*dueChange\.mode=set/s, "todoProposer must reschedule overdue todos through updateItem + set");
   assert.match(prompt, /未出现在 writableState.*unable_to_decide/s, "todoProposer must not guess hidden overdue item ids");
   assert.match(prompt, /status.*becameOverdueAt.*Reducer 管理.*不得输出或修改/s, "todoProposer must treat lifecycle fields as reducer-owned");
+  assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
+  assert.match(prompt, /relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
 });
 
 test("agreement prompt distinguishes explicit long-term commitments from emotional rhetoric", async () => {

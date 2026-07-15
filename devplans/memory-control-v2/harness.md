@@ -310,7 +310,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `memory_compaction` 的 `value.text` 不得引入 source items 未表达的新事实——此约束由 compactionProposer prompt 承担（[proposer-prompt.md](proposer-prompt.md) §2.4/§4.7），Reducer 不做语义检测，仅 LLM smoke 覆盖。
 - Proposer 输出非 target section 时记 `output_schema_invalid`；若这是首次 Provider 输出边界错误则持久化一次 retry 后重新调用，第二次仍非法才 halt 对应 target。item patch 携带 `path` 时同样由 schema 拒绝，只按本 task 的 `targetKey` 决定 cursor，其它 target cursor 不受影响。
 - Todo add 缺 actor/requester 或输出非法枚举时 schema 拒绝；合法 add 初始化 `status=active`、`becameOverdueAt=null`，dueAt 缺省为 null。
-- Todo update 的 dueChange 分别覆盖 keep/clear/set；dueChange 缺失或分支混合时 schema 拒绝。relative dueAt 必须以 evidence message createdAt 为 anchor；fixture 故意令 task.now 与 message.createdAt 不同，证明实现未误用执行时间。absolute date 和 relative 运算必须使用 task 创建时从 User 字段固化的用户时区（默认 UTC）；fixture 覆盖非 UTC 时区下"日期结束后的首个日界线"以及月末截断（如 1 月 31 日 + 1 个月 = 2 月 28/29 日）。
+- Todo update 的 dueChange 分别覆盖 keep/clear/set；dueChange 缺失或分支混合时 schema 拒绝。relative dueAt 必须以 evidence message createdAt 为 anchor；fixture 故意令 task.now 与 message.createdAt 不同，证明实现未误用执行时间。absolute date 和 relative 运算必须使用 task 创建时从 User 字段固化的用户时区（默认 UTC），并统一落到目标日期结束后的首个日界线；fixture 覆盖 `days=0` 在当天结束前保持 active、到日界线后 overdue，以及非 UTC 时区和月末截断（如 1 月 31 日 + 1 个月 = 2 月 28/29 日）。
 - 已计算 dueAt 早于 housekeeping now 时不拒绝历史事实：同一 apply/cleanup 或下一次 housekeeping 将 item 原位改为 overdue，写 `todo_became_overdue`，`becameOverdueAt=dueAt`，并保留 itemId、actor、requester、dueAt、evidenceGroups。
 - overdue todo 仍可由 `completeTodo`/`cancelTodo` 终止；active 容量只统计 active items，overdue items 不触发 compaction、不得 merge。
 - overdue todo 通过 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时，Reducer 原位将 `status` 从 `overdue` 改回 `active`、清空 `becameOverdueAt`，并写 `system_cleanup: todo_revived_from_overdue` event；保留 itemId、actor、requester、dueAt 和全部 evidenceGroups。
@@ -323,7 +323,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 
 - 配置加载覆盖已实现/未实现的 structured-output adapter：未知 adapter 必须启动失败，不能回退到裸文本 + `JSON.parse`；已实现 adapter 使用原生 schema/tool/function 并对返回值再做本地完整 schema 校验。真实 Provider preflight 顺序覆盖六个 Normal Proposer 与 Compaction schema，任一 schema 被端点拒绝、返回错误分支或本地验证失败均不通过。
 - mock adapter 返回合法 `status: "ok"` → output 交 Reducer；成功提交时 task/status/events/state/snapshot 同事务完成。
-- proposer/tickId 不匹配、`sectionResults` 残缺或非法 → 首次输出边界错误写 ops log=`output_schema_invalid_retry` 并持久化计数；第二次仍非法才 task failed、对应 target halted、ops log=`output_schema_invalid`。不交 Reducer，不推进 cursor，不增加 revision/snapshot。
+- proposer/tickId 不匹配、`sectionResults` 残缺或非法 → 首次输出边界错误写 ops log=`output_schema_invalid_retry`，并持久化计数与经过裁剪的 schema 修复反馈；第二次调用必须收到该反馈并返回完整替代结果，进程中断恢复后也必须复用反馈。第二次仍非法才 task failed、对应 target halted、ops log=`output_schema_invalid`。日志和 stage payload 不保存非法输出原文；所有错误路径都不交 Reducer、不推进 cursor、不增加 revision/snapshot。
 - `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，并持久化完整 `stage_payload.expandedEnvelope`，不修改 target 长期错误计数；恢复和下一 attempt 必须复用该 envelope，二次仍 unable 才以 cursor-only revision 终结。
 - compactionProposer 返回 `unable_to_compact` → maintenance task failed、对应 target halted、写 ops log；不增加 revision/snapshot。
 - `safety_policy_blocked` / `llm_call_failed` → task `retry_wait`、attempt 递增、写 notBefore，target status=`retry_wait` 且 `consecutive_errors + 1`；第三次只 halt 对应 target。

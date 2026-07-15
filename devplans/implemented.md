@@ -150,7 +150,9 @@
 - 新增 SIGTERM/SIGINT graceful shutdown：撤销 readiness、停止 polling/cleanup、取消所有在途可取消 chat scope，等待 HTTP、Memory、privacy operation 和 scope lane 收口后关闭数据库；超时强制断开并记录非 graceful 结果。
 - Memory runtime、privacy hard delete、trash cleanup 和 scope coordinator 均增加可等待的 idle/shutdown 边界，避免旧进程退出后仍继续调用 Provider 或提交派生结果。
 - production 启动强制 `CHAT_MEMORY_V2_ENABLED=true`、`APP_REPLICA_COUNT=1`，要求两个 raw debug 开关显式为 false，并用 `CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON` 同时约束默认/请求 chat 模型与 Memory 模型；`SERVER_SHUTDOWN_TIMEOUT_MS` 提供受限的停机窗口配置。
-- 增加 health/readiness、启动顺序、严格恢复、全 scope cancel、后台 privacy drain、生产模型 allowlist、production fail-closed 和 fatal process event 测试；`npm test` 245/245 通过。
+- Todo relative dueAt 收敛为单一单位 canonical wire contract：`days=0` 表示今天，absolute/relative deadline 均解析为 evidence message 所在用户时区目标日期结束后的首个日界线；Provider schema、本地 validator、Reducer、prompt 与权威契约文档同步更新。
+- `output_schema_invalid` 的唯一即时重试改为 durable repair retry：有界校验 path/message 同时写入 task `schemaRepairFeedback` 与 `output_schema_invalid_retry` ops log，并注入第二次 system prompt；进程恢复复用同一反馈，非法输出原文不落 task/log/prompt，第二次仍非法才写终态 `output_schema_invalid` 并 halt target。
+- 增加 Provider raw/DeepSeek-compiled schema 与本地 dueAt validator 的边界一致性测试，以及今天日界线、修复反馈持久化/恢复/包装层透传/日志隐私测试。增加 health/readiness、启动顺序、严格恢复、全 scope cancel、后台 privacy drain、生产模型 allowlist、production fail-closed 和 fatal process event 测试；Windows 项目运行时 `npm test` 251/251 通过。
 - 这里只完成 GATE-04 的应用代码部分；单实例/autoscaling/无重叠部署证明、真实停启服验证、两次生产历史副本 rehearsal、备份恢复和正式 cutover 仍未执行。
 
 ## 2026-07-13：Memory v1 退役审计修复

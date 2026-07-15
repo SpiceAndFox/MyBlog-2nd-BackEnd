@@ -70,9 +70,10 @@ function addCalendarDuration(anchor, duration, timeZone = "UTC") {
   month = ((monthIndex % 12) + 12) % 12 + 1;
   day = Math.min(day, daysInMonth(year, month));
   const date = new Date(Date.UTC(year, month - 1, day + days));
+  const boundary = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1));
   return localPartsToInstant({
-    year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(),
-    hour: local.hour, minute: local.minute, second: local.second, fractionalSecond: local.fractionalSecond,
+    year: boundary.getUTCFullYear(), month: boundary.getUTCMonth() + 1, day: boundary.getUTCDate(),
+    hour: 0, minute: 0, second: 0, fractionalSecond: 0,
   }, timeZone);
 }
 

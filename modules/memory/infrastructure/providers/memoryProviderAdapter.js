@@ -4,6 +4,15 @@ const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 
+function schemaRepairPrompt(systemPrompt, feedback) {
+  const errors = Array.isArray(feedback?.errors) ? feedback.errors.slice(0, 8) : [];
+  if (!errors.length) return systemPrompt;
+  const lines = errors.map((error, index) => (
+    `${index + 1}. ${String(error.path || "$").slice(0, 240).replace(/[^A-Za-z0-9_$.[\]-]/g, "?")}: ${String(error.message || "does not satisfy the contract").replace(/[\r\n]+/g, " ").slice(0, 240)}`
+  ));
+  return `${systemPrompt}\n\n[SCHEMA_REPAIR]\n上一份 tool arguments 未通过本地契约校验。请根据以下错误重新生成一份完整的替代结果，不要只返回局部字段，也不要解释。\n${lines.join("\n")}\n只修复格式或契约错误；事实判断仍必须完全依据原始 Memory task。`;
+}
+
 function normalizeProviderOutput(output, task) {
   if (task?.proposer !== "currentStateProposer" || !output?.sectionResults?.scene?.patches) return output;
   const normalized = structuredClone(output);
@@ -20,16 +29,17 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   return Object.freeze({
-    async propose(envelope) {
+    async propose(envelope, { repairFeedback = null } = {}) {
       let response;
       try {
         const envelopeResult = validateTaskEnvelope(envelope);
         if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
         const { task } = envelope;
         const schema = buildOutputSchema(task.proposer, task.targetSections);
+        const basePrompt = await promptLoader(task.proposer);
         response = await invokeStructured({
           proposer: task.proposer,
-          systemPrompt: await promptLoader(task.proposer),
+          systemPrompt: schemaRepairPrompt(basePrompt, repairFeedback),
           userPayload: envelope,
           responseSchema: schema,
         });
@@ -60,15 +70,15 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
 function createMockMemoryProviderAdapter({ outputs, promptLoader = async () => "mock" } = {}) {
   const queue = Array.isArray(outputs) ? outputs.slice() : null;
   return Object.freeze({
-    async propose(envelope) {
+    async propose(envelope, options) {
       const proposer = envelope?.task?.proposer;
       const value = queue ? queue.shift() : outputs?.[proposer];
       const result = typeof value === "function" ? await value(envelope) : value;
       if (result?.status === "error") return result;
       const adapter = createMemoryProviderAdapter({ promptLoader, invokeStructured: async () => ({ output: result?.status === "ok" ? result.output : result }) });
-      return adapter.propose(envelope);
+      return adapter.propose(envelope, options);
     },
   });
 }
 
-module.exports = { createMemoryProviderAdapter, createMockMemoryProviderAdapter, normalizeProviderOutput, ERROR_REASONS };
+module.exports = { createMemoryProviderAdapter, createMockMemoryProviderAdapter, normalizeProviderOutput, schemaRepairPrompt, ERROR_REASONS };

@@ -33,11 +33,13 @@ test("provider retryMax halts even before the broader consecutive-error circuit 
 test("output schema invalid retries once durably and commits a valid second result", async () => {
   const data = store();
   let calls = 0;
+  const repairFeedbacks = [];
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: data.repositories, config, now: () => fixedNow,
-    providerAdapter: { propose: async (envelope) => {
+    providerAdapter: { propose: async (envelope, options) => {
       calls += 1;
-      if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$.sectionResults" }] } };
+      repairFeedbacks.push(options?.repairFeedback ?? null);
+      if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$.sectionResults", message: "is invalid" }], rawOutput: "must-not-persist" } };
       return { status: "ok", output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "noop" } } } };
     } },
   });
@@ -45,8 +47,14 @@ test("output schema invalid retries once durably and commits a valid second resu
   const task = [...data.inspect.tasks.values()][0];
   assert.equal(result.status, "committed");
   assert.equal(calls, 2);
+  assert.equal(repairFeedbacks[0], null);
+  assert.deepEqual(repairFeedbacks[1].errors, [{ path: "$.sectionResults", message: "is invalid" }]);
   assert.equal(task.attempt, 1);
+  assert.deepEqual(task.stage_payload.schemaRepairFeedback, repairFeedbacks[1]);
   assert.equal(data.inspect.ops[0].outcome, "output_schema_invalid_retry");
+  assert.deepEqual(data.inspect.ops[0].detail.repairFeedback, repairFeedbacks[1]);
+  assert.doesNotMatch(JSON.stringify(task.stage_payload), /must-not-persist/);
+  assert.doesNotMatch(JSON.stringify(data.inspect.ops[0]), /must-not-persist/);
   assert.equal(data.inspect.statuses.get("todos").status, "healthy");
 });
 
@@ -87,9 +95,11 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   const data = store();
   let calls = 0;
   let interrupted = true;
-  const providerAdapter = { propose: async () => {
+  const repairFeedbacks = [];
+  const providerAdapter = { propose: async (_envelope, options) => {
     calls += 1;
-    if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$" }] } };
+    repairFeedbacks.push(options?.repairFeedback ?? null);
+    if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$", message: "broken output" }] } };
     if (interrupted) throw new Error("simulated process interruption");
     return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$" }] } };
   } };
@@ -101,6 +111,9 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   const result = await pipeline.processEnvelope(envelope);
   assert.equal(result.halted, true);
   assert.equal(calls, 3, "recovery may call once but must not grant another schema retry");
+  assert.equal(repairFeedbacks[0], null);
+  assert.deepEqual(repairFeedbacks[1], repairFeedbacks[2], "recovery must reuse the durable repair feedback");
+  assert.deepEqual(repairFeedbacks[2].errors, [{ path: "$", message: "broken output" }]);
 });
 
 test("unable_to_decide expands once, then commits one cursor-only revision idempotently", async () => {

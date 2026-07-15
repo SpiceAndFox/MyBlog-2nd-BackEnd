@@ -1,11 +1,9 @@
 const { TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS } = require("../../contracts");
+const { buildDueAtSchema } = require("../../contracts/dueAt");
 
 const refSchema = { type: "object", additionalProperties: false, required: ["messageId", "quote"], properties: { messageId: { type: "integer", minimum: 0 }, quote: { type: "string", minLength: 1, maxLength: 200 } } };
 const textValue = { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", minLength: 1 } } };
-const dueAt = { oneOf: [
-  { type: "object", additionalProperties: false, required: ["mode", "date"], properties: { mode: { const: "absolute" }, date: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" } } },
-  { type: "object", additionalProperties: false, required: ["mode"], anyOf: [{ required: ["days"] }, { required: ["months"] }, { required: ["years"] }], properties: { mode: { const: "relative" }, days: { type: "integer", minimum: 0 }, months: { type: "integer", minimum: 0 }, years: { type: "integer", minimum: 0 } } },
-] };
+const dueAt = buildDueAtSchema();
 const dueChange = { oneOf: [
   { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "keep" } } },
   { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "clear" } } },

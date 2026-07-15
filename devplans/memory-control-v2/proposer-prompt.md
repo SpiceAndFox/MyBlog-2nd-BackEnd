@@ -88,8 +88,8 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 如有明确 deadline，在 add value 的 `dueAt` 或 update value 的 `dueChange.mode=set` 中设置：
 
 - 听到明确日期 → `{ "mode": "absolute", "date": "YYYY-MM-DD" }`
-- 听到相对时长 → `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`
-- 只提取你听到的，不要按 worker 当前时间做日期计算。Reducer 会以 evidence message 的 `createdAt` 为相对时间 anchor。
+- 听到相对日期 → 只选择一个单位输出 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days >= 0`，`months/years >= 1`；今天固定为 `days=0`，不得同时输出多个单位或未使用的零值字段。
+- 只提取你听到的，不要按 worker 当前时间做日期计算。Reducer 会以 evidence message 的 `createdAt` 为相对日期 anchor，并把 deadline 解析为目标日期结束后的首个用户时区日界线。
 - 更新 todo 时始终显式输出 `dueChange`：不改期限用 `keep`，删除期限用 `clear`，设置/替换期限用 `set`。字段省略不表示清空。
 
 #### evidenceKind 判断指南

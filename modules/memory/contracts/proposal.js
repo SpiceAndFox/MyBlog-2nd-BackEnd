@@ -16,6 +16,7 @@ const {
 } = require("./constants");
 const { isValidIanaTimeZone } = require("../../../utils/timeZone");
 const { isPlainObject, isIsoTimestamp } = require("./state");
+const { validateDueAtExpression } = require("./dueAt");
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -43,26 +44,10 @@ function exactObject(value, keys, path, errors) {
 function positiveText(value) { return typeof value === "string" && value.trim().length > 0; }
 function nonNegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0; }
 function positiveInteger(value) { return Number.isSafeInteger(value) && value > 0; }
-function validCalendarDate(value) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
-
 function validateDueAt(value, path, errors) {
-  if (!isPlainObject(value) || !["absolute", "relative"].includes(value.mode)) { add(errors, path, "must be an absolute or relative due expression"); return; }
-  if (value.mode === "absolute") {
-    if (!exactObject(value, ["mode", "date"], path, errors)) return;
-    if (!validCalendarDate(value.date)) add(errors, `${path}.date`, "must be a valid YYYY-MM-DD calendar date");
-    return;
+  for (const error of validateDueAtExpression(value)) {
+    add(errors, `${path}${error.path.slice(1)}`, error.message);
   }
-  const allowed = ["mode", "days", "months", "years"];
-  Object.keys(value).forEach((key) => { if (!allowed.includes(key)) add(errors, `${path}.${key}`, "is not allowed"); });
-  const durations = ["days", "months", "years"].filter((key) => Object.prototype.hasOwnProperty.call(value, key));
-  if (!durations.length) add(errors, path, "relative due expression needs at least one duration");
-  durations.forEach((key) => { if (!Number.isSafeInteger(value[key]) || value[key] < 0) add(errors, `${path}.${key}`, "must be a non-negative safe integer"); });
-  if (durations.length && durations.every((key) => value[key] === 0)) add(errors, path, "relative duration must be greater than zero");
 }
 
 function validateValue(value, section, op, path, errors) {
