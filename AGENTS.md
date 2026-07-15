@@ -5,7 +5,7 @@
 ```
   powershell.exe -NoProfile -Command "
   Set-Location 'E:\Code\Blog\BlogBackEnd'
-  npm.cmd run check:memory-schema
+  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report reports/memory-v2-rehearsal-3.json  --pricing deployment\memory-pricing.json
   "
 ```
 

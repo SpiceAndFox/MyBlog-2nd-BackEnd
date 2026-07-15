@@ -2,7 +2,29 @@
 process.env.DOTENV_CONFIG_QUIET ||= "true";
 require("dotenv").config({ quiet: true });
 
-const PROFILE_SECTIONS = Object.freeze(["userProfile", "assistantProfile"]);
+const MEMORY_SECTIONS = Object.freeze([
+  "worldFacts",
+  "userProfile",
+  "assistantProfile",
+  "relationship",
+  "milestones",
+  "standingAgreements",
+  "todos",
+  "recentEpisodes",
+  "scene",
+]);
+
+const SECTION_TARGETS = Object.freeze({
+  worldFacts: "worldFacts",
+  userProfile: "profileRelationship",
+  assistantProfile: "profileRelationship",
+  relationship: "profileRelationship",
+  milestones: "episodes",
+  standingAgreements: "standingAgreements",
+  todos: "todos",
+  recentEpisodes: "episodes",
+  scene: "scene",
+});
 
 function parseArgs(argv) {
   const values = {};
@@ -33,23 +55,26 @@ function resolveOptions(values) {
   }
 
   const requested = values.sections === undefined
-    ? PROFILE_SECTIONS
+    ? MEMORY_SECTIONS
     : String(values.sections).split(",").map((section) => section.trim()).filter(Boolean);
   if (!requested.length) throw new Error("--sections cannot be empty");
-  const unknown = requested.filter((section) => !PROFILE_SECTIONS.includes(section));
+  const unknown = requested.filter((section) => !MEMORY_SECTIONS.includes(section));
   if (unknown.length) {
-    throw new Error(`Unsupported section(s): ${[...new Set(unknown)].join(", ")}. Supported: ${PROFILE_SECTIONS.join(", ")}`);
+    throw new Error(`Unsupported section(s): ${[...new Set(unknown)].join(", ")}. Supported: ${MEMORY_SECTIONS.join(", ")}`);
   }
   const selected = new Set(requested);
-  return { help: false, userId, presetId, sections: PROFILE_SECTIONS.filter((section) => selected.has(section)) };
+  return { help: false, userId, presetId, sections: MEMORY_SECTIONS.filter((section) => selected.has(section)) };
 }
 
 function printUsage(stream = process.stdout) {
   stream.write([
     "Usage:",
-    "  npm run inspect:memory-v2 -- --userId <id> --presetId <id> [--sections userProfile,assistantProfile]",
+    "  npm run inspect:memory-v2 -- --userId <id> --presetId <id> [--sections <section,...>]",
     "",
-    "This command is read-only. By default it prints both rendered profile sections.",
+    "Sections:",
+    `  ${MEMORY_SECTIONS.join(",")}`,
+    "",
+    "This command is read-only. By default it prints all rendered memory sections.",
     "",
   ].join("\n"));
 }
@@ -58,16 +83,46 @@ function renderItems(items) {
   return items.length ? items.map((item) => `- ${item.text}`).join("\n") : "(无)";
 }
 
-function renderProfiles({ state, targetStatuses = [], diagnostics = [], sections, renderTargetHealthMarker }) {
-  const marker = renderTargetHealthMarker("profileRelationship", targetStatuses, diagnostics);
-  const renderers = {
-    userProfile: () => `${marker ? `${marker}\n` : ""}[User 核心档案]\n${renderItems(state.longTerm.userProfile)}`,
-    assistantProfile: () => `[Assistant 核心档案]\n${renderItems(state.longTerm.assistantProfile)}`,
+function renderMemorySections({
+  state,
+  targetStatuses = [],
+  diagnostics = [],
+  sections,
+  renderTargetHealthMarker,
+  renderTodo,
+  renderScene,
+}) {
+  const markerLine = (section) => {
+    const marker = renderTargetHealthMarker(SECTION_TARGETS[section], targetStatuses, diagnostics);
+    return marker ? `${marker}\n` : "";
   };
-  return sections.map((section) => renderers[section]()).join("\n\n");
+  const renderers = {
+    worldFacts: () => `[长期事实]\n${renderItems(state.longTerm.worldFacts)}`,
+    userProfile: () => `[User 核心档案]\n${renderItems(state.longTerm.userProfile)}`,
+    assistantProfile: () => `[Assistant 核心档案]\n${renderItems(state.longTerm.assistantProfile)}`,
+    relationship: () => `[关系模式]\n${renderItems(state.longTerm.relationship)}`,
+    milestones: () => `[重要里程碑]\n${renderItems(state.longTerm.milestones)}`,
+    standingAgreements: () => `[持续约定]\n${renderItems(state.working.standingAgreements)}`,
+    todos: () => [
+      `[待办]\n${state.working.todos.filter((todo) => todo.status === "active").map(renderTodo).join("\n") || "(无)"}`,
+      `[已逾期待办]\n${state.working.todos.filter((todo) => todo.status === "overdue").map(renderTodo).join("\n") || "(无)"}`,
+    ].join("\n\n"),
+    recentEpisodes: () => `[最近经历]\n${renderItems(state.working.recentEpisodes)}`,
+    scene: () => [
+      `[当前状态]\n${renderScene(state.current.scene)}`,
+      `[已过期场景 / 上次已知场景]\n${state.current.previousScene ? renderScene(state.current.previousScene) : "(无)"}`,
+    ].join("\n\n"),
+  };
+  const markedTargets = new Set();
+  return sections.map((section) => {
+    const target = SECTION_TARGETS[section];
+    const marker = markedTargets.has(target) ? "" : markerLine(section);
+    markedTargets.add(target);
+    return `${marker}${renderers[section]()}`;
+  }).join("\n\n");
 }
 
-async function inspectProfiles({ db, memory, userId, presetId, sections }) {
+async function inspectMemory({ db, memory, userId, presetId, sections }) {
   const { rows } = await db.query(`
     SELECT
       pm.memory_state,
@@ -98,12 +153,14 @@ async function inspectProfiles({ db, memory, userId, presetId, sections }) {
 
   const rawState = memory.contracts.assertMemoryState(rows[0].memory_state);
   const state = memory.domain.filterRebuiltState(rawState, rows[0].tombstones).state;
-  return renderProfiles({
+  return renderMemorySections({
     state,
     targetStatuses: rows[0].target_statuses,
     diagnostics: rows[0].diagnostics,
     sections,
     renderTargetHealthMarker: memory.domain.renderTargetHealthMarker,
+    renderTodo: memory.domain.renderTodo,
+    renderScene: memory.domain.renderScene,
   });
 }
 
@@ -115,7 +172,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   }
   const db = dependencies.db || require("../db");
   const memory = dependencies.memory || require("../modules/memory");
-  const output = await inspectProfiles({ db, memory, ...options });
+  const output = await inspectMemory({ db, memory, ...options });
   process.stdout.write(`${output}\n`);
 }
 
@@ -134,4 +191,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { PROFILE_SECTIONS, parseArgs, resolveOptions, renderProfiles, inspectProfiles, main };
+module.exports = { MEMORY_SECTIONS, parseArgs, resolveOptions, renderMemorySections, inspectMemory, main };
