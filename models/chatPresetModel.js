@@ -276,9 +276,11 @@ const chatPresetModel = {
     const query = `
       DELETE FROM chat_prompt_presets
       WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NOT NULL
+      RETURNING avatar_url
     `;
-    const { rowCount } = await (client || db).query(query, [userId, presetId]);
-    return rowCount > 0;
+    const { rows } = await (client || db).query(query, [userId, presetId]);
+    if (!rows[0]) return null;
+    return { deleted: true, avatarUrl: rows[0].avatar_url || null };
   },
 };
 

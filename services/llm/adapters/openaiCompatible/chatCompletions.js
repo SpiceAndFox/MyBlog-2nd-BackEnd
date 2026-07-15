@@ -181,13 +181,16 @@ function buildBody({
   return body;
 }
 
-async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, ...rest } = {}) {
+async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, signal, ...rest } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "chat/completions");
   const headerExtensions = buildHeaderExtensions({ providerId: provider.id, model, settings: rest?.settings }); // openrouter
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
+  const abortFromParent = () => abortController.abort(signal?.reason || new Error("Request cancelled"));
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
 
   try {
     const response = await fetch(url, {
@@ -234,6 +237,7 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
     return { content, raw: data };
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 

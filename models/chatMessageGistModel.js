@@ -1,5 +1,9 @@
 const db = require("../db");
 
+function executor(client) {
+  return client && typeof client.query === "function" ? client : db;
+}
+
 function normalizePresetId(rawPresetId) {
   const normalized = String(rawPresetId || "").trim();
   return normalized || null;
@@ -108,7 +112,36 @@ const chatMessageGistModel = {
     ]);
     return mapRow(rows[0]) || null;
   },
+
+  async deleteByScope(userId, presetId, { client } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+    try {
+      const { rowCount } = await executor(client).query(
+        `DELETE FROM chat_message_gists WHERE user_id=$1 AND preset_id=$2`,
+        [userId, normalizedPresetId],
+      );
+      return rowCount || 0;
+    } catch (error) {
+      if (error?.code === "42P01") return 0;
+      throw error;
+    }
+  },
+
+  async countByScope(userId, presetId, { client } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+    try {
+      const { rows } = await executor(client).query(
+        `SELECT COUNT(*)::BIGINT AS count FROM chat_message_gists WHERE user_id=$1 AND preset_id=$2`,
+        [userId, normalizedPresetId],
+      );
+      return Number(rows[0]?.count || 0);
+    } catch (error) {
+      if (error?.code === "42P01") return 0;
+      throw error;
+    }
+  },
 };
 
 module.exports = chatMessageGistModel;
-

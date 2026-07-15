@@ -114,7 +114,7 @@ async function generateAssistantGist({ userId, presetId, messageId, userContent,
   const workerRaw = chatGistConfig.workerRaw;
 
   const prompt = buildAssistantGistPrompt({ userContent, assistantContent, maxChars });
-  logger.debugGist("chat_message_gist_request", {
+  logger.debug("chat_message_gist_request", {
     userId,
     presetId,
     messageId,
@@ -123,7 +123,6 @@ async function generateAssistantGist({ userId, presetId, messageId, userContent,
     maxChars,
     userChars: String(userContent || "").length,
     assistantChars: String(assistantContent || "").length,
-    messages: prompt.messages,
   });
 
   const response = await createChatCompletion({
@@ -139,14 +138,12 @@ async function generateAssistantGist({ userId, presetId, messageId, userContent,
   const rawText = String(response?.content || "");
   const normalized = normalizeGistText(rawText, maxChars);
 
-  logger.debugGist("chat_message_gist_response", {
+  logger.debug("chat_message_gist_response", {
     userId,
     presetId,
     messageId,
     providerId,
     modelId,
-    rawText,
-    normalized,
     normalizedChars: normalized.length,
   });
 

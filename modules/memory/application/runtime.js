@@ -25,19 +25,21 @@ function createKeyedExecutor() {
   };
 }
 
-function createDisabledRuntime(repositories, privacyStores = []) {
+function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = createKeyedExecutor()) {
   const disabled = async () => ({ status: "disabled" });
   const stopProjectionPolling = () => {};
   const stopTaskPolling = () => {};
   async function mutateSourceAndRebuild(_userId, _presetId, { mutateSource } = {}) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
-    const mutationResult = repositories?.withTransaction
-      ? await repositories.withTransaction((client) => mutateSource(client))
-      : await mutateSource(null);
-    return { status: "memory_disabled", mutationResult };
+    return enqueueByKey(`${_userId}:${_presetId}`, async () => {
+      const mutationResult = repositories?.withTransaction
+        ? await repositories.withTransaction((client) => mutateSource(client))
+        : await mutateSource(null);
+      return { status: "memory_disabled", mutationResult };
+    });
   }
   const privacyDelete = repositories?.privacy
-    ? createPrivacyHardDelete({ repositories, stores: privacyStores })
+    ? createPrivacyHardDelete({ repositories, stores: privacyStores, enqueueByKey })
     : null;
   async function privacyHardDelete(userId, presetId, options = {}) {
     if (!privacyDelete) throw new Error("Memory privacy hard delete is unavailable");
@@ -51,6 +53,8 @@ function createDisabledRuntime(repositories, privacyStores = []) {
     rebuildScope: disabled,
     mutateSourceAndRebuild,
     privacyHardDelete,
+    getPrivacyOperation: (userId, operationId) => repositories?.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null),
+    hasIncompletePrivacyOperation: (userId, presetId) => repositories?.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false),
     runRetentionScope: disabled,
     reconcileRebuilds: async () => ({}),
     reconcilePrivacyDeletes: () => privacyDelete?.reconcilePending() ?? Promise.resolve({}),
@@ -67,13 +71,13 @@ function createDisabledRuntime(repositories, privacyStores = []) {
   });
 }
 
-function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, privacyStores = [], metrics = createMemoryMetrics(), onBackgroundError } = {}) {
-  if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores);
+function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, privacyStores = [], metrics = createMemoryMetrics(), onBackgroundError, enqueueByKey: sharedEnqueueByKey } = {}) {
+  const enqueueByKey = sharedEnqueueByKey || createKeyedExecutor();
+  if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores, enqueueByKey);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
 
-  const enqueueByKey = createKeyedExecutor();
   const invokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
   const adapter = providerAdapter || createMemoryProviderAdapter({ invokeStructured, promptLoader: loadProposerPrompt });
   let providerInitialization = providerAdapter ? Promise.resolve([]) : null;
@@ -91,7 +95,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   });
   const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
   const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
-  const privacyDelete = repositories.privacy ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey }) : null;
+  const privacyDelete = repositories.privacy
+    ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey, onBackgroundError })
+    : null;
   const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
   const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError: onBackgroundError });
   const housekeeping = createMemoryHousekeeping({ repositories, config, enqueueByKey });
@@ -329,6 +335,14 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return privacyDelete.execute(userId, presetId, options);
   }
 
+  function getPrivacyOperation(userId, operationId) {
+    return repositories.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null);
+  }
+
+  function hasIncompletePrivacyOperation(userId, presetId) {
+    return repositories.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false);
+  }
+
   function reconcilePrivacyDeletes() {
     return privacyDelete ? runInBackground(() => privacyDelete.reconcilePending()) : Promise.resolve({});
   }
@@ -346,6 +360,8 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     rebuildScope,
     mutateSourceAndRebuild,
     privacyHardDelete,
+    getPrivacyOperation,
+    hasIncompletePrivacyOperation,
     runRetentionScope,
     reconcileRebuilds,
     reconcilePrivacyDeletes,

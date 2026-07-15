@@ -17,6 +17,9 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
     if (column.table_name === "chat_context_quality_diagnostics" && column.column_name === "detail") {
       column.data_type = "jsonb"; column.is_nullable = "NO"; column.column_default = "'{}'::jsonb";
     }
+    if (column.table_name === "chat_memory_privacy_operations" && column.column_name === "operation_payload") {
+      column.data_type = "jsonb"; column.is_nullable = "NO"; column.column_default = "'{}'::jsonb";
+    }
     if (column.table_name === "chat_memory_recovery_notifications" && column.column_name === "boundary_message_id") {
       column.is_nullable = "NO"; column.column_default = "0";
     }
@@ -33,4 +36,3 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
   assert.equal(evaluateInspection({ ...base, indexes: base.indexes.filter((index) => index !== "idx_memory_tasks_recovery") }).clean, false);
   assert.equal(evaluateInspection({ ...base, columns: base.columns.filter((column) => !(column.table_name === "chat_memory_events" && column.column_name === "normalized_operation")) }).clean, false);
 });
-

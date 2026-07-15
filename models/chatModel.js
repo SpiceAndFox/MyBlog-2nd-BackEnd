@@ -245,7 +245,7 @@ const chatModel = {
     if (!session) return null;
 
     const query = `
-      SELECT id, preset_id, role, content, created_at
+      SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2
       ORDER BY id ASC
@@ -256,7 +256,7 @@ const chatModel = {
 
   async getMessage(userId, sessionId, messageId) {
     const query = `
-      SELECT id, preset_id, role, content, created_at
+      SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
       FROM chat_messages
       WHERE id = $1 AND session_id = $2 AND user_id = $3
     `;
@@ -271,7 +271,7 @@ const chatModel = {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
 
     const query = `
-      SELECT id, preset_id, role, content, created_at
+      SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2
       ORDER BY id DESC
@@ -288,7 +288,7 @@ const chatModel = {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
 
     const query = `
-      SELECT id, preset_id, role, content, created_at
+      SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2 AND id <= $3
       ORDER BY id DESC
@@ -303,7 +303,7 @@ const chatModel = {
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
     const query = `
-      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.idempotency_key, m.source_generation, m.created_at
       FROM chat_messages m
       INNER JOIN chat_sessions s ON s.id = m.session_id
       WHERE m.user_id = $1 AND m.preset_id = $2 AND s.user_id = $1 AND s.deleted_at IS NULL
@@ -318,7 +318,7 @@ const chatModel = {
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
     const query = `
-      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.idempotency_key, m.source_generation, m.created_at
       FROM chat_messages m
       INNER JOIN chat_sessions s ON s.id = m.session_id
       WHERE m.user_id = $1 AND m.preset_id = $2 AND m.id <= $3 AND s.user_id = $1 AND s.deleted_at IS NULL
@@ -344,7 +344,7 @@ const chatModel = {
 
     const query = normalizedUpToMessageId !== null
       ? `
-      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.idempotency_key, m.source_generation, m.created_at
       FROM chat_messages m
       INNER JOIN chat_sessions s ON s.id = m.session_id
       WHERE m.user_id = $1
@@ -356,7 +356,7 @@ const chatModel = {
       LIMIT $4
     `
       : `
-      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.idempotency_key, m.source_generation, m.created_at
       FROM chat_messages m
       INNER JOIN chat_sessions s ON s.id = m.session_id
       WHERE m.user_id = $1
@@ -383,7 +383,7 @@ const chatModel = {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
 
     const query = `
-      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.idempotency_key, m.source_generation, m.created_at
       FROM chat_messages m
       INNER JOIN chat_sessions s ON s.id = m.session_id
       WHERE m.user_id = $1
@@ -416,17 +416,120 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async updateMessageContent(userId, sessionId, messageId, content, { client } = {}) {
+  async createUserMessage(userId, sessionId, content, { turnId, idempotencyKey } = {}) {
+    const normalizedContent = String(content || "").trim();
+    const normalizedTurnId = String(turnId || "").trim();
+    const normalizedKey = String(idempotencyKey || "").trim();
+    if (!normalizedContent || !normalizedTurnId || !normalizedKey) {
+      throw new Error("Content, turnId, and idempotencyKey are required");
+    }
+    const insert = await db.query(`
+      INSERT INTO chat_messages (
+        session_id,user_id,preset_id,role,content,turn_id,idempotency_key,source_generation
+      )
+      SELECT s.id,$2,s.preset_id,'user',$3,$4,$5,
+             COALESCE((pm.memory_state->'meta'->>'sourceGeneration')::BIGINT,0)
+      FROM chat_sessions s
+      LEFT JOIN chat_preset_memory pm ON pm.user_id=s.user_id AND pm.preset_id=s.preset_id
+      WHERE s.id=$1 AND s.user_id=$2 AND s.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM chat_memory_privacy_operations po
+          WHERE po.user_id=s.user_id AND po.preset_id=s.preset_id AND po.status<>'completed'
+        )
+      ON CONFLICT (user_id,preset_id,idempotency_key)
+        WHERE role='user' AND idempotency_key IS NOT NULL
+      DO NOTHING
+      RETURNING id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+    `, [sessionId, userId, normalizedContent, normalizedTurnId, normalizedKey]);
+    if (insert.rows[0]) return { message: insert.rows[0], created: true };
+
+    const existing = await db.query(`
+      SELECT id,session_id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+      FROM chat_messages
+      WHERE user_id=$1 AND idempotency_key=$2 AND role='user'
+        AND preset_id=(SELECT preset_id FROM chat_sessions WHERE id=$3 AND user_id=$1)
+      LIMIT 1
+    `, [userId, normalizedKey, sessionId]);
+    const message = existing.rows[0] || null;
+    const privacy = await db.query(`
+      SELECT 1 FROM chat_memory_privacy_operations po
+      JOIN chat_sessions s ON s.user_id=po.user_id AND s.preset_id=po.preset_id
+      WHERE s.id=$1 AND s.user_id=$2 AND po.status<>'completed'
+      LIMIT 1
+    `, [sessionId, userId]);
+    if (privacy.rows.length) return { message: null, created: false, blocked: true };
+    if (!message) return { message: null, created: false };
+    if (Number(message.session_id) !== Number(sessionId) || String(message.content) !== normalizedContent) {
+      const error = new Error("Idempotency key was already used for a different message");
+      error.code = "CHAT_IDEMPOTENCY_CONFLICT";
+      throw error;
+    }
+    return { message, created: false };
+  },
+
+  async getAssistantForUserMessage(userId, parentUserMessageId) {
+    const { rows } = await db.query(`
+      SELECT id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+      FROM chat_messages
+      WHERE user_id=$1 AND parent_user_message_id=$2 AND role='assistant'
+      LIMIT 1
+    `, [userId, parentUserMessageId]);
+    return rows[0] || null;
+  },
+
+  async createAssistantMessageForTurn(userId, sessionId, parentUserMessageId, turnId, content) {
+    const normalizedContent = String(content || "").trim();
+    const normalizedTurnId = String(turnId || "").trim();
+    if (!normalizedContent || !normalizedTurnId) throw new Error("Assistant content and turnId are required");
+    const { rows } = await db.query(`
+      INSERT INTO chat_messages (
+        session_id,user_id,preset_id,role,content,turn_id,parent_user_message_id,source_generation
+      )
+      SELECT u.session_id,u.user_id,u.preset_id,'assistant',$5,u.turn_id,u.id,u.source_generation
+      FROM chat_messages u
+      JOIN chat_sessions s ON s.id=u.session_id AND s.user_id=u.user_id AND s.deleted_at IS NULL
+      LEFT JOIN chat_preset_memory pm ON pm.user_id=u.user_id AND pm.preset_id=u.preset_id
+      WHERE u.id=$3 AND u.user_id=$1 AND u.session_id=$2 AND u.role='user' AND u.turn_id=$4
+        AND COALESCE(u.source_generation,0)=COALESCE((pm.memory_state->'meta'->>'sourceGeneration')::BIGINT,0)
+        AND NOT EXISTS (
+          SELECT 1 FROM chat_memory_privacy_operations po
+          WHERE po.user_id=u.user_id AND po.preset_id=u.preset_id AND po.status<>'completed'
+        )
+      ON CONFLICT (parent_user_message_id)
+        WHERE role='assistant' AND parent_user_message_id IS NOT NULL
+      DO NOTHING
+      RETURNING id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+    `, [userId, sessionId, parentUserMessageId, normalizedTurnId, normalizedContent]);
+    if (rows[0]) return { message: rows[0], created: true };
+    const existing = await this.getAssistantForUserMessage(userId, parentUserMessageId);
+    if (existing) return { message: existing, created: false };
+    const error = new Error("Chat turn became stale before assistant commit");
+    error.code = "CHAT_TURN_STALE";
+    throw error;
+  },
+
+  async updateMessageContent(userId, sessionId, messageId, content, { client, turnId, idempotencyKey } = {}) {
     const normalizedContent = String(content || "").trim();
     if (!normalizedContent) throw new Error("Content is required");
 
     const query = `
       UPDATE chat_messages
-      SET content = $1
+      SET content = $1,
+          turn_id = COALESCE($5::UUID, turn_id),
+          idempotency_key = COALESCE($6, idempotency_key)
       WHERE id = $2 AND session_id = $3 AND user_id = $4
-      RETURNING id, preset_id, role, content, created_at
+      RETURNING id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
     `;
-    const { rows } = await executor(client).query(query, [normalizedContent, messageId, sessionId, userId]);
+    const { rows } = await executor(client).query(query, [normalizedContent, messageId, sessionId, userId, turnId || null, idempotencyKey || null]);
+    return rows[0] || null;
+  },
+
+  async setMessageSourceGeneration(userId, sessionId, messageId, sourceGeneration, { client } = {}) {
+    const { rows } = await executor(client).query(`
+      UPDATE chat_messages SET source_generation=$1
+      WHERE id=$2 AND session_id=$3 AND user_id=$4 AND role='user'
+      RETURNING id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+    `, [sourceGeneration, messageId, sessionId, userId]);
     return rows[0] || null;
   },
 

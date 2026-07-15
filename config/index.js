@@ -877,8 +877,8 @@ const logConfig = {
   chatFile: readStringEnv("LOG_CHAT_FILE", ""),
   debugFullFile: readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log"),
   debugGistFile: readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log"),
-  debugFullEnabled: readBoolEnv("LOG_DEBUG_FULL_ENABLED", true),
-  debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", true),
+  debugFullEnabled: readBoolEnv("LOG_DEBUG_FULL_ENABLED", false),
+  debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", false),
 };
 
 const { loadMemoryV2Config } = require("../modules/memory");

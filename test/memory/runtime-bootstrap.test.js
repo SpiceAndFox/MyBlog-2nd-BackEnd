@@ -35,6 +35,7 @@ test("disabled runtime privacy delete purges legacy v2 authority and derived sta
       async purgeAuthorityState() { calls.push(["authority"]); },
       async upsertOperation(_u, _p, value) { operation = { ...value }; return operation; },
       async updateOperation(_u, _p, changes) { Object.assign(operation, changes); return operation; },
+      async getOperation() { return operation; },
       async listIncompleteOperations() { return []; },
     },
   };
@@ -43,8 +44,12 @@ test("disabled runtime privacy delete purges legacy v2 authority and derived sta
     privacyStores: [{ name: "rag", async purge() { calls.push(["rag"]); }, async verifyPurged() { return true; } }],
   });
   const result = await runtime.privacyHardDelete(1, "default", { async deleteRawSource() { calls.push(["raw"]); return 1; } });
-  assert.equal(result.status, "completed");
-  assert.deepEqual(calls, [["raw"], ["rag"], ["derived", true], ["authority"]]);
+  assert.equal(result.status, "purging");
+  assert.equal(result.rawMutationCommitted, true);
+  assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"]]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"], ["rag"]]);
   assert.equal(operation.status, "completed");
 });
 
@@ -136,4 +141,3 @@ test("ensureScope initializes revision zero before context assembly", async () =
   await runtime.ensureScope({ userId: 1, presetId: "new-preset" });
   assert.equal(initializations, 1);
 });
-

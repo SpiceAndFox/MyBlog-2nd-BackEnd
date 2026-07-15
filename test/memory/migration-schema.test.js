@@ -42,10 +42,20 @@ test("privacy recovery schema survives preset deletion and RAG verification chec
   assert.match(ragRepository, /ref->>'contentHash'='sha256:'/);
 });
 
+test("chat turn migration persists identity, idempotency, generation fences, and durable operation payloads", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/008-chat-turns-and-async-privacy.sql"), "utf8");
+  for (const column of ["turn_id", "parent_user_message_id", "idempotency_key", "source_generation"]) {
+    assert.match(migration, new RegExp(`ADD COLUMN IF NOT EXISTS ${column}`, "i"));
+  }
+  assert.match(migration, /idx_chat_messages_scope_idempotency/i);
+  assert.match(migration, /idx_chat_messages_one_assistant_per_parent/i);
+  assert.match(migration, /operation_payload JSONB/i);
+  assert.match(migration, /idx_memory_privacy_operations_active_scope/i);
+});
+
 test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {
   const retriever = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/retriever.js"), "utf8");
   const repository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");
   assert.match(retriever, /maxMessageId:\s*beforeMessageId/);
   assert.match(repository, /AND id > \$4\s+AND id <= \$5\s+ORDER BY id ASC\s+LIMIT \$6/);
 });
-

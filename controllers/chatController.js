@@ -1,5 +1,6 @@
 const chatModel = require("@models/chatModel");
 const chatPresetModel = require("@models/chatPresetModel");
+const crypto = require("node:crypto");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
@@ -13,6 +14,8 @@ const {
   requestDeleteChunksFromMessageId,
 } = require("../services/chat/rag/indexer");
 const { logger, withRequestContext } = require("../logger");
+const scopeCoordinator = require("../services/chat/scopeCoordinator");
+const { deleteAvatarByUrl } = require("../services/chat/avatarStorage");
 
 const {
   getProviderDefinition,
@@ -60,6 +63,29 @@ function parseMessageId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);
   if (!Number.isFinite(asNumber) || asNumber <= 0) return null;
   return asNumber;
+}
+
+function readIdempotencyKey(req) {
+  const value = req.get?.("Idempotency-Key") ?? req.body?.idempotencyKey;
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length > 200 || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+  return normalized;
+}
+
+function privacyPayload(mutation) {
+  return {
+    operationId: mutation.operationId,
+    status: mutation.status,
+    rawMutationCommitted: Boolean(mutation.rawMutationCommitted),
+    statusUrl: `/api/chat/privacy-operations/${mutation.operationId}`,
+  };
+}
+
+function cancelScopeGeneration(userId, presetId, reason) {
+  return scopeCoordinator.cancelByKey(
+    scopeCoordinator.buildKey(userId, presetId),
+    Object.assign(new Error(reason || "Chat source changed"), { code: "CHAT_SCOPE_MUTATED" }),
+  );
 }
 
 function isDateKey(value) {
@@ -465,6 +491,28 @@ async function compressAvatarImage({ inputPath, baseName }) {
 }
 
 const chatController = {
+  async getPrivacyOperation(req, res) {
+    try {
+      const operation = await memoryRuntime.getPrivacyOperation(req.user?.id, req.params.operationId);
+      if (!operation) return res.status(404).json({ error: "Privacy operation not found" });
+      return res.status(200).json({
+        privacy: {
+          operationId: operation.operation_id ?? operation.operationId,
+          presetId: operation.preset_id ?? operation.presetId,
+          mode: operation.operation_mode ?? operation.operationMode,
+          status: operation.status,
+          rawMutationCommitted: true,
+          lastErrorReason: operation.last_error_reason ?? operation.lastErrorReason ?? null,
+          createdAt: operation.created_at ?? operation.createdAt,
+          updatedAt: operation.updated_at ?? operation.updatedAt,
+        },
+      });
+    } catch (error) {
+      logger.error("chat_privacy_operation_get_failed", withRequestContext(req, { error }));
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
   async getMeta(req, res) {
     try {
       const configuredProviders = listConfiguredProviders();
@@ -673,7 +721,11 @@ const chatController = {
         return res.status(400).json({ error: "Builtin preset cannot be deleted" });
       }
 
-      const result = await chatPresetModel.deletePreset(userId, presetId);
+      cancelScopeGeneration(userId, presetId, "Preset deleted");
+      const result = await scopeCoordinator.enqueueByKey(
+        scopeCoordinator.buildKey(userId, presetId),
+        () => chatPresetModel.deletePreset(userId, presetId),
+      );
       if (!result.deleted) return res.status(404).json({ error: "Preset not found" });
 
       res.status(204).send();
@@ -711,17 +763,17 @@ const chatController = {
         return res.status(400).json({ error: "Builtin preset cannot be deleted" });
       }
 
+      cancelScopeGeneration(userId, presetId, "Preset permanently deleted");
       const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
         deleteScope: true,
         deleteRawSource: (client) => chatPresetModel.deletePresetPermanently(userId, presetId, { client }),
+        operationPayload: (deletedPreset) => ({
+          avatarUrls: deletedPreset.avatarUrl ? [deletedPreset.avatarUrl] : [],
+        }),
       });
       const deleted = mutation.mutationResult;
       if (!deleted) return res.status(404).json({ error: "Preset not found" });
-      if (mutation.status !== "completed") {
-        return res.status(202).json({ presetId, privacy: { status: "purging" } });
-      }
-
-      res.status(204).send();
+      return res.status(202).json({ presetId, privacy: privacyPayload(mutation) });
     } catch (error) {
       logger.error(
         "chat_preset_delete_permanent_failed",
@@ -760,9 +812,32 @@ const chatController = {
       const avatarUrl = `/uploads/assistant_avatars/${processed.filename}`;
       let preset;
       try {
-        preset = await chatPresetModel.updatePresetAvatar(userId, presetId, avatarUrl);
+        preset = await scopeCoordinator.enqueueByKey(
+          scopeCoordinator.buildKey(userId, presetId),
+          async () => {
+            const current = await chatPresetModel.getPreset(userId, presetId);
+            if (!current || current.isBuiltin) return null;
+            const previousAvatarUrl = current.avatarUrl || null;
+            const updated = await chatPresetModel.updatePresetAvatar(userId, presetId, avatarUrl);
+            if (updated && previousAvatarUrl && previousAvatarUrl !== avatarUrl) {
+              try {
+                await deleteAvatarByUrl(previousAvatarUrl);
+              } catch (cleanupError) {
+                try {
+                  await chatPresetModel.updatePresetAvatar(userId, presetId, previousAvatarUrl);
+                  await safeUnlink(processed.path);
+                } catch (rollbackError) {
+                  rollbackError.keepNewAvatar = true;
+                  throw rollbackError;
+                }
+                throw cleanupError;
+              }
+            }
+            return updated;
+          },
+        );
       } catch (updateError) {
-        await safeUnlink(processed.path);
+        if (!updateError?.keepNewAvatar) await safeUnlink(processed.path);
         throw updateError;
       }
       if (!preset) {
@@ -851,6 +926,7 @@ const chatController = {
       const existing = await chatModel.getSession(userId, sessionId);
       if (!existing) return res.status(404).json({ error: "Session not found" });
       const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      cancelScopeGeneration(userId, presetId, "Session trashed");
       const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
         reason: "session_trashed",
         mutateSource: (client) => chatModel.trashSession(userId, sessionId, { client }),
@@ -874,6 +950,7 @@ const chatController = {
       const existing = await chatModel.getTrashedSession(userId, sessionId);
       if (!existing) return res.status(404).json({ error: "Session not found" });
       const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      cancelScopeGeneration(userId, presetId, "Session restored");
       const mutation = await memoryRuntime.mutateSourceAndRebuild(userId, presetId, {
         reason: "session_restored",
         mutateSource: (client) => chatModel.restoreSession(userId, sessionId, { client }),
@@ -897,16 +974,13 @@ const chatController = {
       const existing = await chatModel.getTrashedSession(userId, sessionId);
       if (!existing) return res.status(404).json({ error: "Session not found" });
       const presetId = String(existing.preset_id || existing.presetId || "").trim();
+      cancelScopeGeneration(userId, presetId, "Session permanently deleted");
       const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
         deleteRawSource: (client) => chatModel.deleteSessionPermanently(userId, sessionId, { client }),
       });
       const deletedSession = mutation.mutationResult;
       if (!deletedSession) return res.status(404).json({ error: "Session not found" });
-      if (mutation.status !== "completed") {
-        return res.status(202).json({ sessionId, privacy: { status: "purging" } });
-      }
-
-      res.status(204).send();
+      return res.status(202).json({ sessionId, privacy: privacyPayload(mutation) });
     } catch (error) {
       logger.error(
         "chat_session_delete_permanent_failed",
@@ -964,7 +1038,7 @@ const chatController = {
       if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
 
       const { presetId, preset } = presetResolution;
-      kickRagDeleteFromMessage({ userId, presetId, fromMessageId: messageId });
+      cancelScopeGeneration(userId, presetId, "Message edited");
 
       const mergedSettings = mergeSettings(session.settings, incomingSettings);
       mergedSettings.systemPromptPresetId = presetId;
@@ -985,12 +1059,30 @@ const chatController = {
         effectiveSettings.enableWebSearch = false;
       }
 
+      const nextTurnId = crypto.randomUUID();
+      const regenerationKey = String(message.idempotency_key || "").trim() || `edit:${crypto.randomUUID()}`;
+      let editedMessage = null;
       const mutation = await memoryRuntime.privacyHardDelete(userId, presetId, {
         deleteRawSource: async (client) => {
           if (truncate) await chatModel.deleteMessagesAfter(userId, sessionId, messageId, { client });
-          const updated = await chatModel.updateMessageContent(userId, sessionId, messageId, content, { client });
+          const updated = await chatModel.updateMessageContent(userId, sessionId, messageId, content, {
+            client,
+            turnId: nextTurnId,
+            idempotencyKey: regenerationKey,
+          });
           if (!updated) throw new Error("Message disappeared during edit");
+          editedMessage = updated;
           return updated;
+        },
+        afterGenerationInitialized: async (client, metadata) => {
+          const updated = await chatModel.setMessageSourceGeneration(
+            userId,
+            sessionId,
+            messageId,
+            metadata.sourceGeneration,
+            { client },
+          );
+          if (editedMessage && updated) Object.assign(editedMessage, updated);
         },
       });
       const updatedUserMessage = mutation.mutationResult;
@@ -999,184 +1091,35 @@ const chatController = {
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
 
+      if (mutation.status !== "completed") {
+        return res.status(202).json({
+          session: updatedSession,
+          user_message: updatedUserMessage,
+          privacy: privacyPayload(mutation),
+          regeneration: regenerate
+            ? {
+              status: "blocked_until_privacy_completed",
+              resumeAfterStatus: "completed",
+              method: "POST",
+              url: `/api/chat/sessions/${sessionId}/messages`,
+              idempotencyKey: regenerationKey,
+            }
+            : undefined,
+        });
+      }
+
       if (!regenerate) {
         updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;
         return res.status(200).json({ session: updatedSession, user_message: updatedUserMessage });
       }
-
-      const providerSettings = effectiveSettings;
-      updatedSession =
-        (await chatModel.updateSessionSettings(userId, sessionId, providerSettings, presetId)) || updatedSession;
-
-      const shouldStream = Boolean(providerSettings.stream);
-
-      const context = await compileChatContextMessages({
-        userId,
-        presetId,
-        systemPrompt: providerSettings.systemPrompt,
-        upToMessageId: messageId,
+      return res.status(409).json({
+        error: "Regeneration must resume through the send endpoint after the privacy operation completes",
+        regeneration: {
+          method: "POST",
+          url: `/api/chat/sessions/${sessionId}/messages`,
+          idempotencyKey: regenerationKey,
+        },
       });
-      const messages = context.messages;
-
-      logger.debug(
-        "chat_context_compiled",
-        withRequestContext(req, {
-          sessionId,
-          presetId,
-          segments: context.segments,
-          memory: context.memory,
-        })
-      );
-      logger.debugFull(
-        "chat_api_request",
-        withRequestContext(req, {
-          sessionId,
-          presetId,
-          messageId,
-          providerId,
-          modelId,
-          stream: shouldStream,
-          messages,
-        })
-      );
-
-      if (!shouldStream) {
-        const { content: assistantContent } = await createChatCompletion({
-          providerId,
-          model: modelId,
-          messages,
-          settings: providerSettings,
-        });
-
-        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
-        updatedSession = await chatModel.touchSession(userId, sessionId);
-        requestMemoryUpdate({ userId, presetId });
-        kickRagTurnIndexing({
-          userId,
-          presetId,
-          sessionId,
-          userMessage: updatedUserMessage,
-          assistantMessage,
-          userContent: updatedUserMessage?.content,
-          assistantContent,
-        });
-        requestAssistantGistGeneration({
-          userId,
-          presetId,
-          messageId: assistantMessage?.id,
-          userContent: updatedUserMessage?.content,
-          content: assistantContent,
-        });
-
-        return res
-          .status(200)
-          .json(attachContextHealth({
-            session: updatedSession,
-            user_message: updatedUserMessage,
-            assistant_message: attachRagSources(assistantMessage, context),
-          }, context, res));
-      }
-
-      res.status(200);
-      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.flushHeaders?.();
-
-      writeSse(res, { type: "start", session_id: sessionId, user_message: updatedUserMessage });
-
-      const abortController = new AbortController();
-      req.on("close", () => abortController.abort(new Error("Client disconnected")));
-      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
-
-      let assistantContent = "";
-      let finalAssistantContent = "";
-      try {
-        const upstreamResponse = await createChatCompletionStreamResponse({
-          providerId,
-          model: modelId,
-          messages,
-          settings: providerSettings,
-          signal: abortController.signal,
-        });
-
-        for await (const event of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
-          if (typeof event === "string") {
-            const delta = event;
-            if (!delta) continue;
-            assistantContent += delta;
-            writeSse(res, { type: "delta", delta });
-            continue;
-          }
-
-          if (!event || typeof event !== "object") continue;
-
-          if (event.type === "final") {
-            if (typeof event.content === "string" && event.content.trim()) {
-              finalAssistantContent = event.content;
-            }
-            continue;
-          }
-
-          const delta = typeof event.delta === "string" ? event.delta : "";
-          if (!delta) continue;
-          assistantContent += delta;
-          writeSse(res, { type: "delta", delta });
-        }
-      } catch (streamError) {
-        if (abortController.signal.aborted) {
-          const message = getAbortReasonMessage(abortController.signal);
-          if (message && message !== "Client disconnected") {
-            writeSse(res, { type: "error", error: message });
-          }
-          res.end();
-          return;
-        }
-        throw streamError;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
-      if (!normalizedAssistantContent) {
-        writeSse(res, { type: "error", error: "Empty model response" });
-        res.end();
-        return;
-      }
-
-      const assistantMessage = await chatModel.createMessage(
-        userId,
-        sessionId,
-        "assistant",
-        normalizedAssistantContent
-      );
-      updatedSession = await chatModel.touchSession(userId, sessionId);
-      requestMemoryUpdate({ userId, presetId });
-      kickRagTurnIndexing({
-        userId,
-        presetId,
-        sessionId,
-        userMessage: updatedUserMessage,
-        assistantMessage,
-        userContent: updatedUserMessage?.content,
-        assistantContent: normalizedAssistantContent,
-      });
-      requestAssistantGistGeneration({
-        userId,
-        presetId,
-        messageId: assistantMessage?.id,
-        userContent: updatedUserMessage?.content,
-        content: normalizedAssistantContent,
-      });
-
-      writeSse(res, attachContextHealth({
-        type: "done",
-        session: updatedSession,
-        user_message: updatedUserMessage,
-        assistant_message: attachRagSources(assistantMessage, context),
-      }, context, res));
-      res.end();
     } catch (error) {
       const message = error?.message || "Internal Server Error";
       if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
@@ -1197,7 +1140,7 @@ const chatController = {
     }
   },
 
-  async sendMessage(_req, res) {
+  async _sendMessageInScope(_req, res, scopeSignal) {
     const req = _req;
     let errorSession = null;
     let userMessage = null;
@@ -1209,6 +1152,8 @@ const chatController = {
 
       const content = String(req.body?.content || "").trim();
       if (!content) return res.status(400).json({ error: "Content cannot be empty" });
+      const idempotencyKey = readIdempotencyKey(req);
+      if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key header is required" });
 
       const session = await chatModel.getSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
@@ -1246,8 +1191,26 @@ const chatController = {
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
       errorSession = updatedSession;
 
-      userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
-      if (!userMessage) return res.status(404).json({ error: "Session not found" });
+      const userInsert = await chatModel.createUserMessage(userId, sessionId, content, {
+        turnId: crypto.randomUUID(),
+        idempotencyKey,
+      });
+      userMessage = userInsert.message;
+      if (!userMessage) {
+        if (userInsert.blocked) return res.status(409).json({ error: "Privacy operation is still in progress" });
+        return res.status(404).json({ error: "Session not found" });
+      }
+      if (!userInsert.created) {
+        const existingAssistant = await chatModel.getAssistantForUserMessage(userId, userMessage.id);
+        if (existingAssistant) {
+          return res.status(200).json({
+            session: updatedSession,
+            user_message: userMessage,
+            assistant_message: existingAssistant,
+            idempotent_replay: true,
+          });
+        }
+      }
 
       const context = await compileChatContextMessages({
         userId,
@@ -1266,28 +1229,22 @@ const chatController = {
           memory: context.memory,
         })
       );
-      logger.debugFull(
-        "chat_api_request",
-        withRequestContext(req, {
-          sessionId,
-          presetId,
-          messageId: userMessage?.id,
-          providerId,
-          modelId,
-          stream: shouldStream,
-          messages,
-        })
-      );
-
       if (!shouldStream) {
         const { content: assistantContent } = await createChatCompletion({
           providerId,
           model: modelId,
           messages,
           settings: effectiveSettings,
+          signal: scopeSignal,
         });
 
-        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
+        const { message: assistantMessage } = await chatModel.createAssistantMessageForTurn(
+          userId,
+          sessionId,
+          userMessage.id,
+          userMessage.turn_id,
+          assistantContent,
+        );
         updatedSession = await chatModel.touchSession(userId, sessionId);
         errorSession = updatedSession;
         requestMemoryUpdate({ userId, presetId });
@@ -1327,7 +1284,9 @@ const chatController = {
       writeSse(res, { type: "start", session_id: sessionId, user_message: userMessage });
 
       const abortController = new AbortController();
-      req.on("close", () => abortController.abort(new Error("Client disconnected")));
+      const abortFromScope = () => abortController.abort(scopeSignal?.reason || new Error("Request cancelled"));
+      if (scopeSignal?.aborted) abortFromScope();
+      else scopeSignal?.addEventListener("abort", abortFromScope, { once: true });
       const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
 
       let assistantContent = "";
@@ -1376,6 +1335,7 @@ const chatController = {
         throw streamError;
       } finally {
         clearTimeout(timeout);
+        scopeSignal?.removeEventListener("abort", abortFromScope);
       }
 
       const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
@@ -1385,10 +1345,11 @@ const chatController = {
         return;
       }
 
-      const assistantMessage = await chatModel.createMessage(
+      const { message: assistantMessage } = await chatModel.createAssistantMessageForTurn(
         userId,
         sessionId,
-        "assistant",
+        userMessage.id,
+        userMessage.turn_id,
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
@@ -1434,7 +1395,46 @@ const chatController = {
       const payload = { error: message };
       if (errorSession) payload.session = errorSession;
       if (userMessage) payload.user_message = userMessage;
-      res.status(500).json(payload);
+      const status = ["CHAT_IDEMPOTENCY_CONFLICT", "CHAT_TURN_STALE", "CHAT_SCOPE_MUTATED"].includes(error?.code)
+        ? 409
+        : 500;
+      res.status(status).json(payload);
+    }
+  },
+
+  async sendMessage(req, res) {
+    const userId = req.user?.id;
+    const sessionId = parseSessionId(req.params.sessionId);
+    if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
+    if (!readIdempotencyKey(req)) {
+      return res.status(400).json({ error: "Idempotency-Key header is required" });
+    }
+
+    try {
+      const session = await chatModel.getSession(userId, sessionId);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      const presetId = getSessionPresetId(session);
+      if (!presetId) return res.status(409).json({ error: "Session has no valid preset" });
+
+      const clientAbort = new AbortController();
+      const onResponseClose = () => {
+        if (!res.writableEnded) clientAbort.abort(new Error("Client disconnected"));
+      };
+      res.once("close", onResponseClose);
+      try {
+        return await scopeCoordinator.enqueueByKey(
+          scopeCoordinator.buildKey(userId, presetId),
+          ({ signal }) => chatController._sendMessageInScope(req, res, signal),
+          { cancellable: true, signal: clientAbort.signal },
+        );
+      } finally {
+        res.removeListener("close", onResponseClose);
+      }
+    } catch (error) {
+      if (res.destroyed || res.writableEnded) return;
+      const status = error?.code === "CHAT_SCOPE_MUTATED" ? 409 : 500;
+      if (!res.headersSent) return res.status(status).json({ error: error?.message || "Internal Server Error" });
+      try { res.end(); } catch { /* ignore */ }
     }
   },
 };

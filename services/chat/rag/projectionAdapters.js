@@ -13,7 +13,7 @@ function loadProjectionDependencies() {
 async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
   const { db } = loadProjectionDependencies();
   const { rows } = await db.query(`
-    SELECT m.id, m.session_id, m.role, m.content, m.created_at
+    SELECT m.id, m.session_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.created_at
     FROM chat_messages m
     JOIN chat_sessions s ON s.id = m.session_id
     WHERE m.user_id = $1 AND m.preset_id = $2 AND s.user_id = m.user_id AND s.deleted_at IS NULL
@@ -25,13 +25,33 @@ async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
 
 function buildTurns(messages, { afterMessageId = 0 } = {}) {
   const turns = [];
+  const usersById = new Map();
+  for (const message of messages) {
+    if (message.role === "user") usersById.set(Number(message.id), message);
+  }
+
+  const pairedAssistants = new Set();
+  for (const message of messages) {
+    if (message.role !== "assistant" || message.parent_user_message_id === null || message.parent_user_message_id === undefined) continue;
+    const userMessage = usersById.get(Number(message.parent_user_message_id));
+    if (!userMessage) continue;
+    if (String(message.session_id) !== String(userMessage.session_id)) continue;
+    if (message.turn_id && userMessage.turn_id && String(message.turn_id) !== String(userMessage.turn_id)) continue;
+    if (Number(message.id) > afterMessageId) turns.push({ userMessage, assistantMessage: message });
+    pairedAssistants.add(Number(message.id));
+  }
+
   let pendingUser = null;
   for (const message of messages) {
     if (message.role === "user") {
+      if (message.turn_id) {
+        pendingUser = null;
+        continue;
+      }
       pendingUser = message;
       continue;
     }
-    if (message.role !== "assistant" || !pendingUser) continue;
+    if (message.role !== "assistant" || message.turn_id || pairedAssistants.has(Number(message.id)) || !pendingUser) continue;
     if (String(message.session_id) !== String(pendingUser.session_id)) {
       pendingUser = null;
       continue;
@@ -39,7 +59,7 @@ function buildTurns(messages, { afterMessageId = 0 } = {}) {
     if (Number(message.id) > afterMessageId) turns.push({ userMessage: pendingUser, assistantMessage: message });
     pendingUser = null;
   }
-  return turns;
+  return turns.sort((left, right) => Number(left.assistantMessage.id) - Number(right.assistantMessage.id));
 }
 
 async function stageRagProjection(input, { afterMessageId = 0 } = {}) {

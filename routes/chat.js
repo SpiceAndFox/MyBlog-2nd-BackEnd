@@ -8,6 +8,7 @@ const uploadChatPresetAvatar = require("@middleware/uploadChatPresetAvatar");
 router.use(authMiddleware);
 
 router.get("/meta", chatController.getMeta);
+router.get("/privacy-operations/:operationId", chatController.getPrivacyOperation);
 
 router.get("/presets", chatController.listPresets);
 router.get("/presets/trash", chatController.listTrashedPresets);

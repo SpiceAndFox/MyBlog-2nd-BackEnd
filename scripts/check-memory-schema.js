@@ -4,6 +4,7 @@ const { Pool } = require("pg");
 require("dotenv").config({ quiet: true });
 
 const REQUIRED_COLUMNS = Object.freeze({
+  chat_messages: ["id", "session_id", "user_id", "preset_id", "role", "content", "turn_id", "parent_user_message_id", "idempotency_key", "source_generation", "created_at"],
   chat_preset_memory: ["id", "user_id", "preset_id", "memory_state", "created_at", "updated_at"],
   chat_memory_snapshots: ["id", "user_id", "preset_id", "source_generation", "revision", "schema_version", "state", "created_at"],
   chat_memory_event_groups: ["event_group_id", "user_id", "preset_id", "task_id", "target_key", "source_generation", "schema_version", "base_revision", "result_revision", "cursor_before", "cursor_after", "group_kind", "created_at"],
@@ -16,7 +17,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   chat_context_quality_diagnostics: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "diagnostic_type", "source_generation", "request_id", "target_cursor", "processed_boundary_message_id", "omitted_upper_message_id", "recent_window_start", "original_gap_count", "original_gap_chars", "retained_boundary", "retained_count", "omitted_count", "omitted_chars", "truncated", "detail", "resolved", "resolved_at", "created_at", "updated_at"],
   chat_memory_diagnostic_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_event_id", "last_error_reason", "updated_at"],
   chat_memory_recovery_notifications: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "notification_type", "boundary_message_id", "source_generation", "delivered", "delivered_at", "created_at"],
-  chat_memory_privacy_operations: ["user_id", "preset_id", "operation_id", "operation_mode", "source_generation", "boundary_message_id", "status", "last_error_reason", "created_at", "updated_at"],
+  chat_memory_privacy_operations: ["user_id", "preset_id", "operation_id", "operation_mode", "source_generation", "boundary_message_id", "operation_payload", "status", "last_error_reason", "created_at", "updated_at"],
 });
 const REQUIRED_TABLES = Object.freeze(Object.keys(REQUIRED_COLUMNS));
 const REQUIRED_INDEXES = Object.freeze([
@@ -25,6 +26,8 @@ const REQUIRED_INDEXES = Object.freeze([
   "idx_memory_tasks_recovery", "idx_memory_tasks_scope_dedupe", "idx_memory_ops_log_health", "idx_memory_ops_log_outcome",
   "idx_suppression_tombstones_lookup", "idx_context_diagnostics_active", "idx_context_diagnostics_one_active", "idx_recovery_notifications_pending",
   "idx_memory_privacy_operations_pending",
+  "idx_memory_privacy_operations_active_scope",
+  "idx_chat_messages_scope_idempotency", "idx_chat_messages_one_assistant_per_parent", "idx_chat_messages_turn_id",
 ]);
 
 function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, legacy }) {
@@ -54,6 +57,8 @@ function evaluateInspection({ tables, columns, indexes, userTimeZoneColumn, lega
     && columnMap.get("chat_context_quality_diagnostics")?.get("resolved")?.is_nullable === "NO"
     && columnMap.get("chat_context_quality_diagnostics")?.get("detail")?.data_type === "jsonb"
     && columnMap.get("chat_context_quality_diagnostics")?.get("detail")?.is_nullable === "NO"
+    && columnMap.get("chat_memory_privacy_operations")?.get("operation_payload")?.data_type === "jsonb"
+    && columnMap.get("chat_memory_privacy_operations")?.get("operation_payload")?.is_nullable === "NO"
     && columnMap.get("chat_memory_diagnostic_projection_checkpoints")?.get("processed_event_id")?.is_nullable === "NO"
     && String(columnMap.get("chat_memory_diagnostic_projection_checkpoints")?.get("processed_event_id")?.column_default ?? "").includes("0");
   const clean = missingTables.length === 0 && missingColumns.length === 0 && missingIndexes.length === 0

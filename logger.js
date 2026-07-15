@@ -23,8 +23,13 @@ const LOG_DEBUG_FILE = readStringEnv("LOG_DEBUG_FILE", "debug.log");
 const LOG_CHAT_FILE = readStringEnv("LOG_CHAT_FILE", "");
 const LOG_DEBUG_FULL_FILE = readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log");
 const LOG_DEBUG_GIST_FILE = readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log");
-const LOG_DEBUG_FULL_ENABLED = readBoolEnv("LOG_DEBUG_FULL_ENABLED", true);
-const LOG_DEBUG_GIST_ENABLED = readBoolEnv("LOG_DEBUG_GIST_ENABLED", true);
+const LOG_DEBUG_FULL_ENABLED = readBoolEnv("LOG_DEBUG_FULL_ENABLED", false);
+const LOG_DEBUG_GIST_ENABLED = readBoolEnv("LOG_DEBUG_GIST_ENABLED", false);
+
+if (String(process.env.NODE_ENV || "").trim().toLowerCase() === "production"
+  && (LOG_DEBUG_FULL_ENABLED || LOG_DEBUG_GIST_ENABLED)) {
+  throw new Error("Raw chat debug logging cannot be enabled in production");
+}
 
 function resolveLogPath(logDir, rawPath) {
   const normalized = typeof rawPath === "string" ? rawPath.trim() : "";
@@ -40,8 +45,14 @@ const levelLogFilePaths = {
   debug: resolveLogPath(logDir, LOG_DEBUG_FILE),
 };
 const chatLogFilePath = resolveLogPath(logDir, LOG_CHAT_FILE);
-const debugFullLogFilePath = LOG_DEBUG_FULL_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_FULL_FILE) : "";
-const debugGistLogFilePath = LOG_DEBUG_GIST_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_GIST_FILE) : "";
+const retainedLogPaths = new Set([...Object.values(levelLogFilePaths), chatLogFilePath].filter(Boolean));
+for (const legacyRawPath of [
+  resolveLogPath(logDir, LOG_DEBUG_FULL_FILE),
+  resolveLogPath(logDir, LOG_DEBUG_GIST_FILE),
+]) {
+  if (!legacyRawPath || retainedLogPaths.has(legacyRawPath)) continue;
+  try { fs.rmSync(legacyRawPath, { force: true }); } catch { /* best-effort startup cleanup */ }
+}
 
 if (LOG_TO_FILE) {
   fs.mkdirSync(logDir, { recursive: true });
@@ -172,8 +183,6 @@ const logger = {
     logCustom("chat", message, meta, { filePath: chatLogFilePath, consoleLevel: "info" });
   },
   debug: (message, meta) => log("debug", message, meta),
-  debugFull: (message, meta) => logCustom("debug_full", message, meta, { filePath: debugFullLogFilePath }),
-  debugGist: (message, meta) => logCustom("debug_gist", message, meta, { filePath: debugGistLogFilePath }),
 };
 
 function withRequestContext(req, meta = {}) {

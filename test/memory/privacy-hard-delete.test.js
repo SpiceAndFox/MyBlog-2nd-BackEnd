@@ -20,8 +20,12 @@ test("privacy hard delete does not force-drain while any external store still re
   const stores = [{ name: "rag", async purge() { calls.push("rag-purge"); }, async verifyPurged() { return false; } }];
   const hardDelete = createPrivacyHardDelete({ repositories, sourceRebuild, stores });
   const result = await hardDelete.execute(7, "companion", { async deleteRawSource() { calls.push("raw-delete"); } });
-  assert.equal(result.status, "incomplete");
-  assert.deepEqual(calls, ["raw-delete", "rag-purge", "memory-purge"]);
+  assert.equal(result.status, "purging");
+  assert.equal(result.rawMutationCommitted, true);
+  assert.deepEqual(calls, ["raw-delete", "memory-purge"]);
+  const continued = await hardDelete.continueOperation(7, "companion", operation, { repurge: true });
+  assert.equal(continued.status, "incomplete");
+  assert.deepEqual(calls, ["raw-delete", "memory-purge", "rag-purge"]);
+  assert.equal(calls.includes("drain"), false);
   assert.equal(operation.status, "purging");
 });
-
