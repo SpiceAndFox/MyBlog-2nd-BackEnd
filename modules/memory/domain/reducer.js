@@ -1,5 +1,9 @@
 const crypto = require("node:crypto");
-const { TARGETS } = require("../contracts/constants");
+const {
+  TARGETS,
+  TYPED_PROFILE_SECTIONS,
+  PROFILE_PATTERN_MIN_DISTINCT_MESSAGES,
+} = require("../contracts/constants");
 const { assertMemoryState } = require("../contracts/state");
 const { validatePatch } = require("../contracts/proposal");
 const { validateEvidenceRefs } = require("./evidence");
@@ -12,7 +16,6 @@ const {
   mergedProfileMetadata,
 } = require("./profileMetadata");
 const { findDeterministicDuplicate } = require("./itemDeduplication");
-const { TYPED_PROFILE_SECTIONS } = require("../contracts/constants");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target]))
@@ -230,7 +233,7 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
         }
         if (TYPED_PROFILE_SECTIONS.includes(section) && ["addItem", "updateItem"].includes(patch.op)
             && patch.value.factBasis === "observedPattern"
-            && new Set(refs.map((ref) => ref.messageId)).size < 2) {
+            && new Set(refs.map((ref) => ref.messageId)).size < PROFILE_PATTERN_MIN_DISTINCT_MESSAGES) {
           events.push(rejected(section, patch, patchId, "insufficient_pattern_evidence"));
           continue;
         }

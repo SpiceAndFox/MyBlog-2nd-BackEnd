@@ -44,24 +44,14 @@ test("each prompt requires tickId copy", async () => {
   }
 });
 
-test("each prompt contains golden examples (正例) and negative examples (反例)", async () => {
+test("each prompt contains at least one compact decision-boundary example", async () => {
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
-    const isCurrentState = proposer === "currentStateProposer";
-    // currentStateProposer uses "判断示例" section with narrative style that predates the 正例/反例 convention
-    if (isCurrentState) {
-      assert.match(prompt, /判断示例|应当 noop|应当 unable_to_decide/, `${proposer} must contain judgment examples`);
-    } else {
-      // New prompts use ✅/❌, old prompts use 正例/反例 — accept either
-      const hasGolden = /正例/.test(prompt) || /✅/.test(prompt);
-      const hasNegative = /反例/.test(prompt) || /❌/.test(prompt);
-      assert.ok(hasGolden, `${proposer} must contain golden examples (正例 or ✅)`);
-      assert.ok(hasNegative, `${proposer} must contain negative examples (反例 or ❌)`);
-      const positiveMatches = (prompt.match(/✅/g) || []).length;
-      const negativeMatches = (prompt.match(/❌/g) || []).length;
-      assert.ok(positiveMatches >= 3, `${proposer} must have at least 3 positive examples (found ${positiveMatches})`);
-      assert.ok(negativeMatches >= 5, `${proposer} must have at least 5 negative examples (found ${negativeMatches})`);
-    }
+    assert.match(
+      prompt,
+      /判断示例|泛化校准|正例|反例|✅|❌|应当 noop|应当 unable_to_decide/,
+      `${proposer} must contain a decision-boundary example`,
+    );
   }
 });
 
@@ -102,6 +92,39 @@ test("agreement prompt distinguishes explicit long-term commitments from emotion
   assert.match(prompt, /单纯抒情|情绪化宣誓/);
 });
 
+test("episode prompt clusters coherent interaction arcs instead of producing a turn log", async () => {
+  const prompt = await loadProposerPrompt("episodeProposer");
+  assert.match(prompt, /不是逐轮摘要器.*聊天日志.*动作时间线/s);
+  assert.match(prompt, /一个完整互动弧最多形成一个 recentEpisodes item/);
+  assert.match(prompt, /同一互动弧有新进展.*updateItem \+ recent_episode/s);
+  assert.match(prompt, /recentEpisodes.*硬上限为 3 个/s);
+  assert.match(prompt, /连续消息聚合为互动弧|按场景、主题、目标与因果连续性聚合/);
+  assert.match(prompt, /不默认双写/);
+  assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
+});
+
+test("profile prompt requires durable facts and cross-episode pattern evidence", async () => {
+  const prompt = await loadProposerPrompt("profileRelationshipProposer");
+  assert.match(prompt, /至少三条不同消息.*至少两个独立互动片段/s);
+  assert.match(prompt, /explicit.*当下动作.*不是 explicit 长期事实/s);
+  assert.match(prompt, /一次行为不能推出技能、人格、动机或关系模式/);
+  assert.match(prompt, /相邻.*提议→回应.*一个互动片段/s);
+  assert.match(prompt, /证据不足.*输出.*noop.*不要输出.*unable_to_decide/s);
+});
+
+test("reflective prompts stay compact and contain no Alice-session fixture details", async () => {
+  const budgets = {
+    episodeProposer: 4_000,
+    profileRelationshipProposer: 5_000,
+  };
+  const fixtureTerms = /草莓大福|西湖|饼干盒|三明治|爱心煎蛋|滑板|怕虫|摩托车|门口道别|深夜回家/;
+  for (const [proposer, maxChars] of Object.entries(budgets)) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.ok(prompt.length <= maxChars, `${proposer} exceeds compact prompt budget (${prompt.length} > ${maxChars})`);
+    assert.doesNotMatch(prompt, fixtureTerms, `${proposer} must not contain production-session examples`);
+  }
+});
+
 test("single-section prompts express exclusions only as local noop decisions", async () => {
   const todo = await loadProposerPrompt("todoProposer");
   const agreement = await loadProposerPrompt("agreementProposer");
@@ -132,12 +155,11 @@ test("each prompt has section × op × evidenceKind mapping", async () => {
   }
 });
 
-test("each prompt has output shape examples", async () => {
+test("each prompt names the schema-owned output container", async () => {
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
-    // Should contain JSON output examples with sectionResults
-    assert.match(prompt, /"sectionResults"/, `${proposer} must show output shape with sectionResults`);
-    assert.match(prompt, /"proposer"/, `${proposer} must show output shape with proposer field`);
+    assert.match(prompt, /sectionResults/, `${proposer} must name sectionResults`);
+    assert.match(prompt, /proposer/i, `${proposer} must name proposer`);
   }
 });
 

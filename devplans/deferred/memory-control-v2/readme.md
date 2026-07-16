@@ -10,6 +10,7 @@
 - [容量降级策略](capacity-degradation.md)：compaction 失败后的自动降级方案，当前临时使用 halt + 手动调容量。
 - [总 Context 预算](total-context-budget.md)：基于 provider/model 最大输入的统一最终裁剪优先级和降级顺序。
 - [GapBridge 与 RAG 内容重叠](gap-bridge-rag-overlap.md)：GapBridge 完整原文与 RAG 片段召回的内容去重策略。
+- [Proposer 独立 Few-shot Golden Messages](proposer-few-shot-golden-messages.md)：把合成 golden 作为独立 user/assistant 消息注入运行时；需先通过跨主题 A/B，并按 provider 原生 structured-output 协议编译。
 - [运行时维护与长历史扩展](runtime-retention-and-history-scaling.md)：Retention 未调度/投影门不一致、全历史热路径、单 item 容量死路、context capability 与 migration 工具加固。
 - [toSend](toSend.md)：如果你是LLM，你不要阅读这个文件，这里面只记录了我的一些杂想，不是明确的系统设计
 

@@ -87,7 +87,7 @@ Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory
 - `assistantProfile.facet`：`identity | personaTrait | communicationStyle | behavioralTendency | value | limitation`；canonicalKey：`identity | persona | communicationTone | responseFormat | followUpQuestions | roleplayIdentity | emotionalStance | value | limitation | open`；multi-value key：`persona | value | open`。
 - `relationship.facet`：`status | address | trust | interactionPattern | sharedBoundary`；canonicalKey：`relationshipStatus | userToAssistantAddress | assistantToUserAddress | trust | roleStructure | interactionPattern | sharedBoundary | open`；multi-value key：`interactionPattern | open`。
 
-`factBasis=explicit` 表示消息直接陈述长期事实；`factBasis=observedPattern` 表示从窗口内可观察行为归纳稳定模式。Reducer 对后者强制要求至少 2 条来自不同 messageId 的 evidenceRefs，且仍必须至少一条 evidence 来自本轮 new batch。临时对话目标、当前态度、单次角色动作、一次性情绪不得伪装为 profile facet。
+`factBasis=explicit` 表示消息直接陈述跨场景持续成立的长期事实，不是“只要消息明说了某个当下动作就算 explicit”；`factBasis=observedPattern` 表示从窗口内可观察行为归纳稳定模式。Reducer 对后者强制要求至少 3 条来自不同 messageId 的 evidenceRefs，且仍必须至少一条 evidence 来自本轮 new batch。Prompt 还必须要求这些证据覆盖至少两个独立互动片段，而不是同一问答或同一微事件里的相邻台词；片段独立性属于语义约束，由 Proposer 判断。临时对话目标、当前态度、单次角色动作、一次性情绪不得伪装为 profile facet。
 
 `evidenceGroups` 是权威 state 中 item 的证据结构。每个 group 携带自己的 `evidenceKind` + `refs`，是一个可审计、可 recall 的证据单元；group 内多个 ref 共同支撑该单元。普通 add/update item patch 输出 `{ messageId, quote }` 形式的 `evidenceRefs`；Reducer 校验数据库消息后，为每个持久化 ref 补入当时已校验的 `contentHash`，再将其与 `patch.evidenceKind` 包装成新的 `evidenceGroup` 追加到 item。`forgetItem` 的新 evidence 只证明 forget 指令，不追加到已移除 item；`mergeItems` 不接收 Proposer 输出的 `evidenceRefs`，Reducer 从 source items 继承 `evidenceGroups`，各 group 保留各自 evidenceKind。持久化的 `messageId + contentHash` 也是 correction/forget 生成 context-suppression tombstone 的确定性 source key。
 

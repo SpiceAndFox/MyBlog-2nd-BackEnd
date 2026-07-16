@@ -32,16 +32,18 @@ Source rebuild、一次性迁移和服务器维护排查不受普通 `lagThresho
 
 Observer 将 eligible targets 列为 `eligibleTasks`，每个 normal target 对应一个 task 和一个专用 Proposer。只有目标 section 出现在该 Proposer 的输入和输出契约中；非目标 section 不出现在 `sectionResults` 中。目标 section 是否实际变化，由对应 Proposer 读取 envelope 后输出 patch 或 noop，Observer 不预判。
 
-触发与上下文窗口建议（可调）：
+触发与上下文窗口建议（可调，数量单位均为 raw User/Assistant message；一次常见问答通常占 2 条）：
 
 | targetKey | lagThreshold | contextWindow | 理由 |
 | --- | --- | --- | --- |
-| `scene` | 4 | 8 | 场景变化高频，及时捕捉；保留有限 overlap 以消解当前状态指代，避免旧场景干扰 |
-| `todos` | 6 | 24 | 待办中频；较大窗口用于判断跨轮确认、完成与取消 |
-| `standingAgreements` | 8 | 24 | 持续约定中低频；较大窗口用于判断跨轮修订与取消 |
-| `episodes` | 10 | 32 | 近期经历中频；覆盖较完整的事件发展过程 |
-| `profileRelationship` | 12 | 48 | 长期档案低频；较大窗口用于稳定行为与 AssistantProfile 判断，同时由 new-batch evidence gate 抑制 overlap 重提取 |
-| `worldFacts` | 8 | 32 | 世界设定低频；覆盖多轮叙事逐步确立的背景事实 |
+| `scene` | 4 | 16 | 场景变化高频，及时捕捉；额外 overlap 用于消解地点、时间和动作指代 |
+| `todos` | 8 | 48 | 待办中频；覆盖提出、确认、执行和完成的完整短链路，同时避免每个问答都调用 |
+| `standingAgreements` | 16 | 64 | 持续约定低频；先观察承诺是否真正形成、修订或取消，避免把即时客套写成长期约定 |
+| `episodes` | 32 | 96 | 近期经历属于后台反思；用较大 new batch 聚合同一互动弧，用 64 条 overlap 跨批次延续事件而不是逐轮切片 |
+| `profileRelationship` | 32 | 128 | 长期档案属于低频巩固；用 96 条 overlap 判断跨片段稳定模式，同时由 new-batch evidence gate 抑制 overlap 重提取 |
+| `worldFacts` | 16 | 96 | 世界设定低频；覆盖多轮叙事逐步确立、修正或撤销的背景事实 |
+
+`scene` / `todos` 是需要较快落地的工作状态；`episodes` / `profileRelationship` 是需要先积累再归纳的反思状态。不要为了让所有 target 使用整齐的相同数值而牺牲这一区别。扩大 `contextWindow` 只增加 overlap，不改变 cursor 的 new batch 边界；扩大 `lagThreshold` 同时降低调用频率并增加单次 new batch，因此必须配合对应 Proposer 的事件聚类和长期性门槛。
 
 ## 3. Cursor 推进
 

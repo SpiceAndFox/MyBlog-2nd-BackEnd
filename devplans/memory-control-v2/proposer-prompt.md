@@ -34,7 +34,7 @@ schema 作者注意：
 
 ### 2.2 Prompt 设计原则
 
-每个 `prompts/memory/*.md` 是独立、自包含的 prompt 文件，只包含本 Proposer 目标 section 相关的原则、evidenceKind 子集（[state-contract.md](state-contract.md) §3.1）、op 速查（§3）和 golden example（§4）。不同 Proposer 的 prompt 之间允许重复共享原则。
+每个 `prompts/memory/*.md` 是独立、自包含且有长度预算的 system prompt，只保留本 Proposer 的任务边界、schema 无法表达的语义规则、evidenceKind 子集和必要的判定校准。输出字段与枚举由 strict schema 负责，prompt 不复制完整 JSON 输出样例。校准例必须是合成、领域中性且最小化的边界对照；不得复制真实用户、preset 或当前调试会话中的人物、地点、物品和事件。大量正反例应留在 Harness 评测集，而不是塞进生产 prompt。
 
 以下原则按主题分组。各 prompt 文件按 §2.3 的组成表提取相关条目。
 
@@ -139,18 +139,25 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 
 #### episodeProposer（recentEpisodes, milestones）
 
-- milestones 位于长期区，只记录关系或剧情关键转折，日常琐事不要写入。
+- `recentEpisodes` 是少量高显著度“事件簇”，不是逐轮摘要、聊天日志或动作时间线。先按同一场景/主题/目标/因果连续性把 observedMessages 聚成互动弧，再为一个完整互动弧最多写一条；同一互动弧跨 batch 延续时优先 `updateItem + recent_episode`，不得为每个新动作另建 item。
+- 单个 task 的 recentEpisodes 通常为 0–2 个 patch，最多 3 个；批次在事件中途结束且尚无稳定结果、重要未决问题或未来延续价值时应 noop，不创建“进行中”流水账。
+- `value.text` 只保留事件、结果/未决问题及关系意义，省略不改变结果的过渡动作、表情和感官细节。重复日常互动与临时安排本身不构成 episode。
+- milestones 位于长期区，只记录明确改变关系身份、信任/边界基线或主剧情状态的关键转折。一次温馨互动或普通日常承诺即使情绪强烈也不是 milestone。
+- milestone 与 recentEpisode 不默认双写；只有同一证据同时产生独立的近期延续价值和长期基线变化时才分别记录。
 
 #### profileRelationshipProposer（userProfile, assistantProfile, relationship）
 
 - `userProfile`、`assistantProfile`、`relationship` 接受长期事实（含 assistant 设定人格和行为推断的人格特征），临时剧情、一次性情绪不要写入。
 - 每个 add/update value 必须包含 `text + facet + canonicalKey + factBasis`。facet/canonicalKey 使用 [状态契约](state-contract.md) §2 的 section 专属枚举；同 section 的非 multi-value canonicalKey 已存在时只能 update/noop，不能再次 add。
-- 每个 patch 至少一条 evidenceRef 必须来自 new batch；overlap 只用于补充证据和指代消解。`factBasis=observedPattern` 至少引用 2 个不同 messageId，直接陈述使用 `explicit`。
+- 每个 patch 至少一条 evidenceRef 必须来自 new batch；overlap 只用于补充证据和指代消解。`factBasis=observedPattern` 至少引用 3 个不同 messageId，并覆盖至少两个独立互动片段；直接陈述使用 `explicit`。
 - User 与 Assistant 的真实消息都可以用 `long_term_fact` 支持三个 section 的新增；不要按 role 把任一方限制为只能维护 userProfile 或 assistantProfile。
 - 三个正式 section 分别输出自己的 `sectionResults`，patch 不使用 `path`。
 - 已有 item 的改写接受 user_correction 或 assistant_correction，两者权限相同。
 - 明确要求忘记已有 item 时输出 `forgetItem`，并按真实发言方使用 `user_forget` 或 `assistant_forget`；只引用 writableState 中的 itemId，不复述被忘记内容到 value。
-- 行为推断使用 long_term_fact，只在窗口内有清晰、显著的行为模式时才输出，一次性动作不构成 trait。assistantProfile 只记录被明确赋予或稳定形成的身份、人格、价值和行为特征，不把一次模型错误或用户要求修复的坏习惯固化为 Assistant 人格。
+- `factBasis=explicit` 只用于消息直接断言身份、稳定偏好/边界、长期能力或关系状态；“明确说出一次当下动作/感受”仍是一次性事件，不能借 explicit 绕过长期性门槛。
+- 行为推断使用 long_term_fact，只在窗口内有清晰、显著且跨独立片段复现的行为模式时才输出，一次性动作不构成 trait。相邻的提议→回应、问题→回答或同一场景的多个动作只算一个片段。证据数量不足以达到模式门槛时应 `noop`，而不是 `unable_to_decide`。
+- assistantProfile 只记录被明确赋予或稳定形成的身份、人格、价值、能力和行为特征；一次活动或即时情绪反应不能推出技能或人格，也不能把一次模型错误或用户要求修复的坏习惯固化为 Assistant 人格。
+- relationship 只记录明确关系身份/称呼/共同边界，或跨独立片段重复成立的互动结构；单次照顾、临时安排或亲昵回应不是持续关系模式。
 
 #### worldFactProposer（worldFacts）
 
@@ -183,6 +190,8 @@ value.text 客观记录事件本质、双方意愿、关系变化，不写感官
 ### 2.5 User Prompt
 
 将 [state-contract.md](state-contract.md) §5.1 / §5.2 中对应 Proposer 的 task envelope JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
+
+默认调用保持 `system instructions + 当前 task envelope user message`，不注入独立 user/assistant few-shot 对。few-shot 不是结构化输出的必需条件：输出形状由 strict schema/tool 约束，语义边界优先由短规则、Reducer 和 Harness 固化。独立 golden messages 的候选结构、A/B 指标和移出延期条件统一记录在 [Proposer 独立 Few-shot Golden Messages（延后）](../deferred/memory-control-v2/proposer-few-shot-golden-messages.md)，当前主设计不预实现传输接口。
 
 ## 3. Per-Proposer op→field 必填速查表
 
@@ -254,9 +263,9 @@ patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `re
 
 `evidenceKind` 只能是 `memory_compaction`。compactionProposer 输出状态为 `patches | unable_to_compact`。Reducer 根据 itemIds 从 source items 继承 evidenceGroups。
 
-## 4. Golden Examples
+## 4. Harness Evaluation Examples
 
-Golden Example 约束 schema 无法表达的东西：text/value 的高密度质量、quote 选取标准、op 选择边界、evidenceKind 判定。每个 `prompts/memory/*.md` 应包含对应 Proposer 的 golden + negative example。本节给出跨 Proposer 的参考集，prompt 作者可据此扩充。
+本节样例用于 Harness 与人工评审，约束 schema 无法表达的 text/value 质量、quote 选取、op 边界和 evidenceKind 判定。它们不是必须逐条复制进生产 system prompt；生产 prompt 只保留少量合成、领域中性的边界校准。
 
 ### 4.1 currentStateProposer
 

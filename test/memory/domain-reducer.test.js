@@ -281,9 +281,10 @@ test("typed profile add rejects exact text and canonical-key duplicates", () => 
   }
 });
 
-test("observed profile patterns require two messages and persist typed metadata", () => {
+test("observed profile patterns require three messages and persist typed metadata", () => {
   const first = message(1, "user", "这个问题请认真回答");
   const second = message(2, "user", "我希望技术问题保持严肃");
+  const third = message(3, "user", "技术细节还是请严谨一点");
   const patch = {
     op: "addItem",
     value: { text: "偏好: 技术讨论保持严肃", facet: "communicationBoundary", canonicalKey: "topicSeriousness", factBasis: "observedPattern" },
@@ -291,16 +292,20 @@ test("observed profile patterns require two messages and persist typed metadata"
   };
   const run = (evidenceRefs) => reduceProposal({
     state: createInitialMemoryState(),
-    task: task("profileRelationship", { cursorBefore: 1, observedMessageIds: [1, 2] }),
-    observedMessages: [observed(first), observed(second)], databaseMessages: [first, second], config,
+    task: task("profileRelationship", { cursorBefore: 2, targetMessageId: 3, observedMessageIds: [1, 2, 3] }),
+    observedMessages: [observed(first), observed(second), observed(third)], databaseMessages: [first, second, third], config,
     proposal: profileProposal({ status: "patches", patches: [{ ...patch, evidenceRefs }] }),
     idFactory: sequence("patch", "item"),
   });
-  const rejected = run([{ messageId: 2, quote: "技术问题保持严肃" }]);
+  const rejected = run([
+    { messageId: 1, quote: "问题请认真回答" },
+    { messageId: 3, quote: "技术细节还是请严谨一点" },
+  ]);
   assert.equal(rejected.events[0].rejectReason, "insufficient_pattern_evidence");
   const accepted = run([
     { messageId: 1, quote: "问题请认真回答" },
     { messageId: 2, quote: "技术问题保持严肃" },
+    { messageId: 3, quote: "技术细节还是请严谨一点" },
   ]);
   assert.equal(accepted.events[0].decision, "accepted");
   assert.deepEqual(

@@ -29,6 +29,7 @@ const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));
 const TYPED_PROFILE_SECTIONS = Object.freeze(["userProfile", "assistantProfile", "relationship"]);
 const PROFILE_FACT_BASES = Object.freeze(["explicit", "observedPattern"]);
+const PROFILE_PATTERN_MIN_DISTINCT_MESSAGES = 3;
 const PROFILE_FACETS = Object.freeze({
   userProfile: Object.freeze(["identity", "background", "preference", "communicationBoundary", "communicationStyle", "interactionPattern", "interest"]),
   assistantProfile: Object.freeze(["identity", "personaTrait", "communicationStyle", "behavioralTendency", "value", "limitation"]),
@@ -131,6 +132,7 @@ module.exports = {
   ITEM_SECTIONS,
   TYPED_PROFILE_SECTIONS,
   PROFILE_FACT_BASES,
+  PROFILE_PATTERN_MIN_DISTINCT_MESSAGES,
   PROFILE_FACETS,
   PROFILE_CANONICAL_KEYS,
   MULTI_VALUE_PROFILE_KEYS,

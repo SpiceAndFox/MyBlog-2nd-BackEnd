@@ -282,7 +282,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 缺少 target section 或包含非 target section 属于 `output_schema_invalid`，本 task 的 target cursor 不推进；其它 target 不受影响。
 - `episodeProposer` 的 `recentEpisodes` 与 `milestones` 共享 `episodes` cursor：一个 section accepted/noop、另一个 `unable_to_decide` 时整个 target 不推进；两者都形成可推进终局后只推进一次。
 - `profileRelationshipProposer` 的 `userProfile`、`assistantProfile`、`relationship` 三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 只推进独立的 `worldFacts` cursor。event 的 `section` 记录实际正式 section，`target_key` 记录共享 cursor 归属。
-- profile/relationship add/update 缺少 facet/canonicalKey/factBasis 时 schema 拒绝；`observedPattern` 少于 2 个不同 messageId 时 Reducer 以 `insufficient_pattern_evidence` 拒绝；全部 evidence 只来自 overlap 时以 `overlap_only_evidence` 拒绝。
+- profile/relationship add/update 缺少 facet/canonicalKey/factBasis 时 schema 拒绝；`observedPattern` 少于 3 个不同 messageId 时 Reducer 以 `insufficient_pattern_evidence` 拒绝；全部 evidence 只来自 overlap 时以 `overlap_only_evidence` 拒绝。
 - 同 section Unicode 规范化 text 完全相同的 add/update 以 `duplicate_item` 拒绝；非 multi-value canonicalKey 冲突以 `duplicate_profile_key` 拒绝，multi-value/open key 仍允许不同 text 的多值项。
 - maintenance task 的 `targetKey` 仅关联来源 normal target；它不携带 `cursorBefore`，不读取或推进 raw-message cursor，也不拥有独立 `targetCursors` key。它完成后仍由被阻塞的原 normal target 决定 cursor。
 - ops_log 的 `task_id/target_key` 必填；可明确归属某个 `sectionResults` 的 outcome 填对应正式 section。task 级 outcome 的 `section` 必须为 null，且不得用 targetKey 代填。
@@ -344,7 +344,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
 - 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
 - 指标断言至少验证 per-target calls 与 observed-message 总数（calls/message 由两者相除）、eligible、tokens/latency，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration；指标使用稳定标签且不含原始消息正文等高基数字段。货币费用不进入 Memory 指标或报告，由 Provider 官方余额变化评估。
-- 配置测试证明 capacity、scene/overdue、六组 lagThreshold/contextWindow（`scene=4/8`、`todos=6/24`、`standingAgreements=8/24`、`episodes=10/32`、`profileRelationship=12/48`、`worldFacts=8/32`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
+- 配置测试证明 capacity、scene/overdue、六组 lagThreshold/contextWindow（`scene=4/16`、`todos=8/48`、`standingAgreements=16/64`、`episodes=32/96`、`profileRelationship=32/128`、`worldFacts=16/96`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
 
 ### 3.8 Renderer 稳定性（渲染回归基线）
 
@@ -412,7 +412,8 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - recentEpisodes 超窗口 -> 最旧 item 确定性滚出并写 cleanup event，不触发 compaction。
 - 新增 standing agreement -> 修订 agreement -> 取消 agreement -> render 不再显示已取消约定。
 - 明确长期事实 -> 对应长期 section 新增；临时情绪 -> 不进入长期 sections。
-- 行为推断的长期特征 -> profile/relationship 新增（`long_term_fact`）；一次性动作不写入，worldFacts 不使用行为 trait 推断。
+- 行为推断的长期特征只有在至少 3 个不同 messageId 且覆盖至少两个独立互动片段时才允许 profile/relationship 新增（`long_term_fact`）；Reducer 确定性校验证据数量，Prompt 负责判断片段独立性。一次性动作、同一微事件内的相邻台词不写入，worldFacts 不使用行为 trait 推断。
+- Episode Prompt 质量测试固定要求：先聚合同一互动弧、同一弧跨 batch 优先 update、单 task 最多 3 个 recentEpisodes patch、日常微动作 noop、milestone 不默认与 recentEpisode 双写。以“深夜回家→折返取物→道别→约定次日早餐”为反例时，不得拆成逐动作 item。
 - assistant 修正已有长期 item -> `updateItem + assistant_correction` 接受（四个长期 sections 均可）。
 - 多次更新/合并后的长期 item -> 明确 forget -> active state 原子移除并按完整 evidenceGroups suppress；随后 rebuild/RAG/Recall 均不恢复旧 source。
 - 长期 item correction -> active state 只显示新值，旧 source 从 RAG/Recall 排除，新 correction message 可正常召回。

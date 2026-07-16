@@ -16,12 +16,12 @@ function validEnv() {
     env[`CHAT_MEMORY_V2_${section}_MAX_RENDERED_CHARS`] = "2000";
   }
   const targets = {
-    SCENE: [4, 8],
-    TODOS: [6, 24],
-    STANDING_AGREEMENTS: [8, 24],
-    EPISODES: [10, 32],
-    PROFILE_RELATIONSHIP: [12, 48],
-    WORLD_FACTS: [8, 32],
+    SCENE: [4, 16],
+    TODOS: [8, 48],
+    STANDING_AGREEMENTS: [16, 64],
+    EPISODES: [32, 96],
+    PROFILE_RELATIONSHIP: [32, 128],
+    WORLD_FACTS: [16, 96],
   };
   for (const [target, [lagThreshold, contextWindow]] of Object.entries(targets)) {
     env[`CHAT_MEMORY_V2_${target}_LAG_THRESHOLD`] = String(lagThreshold);
@@ -54,12 +54,12 @@ test("v2 config requires an explicit structured-output adapter", () => {
   assert.equal(config.provider.model, "structured-model");
   assert.equal(config.provider.adapter, "openai-json-schema");
   assert.deepEqual(config.targets, {
-    scene: { lagThreshold: 4, contextWindow: 8 },
-    todos: { lagThreshold: 6, contextWindow: 24 },
-    standingAgreements: { lagThreshold: 8, contextWindow: 24 },
-    episodes: { lagThreshold: 10, contextWindow: 32 },
-    profileRelationship: { lagThreshold: 12, contextWindow: 48 },
-    worldFacts: { lagThreshold: 8, contextWindow: 32 },
+    scene: { lagThreshold: 4, contextWindow: 16 },
+    todos: { lagThreshold: 8, contextWindow: 48 },
+    standingAgreements: { lagThreshold: 16, contextWindow: 64 },
+    episodes: { lagThreshold: 32, contextWindow: 96 },
+    profileRelationship: { lagThreshold: 32, contextWindow: 128 },
+    worldFacts: { lagThreshold: 16, contextWindow: 96 },
   });
   assert.deepEqual(config.hygiene, { highWatermarkPercent: 70, minItemDelta: 5 });
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "prompt-and-parse";
