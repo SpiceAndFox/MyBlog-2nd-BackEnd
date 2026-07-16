@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-const REPORT_FORMAT_VERSION = 2;
+const REPORT_FORMAT_VERSION = 3;
 
 function sha256(value) {
   return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
@@ -77,21 +77,7 @@ function buildSchemaFingerprint(rootDir) {
   return { sha256: sha256(stableJson(files)), files };
 }
 
-function loadPricingFile(filePath) {
-  if (!filePath) return { pricing: null, evidence: null };
-  const resolved = path.resolve(filePath);
-  const content = fs.readFileSync(resolved, "utf8");
-  const pricing = JSON.parse(content);
-  return {
-    pricing,
-    evidence: {
-      fileName: path.basename(resolved),
-      sha256: sha256(content),
-    },
-  };
-}
-
-function buildMigrationEvidence({ rootDir, memoryConfig, ragConfig = null, pricingEvidence = null } = {}) {
+function buildMigrationEvidence({ rootDir, memoryConfig, ragConfig = null } = {}) {
   const sanitizedConfig = sanitizeConfig({ memory: memoryConfig, rag: ragConfig });
   return {
     reportFormatVersion: REPORT_FORMAT_VERSION,
@@ -101,7 +87,6 @@ function buildMigrationEvidence({ rootDir, memoryConfig, ragConfig = null, prici
       sha256: sha256(stableJson(sanitizedConfig)),
       values: sanitizedConfig,
     },
-    pricing: pricingEvidence,
   };
 }
 
@@ -110,7 +95,6 @@ module.exports = {
   buildMigrationEvidence,
   buildCodeFingerprint,
   buildSchemaFingerprint,
-  loadPricingFile,
   sanitizeConfig,
   sha256,
   stableJson,

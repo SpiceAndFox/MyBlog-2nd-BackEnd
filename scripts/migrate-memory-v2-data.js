@@ -53,7 +53,6 @@ function resolveOptions(args) {
     apply: args.apply === true,
     serviceStopped: args["service-stopped"] === true || args.serviceStopped === true,
     reportPath: typeof args.report === "string" && args.report.trim() ? path.resolve(args.report.trim()) : null,
-    pricingPath: typeof args.pricing === "string" && args.pricing.trim() ? path.resolve(args.pricing.trim()) : null,
   };
 }
 
@@ -61,8 +60,8 @@ function printUsage() {
   process.stdout.write([
     "Usage:",
     "  npm run migrate:memory-v2-data -- --mode inventory [--user <id> --preset <id>]",
-    "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--pricing <versioned-pricing.json>] [--user <id> --preset <id>]",
-    "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--pricing <versioned-pricing.json>] [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--user <id> --preset <id>]",
+    "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--user <id> --preset <id>]",
     "",
     "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG and write authority data; query-time Recall inherits the RAG cutoff.",
     "Run rehearsal only against a production-history copy. Cutover requires the public service to be stopped.",
@@ -112,7 +111,6 @@ function enforceEvidenceGate(report, evidence) {
   if (!evidence?.schema?.sha256 || !evidence?.schema?.files?.length) issues.push("schema_fingerprint_unavailable");
   if (!evidence?.config?.sha256) issues.push("config_fingerprint_unavailable");
   if (!report.providerUsage?.tokenUsageCoverageComplete) issues.push("provider_token_usage_incomplete");
-  if (!report.providerUsage?.costCoverageComplete) issues.push("provider_cost_coverage_incomplete");
   if (!report.providerUsage?.retryClassificationCoverageComplete) issues.push("provider_retry_classification_incomplete");
   if (!report.sourceInventory?.before?.contentFingerprintCoverageComplete
     || !report.sourceInventory?.after?.contentFingerprintCoverageComplete) issues.push("source_content_fingerprint_incomplete");
@@ -135,16 +133,13 @@ async function main(argv = process.argv.slice(2)) {
   }
   const options = resolveOptions(args);
   const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
-  const { pricing, evidence: pricingEvidence } = memory.loadPricingFile(options.pricingPath);
   const providerTelemetry = memory.createMigrationProviderTelemetry({
-    pricing,
     expectedModel: config.provider.model,
   });
   const evidence = memory.buildMigrationEvidence({
     rootDir: path.join(__dirname, ".."),
     memoryConfig: config,
     ragConfig: require("../config").chatRagConfig,
-    pricingEvidence,
   });
   const migration = createMigration(config, providerTelemetry);
   const inventory = withCallEstimates(await migration.inventory(options.scopes), config);

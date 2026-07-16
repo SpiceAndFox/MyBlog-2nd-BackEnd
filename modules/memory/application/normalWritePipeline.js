@@ -208,10 +208,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       metrics?.observe("memory_provider_calls_per_message", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, 1 / Math.max(1, envelope.observedMessages.length));
       const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
       const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
-      const providerCost = Number(result.usage?.cost_usd ?? result.usage?.cost ?? result.costUsd ?? result.cost);
       if (Number.isFinite(inputTokens)) metrics?.observe("memory_provider_input_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, inputTokens);
       if (Number.isFinite(outputTokens)) metrics?.observe("memory_provider_output_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, outputTokens);
-      if (Number.isFinite(providerCost) && providerCost >= 0) metrics?.observe("memory_provider_cost_usd", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, providerCost);
       if (result.status !== "error") {
         const validation = validateProposerOutput(result.output, envelope.task);
         if (!validation.ok) result = { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validation.errors } };

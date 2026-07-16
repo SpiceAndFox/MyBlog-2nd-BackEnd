@@ -4,42 +4,6 @@ function finiteNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
-function roundUsd(value) {
-  return Math.round(value * 1_000_000_000) / 1_000_000_000;
-}
-
-function normalizePricing(pricing, expectedModel) {
-  if (!pricing) return null;
-  const requiredString = (name) => {
-    const value = String(pricing[name] ?? "").trim();
-    if (!value) throw new Error(`Migration pricing ${name} is required`);
-    return value;
-  };
-  const requiredRate = (name) => {
-    const value = finiteNumber(pricing[name]);
-    if (value === null) throw new Error(`Migration pricing ${name} must be a non-negative number`);
-    return value;
-  };
-  const normalized = Object.freeze({
-    version: requiredString("version"),
-    source: requiredString("source"),
-    effectiveAt: requiredString("effectiveAt"),
-    currency: requiredString("currency").toUpperCase(),
-    model: requiredString("model"),
-    inputUsdPerMillionTokens: requiredRate("inputUsdPerMillionTokens"),
-    cachedInputUsdPerMillionTokens: requiredRate("cachedInputUsdPerMillionTokens"),
-    outputUsdPerMillionTokens: requiredRate("outputUsdPerMillionTokens"),
-  });
-  if (normalized.currency !== "USD") throw new Error("Migration pricing currency must be USD");
-  if (expectedModel && normalized.model !== expectedModel) {
-    throw new Error(`Migration pricing model ${normalized.model} does not match configured model ${expectedModel}`);
-  }
-  if (!Number.isFinite(Date.parse(normalized.effectiveAt))) {
-    throw new Error("Migration pricing effectiveAt must be an ISO-compatible timestamp");
-  }
-  return normalized;
-}
-
 function usageValue(usage, ...keys) {
   for (const key of keys) {
     const value = finiteNumber(usage?.[key]);
@@ -61,27 +25,7 @@ function normalizeUsage(result) {
   const totalTokens = reportedTotal ?? (
     inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null
   );
-  const providerReportedCostUsd = usageValue(usage, "cost_usd", "cost")
-    ?? finiteNumber(result?.costUsd)
-    ?? finiteNumber(result?.cost);
-  return { inputTokens, cachedInputTokens, outputTokens, totalTokens, providerReportedCostUsd };
-}
-
-function calculateCost(usage, pricing) {
-  if (usage.providerReportedCostUsd !== null) {
-    return { costUsd: usage.providerReportedCostUsd, costSource: "provider_reported" };
-  }
-  if (!pricing || usage.inputTokens === null || usage.outputTokens === null) {
-    return { costUsd: null, costSource: null };
-  }
-  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
-  const uncached = usage.inputTokens - cached;
-  const costUsd = (
-    (uncached * pricing.inputUsdPerMillionTokens)
-    + (cached * pricing.cachedInputUsdPerMillionTokens)
-    + (usage.outputTokens * pricing.outputUsdPerMillionTokens)
-  ) / 1_000_000;
-  return { costUsd: roundUsd(costUsd), costSource: `pricing:${pricing.version}` };
+  return { inputTokens, cachedInputTokens, outputTokens, totalTokens };
 }
 
 function addAggregate(container, key, record) {
@@ -91,9 +35,7 @@ function addAggregate(container, key, record) {
     cachedInputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
-    costUsd: 0,
     tokenUsageMissingCallCount: 0,
-    costMissingCallCount: 0,
   };
   aggregate.callCount += 1;
   if (record.inputTokens === null || record.outputTokens === null) aggregate.tokenUsageMissingCallCount += 1;
@@ -106,13 +48,10 @@ function addAggregate(container, key, record) {
   else if (record.inputTokens !== null && record.outputTokens !== null) {
     aggregate.totalTokens += record.inputTokens + record.outputTokens;
   }
-  if (record.costUsd === null) aggregate.costMissingCallCount += 1;
-  else aggregate.costUsd = roundUsd(aggregate.costUsd + record.costUsd);
   container[key] = aggregate;
 }
 
-function createMigrationProviderTelemetry({ pricing = null, expectedModel = null, monotonicNow = () => performance.now() } = {}) {
-  const normalizedPricing = normalizePricing(pricing, expectedModel);
+function createMigrationProviderTelemetry({ expectedModel = null, monotonicNow = () => performance.now() } = {}) {
   const records = [];
   const taskCalls = new Map();
 
@@ -121,7 +60,6 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
     const taskCallOrdinal = (taskCalls.get(taskId) ?? 0) + 1;
     taskCalls.set(taskId, taskCallOrdinal);
     const usage = normalizeUsage(result);
-    const cost = calculateCost(usage, normalizedPricing);
     records.push(Object.freeze({
       targetKey: String(envelope?.task?.targetKey ?? "unknown"),
       proposer: String(envelope?.task?.proposer ?? "unknown"),
@@ -132,7 +70,6 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
       durableAttempt,
       durationMs: Math.max(0, Number(durationMs) || 0),
       ...usage,
-      ...cost,
     }));
   }
 
@@ -189,7 +126,7 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
     for (const entry of selected) addAggregate(totals, "all", entry);
     const summary = totals.all ?? {
       callCount: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
-      totalTokens: 0, costUsd: 0, tokenUsageMissingCallCount: 0, costMissingCallCount: 0,
+      totalTokens: 0, tokenUsageMissingCallCount: 0,
     };
     return {
       ...summary,
@@ -198,8 +135,6 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
       retryClassificationCoverageComplete: retryClassificationMissingCallCount === 0,
       providerDurationMs: Math.max(0, Math.round(durationMs)),
       tokenUsageCoverageComplete: summary.tokenUsageMissingCallCount === 0,
-      costCoverageComplete: summary.costMissingCallCount === 0,
-      pricing: normalizedPricing,
       byTarget,
       byProposer,
       byModel,
@@ -208,7 +143,7 @@ function createMigrationProviderTelemetry({ pricing = null, expectedModel = null
     };
   }
 
-  return Object.freeze({ wrapAdapter, mark, snapshot, pricing: normalizedPricing });
+  return Object.freeze({ wrapAdapter, mark, snapshot });
 }
 
-module.exports = { createMigrationProviderTelemetry, normalizePricing, normalizeUsage };
+module.exports = { createMigrationProviderTelemetry, normalizeUsage };

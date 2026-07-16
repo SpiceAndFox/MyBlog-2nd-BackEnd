@@ -99,7 +99,7 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   const metrics = createMemoryMetrics();
   const pipeline = createNormalWritePipeline({
     observer: {}, config, repositories: store.repositories, metrics,
-    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.001 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
     now: () => new Date("2026-07-12T00:01:00Z"), idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
   });
   const result = await pipeline.processIntent(1, "default", intent);
@@ -112,7 +112,6 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   assert.equal(metricSnapshot.counters["memory_provider_results_total{proposer=todoProposer,result=ok,targetKey=todos}"], 1);
   assert.equal(metricSnapshot.counters["memory_provider_observed_messages_total{proposer=todoProposer,targetKey=todos}"], 1);
   assert.equal(metricSnapshot.observations["memory_provider_calls_per_message{proposer=todoProposer,targetKey=todos}"].average, 1);
-  assert.equal(metricSnapshot.observations["memory_provider_cost_usd{model=test,targetKey=todos}"].sum, 0.001);
 });
 
 test("repeated commit phase returns the existing revision without duplicate writes", async () => {

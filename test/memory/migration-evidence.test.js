@@ -21,10 +21,10 @@ test("migration evidence fingerprints code, every schema migration, and redacted
       embeddingApiKey: "embedding-secret",
       rerankerModel: "Qwen/Qwen3-Reranker-8B",
     },
-    pricingEvidence: { fileName: "deepseek-v4-flash.json", sha256: "sha256:price" },
   });
 
   assert.equal(evidence.reportFormatVersion, REPORT_FORMAT_VERSION);
+  assert.equal(evidence.reportFormatVersion, 3);
   assert.match(evidence.code.gitCommit, /^[a-f0-9]{40}$/);
   assert.match(evidence.schema.sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(evidence.schema.files.some((file) => file.name === "009-launch-gate-legacy-projections.sql"), true);
@@ -33,7 +33,6 @@ test("migration evidence fingerprints code, every schema migration, and redacted
   assert.deepEqual(evidence.config.values.memory.provider.apiKey, { configured: true });
   assert.deepEqual(evidence.config.values.rag.embeddingApiKey, { configured: true });
   assert.doesNotMatch(JSON.stringify(evidence), /memory-secret|embedding-secret/);
-  assert.equal(evidence.pricing.fileName, "deepseek-v4-flash.json");
 });
 
 test("configuration fingerprints are stable across property insertion order", () => {

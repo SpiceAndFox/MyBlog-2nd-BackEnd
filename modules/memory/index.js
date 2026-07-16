@@ -25,7 +25,7 @@ const { runStructuredOutputPreflight } = require("./infrastructure/providers/pro
 const { loadProposerPrompt } = require("./prompts");
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
-const { buildMigrationEvidence, loadPricingFile } = require("./application/migrationEvidence");
+const { buildMigrationEvidence } = require("./application/migrationEvidence");
 
 let defaultMemoryRuntime = null;
 
@@ -82,7 +82,6 @@ module.exports = Object.freeze({
   createProviderAdmission,
   createMigrationProviderTelemetry,
   buildMigrationEvidence,
-  loadPricingFile,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
     return defaultMemoryRuntime;

@@ -9,18 +9,16 @@ test("Memory v2 data migration CLI defaults to read-only inventory", () => {
     apply: false,
     serviceStopped: false,
     reportPath: null,
-    pricingPath: null,
   });
 });
 
-test("cutover evidence gate rejects incomplete usage, missing cost, and a dirty tree", () => {
+test("cutover evidence gate rejects incomplete usage and a dirty tree", () => {
   const report = enforceEvidenceGate({
     status: "completed",
     mode: "cutover",
     canStartService: true,
     providerUsage: {
       tokenUsageCoverageComplete: false,
-      costCoverageComplete: false,
       retryClassificationCoverageComplete: true,
     },
     sourceInventory: {
@@ -39,7 +37,6 @@ test("cutover evidence gate rejects incomplete usage, missing cost, and a dirty 
   assert.deepEqual(report.evidenceGate.issues, [
     "cutover_working_tree_not_clean",
     "provider_token_usage_incomplete",
-    "provider_cost_coverage_incomplete",
   ]);
 });
 
@@ -50,7 +47,6 @@ test("rehearsal evidence gate passes with complete telemetry while keeping servi
     canStartService: false,
     providerUsage: {
       tokenUsageCoverageComplete: true,
-      costCoverageComplete: true,
       retryClassificationCoverageComplete: true,
     },
     sourceInventory: {
@@ -72,13 +68,12 @@ test("Memory v2 data migration CLI requires explicit scope pairs and cutover con
   assert.throws(() => resolveOptions(parseArgs(["--user", "1"])), /provided together/);
   assert.deepEqual(resolveOptions(parseArgs([
     "--mode", "cutover", "--user", "1", "--preset", "lina", "--apply", "--service-stopped",
-    "--report", "reports/cutover.json", "--pricing", "pricing/deepseek-v4-flash.json",
+    "--report", "reports/cutover.json",
   ])), {
     mode: "cutover",
     scopes: [{ userId: 1, presetId: "lina" }],
     apply: true,
     serviceStopped: true,
     reportPath: require("node:path").resolve("reports/cutover.json"),
-    pricingPath: require("node:path").resolve("pricing/deepseek-v4-flash.json"),
   });
 });
