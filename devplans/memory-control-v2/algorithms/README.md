@@ -1,11 +1,11 @@
-# Memory Control v2 算法契约索引
+# Memory Control v2.1 算法契约索引
 
-本目录保存 Memory Control v2 的确定性算法与状态机契约。拆分目的不是简化或重新解释已经确认的规则，而是让每个算法只有一个权威定义，避免同一算法散落在状态、写入、渲染和 Harness 文档中后产生冲突。
+本目录保存 version 3 的确定性算法与状态机契约。当前处于开发期直接替换，不继承 version 2 的 target raw cursor、new-batch eligibility 或旧 task/proposal replay。
 
 ## 权威边界
 
 - [状态契约](../state-contract.md)：只负责数据 shape、枚举、policy table、DDL、索引和静态字段约束。
-- [写入协议](../write-protocol.md)：只负责 Observer、Proposer、Reducer、Renderer 之间的编排顺序和算法调用关系。
+- [写入协议](../write-protocol.md)：只负责 SourceScanCoordinator、semanticSignalObserver、专业 Proposer、Reducer、Renderer 之间的编排顺序和算法调用关系。
 - 本目录：负责算法步骤、状态转移、失败分支、幂等规则和运行不变量。
 - [Proposer Prompt 契约](../proposer-prompt.md)：负责 LLM 输出行为约束，不重新定义 Reducer 算法。
 - [Harness 验收契约](../harness.md)：负责测试覆盖，不重新定义算法；断言应引用本目录中的权威规则。
@@ -15,10 +15,11 @@
 
 ## 算法清单
 
+- [Source Scan 与 Observation](source-scan-and-observation.md)
 - [Evidence 校验与 Quote 匹配](evidence-validation.md)
 - [Reducer Apply 算法](reducer-application.md)
 - [领域生命周期](domain-lifecycle.md)
-- [Task 执行、Cursor 与幂等](task-execution-and-idempotency.md)
+- [Task 执行、Boundary Cycle 与幂等](task-execution-and-idempotency.md)
 - [Compaction 与 Proposal Replay](compaction-and-replay.md)
 - [Source Rebuild 与 Projection](source-rebuild-and-projection.md)
 - [Context Coverage](context-coverage.md)

@@ -1,10 +1,36 @@
-# Memory Control v2 修复后的系统行为定义
+# Memory Control v2.1 修复行为与验收来源
 
-> 文档性质：规范性调整目标（behavior contract）
+> 文档性质：已采纳的问题分析、行为需求与验收来源
 >
 > 适用范围：`memory-control-v2` 的观察、触发、Proposer、Reducer、重建与诊断链路
 >
-> 本文只定义修复后系统必须表现出的行为，不规定开发顺序、迁移步骤或发布安排。
+> 本文不再单独定义静态 schema 或状态机；落地契约以 `devplans/memory-control-v2/` 的 version 3 文档为准。
+
+## 0. 评审结论与落地映射
+
+方案的行为方向合理，已采纳“连续 source scan、跨窗口 observation、按候选调用专业 Proposer、同 boundary 快照、candidate 与 scan 进度分离、event-time rebuild”作为 v2.1 主链路。为使其可实现，本次补齐了以下原方案未定部分：
+
+| 行为需求 | version 3 落地契约 |
+| --- | --- |
+| 连续语义扫描 | 纯代码 `SourceScanCoordinator` + 独立 LLM `semanticSignalObserver`；逐消息 assessment |
+| 跨窗口累计 | observation master + raw evidence + semantic occasion/arc + per-target lifecycle |
+| 不被 noop/reject 吞掉 | `candidateDecisions` 精确覆盖输入；Reducer 决定 consumed/retryable/dead-letter |
+| target 顺序不影响可见输入 | boundary cycle 冻结同一 `asOfRevision`，先收集全部 proposal 后固定顺序 reduce |
+| 长期模式 | 3 distinct occasions 且跨 2 distinct arcs，由 ledger 计数 |
+| Scene | epoch + 字段级 TTL；每 epoch 只归档一次完整 last-known snapshot |
+| 相对时间 | todo 显式 `timeAnchorMessageId`，重建按 boundary event time，末尾再做 wall-clock housekeeping |
+| 旧证据合法性 | 必须已登记在当前 observation/version/target；任意 overlap/read-only 历史无权写入 |
+| 批不变量 | online/rebuild、batch/session/target-order metamorphic harness |
+
+当前仍处开发期，明确采用 destructive version 3 replacement：保留 raw `chat_messages`，清空旧 v2 派生 state/task/event/snapshot/cursor/projection，再从 raw source 全量重建；不做旧版本读取、回填、双写或 proposal replay。
+
+权威入口：
+
+- [顶层设计](memory-control-v2/memory-control-v2-overview.md)
+- [状态契约](memory-control-v2/state-contract.md)
+- [写入协议](memory-control-v2/write-protocol.md)
+- [算法契约索引](memory-control-v2/algorithms/README.md)
+- [Prompt](memory-control-v2/proposer-prompt.md) 与 [Harness](memory-control-v2/harness.md)
 
 ## 1. 文档目标与优先级
 
@@ -16,7 +42,7 @@
 4. 在线增量处理与从头重建遵循相同语义；改变批大小、窗口大小、session 分组或目标调度顺序，不应改变哪些事实有资格进入记忆。
 5. “任务成功执行”与“语义工作已正确完成”必须分开判断。被拒绝或暂时无法归类的候选信息不得在 cursor 前进后静默消失。
 
-本文与 `devplans/memory-control-v2/` 中既有设计冲突时，本文对“触发、证据新鲜度、Proposer 依赖关系、cursor、重建和长期模式累计”的规定优先；容量、隐私、RAG、屏蔽等未被本文修改的约束继续有效。
+本文保留行为动机和验收语义；具体字段、枚举、事务与失败分支以本节链接的 version 3 权威文档为准。若本文仍残留讨论期措辞，不得覆盖已补齐的静态/算法契约。
 
 ## 2. 核心结论
 
@@ -54,12 +80,12 @@
 
 ### 3.2 已提交的消息增量
 
-“消息增量”仅指自上次可靠扫描位置之后、截至本次稳定 source boundary 的原始消息集合。它是安全处理和故障重试的机械单位，不是语义单位：
+稳定 source max 与 pending endpoint 可以覆盖自上次可靠扫描位置之后的多条原始消息，但它们只是 backlog/wake 范围。version 3 的 canonical `single_source_message_v1` plan 固定让每条完整有效 source message 恰好形成一个 immutable semantic boundary，Observer task 的“本次增量”因此永远只有该一条消息：
 
-- 它可以恰好包含一组 user/assistant 消息，也可以包含多组消息。
-- user 消息与 assistant 回复可以利用 `parent_user_message_id` 或 `turnId` 在摄取层确认归属和完整性。
+- user 消息与 assistant 回复可以利用 durable pending accumulator 共享一次 wake/raw prefetch，但必须逐 boundary scan→cycle，不能合并成一个 Observer envelope。
+- `parent_user_message_id` 或 `turnId` 只用于摄取层确认归属和完整性，不参与 boundary 切分。
 - 这种配对关系不代表一个 episode，也不代表一个长期模式的独立样本。
-- 语义判断仍然依据角色、内容、时间和上下文，而不是增量的包装方式。
+- scan batch、debounce 或 SQL page 改变时，boundary rows、Observer cutoff 与 task 数保持不变。
 
 本文不再使用容易被理解为语义单元的 `exchange` 一词。
 
@@ -73,7 +99,7 @@ actor: assistant
 claim: 每天早上给用户做早餐
 acceptedBy: user
 rawMessageIds: [729, 730]
-candidateTargets: [agreements]
+candidateTargets: [standingAgreements]
 ```
 
 它的含义仅是：“这些原始消息中存在一个值得由 agreement Proposer 判断的信号。”它不是最终 agreement，也不是给聊天模型展示的摘要。
@@ -86,7 +112,7 @@ candidateTargets: [agreements]
 - 允许在后续消息出现后补全，例如先出现提议，后出现接受、拒绝或完成结果。
 - 允许被重新推导或修复；原始消息始终高于证据记录。
 
-具体是否以单独数据表实现不属于本文约束，但系统必须具备等价的跨窗口证据保存能力。不能只把候选留在某次 LLM 上下文中。
+version 3 已确定以 observation/occasion/arc、observation evidence 与 per-target consumption 表持久化；不能只把候选留在某次 LLM 上下文中。
 
 ### 3.4 语义弧（semantic arc）
 
@@ -135,7 +161,7 @@ candidateTargets: [agreements]
 1. **来源不变量**：所有最终写入都有可验证的原始消息证据；不从摘要凭空推断事实。
 2. **覆盖不变量**：每条已提交原始消息最终至少被成功评估一次；允许重试，但语义副作用必须幂等。
 3. **尾部不变量**：对话停止后，即使剩余消息不足固定阈值，也不能成为永远不处理的尾部。
-4. **批次不变量**：改变 `lagThreshold`、批大小和 overlap 大小，不改变证据资格和最终语义。
+4. **批次不变量**：改变 scan batch/debounce 只改变 pending wake/raw prefetch，不能改变 singleton boundary rows、Observer task/cycle 切分；专业上下文预算和 overlap 大小变化不改变证据资格和最终语义。
 5. **分组不变量**：改变 session 划分不改变最终语义。
 6. **调度不变量**：改变各 target 的调用先后不改变最终语义；任何 target 不得依赖另一个 target 先产出摘要才能看到事实。
 7. **时点不变量**：任务只能读取 source boundary 当时可见的原始消息与状态，不能在重建时读取“未来状态”。
@@ -159,11 +185,11 @@ candidateTargets: [agreements]
 
 ### 6.2 固定频率只能用于吞吐合并
 
-`lagThreshold`、debounce、批处理大小可以用于减少任务数量，但只能是运行层优化：
+scan batch、debounce、批处理大小只能减少 wake 与 raw I/O 查询次数，不能减少或合并 canonical source-scan task；version 3 不再保留 `lagThreshold` 语义门：
 
 - 它们不能决定一条消息是否“够新”或是否有资格成为证据。
-- 合并等待必须有确定的最大延迟，并在对话暂停、生成结束或显式 flush 时处理不足阈值的尾部。
-- 即使批次只包含状态变化的后一半，系统也必须能通过待定证据关联到前一半原文。
+- 尾部先进入 durable pending accumulator：pending endpoint只能提升，固化的 freeze/tail deadline只能提前；到期后才为最早 singleton boundary冻结 immutable task，重启必须可恢复。
+- user/assistant 可以在 deadline 内共享预取，但状态变化的后一半仍是下一 boundary，并通过待定 evidence关联前一半原文。
 - 增大窗口可以改善局部理解，但不能替代跨窗口证据累计，也不能作为修复遗漏的唯一手段。
 
 ### 6.3 各模块的触发条件
@@ -172,7 +198,7 @@ candidateTargets: [agreements]
 | --- | --- | --- |
 | `scene` | 当前地点、活动、参与者、即时氛围发生明确变化，或已有字段被明确否定/离开 | session 切换、纯寒暄、仅达到消息数阈值 |
 | `todos` | 一次性请求或承诺建立；截止时间、内容、负责人变化；完成、取消、拒绝或过期 | 仅表达长期习惯；没有行动责任的愿望 |
-| `agreements` | 反复适用的规则、边界、习惯性承诺被提出并得到接受；既有约定被重申、修改或取消 | 单次明日任务；单方面但未被接受的随口提议 |
+| `standingAgreements` | 反复适用的规则、边界、习惯性承诺被提出并得到接受；既有约定被重申、修改或取消 | 单次明日任务；单方面但未被接受的随口提议 |
 | `episodes` | 一个有长期回忆价值的语义弧开始、发生关键进展、解决或结束 | session/turn 边界、固定 32 条消息、普通闲聊的每次往返 |
 | `profileRelationship` | 明确稳定的自我陈述/关系定义；或跨独立行为场合累计的模式达到晋升条件；既有结论被反证或深化 | 只在同一场合重复三句话、仅因为新 episode 已生成 |
 | `worldFacts` | 虚构世界设定、角色 canon、持久规则被明确建立、纠正或遗忘 | 普通常识、临时场景事实、为了避免为空而推断设定 |
@@ -226,7 +252,7 @@ episodes 完成 → profile/relationship 才可运行
 - `contextWindow` 是支持上下文，不是证据覆盖范围。
 - 应优先按待定候选、实体、动作、语义弧和现有记忆 ID 检索相关原文，避免把全部无关状态塞入一个 envelope。
 - 只读上下文不得凭空触发写入；若其中确有此前遗漏的原始证据，应把它显式登记为可审计的 late-discovery 候选，再进入正常判断。
-- 同一 source boundary 触发的多个 Proposer 应读取同一个 as-of 快照，避免先提交的目标把“未来派生结论”泄漏给后运行目标。
+- 同一 boundary cycle（同 `cycleLineageId + reviewEpoch`）触发的多个 Proposer 应读取同一个 as-of 快照，避免先提交的目标把“未来派生结论”泄漏给后运行目标；后续 semantic review 是新的 evaluation，可冻结新的 as-of。
 
 ### 7.4 Proposal 的最低语义要求
 
@@ -237,7 +263,7 @@ episodes 完成 → profile/relationship 才可运行
 - 原始证据 message IDs；
 - 可精确匹配原文的关键引用或等价校验信息；
 - 为什么这些证据满足该模块的写入标准；
-- 时间锚点、置信度或待定原因（适用时）。
+- 时间锚点或待定原因（适用时）；不得输出无校准、无法验证的自由置信度字段。
 
 no-op 也必须指出它处理了哪些候选，以及属于“证据不足、模块不匹配、与现有状态重复、明确不应记忆”中的哪一种。no-op 不是丢弃候选的通用出口。
 
@@ -313,7 +339,7 @@ episode 可以记录高显著性的共同经历，但很多能反映稳定模式
 - 地点、活动、参与者和氛围只能在原文明确支持时填写；不能把某个角色的单独地点推断为所有人的共同地点。
 - 各字段的有效性独立。更新氛围不能让已经失效的地点或活动一起续期。
 - 明确离开、活动结束或新场景冲突时，应清除或替换对应字段。
-- TTL 到期后 `currentScene` 可以为空；`previousScene` 应是最近一个真实、完整且已结束/过期的场景，而不是因批次碰巧存活的更早场景。
+- TTL 到期后 `current.scene` 可以为空；`current.previousScene` 应是最近一个真实、完整且已结束/过期的场景，而不是因批次碰巧存活的更早场景。
 - session 切换不得清空或强制归档 scene。
 
 ### 10.2 Todos
@@ -334,7 +360,7 @@ episode 可以记录高显著性的共同经历，但很多能反映稳定模式
 ### 10.4 Episodes
 
 - Episode 是有回忆价值的事件，不是固定条数消息的摘要。
-- 一个 episode 可以处于 open 状态，并随同一语义弧的关键进展追加，最终在解决、返回、结束或明确转换时关闭。
+- 一个 episode 候选的 semantic arc 可以处于 open 状态，并在 observation ledger 中随关键进展追加；最终 `recentEpisodes` 只接收明确 closed 且达到记忆价值门槛的 arc。
 - 普通闲聊不应被强制写成 episode；高显著性共同经历也不能因跨度超过一个窗口而被拆碎或遗漏。
 - session、turn 和固定消息数都不能单独开始或结束 episode。
 - 每个 episode 应保留最小充分原始证据，并能区分事件发生、关键转折和结果。
@@ -360,7 +386,7 @@ episode 可以记录高显著性的共同经历，但很多能反映稳定模式
 | 语义 | 默认目标 |
 | --- | --- |
 | 一次性待办、承诺及其完成状态 | `todos` |
-| 反复适用的规则、习惯性承诺或边界 | `agreements` |
+| 反复适用的规则、习惯性承诺或边界 | `standingAgreements` |
 | 有长期回忆价值的共同经历 | `episodes` |
 | 跨独立场合稳定出现的个人/关系模式 | `profileRelationship` |
 | 当前即时叙事画面 | `scene` |
@@ -420,22 +446,22 @@ Reducer 仍是写入权威，但不得用批次偶然性代替语义校验。
 
 | 原始消息 | 修复后应观察到的行为 |
 | --- | --- |
-| `528/529`：“以后经常做草莓大福”及其响应 | 识别为 recurring commitment 候选；在语义上得到接受时建立或更新 agreement，不能因 agreements 的固定 16 条频率而 no-op |
+| `528/529`：“以后经常做草莓大福”及其响应 | 识别为 recurring commitment 候选；在语义上得到接受时建立或更新 standing agreement，不能因旧式固定调用频率而 no-op |
 | `684/687/696` 建立的三明治相关一次性承诺，及 `724/727/728` 的后续完成信息 | 关联为同一个 todo 生命周期并标记完成；最终 current todos 中不得继续显示为 overdue |
 | `729/730`：“以后每天早上做早餐”及接受 | 建立 daily-breakfast agreement；不能只作为 scene 或普通对话略过 |
 | `975–1076` 的夜间外出到回家过程 | 作为一条连续语义弧评估；达到 episode 显著性标准时形成包含关键进展和结果的完整 episode，不因窗口或 session 拆分而遗漏 |
 | `1078–1080` 的“明天三明治/草莓大福” | 建立相应的一次性 todo；“明天”按源消息当地日期解析为下一自然日，等价 schema 中应表现为 `days: 1`，不能写成 `days: 0` |
 | 多次草莓大福相关行为 | 作为可能的 assistant profile 模式证据跨语义弧累计；达到独立证据门槛才晋升，未达到时保留候选而不是强写 profile |
 | 当前没有明确虚构 canon 的消息 | `worldFacts` 保持为空，不视为缺陷 |
-| 最后场景已超过 TTL | `currentScene` 可以为空，但 `previousScene` 必须指向最近一个有原文支持的已结束/过期场景，而非较早的偶然存留结果 |
+| 最后场景已超过 TTL | `current.scene` 可以为空，但 `current.previousScene` 必须指向最近一个有原文支持的已结束/过期场景，而非较早的偶然存留结果 |
 
 还必须通过以下变形测试：
 
 1. 把同一批 Alice 消息改分为 1 个、8 个或更多 session，结果语义等价。
-2. 使用不同合法 batch/context/overlap 配置重建，所有上述断言仍成立。
+2. 使用不同合法 batch/debounce 配置时生成完全相同的 singleton boundary rows、Observer task envelopes和逐 boundary cycle顺序；context/overlap 变化后所有上述断言仍成立。
 3. 改变 target 调度顺序，结果不依赖 `episodes` 是否先于 `profileRelationship`。
 4. 在 proposal 校验失败后恢复处理，相关事实最终可落地且不会重复创建。
-5. 对话在任意不足 lag threshold 的位置停止并 flush，尾部候选仍会被处理。
+5. 对话在任意不足 scan batch target 的位置停止，尾部仍由 durable pending tail-max deadline 或显式 flush 处理；pending endpoint提升不延期原 deadline，capture 后重启仍冻结同一下一 boundary。
 
 ## 16. 明确替换的旧行为
 

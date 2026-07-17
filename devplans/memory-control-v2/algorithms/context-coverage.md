@@ -1,74 +1,138 @@
-# Context Coverage 算法
+# Context Coverage 算法（version 3）
 
-本文是主聊天 recent window、`needsMemory`、per-target GapBridge、RAG/Recall 查询截止点和 projection 查询时健康判断的单一权威来源。Renderer 模板见 [渲染与上下文接入](../rendering-and-context.md) §5；sidecar DDL 见 [状态契约](../state-contract.md) §9.7、§9.9、§9.10。
+本文是主聊天 recent window、`needsMemory`、GapBridge、RAG/Recall 截止点和查询时健康判断的单一权威来源。Coverage 只读取 version 3 的全局 raw scan checkpoint 与 observation-target lifecycle；各 writer 没有独立消息进度。
 
 ## 1. Recent Window 与 needsMemory
 
-Context compiler 先从该 user/preset 的有效 user/assistant raw messages 构造跨 session 候选历史，再以集中配置的 Unicode code point 阈值计算 `needsMemory`。只使用这一项逻辑门控，不再同时叠加 message count、tokenizer 估算或 provider context 百分比：
+Context compiler 先从该 user/preset 的有效 user/assistant raw messages 构造跨 session 候选历史，再以集中配置的 Unicode code point 阈值计算 `needsMemory`：
 
-1. 候选历史的 raw content Unicode code point 总数不超过阈值时，recent window 保留全部消息，`needsMemory=false`，不注入 `memory`。
-2. 超过阈值时，recent window 从最新消息向前选择不超过同一字符阈值的完整消息，再应用既有 user-boundary 裁剪，令 `needsMemory=true`。
-3. 最新一条消息即使单独超过逻辑阈值也必须完整保留。不得截断单条 raw message 来伪装成完整消息；provider 的物理 context 上限是另一层能力边界。
-4. `needsMemory=true` 后，`chat_preset_memory.memory_state` 存在且 schema 校验通过时，`memory` 读取结构化状态并调用 Renderer 实时生成完整 memory 文本；`memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入。
+1. raw content 总数不超过阈值：保留全部消息，`needsMemory=false`，不注入 memory 或 GapBridge；
+2. 超过阈值：从最新消息向前选择不超过阈值的完整消息，再应用既有 user-boundary 裁剪，`needsMemory=true`；
+3. 最新一条消息即使单独超限也完整保留，不截断单条 raw message；provider 物理上限由独立能力层处理；
+4. `memory_state.version=3` 且 schema 校验成功时实时 Renderer；state 不存在、version 不支持或 schema 非法时不注入 memory，并记录明确 debug reason。
 
-recent window 可以跨 session，session 只保留为消息元数据；不得插入会改变 Proposer 或主聊天语义处理的 session boundary 控制标记。主聊天 recent window 保留 user-boundary 裁剪，Memory Observer 按 target cursor 读取完整 source，两者不能复用同一个裁剪结果。
+recent window 可以跨 session；session/turn 只作为 source 完整性元数据，不插入改变语义的控制消息。主聊天的 user-boundary 裁剪不用于 source scan。
 
-除 `needsMemory=false` 外，跳过注入时必须记录原因（state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查，不得静默跳过。
+令 `R` 为裁剪后 recent window 第一条消息的 messageId。`messageId >= R` 已被 recent window 完整覆盖。无 recent window 时不组装 GapBridge；在正常聊天请求中该情况只会出现在没有有效 raw source 时。
 
-## 2. Per-target GapBridge
+## 2. GapBridge 的双来源覆盖
 
-`needsMemory=true` 时，recent window 可能已经移除某个 target 尚未处理的尾批。Context compiler 必须用每个 normal target 的 cursor 补齐这段 raw-message coverage，不依赖 legacy `summarizedUntilMessageId`：
+`needsMemory=true` 时，GapBridge 必须合并两个集合。所有 raw 查询都限定当前 `(userId,presetId,sourceGeneration)` 的有效 source，并验证当前 content hash。
 
-1. 令 `R` 为 user-boundary 裁剪后 recent window 第一条消息的 messageId，`C` 为该 target 的 `coveredUntilMessageId`。按该 target 的完整有效 source 查询满足 `C < messageId < R` 的消息；这组消息是该 target 的有效 gap。没有 recent window 或 `C >= R` 时该 target 没有 gap。
-2. GapBridge 使用独立于 Memory Renderer section 容量的逻辑 Unicode code point 预算。所有未超预算的 gap 消息以完整 raw message 注入单一 `gapBridge` context segment；多个 target 引用同一消息时只注入一次，同时保留该消息覆盖的 target keys。
-3. 合并去重后的 gap 超预算时，不调用 LLM 压缩。先按 messageId 倒序选择同时满足集中配置的最近 N 条上限与字符预算的完整消息，再恢复为 messageId 升序注入。不能只截取消息正文的一部分。
-4. 单条消息本身超过预算时，该消息计入 omitted，不注入截断版本；使用 LLM 压缩或其他精细处理留给 [Gap Compressor 延后设计](../../deferred/memory-control-v2/gap-compressor.md)。
-5. 任何 omitted 都必须按受影响 target 写入 `chat_context_quality_diagnostics`，至少保存 requestId、userId/presetId、subjectKind/subjectKey、targetCursor、R、原 gap 条数/字符数、保留边界、保留条数、omitted 条数/字符数和 `omitted_upper_message_id`，并明确 `truncated=true`。完整 gap 不需要写持久化成功记录。
-6. 记录保持 active，直到该 target cursor 覆盖其 `omitted_upper_message_id`，或后续 context assembly 在同一事务锁定当前 generation/state，并证明原省略区间 `(target_cursor, omitted_upper_message_id]` 已无有效 source；不能把带历史 `upToMessageId` 的本次 gap 查询为空当作全局证明，也不能只因请求结束而清除。
-7. 截断不阻断主聊天，但受影响 target 必须一直视为上下文覆盖不完整：用户侧进入 degraded 并持续告警“部分早期对话未在上下文中”，注入的旧 target state 标记为“可能滞后”。resolved 后才清除告警并创建恢复通知。
+### 2.1 未扫描 raw source
 
-同一 generation 内的 active GapBridge diagnostic 更新必须令 `omitted_upper_message_id` 单调不减。多个 context 请求并发或乱序完成时，较早/较小的历史查询不得覆盖较新请求已经记录的更大遗漏上界；恢复事务也必须重新校验当前行没有超出本次已证明覆盖的上界。
+令 `S = chat_memory_source_scan_status.scanned_through_message_id`。集合 A 是：
 
-GapBridge 的逻辑预算只限制该 segment，自身不占用或改变任何 Memory section 的 `maxItems/maxRenderedChars`；其最终文本仍计入主模型不可突破的物理 context 上限。GapBridge 只补主聊天上下文，不推进 target cursor、不写 patch，也不替代后续正常 Memory task。
+```text
+S < messageId < R
+```
 
-## 3. RAG/Recall 查询边界
+范围内的全部完整有效 raw messages。它覆盖 source scanner 尚未登记为 assessment/observation、同时又已掉出 recent window 的消息。`S >= R-1` 时集合 A 为空。scan status 缺失或 generation 不一致时按 `S=0` 处理并标记 rebuilding，不能假定“没有 gap”。
 
-Memory 保存当前场景、待办、持续约定、里程碑、长期偏好和关系模式；RAG 负责召回具体旧场景、原话和细节。两者互不替代。
+`stable_boundary_message_id` 可以用于解释为什么尾部尚未扫描，但不能缩小集合 A；即使消息仍处 provisional tail，只要已掉出 recent window，也必须桥接或记录 omission。
 
-RAG/Recall 查询截止点与 projection 告警边界使用以下三个术语：
+### 2.2 未落定 observation evidence
 
-- `sourceBoundary`：当前 `sourceGeneration` 下最新有效 source messageId。
-- `requiredBoundary`：本次主聊天查询需要 RAG/Recall 覆盖到的历史截止点，定义为 `recentWindowStartMessageId - 1`，因为 `messageId >= recentWindowStartMessageId` 的消息已由 recent window 完整覆盖，RAG/Recall 不再需要。
-- `processedBoundary`：projection checkpoint 中实际已处理到的 `processedBoundaryMessageId`。
+集合 B 是当前 generation 中，任一 observation-target 状态为以下之一的 observation 所登记、且位于 recent window 外的全部有效 raw evidence：
 
-RAG 查询时，有效检索上界为 `min(rag.processedBoundary, requiredBoundary)`。Recall/Scene Recall 是命中 RAG chunk 后在查询时即时生成的 enrichment，没有独立派生 store 或 checkpoint，必须继承同一个 RAG 有效上界。该上界约束完整检索结果，包括命中的 chunk、为 chunk 附加的前后 raw dialogue 和据此生成的 Scene Recall；enrichment 的每次 raw 查询都必须显式携带 cutoff，不得重新读取更晚消息。六个 Memory target cursor 与 RAG/Recall cutoff 相互独立：Memory cursor 追平不代表 RAG/Recall 追平，反之亦然。
+```text
+ready | processing | waiting | retryable | dead_letter
+```
 
-Projection 告警条件：
+通常约束为 `messageId < R`。`consumed | excluded` 不需要 GapBridge；invalidated/superseded observation 和命中 suppression/privacy gate 的 evidence 不得注入。一个 observation 分配多个 target 时保留完整 target tags，但 raw 消息只出现一次。
 
-- `processedGeneration != sourceGeneration` → 该 projection 为 `rebuilding`；
-- `processedGeneration == sourceGeneration AND processedBoundary < requiredBoundary` → 该 projection 为 `degraded`，告警“部分早期对话未在上下文中”；
-- `processedGeneration == sourceGeneration AND processedBoundary >= requiredBoundary` → 该 projection 为 `healthy`，即使 `processedBoundary < sourceBoundary`，因为 projection 落后范围全部在 recent window 内，不影响本次查询。
+`waiting` 是正常业务状态、不使 Memory health degraded，但其尚未形成稳定 state，证据仍需要桥接。`retryable | dead_letter` 同时触发健康告警。open episode arc 自身不是独立注入对象；只有它已登记到上述 observation evidence 时进入集合 B。
 
-这里的 `healthy/degraded/rebuilding` 是本次 context query 的覆盖健康判断，不改写 projection worker/checkpoint 的运行状态；worker 是否已追平其 captured source boundary 仍由 [Source Rebuild 与 Projection](source-rebuild-and-projection.md) 决定。两者必须使用不同的代码类型或字段名，避免把“本次查询所需范围已覆盖”误写成“projection 已全量追平”。
+### 2.3 合并、去重与可追溯性
 
-Projection 只部分覆盖 `requiredBoundary` 时（`processedBoundary > 0` 但 `< requiredBoundary`），仍注入已处理部分的结果，并在注入时明确标记检索范围不完整。不因部分落后而完全跳过 projection 注入。
+集合 A、B 按 `(messageId,contentHash)` 去重，恢复原 raw message 的 role、createdAt 和 content。每条候选附带内部 coverage tags：
 
-Context compiler 只能把 `processedGeneration == sourceGeneration AND processedBoundary >= requiredBoundary` 的 projection 当作完整当前结果。未满足此条件的 projection 必须保持 `degraded/rebuilding` 告警，不得把旧 projection 无提示注入或声称为当前状态。
+- `unscannedSource=true/false`；
+- `observationTargets=[{observationId,targetKey,status,observationVersion}]`；
+- 相关 `sourceBoundaryMessageId`。
 
-同一 generation 内持久化的 active projection-lag diagnostic 也必须保留已经观察到的最大 `requiredBoundary`。较小边界的并发/历史请求可以在自身响应中判定 query-scoped healthy，但不得据此 resolve 一个仍要求更大边界的 active diagnostic 或发送虚假恢复通知。
+这些 ID/status 只用于诊断，不向主模型宣称为用户事实。最终注入单一 `gapBridge` segment，并按 messageId 升序排列完整 raw messages。GapBridge 不推进 scan checkpoint、不改变 observation-target lifecycle、不写 patch，也不替代后续 scan/cycle。
 
-## 4. 健康标记与恢复通知
+## 3. 预算与 omission 诊断
 
-Renderer 对 `retry_wait`、`capacity_blocked`、`halted` target 继续渲染最后一次成功提交的稳定 state，但在其负责的 section 前输出稳定标记“该类记忆可能滞后”；`rebuilding` target 使用“该类记忆正在重建”标记。
+GapBridge 使用独立于 Memory section 的 Unicode code point 预算和完整消息条数上限。超预算时不调用 LLM 压缩、不截断消息正文。
 
-多个 section 共享一个 target 时，若各 section 在模板中相邻，可在该组的第一个 section 前只输出一次标记；若不相邻（如 `episodes` 的 milestones 与 recentEpisodes），则应在每个 section 前分别输出标记。GapBridge active omitted 诊断按其 target 使用相同“可能滞后”标记。
+选择算法必须确定且避免一种来源完全饿死：
 
-恢复通知按健康来源写入 `subject_kind/subject_key`，使用 best-effort once 语义：同一恢复事件只创建一行 notification；响应传输成功后由响应层 best-effort 标记 delivered。它不保证恰好一次 delivery，允许响应成功但 delivered 更新前崩溃导致的重复投递。
+1. 先为集合 B 的每个 active observation 保留最近一条实质 evidence（按最早 pending 时间、observationId 稳定轮转）；
+2. 再为集合 A 保留最新未扫描消息；
+3. 剩余预算在全部候选中按 messageId 倒序填充；
+4. 最后恢复 messageId 升序注入。
 
-## 5. 当前总 Context 预算边界
+单条消息本身超过预算时整条 omitted。任何 omission 都必须持久化到 `chat_context_quality_diagnostics`，统一使用 `boundary_message_id` 和 `detail` 表达覆盖边界。
 
-当前各 segment 仍使用独立逻辑预算，尚未引入 provider/model 统一总 context 裁剪。当前部署前提与未来算法见 [总 Context 预算与降级顺序（延后）](../../deferred/memory-control-v2/total-context-budget.md)。GapBridge 与 RAG 的内容重叠当前明确接受，见 [GapBridge 与 RAG 内容重叠（延后）](../../deferred/memory-control-v2/gap-bridge-rag-overlap.md)。
+至少写入：
 
-## 6. Harness
+```js
+{
+  subjectKind: "sourceScan" | "observationTarget",
+  subjectKey: "sourceScan" | "<observationId>:<targetKey>",
+  diagnosticType: "gap_bridge_truncated",
+  sourceGeneration,
+  boundaryMessageId,       // 本 subject 被省略证据的最大 messageId
+  detail: {
+    requestId,
+    recentWindowStartMessageId: R,
+    scannedThroughMessageId: S,
+    observationVersion: null | 3,
+    observationTargetStatus: null | "waiting",
+    candidateMessageCount,
+    candidateCodePoints,
+    retainedMessageCount,
+    retainedCodePoints,
+    omittedMessageCount,
+    omittedCodePoints,
+    omittedMessageIds,
+    truncated: true
+  }
+}
+```
 
-验收用例见 [Harness 验收契约](../harness.md) §3.8、§3.9、§3.10。
+同 generation、同 subject 的 active row 以原子 upsert 更新；`boundary_message_id` 单调不减，较小/较早请求不得覆盖更大遗漏。`detail.omittedMessageIds` 可按受控上限保存，超限时保存 ranges/hash 和准确计数，不能持久化完整 raw content。
+
+恢复条件按 subject 判定：
+
+- `sourceScan`：checkpoint 已扫描通过 active `boundary_message_id`，或在锁定当前 generation 后证明遗漏 key 已不再是有效 raw source；
+- `observationTarget`：对应版本已进入 `consumed | excluded`，被显式 invalidated，或锁定 generation 后证明其全部未落定 registered evidence 已在本次 recent window/GapBridge 完整覆盖；
+- generation 改变：旧 diagnostic 失效并 resolve，但新 generation 仍按实际 coverage 重新判断，不能发送“已追平”的恢复通知。
+
+恢复事务必须重新读取 active row，证明其完整边界，而不是根据一次较小查询结果清除。截断不阻断主聊天，但 active source-scan/observation retry 故障应显示“部分早期对话未在上下文中”；纯 waiting 的 truncation 可显示 coverage 告警，却不能把 waiting 本身误报为 worker failure。
+
+## 4. RAG/Recall 查询边界
+
+Memory 保存结构化当前状态；RAG 负责具体旧场景、原话和细节。三类边界：
+
+- `sourceBoundary`：当前 generation 最新有效 source messageId；
+- `requiredBoundary`：本次需由 RAG/Recall 覆盖的截止点，`R - 1`；
+- `processedBoundary`：projection checkpoint 的 `processed_boundary_message_id`。
+
+有效检索上界为 `min(processedBoundary, requiredBoundary)`。Recall/Scene Recall 是命中 chunk 后的即时 enrichment，没有独立 checkpoint；chunk、附加前后 raw dialogue 和生成 Recall 的每次查询都必须显式携带同一 cutoff。
+
+Memory 的 source scan checkpoint、observation-target lifecycle 与 RAG projection checkpoint 相互独立：scanner 追平不代表 RAG 追平，candidate consumed 也不代表 RAG 已索引；反之亦然。
+
+查询时 projection health：
+
+- `processedGeneration != sourceGeneration` → `rebuilding`；
+- generation 相同但 `processedBoundary < requiredBoundary` → `degraded`；
+- generation 相同且 `processedBoundary >= requiredBoundary` → query-scoped `healthy`，即使还没追到 `sourceBoundary`。
+
+部分覆盖仍可注入已处理范围，但必须标记不完整。active projection-lag diagnostic 同 generation 保留观察到的最大 `requiredBoundary`；小边界请求可以在自身响应中 healthy，但不得清除更大 active diagnostic。
+
+## 5. 健康标记与恢复通知
+
+Renderer 对 retry/capacity/halted target 渲染最后稳定 state，并显示“该类记忆可能滞后”；rebuilding 显示“该类记忆正在重建”。GapBridge diagnostics 按 subject 聚合到受影响 target；source scan 全局故障影响所有尚未覆盖的新候选。
+
+`waiting` observation 不单独降级；`retryable | dead_letter`、source scan retry/halt、active truncation、projection lag 才按各自原因告警。多个相邻 section 可共用一次标记，不相邻 section 各自标记。
+
+恢复通知按 `subject_kind/subject_key/source_generation/boundary_message_id` best-effort once 创建。只有完整 active boundary 被证明覆盖后才能创建；generation 失效式 resolve 不创建 recovery notification。
+
+## 6. Context 总预算边界与 Harness
+
+当前各 segment 仍使用独立逻辑预算，尚未引入 provider/model 统一总裁剪；GapBridge 与 RAG 的内容重叠暂时允许。延后设计见 [总 Context 预算](../../deferred/memory-control-v2/total-context-budget.md)、[Gap Compressor](../../deferred/memory-control-v2/gap-compressor.md) 与 [GapBridge/RAG 重叠](../../deferred/memory-control-v2/gap-bridge-rag-overlap.md)。
+
+Harness 至少覆盖：scan status 缺失、provisional tail 掉出 recent window、A/B 集合交叠去重、多 target evidence、waiting/retryable/dead-letter、预算公平性、并发 diagnostic 单调边界、generation 切换和 projection 部分覆盖。详见 [Harness 验收契约](../harness.md)。

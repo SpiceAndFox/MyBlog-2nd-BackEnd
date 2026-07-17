@@ -1,180 +1,255 @@
-# Memory Control v2 顶层设计
+# Memory Control v2.1 顶层设计
 
 ## 文档定位
 
-本文定义情感类 AI Chat 的 Memory Control v2 顶层设计：目标形态、权威状态、写入边界、失败处理、迁移原则和不可破坏的设计约束。
+本文定义情感类 AI Chat 的 Memory Control v2.1 顶层判断、组件边界与不可破坏的不变量。静态 shape/枚举/DDL 以 [状态契约](state-contract.md) 为单一权威，运行编排以 [写入协议](write-protocol.md) 为权威，确定性状态机从 [算法契约索引](algorithms/README.md) 进入。
 
-详细契约拆分到以下文档：
+配套文档：
 
-- [状态契约](memory-control-v2/state-contract.md)：`memory_state`、section、item、evidenceKind、patch op、Proposer 输入/输出信封、policy table、长度预算、审计事件表与运行 sidecar DDL。**所有静态契约的单一权威来源。**
-- [写入协议](memory-control-v2/write-protocol.md)：Observer、专用 Proposer、Reducer、路由、cursor、compaction、失败降级。
-- [算法契约索引](memory-control-v2/algorithms/README.md)：确定性算法、状态转移、失败分支、幂等与运行不变量。**所有算法行为的单一权威入口。**
-- [渲染与上下文接入](memory-control-v2/rendering-and-context.md)：Renderer、`memory` segment、RAG 边界、raw evidence 边界。
-- [Proposer Prompt 契约](memory-control-v2/proposer-prompt.md)：schema-constrained structured output 与 worker prompt 要点。
-- [Harness 验收契约](memory-control-v2/harness.md)：fixture、golden case、reducer/renderer/pipeline 验证边界。
+- [Source Scan 与 Observation](algorithms/source-scan-and-observation.md)：逐消息语义扫描、observation/arc/occasion ledger；
+- [Task、Boundary Cycle 与幂等](algorithms/task-execution-and-idempotency.md)：durable task、冻结 snapshot、candidate lifecycle、commit/recovery；
+- [Source Rebuild 与 Projection](algorithms/source-rebuild-and-projection.md)：boundary-major/event-time 重建；
+- [Proposer Prompt](proposer-prompt.md)：observer 与专业 Proposer 的 structured output 约束；
+- [渲染与上下文](rendering-and-context.md)：主聊天注入与可见边界；
+- [Harness](harness.md)：golden、metamorphic、在线/重建等价性验收；
+- [修复行为定义](../memory-control-v2-fix.md)：本次问题分析与行为需求来源，不重复定义静态 schema。
 
-后续实现计划必须服从本文。若实现中发现本文判断错误，应先修订本文，再调整拆分后的契约文档和代码。
-
-### 设计与实现原则
-
-本次重构采用偏瀑布式设计：设计阶段一次性覆盖 durable proposal 的 deferred/compaction/replay、每 revision 完整 snapshot、todo overdue、expired scene、GapBridge、用户告警、forget 与 RAG suppression 等已确定能力。实现仍按 State → Proposer/Cursor → Evidence/Capacity → Persistence/Recovery → Compaction → Domain Lifecycle → Context → Health → Rebuild/Projection → Forget/Suppression → Cross-cutting 的依赖顺序分层推进和验收，但实施顺序不代表把已确定能力延期到不明确的未来。明确不进入当前范围的能力只以 §3 和 [延后设计清单](deferred/memory-control-v2/readme.md) 为准。
-
-设计在完整性与可落地性之间取平衡：只为明确的故障路径引入机制；能用简单确定性规则解决的问题，不叠加多套预算、风险分类或额外 LLM 判断。LLM 负责语义判断并提出候选变更；Reducer 只负责纯代码可验证的结构、作用域、权限、证据引用、容量、并发前置条件和事务约束。
-
-### 契约继承边界
-
-本文与各子文档共同构成对原 Memory Control v2 设计的修订，不通过省略内容重新定义全部契约。未被明确修改、替换或列入延后清单的既有契约继续有效，省略不代表删除；item/evidenceGroups/evidenceKind/op/policy table、Proposer envelope/readOnlyContext、确定性算法、Prompt、Renderer、Scene Snapshot/Recall 等细节以对应子文档为准。算法步骤、状态转移、失败分支和幂等规则以 [算法契约索引](memory-control-v2/algorithms/README.md) 为入口；讨论稿中未经明确确认的实现细节不构成规范。
+若文档冲突，优先级为：本文的顶层不变量 → 状态契约的静态定义 → 算法文档的状态机 → Prompt/Renderer/Harness 的消费约束。修订时必须同步受影响文档，不能靠实现猜测。
 
 ## 1. 核心判断
 
-当前 memory 系统的根本问题不是 prompt 不够强，而是把 memory 当成可反复重写的文本摘要。`rolling summary` 和 `core memory` 在多轮压缩、复述、再解释后，必然出现语义漂移、短期剧情侵入长期档案、旧状态污染当前上下文、待办和场景失控等问题。
+当前Memory总结结果差并不只是某一句 prompt 写得不好。旧链路同时存在四个结构性问题：
 
-Memory Control v2 的核心前提是：
+1. **按 target 独立扫 raw source**：不同 target 在不同窗口、不同 revision 看同一段对话，产生未来信息泄漏和批大小敏感；
+2. **cursor 把“看过”误当“理解并处理”**：noop、Reducer rejection 或窗口遗漏后仍可推进，语义信号永久丢失；
+3. **没有跨消息候选账本**：提议、接受、履约、纠正、重复模式散落在多批消息中，Proposer 无法稳定拼成一个事实；
+4. **历史重建使用执行时钟且按 target-major 运行**：相对日期、scene TTL、episode/profile 读取顺序与在线时间线不同。
 
-**memory 不是一段文本，而是一组可审计、可更新、可拒绝、可恢复、可渲染的结构化状态。**
+因此，v2.1 的核心前提是：
 
-LLM 负责观察对话并提出候选变更（patch）；确定性 Reducer 负责校验和写入。LLM 不直接覆写最终 memory。
+> Memory 不是一段反复改写的摘要，也不是若干 target cursor；它是 raw source 经一次可审计语义扫描形成 observation ledger，再由同一 boundary snapshot 上的专业 Proposer 投影出的结构化状态。
 
-### 1.1 对 LLM 能力的诚实认知
+LLM 负责两个受限语义阶段：通用 observer 识别候选信号，专业 Proposer 判断候选是否达到某一 memory section 的写入标准。纯代码负责 source 完整性、schema、证据注册、版本、权限、生命周期、容量、并发前置条件和事务提交。LLM 不直接覆盖最终 state，Reducer 不假装能做开放式语义理解。
 
-本设计明确承认以下事实，并据此约束架构：
+## 2. 目标
 
-- **LLM 不能稳定输出复杂嵌套 JSON**：必须用 provider 支持的 schema-constrained structured output 强制 schema（见 [proposer-prompt.md](memory-control-v2/proposer-prompt.md) §2.1）。
-- **LLM 会改写 quote 而非原文摘录**：Reducer 对 quote 做模糊匹配，不要求精确匹配，但设定明确阈值（见 [Evidence 校验与 Quote 匹配算法](memory-control-v2/algorithms/evidence-validation.md)）。
-- **LLM 会搞错 messageId**：Reducer 校验 messageId 存在性，搞错则 reject。
-- **纯代码不能做语义理解**：Reducer 只做结构化校验（schema、作用域、权限、ID 存在性、quote 模糊匹配、policy 查表、容量、并发前置条件和事务边界），不做语义冲突检测、不做语义匹配，也不宣称能证明 patch text 被 evidence 蕴含。
-- **LLM 的语义判断会有偏差**：系统接受有限的语义误判风险，不增加“高风险事实”分类或第二个 Verifier LLM；依靠 provenance、事件、snapshot、correction/forget 和恢复路径使错误可追踪、可纠正。
-- **LLM 不会自发跨 tick 累积匹配**：任何需要跨轮次累积的机制（如"重复出现 3 次"）必须有确定性 ledger 记录，且匹配方式必须是结构化的（标签/字段），不能依赖语义匹配。
-
-## 2. 设计目标
-
-1. **受控写入**：所有 memory 变更必须经过结构化 patch、纯代码校验和 reducer，不允许 LLM 直接覆写最终 memory。
-2. **证据可追溯**：重要 memory 必须能追溯到原始 message id、短证据 quote 和证据组。
-3. **状态分层**：当前场景、待办、持续约定、近期经历、里程碑、长期核心档案分别维护，各有独立更新时机。
-4. **低漂移**：旧 memory 只能局部增删改，不能被模型反复全文改写。
-5. **可恢复**：系统应能从原始消息、patch 事件和状态快照恢复 memory；避免变更静默丢失或重复应用，并在 forget 后阻止相同来源被自动重建。
-6. **可渲染**：底层是结构化状态，注入主聊天模型时渲染成稳定、紧凑、可读的上下文文本。
-7. **可审计**：patch 决策（accepted / rejected / deferred / noop）写入事件表，供调试和排查。
-8. **主链路稳定**：失败时保留上一次稳定 state；连续错误只 halt 对应 Memory target，运行恢复状态由 durable task/per-target status/ops log 持久化，其他 targets 与主聊天不被全局阻断。用户侧统一聚合为 `healthy` / `degraded` / `rebuilding`，并持续告警到恢复完成。
-9. **故障可区分**：模型调用/输出错误、Reducer 拒绝或异常、事务提交失败分别记录，不用一个笼统失败状态掩盖责任边界。
+1. 每一条稳定 raw message 都有 `signals` 或 `no_relevant_signal` 的 durable assessment；
+2. 跨消息的 propose/accept/reject/complete/correct/forget/pattern evidence 可以累积，不因批边界丢失；
+3. 所有专业 Proposer 在同一 boundary cycle / semantic evaluation 上读取同一 `asOfRevision`，避免跨 target 未来泄漏；
+4. scan 进度、candidate 消费和 current memory 分成三个 authority，任何一个都不能冒充另一个；
+5. 每条最终 memory 能追溯到 observation、occasion/arc 与原始 message/hash/quote；
+6. waiting、excluded、already-reflected、retryable、dead-letter 都有显式终态或可恢复状态，不允许无理由 noop；
+7. 在线处理与全量重建使用同一 `single_source_message_v1` boundary plan；不同 batch/debounce 只改变 wake/prefetch，不改变 Observer task/cycle 切分；
+8. relative due date 以真实表达时间的消息为 anchor，scene 以事件时间维护 epoch 与字段 TTL；
+9. correction/forget 能阻止错误或被遗忘 source 重新进入 active memory、RAG/Recall；自然演化保留历史；
+10. 主聊天始终使用最后一次稳定 state，并准确暴露 degraded/rebuilding，而不是回退到旧全文摘要。
 
 ## 3. 非目标与部署假设
 
 非目标：
 
-- 不兼容旧 rolling/core pipeline 的内部设计。
-- 不把 LLM 输出的整段 summary 作为权威状态。
-- 不把所有历史都塞进长期记忆。
-- 不用缓存或兼容层掩盖状态模型错误。
-- 不把旧 v1 memory 文本直接转换为 v2 权威状态。
-- 不做跨 tick 语义模式累积晋升（N=3/K=2 留作未来探索）。
-- 不引入独立 Evidence Verifier LLM 调用（验证靠纯代码 + Proposer 输出的 evidenceKind 枚举标签）。
-- 不要求 LLM 判断“高风险事实”，也不引入 NLI 来证明 patch text 被 evidence 语义蕴含。
-- 不做多实例并发控制（首版单实例，进程内队列配合持久化幂等校验）。
-- 不在本轮实现 LLM Suppression Proposer、Gap Compressor、长期 overdue todo 的精细归档/检索/清理、容量自动降级策略、总 context 预算裁剪、GapBridge 与 RAG 内容去重、Proposer 独立 few-shot golden messages；延后项统一见 [延后设计清单](../deferred/memory-control-v2/readme.md)。
+- 不兼容 version 2 的 state/task/event/snapshot/target cursor；
+- 不迁移旧 rolling/core 文本或旧 v2 proposal；
+- 不把所有聊天历史都晋升为 memory；
+- 不引入第二个通用 Verifier LLM；
+- 不让 Reducer 用 embedding、NLI 或关键词规则做最终语义判断；
+- 不声称 scanner 可以从架构上消灭所有 false negative；
+- 首版不解决多实例并发，仍以单实例 per-scope lane + durable identity/transaction guard 为部署前提；
+- 不把 session、turn、批大小、固定频率或消息间隔当作 memory 语义资格。
 
-部署假设：
+部署前提：
 
-- 单实例部署，进程内队列（沿用 `tickScheduler.enqueueByKey`）保证 per-`userId/presetId` 串行；durable task 的稳定 identity/dedupe key 与提交前 generation/cursor/revision 校验负责重启和重复 delivery 的幂等防护。多实例部署是未来问题，届时需另行设计 DB lock/lease/fencing，不能把当前幂等约束误称为多实例并发控制。
-- 主聊天和所有 Memory Proposer 只能配置为已声明约 1M context 的模型；启动时验证实际 model capability（`maxInputTokens`），不满足时拒绝启动。总 context 预算裁剪策略在 1M 模型下收益极低，延后处理（见 [总 Context 预算（延后）](deferred/memory-control-v2/total-context-budget.md)）。
-- 容量 halt 发生后有明确的"调高配置 → 重启/重载 → resume"操作步骤；上线前根据真实历史做一次容量分布和全量 rebuild 的 calls/tokens/latency 测量，以确定合适的默认容量值；货币费用由 Provider 官方余额变化评估，不进入 Memory 运行时或迁移报告。
+- 同一 `(userId,presetId)` 的 raw append、source mutation、scan、cycle reduce 与 housekeeping 串行；
+- Provider/model 必须通过真实 structured-output schema preflight；
+- batch/debounce 只优化 pending wake/raw prefetch；durable pending deadline 保证尾部不会无限等待且只能提前；
+- section 容量、retry、retention 与 context 预算全部集中配置并由 harness 验证。
 
-## 4. 旧系统取舍
+## 4. 总体架构
 
-旧系统中保留的是工程思想，不是实现形态。
+```text
+chat_messages（raw authority）
+        │ stable source boundary
+        ▼
+SourceScanCoordinator（纯代码）
+        │ one semantic scan per singleton boundary
+        ▼
+semanticSignalObserver（LLM）
+        │ assessment + arc/occasion + observations
+        ▼
+Observation Ledger（durable control plane）
+        │ per-target ready/retryable candidates
+        ▼
+Boundary Cycle（同一 asOfRevision）
+        │ relevant specialized Proposers only
+        ▼
+candidate decisions + patches
+        │
+        ▼
+Reducer（纯代码）── event/snapshot/tombstone/decision 原子提交
+        │
+        ▼
+memory_state.version=3 ── Renderer ── 主聊天 memory segment
+```
 
-保留：
+### 4.1 SourceScanCoordinator
 
-- 同一 `userId/presetId` 串行写入（`tickScheduler.enqueueByKey`）。
-- 消息编辑、删除、会话恢复会使 memory 失效（dirty 标记）。
-- 状态快照用于恢复（checkpoint 机制）。
-- worker slot 限流。
+纯代码 coordinator 追加 singleton boundary plan、capture/promote durable pending，在 deadline 到达后为下一 boundary冻结 immutable scan task，组装 singleton delta + supporting context、调用 observer、校验 output，并在一个事务内落 assessment/arc/occasion/observation/target 行及 scan checkpoint。它不按关键词决定 memory，也不创建 patch。
 
-废弃：
+完整提交的 user message 本身就是稳定 source；Coordinator 可以为让正常 assistant child共享一次 wake/raw prefetch而有界等待，但两条消息仍是两个 semantic boundaries。user-only 消息不得晚于 provisional 最大等待，失败/断开/flush 时提前处理。流式半条 assistant 不是稳定 source；导入历史按冻结边界处理。turn/session 元数据只证明 source 完整性或回复归属，不进入记忆语义。
 
-- 旧文本 checkpoint 的中心地位；checkpoint 在 v2 中只表示 state snapshot。
-- "旧文本 + 新对话 -> 新全文"的更新范式。
-- core memory 依赖 rolling summary checkpoint 的严格同步思路。
+### 4.2 semanticSignalObserver
 
-## 5. 权威状态与写入边界
+Observer 是一次通用语义扫描，负责发现：scene 变化、一次性/持续承诺、接受/拒绝、完成/取消、episode arc、长期事实、模式证据、纠正与遗忘。它可以显式 append 到输入 catalog 中的 observation，但不能输出最终 item/section patch。
 
-PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory authority。它保存当前完整 memory state，并由 Reducer 原子写回。旧 `rolling_summary`、`core_memory` 和 v1 checkpoint 都是可清除的派生数据，不转换为新系统 authority，也不与新 Memory 同时注入；确认 v1 worker/注入已经停用后，可以在 v2 正式切换前独立清除。`chat_messages` 中的 User/Assistant 原文是 rebuild 的权威 source，Memory 退役、rehearsal、迁移和 cutover 均不得修改或删除它；只有独立、明确授权的用户隐私删除流程可以改变 raw source。
+每条 new source message 必须有 assessment。相同 `semanticKey` 不是同一事实；只有显式 `relatedObservationId` 才能 append/supersede/invalidate。detector prompt/schema/routing config 形成 `detectorVersion`；版本变化必须新建 source generation 全量重建。
 
-协议层正式 section 固定为 `scene`、`todos`、`standingAgreements`、`recentEpisodes`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`。`core` 不作为 section；`current.previousScene` 与 todo 的 `status=overdue` 是 Reducer 维护的衍生状态，不进入 Proposer `sectionResults`，也不拥有 cursor。
+### 4.3 Observation Ledger
 
-`current`、`working`、`longTerm` 和 `meta` 只是 `memory_state` 的物理存储容器，不是 section 或 target，不得出现在 patch/event/policy 的 `section`、`task.targetKey` 或 `sectionResults` key 中。
+Observation 保存候选 claim、raw evidence、relation、occasion/arc、版本和 per-target lifecycle。它解决的不是“先把消息总结一下”，而是让多条证据跨 boundary 可累计、可重判、可解释。
 
-user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。sessionId 只保留在消息中，不复制到 evidence、event 或 Recall provenance；这些结构通过 messageId / source messageIds 追溯来源。
+一个 observation 可路由多个 target，但每个 target 独立处理：
 
-Renderer 输出不是权威状态，不落库为独立列。主聊天热路径读取 `memory_state` 后由纯代码实时渲染为上下文文本；改渲染连接词、标题或压缩格式只需要改 Renderer 代码，不需要回填数据库。
+```text
+ready → processing → consumed
+                   ↘ waiting
+                   ↘ excluded
+                   ↘ retryable → processing | dead_letter
+```
 
-LLM 只负责观察对话并提出结构化 patch。不同记忆族使用不同 Proposer：`currentStateProposer` 处理 `scene`，`todoProposer` 处理 `todos`，`agreementProposer` 处理 `standingAgreements`，`episodeProposer` 处理 `recentEpisodes` / `milestones`，`profileRelationshipProposer` 处理 `userProfile` / `assistantProfile` / `relationship`，`worldFactProposer` 处理 `worldFacts`。Proposer 输入使用统一 envelope（结构见 [state-contract.md](memory-control-v2/state-contract.md) §5）。`compactionProposer` 同时服务容量恢复和达到高水位后的非阻塞主动整理；调用 LLM 前先由纯代码合并规范化 text 完全相同的安全重复项，LLM 只能合并 `writableState` 里的既有 item，不能新增事实或静默删除长期记忆。最终写入必须经过确定性 Reducer：schema、section/target 作用域、new-batch evidence、messageId、quote 模糊匹配、policy 权限、exact text/profile canonicalKey、结构化冲突、容量、generation/cursor/revision 前置条件和事务边界校验。Reducer 不做开放式自然语言理解、不直接调用 LLM，也不证明候选 text 被 evidence 语义蕴含。
+新 evidence 使 observation version 增长时，relation×target 路由决定是否重新 `ready`。accept/reject/complete/cancel/correct/forget/contradict/arc-progress/arc-close 等 material change 必须重开受影响 target；完全重复的 support 可以保持原状态。
 
-完整 schema、section、item、patch 契约、envelope、policy table 见 [state-contract.md](memory-control-v2/state-contract.md)，写入顺序和失败语义见 [write-protocol.md](memory-control-v2/write-protocol.md)。
+### 4.4 专业 Proposer
 
-## 6. 上下文接入边界
+专业 Proposer 按记忆族分工，但不存在固定串行调用链。只有目标存在 ready/retryable candidate 时调用；episode 不是 profile/relationship 的中间摘要，worldFacts 也不会因“每批都必须跑”而填充临时内容。
 
-上下文装配以集中配置的 Unicode 字符阈值计算 `needsMemory`，不叠加 message count、tokenizer 估算或 context 百分比。`needsMemory=true` 且 `memory_state` 存在、schema 校验通过时，单一 `memory` segment 读取结构化状态并调用 Renderer 实时生成完整 memory 文本；否则按明确原因跳过。主聊天 recent window 可跨 session 并保留 user-boundary 裁剪，Memory Observer 则按 target cursor 读取不经该裁剪的完整 raw source。
+每次 output 必须逐 observation 给出：
 
-普通 lagThreshold 下未达阈值的尾批允许等待后续消息；若尾批已被极长新消息挤出 recent window，per-target GapBridge 按 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 补入完整 raw messages。GapBridge 使用独立字符预算；超预算时只保留最近 N 条完整消息并持久化 omitted/保留边界，继续聊天但显式降级告警，不能静默截断或调用 LLM 临时压缩。Source rebuild 必须忽略 lagThreshold 并 force drain 到捕获边界。注入门控与 GapBridge 细节见 [Context Coverage 算法](memory-control-v2/algorithms/context-coverage.md) §1–§2，normal task 的 eligibility、窗口与 force-drain 调度边界见 [Task 执行、Cursor 与幂等算法](memory-control-v2/algorithms/task-execution-and-idempotency.md) §2。
+- `proposed`：达到写入阈值，并指向具体 patch；
+- `waiting`：证据不足、等待接受/结果或模式门槛；
+- `excluded`：目标不匹配、瞬时内容、错误推断、非 canon 等；
+- `already_reflected`：当前 state 已由同一 projection identity/确定性 identity 表达。
 
-RAG 不替代 memory control。RAG 负责从历史中找相关原文片段，Memory Control 负责维护当前稳定状态和长期档案；两者在 context compiler 层并列注入。
+Proposer 不能直接声称 `consumed`，也不能用 section noop 代替候选决定。
 
-普通写入使用 raw observed messages：user 与 assistant 消息都从原始 `chat_messages` 读取。Proposer 可以读取由 `memory_state` 裁剪出的 redacted read-only context 来理解当前对话；普通写入 patch 的 evidenceRefs 只能来自普通模式的 `observedMessages`。维护模式不向 LLM 暴露 raw messages 或既有 evidenceGroups，也不接收 Proposer 输出的 evidenceRefs；`mergeItems` 的 evidenceGroups 由 Reducer 从 source items 继承。read-only context 不能直接证明新事实。assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRefs 来源。
+### 4.5 Reducer 与 Renderer
 
-渲染模板、context segment、RAG 边界和 raw message 规则见 [渲染与上下文接入](memory-control-v2/rendering-and-context.md)。
+Reducer 只做可确定性验证与 apply。候选旧 evidence 必须已经登记在 observation registry，版本、target、boundary、hash、quote、role 与 suppression gate 全部有效；任意 overlap/read-only 历史不能直接触发写入。
 
-## 7. Prompt 与 Harness 边界
+Renderer 只读取 `memory_state.version=3` 的 effective view，不读取 observation claim、task/cursor 或 prompt。跨 section 去重只允许基于同一 `projectionIdentity`，不能靠文本相似或相同 semantic key 擅自删信息。
 
-Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 service 文件中。Proposer 输出必须通过 schema-constrained structured output 强制 schema，不能靠裸 prompt + 文本解析。
+## 5. Boundary Cycle 与批不变量
 
-Harness 是 Memory Control v2 的必要组成部分，不是后补测试。Reducer、quote matcher、policy table、cursor 推进、renderer 稳定性和失败降级都必须有 fixture/golden case 约束，避免重新滑回不可审计的全文摘要重写。
+每个 source boundary 先完成 scan commit，再创建一个 boundary cycle：
 
-Prompt 细节见 [Proposer Prompt 契约](memory-control-v2/proposer-prompt.md)，验收边界见 [Harness 验收契约](memory-control-v2/harness.md)。
+1. 执行 boundary 前的确定性 lifecycle；
+2. 冻结 `asOfRevision`、`semanticNow` 和各 target observation version；
+3. 为所有相关 target 从同一 snapshot 组装 envelope；
+4. 可有限并发调用 Proposer，但必须先持久化全部 proposal；
+5. 再按固定 target 顺序运行 Reducer。
 
-## 8. 顶层决策清单
+同一 cycle 中，后运行 target 看不到前一个 target 刚生成的 state。跨其他 target revision 的 safe rebase 只有在本 target writable sections 与 as-of snapshot 完全相同、generation/cycle/observation version 不变时成立。
 
-| 编号 | 决策              | 结果                                                                  | 权威出处                |
-| ---- | ----------------- | --------------------------------------------------------------------- | ----------------------- |
-| C1   | 权威状态          | `memory_state` JSONB 是唯一权威 memory state                          | state-contract §1       |
-| C2   | 写入权            | Proposer 产出 patch proposal + evidenceKind 枚举分类；纯代码 Reducer 决定最终写入 | write-protocol §1       |
-| C3   | 事件审计          | accepted / rejected / deferred / noop 写入 `chat_memory_events`      | state-contract §9       |
-| C4   | Target 推进       | 每个 target 独立 cursor（联合处理的 section 共享一个 cursor），同一 `userId/presetId` 单队列串行            | write-protocol §3       |
-| C5   | LLM 调用          | 按记忆族调用专用 Proposer；无独立 Verifier LLM                        | write-protocol §1.2     |
-| C6   | 长期 section 写入 | `worldFacts`/`userProfile`/`assistantProfile`/`relationship` 是独立正式 section；新增只接受 `long_term_fact`，改写接受双方 correction，明确 forget 接受双方 forget，同 section 内才允许合并 | write-protocol §4-§5 |
-| C7   | Evidence 输入     | 普通写入证据来自 `observedMessages`；维护合并证据由 Reducer 继承 source items；read-only context 只作背景 | state-contract §5       |
-| C8   | RAG 边界          | RAG 召回具体历史，memory 保存持续状态                                 | rendering-and-context §3 |
-| C9   | 迁移              | 旧文本不直接转 v2，旧会话迁移必须基于原始消息回放                     | write-protocol §7       |
-| C10  | 失败兜底          | 保留稳定 state；连续错误只 halt 对应 target，手动 resume 指定 target（resume 创建新 maintenance child task，不复用已终态旧 task）；不回退到 v1 全文摘要重写 | [Task 执行、Cursor 与幂等算法](memory-control-v2/algorithms/task-execution-and-idempotency.md) §5–§6；write-protocol §8 |
-| C11  | 存储落点          | `chat_preset_memory` 新增 `memory_state` JSONB；不新增权威 render 列  | state-contract §1       |
-| C12  | eligible tasks    | per-target lag 阈值决定本轮调度哪些 Proposer            | write-protocol §2       |
-| C13  | 结构化输出        | 必须用 schema-constrained structured output 强制 schema；每个目标 section 输出 patches/noop/unable_to_decide | state-contract §5.5     |
-| C14  | Reducer 职责      | 纯代码校验结构/作用域/权限/证据引用/容量/并发前置条件/事务边界；不做 NLU、语义匹配或 evidence 蕴含证明 | write-protocol §1.3     |
-| C15  | Renderer 接入     | 使用单一 `memory` segment；读取时实时 render，状态不存在或 schema 不支持则不注入 | rendering-and-context §2 |
-| C16  | 部署假设          | 首版单实例，进程内队列串行并做持久化幂等校验；不做多实例并发控制       | §3                      |
-| C17  | 预算维护          | 可 compaction item section 的长度预算阻塞时 capacity-blocked 并创建 maintenance task；compaction 后确定性 replay 原 proposal；compaction/replay 失败时 halt 对应 target。不可 compaction 的 scene 超限字段以 `capacity_exceeded` 拒绝、推进 cursor、不创建 maintenance（临时方案，待容量默认值稳定后引入自动降级，见 [容量降级策略（延后）](deferred/memory-control-v2/capacity-degradation.md)） | [Compaction 与 Proposal Replay 算法](memory-control-v2/algorithms/compaction-and-replay.md)；[Reducer Apply 算法](memory-control-v2/algorithms/reducer-application.md) |
-| C18  | 健康与告警        | 用户侧只暴露 healthy/degraded/rebuilding；非健康原因持续可见，halt 只作用于对应 target，主聊天继续；scene capacity rejection 由已提交 event 的独立持久化诊断投影派生告警，不污染 Reducer/capacity 事务 | write-protocol §8；[异常诊断投影](memory-control-v2/algorithms/diagnostic-projection.md) |
-| C19  | Source rebuild    | sourceGeneration 是 Memory/RAG/Recall 共享世代；任何有效 source 变化都 +1；source mutation 进入串行队列并原子进入 rebuilding，并用既有 tasks force drain | write-protocol §7       |
-| C20  | 一次性迁移        | v1 派生 Memory 可在其 runtime 停用后独立清除；raw messages 始终保留，v2 只有 rebuild/force drain 与全量校验成功后才能启服；不建 Flush 子系统 | [Source Rebuild 与 Projection 算法](memory-control-v2/algorithms/source-rebuild-and-projection.md) §5 |
-| C21  | Correction/Forget | correction 以新 revision 替换 active 值；forget 原子移除 item 并按完整 evidenceGroups 写 source tombstone，RAG/Recall/rebuild 均执行 suppression | write-protocol §5       |
-| C22  | Privacy hard delete | 跨 raw、Memory 历史/任务 payload、RAG/Recall、tombstone/diagnostic/notification sidecar、diagnostic projection checkpoint 与受控 debug 存储物理清除，并从剩余 source rebuild 后才恢复服务；禁止日志记录 raw prompt/完整 state | [Suppression、Hard Delete 与 Retention 算法](memory-control-v2/algorithms/suppression-and-retention.md) §5 |
-| C23  | Provider Adapter   | Memory 使用专用原生 structured-output Adapter；区分调用失败、安全拒绝、输出截断和 schema invalid，不支持的模型禁止配置 | state-contract §10 |
-| C24  | 串行与幂等        | 单实例 per-user/preset 串行（含 source mutation）；stable task/dedupe identity 与 generation/cursor/revision 提交校验保证重复恢复不重复 apply；revision stale 时创建 successor task | state-contract §9.2-§9.3, §9.6 |
-| C25  | 运营与配置        | 六个 target 分项观测 calls/tokens/延迟/失败与恢复质量；货币费用由 Provider 官方余额评估，不作为运行或迁移门禁；容量、阈值、重试、retention 和告警参数集中配置 | write-protocol §8.2-§8.3 |
+cycle immutable。同一 evaluation 的技术 retry 以同一 `cycleLineageId/reviewEpoch` 的 `retryEpoch+1` 新建 cycle，并继承 retry 0 的 visibility snapshot/as-of、source cutoff、semanticNow 与 candidate versions；否则 recovery target 会看到同-boundary已提交的其他 target state。后来 waiting stale、operator/dead-letter recheck 使用最新已封存 boundary 的新 cycle lineage/review epoch，冻结最新 as-of/current versions，不能冒充技术 retry。observation version变化由其 current boundary/review接管；无法对原 visibility snapshot safe rebase时 halt/rebuild。下一 boundary/evaluation 必须等待更早工作到达 completed/明确 halt。
 
-## 9. 成功标准
+批处理只影响调用次数，不影响语义结果。以下三种运行必须满足 metamorphic equivalence：
 
-Memory Control v2 成功，不是因为摘要更漂亮，而是因为它在长线聊天里表现出以下性质：
+- 同 160 条消息分成 1 批；
+- 分成多个在线 stable boundary；
+- 从 raw source 全量重建。
 
-- 场景不变时不会被反复润色和漂移。
-- 待办能创建、完成、取消和过期，不会变成永久幽灵项。
-- 持续约定能创建、修订和取消，不会伪装成待办。
-- 里程碑只记录真正重要的关系或剧情转折。
-- 长期档案与世界事实 sections 不被临时剧情、一次性互动或错误 summary 污染。
-- 每条重要 memory 都能解释"为什么现在是这个状态"。
-- 主聊天模型拿到的是稳定上下文，而不是越来越混乱的历史压缩文本。
-- durable proposal、compaction/replay、snapshot 和 cursor 在崩溃或重复 delivery 后不会静默丢失或重复应用。
-- 错误记忆可追溯到 source evidence；correction/forget 后 active context、rebuild、RAG 与 Recall 不会重新暴露被替换或遗忘的来源。
-- 模型失败、Reducer 拒绝/异常和事务失败可分别诊断；target 滞后、重建或 halt 时用户持续看到准确状态，恢复后能确认已追平。
+允许 event/task ID 与调用次数不同；最终 active state、observation terminal state、suppression 终态和相对日期必须等价。
 
----
+## 6. 记忆分层与写入标准
+
+| section              | 用途                           | 主要成立条件                                                   |
+| -------------------- | ------------------------------ | -------------------------------------------------------------- |
+| `scene`              | 当前地点、时间、氛围、活动锚点 | 明确当前状态；epoch start/end；字段独立 TTL                    |
+| `todos`              | 可完成、取消或过期的一次性事项 | 明确 request/commitment；完成/取消可跨消息关联                 |
+| `standingAgreements` | 持续规则、边界、反复适用承诺   | 明确长期承诺或双方形成的互动规则；不能伪装成 todo              |
+| `recentEpisodes`     | 最近有回忆价值的共同经历       | 已关闭且达到记忆价值门槛的 semantic arc                        |
+| `milestones`         | 关系/剧情关键转折              | 明确重要性，不接收普通日常                                     |
+| profile/relationship | 稳定显式档案或跨场合模式       | explicit 长期事实，或 3 occasions / 2 arcs 的 observed pattern |
+| `worldFacts`         | 持久虚构 canon/世界规则        | 明确 canon；现实常识、临时场景和角色即兴动作不得填入           |
+
+所有 open episode arc 都只留在 observation 层；即使已有高显著性中间结果，也必须等到 arc 明确关闭后才可投影。session 边界、单轮结束或固定时间间隔不能自动关闭 arc。
+
+## 7. Evidence、身份与自然演化
+
+最终 memory 的证据始终回到 raw message，不以 observation claim、episode summary 或 read-only memory 代替。每个 state evidence group 记录 observation IDs、occasion IDs、message/hash/quote、`evidenceKind` 与 `changeKind`。
+
+`semanticKey` 只帮助检索；相同 key 不自动合并。item 更新依赖显式 item ID 与 observation root/projection identity。跨 section 合法多投影只有在每个 section 增加自己的语义时成立。
+
+变化语义固定为：
+
+- `establish`：首次建立；
+- `reaffirm`：新证据重申，旧历史保留；
+- `refine`：增加限定或提高准确性，旧历史保留；
+- `supersede`：真实的新状态替代旧投影，旧历史仍可召回；
+- `correct`：旧事实当时就是错误的，旧 source 被 suppress；
+- `forget`：明确要求忘记，active state 与召回 source 被 suppress；
+- `lifecycle`：真实完成、取消、过期、scene epoch/TTL 等确定性变化。
+
+短回复证据按关系链解释。`好`、`好吃`、`OK` 可以作为某个已登记提议的接受/支持证据，但不能脱离实质提议独自建立长期事实。
+
+## 8. 时间与重建
+
+Todo relative date 以真正包含“明天/下周”等表达的 `timeAnchorMessageId.createdAt` 为 anchor，并使用 task 冻结的用户时区；不能以 worker 执行时间或更晚的接受消息为 anchor。
+
+Scene 使用 epoch + 字段级 TTL。新 epoch start 会归档旧 epoch；显式 end 会归档并清空；单字段更新不延长其他字段。`previousScene` 每个 epoch 只保存一次完整 last-known snapshot。
+
+重建按 **boundary-major + event-time** 运行：按 raw 时间线依次 scan/cycle/reduce，cycle 的 `semanticNow` 使用单调 `replayNow(boundary)`，即上一 boundary 时钟与本 boundary 新纳入消息最大有效 `createdAt` 的较大者。到最终 raw boundary 后，再以当前 wall clock 运行一次 housekeeping，使历史 todo 正确 overdue、scene 正确过期。
+
+重建完成条件不是“所有 task status 都 succeeded”，而是：scan 到 captured boundary、cycle 全部完成、candidate 无 processing/retryable/dead-letter、state/snapshot 连续、projection 追平。正常 waiting 可保留并完成重建，但必须在 inspect 中可见。
+
+## 9. 失败、健康与诊断
+
+用户侧聚合为 `healthy | degraded | rebuilding`：
+
+- waiting 不降级；它表示事实尚未成立；
+- source scan retry/halt、cycle halt、candidate retryable/dead-letter、capacity blocked、state invalid、projection lag 导致 degraded/rebuilding；
+- 某 target 故障保留其他 target 与最后稳定 state；source scan 全局 halt 阻止新候选调度；
+- Provider/schema 错误、Reducer business reject、Reducer exception、transaction failure、unknown commit outcome 分开记录；
+- 恢复通知只有在对应 scan/target/projection 真正追平后产生。
+
+`inspect:memory-v2` 至少展示：scan cursor/boundary/detector version、逐消息 assessment、observation 版本与 raw evidence、arc/occasion、per-target status/reason、candidate decision、patch/reject、cycle/as-of/epoch、task worker/target/stage、state provenance 与健康诊断。
+
+## 10. 开发期直接替换
+
+切换 version 3 时：
+
+1. 停止所有 Memory worker，并验证没有 running task；
+2. 保留 raw `chat_messages`；
+3. 删除旧 v2 current state、snapshot/event/task/status/ops、suppression、projection checkpoint、diagnostic，以及新旧 observation 控制面中的派生行；
+4. 以 [状态契约](state-contract.md) 的 fresh schema 创建空 version 3 authority；
+5. 从 raw source 全量 rebuild 到 captured boundary，运行 final wall-clock housekeeping 与 projection drain；
+6. 只有验收通过后启用在线 writer/Renderer。
+
+没有旧 schema reader、backfill、双写、shadow compatibility 或旧 proposal replay。rehearsal 可以在隔离数据库执行，但它验证的是 version 3 从 raw 重建，不是旧派生状态迁移。
+
+## 11. 顶层决策表
+
+| 决策                | 结果                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| current authority   | `memory_state.version=3`                                                                 |
+| raw scan            | 每个完整有效 source message 的 immutable semantic boundary 一次 `semanticSignalObserver` |
+| candidate authority | durable observation + per-target lifecycle                                               |
+| target 调用         | 只调用有 ready/retryable candidate 的专业 Proposer                                       |
+| snapshot 可见性     | 同一 boundary cycle 共享 `asOfRevision`                                                  |
+| raw scan 进度       | global source scan checkpoint；无 per-target raw cursor                                  |
+| evidence 新鲜度     | observation registry + version/boundary/hash；不要求 task new-batch evidence             |
+| 模式晋升            | 3 distinct occasions、2 distinct arcs                                                    |
+| scene               | epoch + 字段级 TTL + 每 epoch 一次完整 previous snapshot                                 |
+| rebuild             | boundary-major、event-time；末尾 wall-clock housekeeping                                 |
+| 兼容                | 开发期 destructive replace，无 version 2 兼容                                            |
+
+## 12. 成功标准
+
+- Alice 对话中的早餐/点心承诺能区分一次性 todo 与持续 agreement，并在接受、履约或取消后正确演化；
+- `好吃` 等短回复不再因固定三字符规则丢掉接受链，但不能独立制造事实；
+- `明天` 使用原消息时间，不因几个月后重建而立即生成错误期限；
+- scene 不因历史重建使用当前时钟而在写入瞬间消失，也不因更新 mood 给 location 续期；
+- 同一原始消息在不同 batch/debounce 下产生相同 boundary rows、Observer envelopes与逐 boundary顺序，不会产生根本不同的 profile/relationship/worldFacts；
+- Reducer reject 不会与 cursor 推进一起静默丢失候选；
+- 每条记忆可以从 item → evidenceGroup → observation/occasion/arc → raw message 完整解释；
+- correction/forget 后，active memory、rebuild、RAG/Recall 都不会重新暴露被 suppress 的旧 source；
+- inspect 能明确回答“没扫描、没识别、在等待、被排除、提案失败、Reducer 拒绝还是事务失败”。

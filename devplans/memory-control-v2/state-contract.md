@@ -1,1091 +1,1414 @@
-# Memory Control v2 状态契约
+# Memory Control v2.1 状态契约
 
-本文是 Memory Control v2 的**静态契约权威来源**：所有数据 shape、枚举、policy table、DDL、索引和存储落点都在这里定义一次。确定性算法与状态机见 [算法契约索引](algorithms/README.md)，写入编排见 [write-protocol.md](write-protocol.md)，顶层判断见 [../memory-control-v2-overview.md](../memory-control-v2-overview.md)。
+本文是 Memory Control v2.1 的静态契约权威来源：只定义数据 shape、枚举、约束、policy 与存储落点。编排见 [写入协议](write-protocol.md)，状态转移见 [算法契约索引](algorithms/README.md)，顶层取舍见 [顶层设计](memory-control-v2-overview.md)。
 
-跨文档惯例：本文已定义的契约，其他文档只引用章节号，不重述。
+## 0. 版本选择与开发期替换边界
 
-## 1. 权威状态与存储落点
+产品架构仍称 **Memory Control v2**；本次行为协议称 **v2.1**，持久化 `schemaVersion` 与 `memory_state.version` 固定为 **3**。
 
-PostgreSQL 中的结构化 `memory_state` 是新系统唯一的当前 Memory authority，保存当前完整 memory state，由 Reducer 原子写回。旧 `rolling_summary`、`core_memory` 和 v1 checkpoint 只是派生数据，不转换为新系统 authority，也不与新 Memory 同时注入；v1 runtime 停用并显式确认后可以独立清除。`chat_messages` 中的 User/Assistant 原文是 rebuild authority，任何 Memory 退役、演练或切换操作都不得修改或删除；raw source 只有在独立的用户隐私删除/消息管理操作明确授权时才可变化。
+当前系统仍处开发期，version 3 采用直接、破坏性替换：
 
-user/preset 下的对话跨 session 语义连续。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界。sessionId 只保留在消息中，不复制到 evidence、event 或 Recall provenance；这些结构通过 messageId / source messageIds 追溯来源。
+1. 保留 `chat_messages` 中仍有效的 user/assistant 原文，以及与 Memory 无关的用户、preset 配置；
+2. 停止 Memory worker 后，清空 `chat_preset_memory.memory_state`，drop 并按本文重新 create 全部 Memory v2 authority、task、event、observation、projection 与诊断表；
+3. 不读取、迁移或回填 version 2 state、target cursor、task payload、proposal、event、snapshot、tombstone 或 projection checkpoint；
+4. 不做双写、兼容 reader、旧 task replay、旧 proposal replay或按 target 扫描的过渡路径；
+5. 从保留的 raw source 以 version 3 协议全量重建，再启用在线写入。
 
-在现有 `chat_preset_memory` 表新增一列：
+因此，本文后续只定义 version 3；任何 `targetCursors`、`cursorBefore/targetMessageId/newBatch`、`lagThreshold`、version 2 schema fallback 或 migration backfill 都不属于现行契约。
 
-- `memory_state JSONB`：完整权威 memory state。
+## 1. 权威状态
 
-Renderer 输出不作为独立权威列落库。主聊天热路径读取 `memory_state` 后实时调用纯代码 Renderer 生成上下文文本。
+### 1.1 唯一 current authority
 
-§9 的 snapshots 是按 revision 保存的恢复记录，不是第二份“当前 state” authority，也不直接注入上下文；正常读取始终以 `chat_preset_memory.memory_state` 当前行作为 authority。
-
-`memory_state` blob 内置 `version` 字段作为 schema version。Reducer 按 `version` 选择 schema holder，`version` 升级必须走显式迁移函数。
-
-概念形态：
+`chat_preset_memory.memory_state JSONB` 是当前 Memory 的唯一 authority。snapshot 是恢复锚点，event 是审计/replay 记录，observation 是可重建的控制面；三者都不是第二份 current authority，也不得直接注入主聊天。
 
 ```js
 {
-  version: 2,
+  version: 3,
   current: {
     scene: {
-      location: { value: null, evidenceRef: null, updatedAtMessageId: null },
-      time: { value: null, evidenceRef: null, updatedAtMessageId: null },
-      mood: { value: null, evidenceRef: null, updatedAtMessageId: null },
-      note: { value: null, evidenceRef: null, updatedAtMessageId: null }
+      epochId: null,
+      startedAtMessageId: null,
+      location: emptySceneField,
+      time: emptySceneField,
+      mood: emptySceneField,
+      note: emptySceneField
     },
-    previousScene: null         // Reducer 维护的上一条已过期场景，不是 section、没有 cursor
+    previousScene: null
   },
   working: {
-    todos: [],                  // item 数组；status: active | overdue
-    standingAgreements: [],     // item 数组
-    recentEpisodes: []          // item 数组，滑动窗口
+    todos: [],
+    standingAgreements: [],
+    recentEpisodes: []
   },
   longTerm: {
-    milestones: [],             // item 数组，长期归档
-    worldFacts: [],             // item 数组
-    userProfile: [],            // item 数组
-    assistantProfile: [],       // item 数组
-    relationship: []            // item 数组
+    milestones: [],
+    worldFacts: [],
+    userProfile: [],
+    assistantProfile: [],
+    relationship: []
   },
   meta: {
-    revision: 0,               // 全局单调 Memory revision；每个成功 revision 都有同号完整 post-state snapshot
-    sourceGeneration: 0,       // 单调 source 世代；raw source 失效重建时 +1，普通追加不变
-    targetCursors: {}          // { targetKey: coveredUntilMessageId }，targetKey 见 §2，联合处理的 section 共享一个 cursor
+    revision: 0,
+    sourceGeneration: 1
   }
 }
 ```
 
-`memory_state.meta.sourceGeneration` 是 Memory 与 RAG 判断 raw source 是否仍有效的共享权威世代；查询时 Recall 继承 RAG 对该世代的 cutoff。任何有效 source 的编辑、删除、恢复、改变归属/可见性或排序语义变化都单调 `+1`；普通追加 User/Assistant message 不改变 generation。即使变更触及的 source 尚未被某个 Memory target cursor 覆盖，也必须 `+1`，因为 RAG 可能已经处理了 Memory 尚未处理的消息。`memory_state.meta` 不保存 `halted`、错误计数、retry 或 context-expansion 等运行恢复状态；这些状态的 authority 是 §9 的 durable task、per-target status 和 ops log。
+`emptySceneField` 固定为：
 
-每个可追踪 item 结构：
+```js
+{ value: null, evidenceRef: null, updatedAtMessageId: null }
+```
+
+`meta` 不保存 scan 或 target cursor：
+
+- raw source 机械扫描进度以 `chat_memory_source_scan_status` 为 authority；尚未冻结为 task 的尾部/deadline 以 `chat_memory_source_scan_pending` 为 authority；
+- 每条完整有效 source 对应的 canonical semantic boundary 以 immutable `chat_memory_semantic_boundaries` 为 authority；
+- observation 对每个 target 的处理状态以 `chat_memory_observation_targets` 为 authority；
+- task 的 attempt、not-before、阶段和 proposal 以 `chat_memory_tasks` 为 authority。
+
+普通 raw append 不改变 `sourceGeneration`。编辑、删除、恢复、改变 scope/visibility/order，或改变 `detectorVersion` 时创建新 generation；旧 generation 的 task/cycle/observation 不得写入新 state。
+
+### 1.2 Scene shape
+
+非空 scene field：
 
 ```js
 {
-  id: "todo:uuid-xxx",          // Reducer 生成，全局唯一
-  text: "归还橡皮",              // 高密度关键词式描述
-  evidenceGroups: [
-    {
-      evidenceKind: "user_commitment",
-      refs: [{ messageId: 121, contentHash: "sha256:...", quote: "我明天会把橡皮还给她" }]
-    }
-  ],
-  createdAtMessageId: 121,
-  updatedAtMessageId: 121,
-  facet: "communicationBoundary", // 仅 profile/relationship：受控 facet；legacy rebuild 中旧 item 可暂缺
-  canonicalKey: "responseFormat", // 仅 profile/relationship：受控语义槽；各 section 明列 multi-value key
-  factBasis: "explicit",          // 仅 profile/relationship：explicit | observedPattern
-  actor: "user",               // 仅 todo：实际执行者 user | assistant | both
-  requester: "user",            // 仅 todo：提出请求或承诺的一方 user | assistant
-  status: "active",             // 仅 todo：active | overdue；到期时 Reducer 原位更新
-  becameOverdueAt: null,        // 仅 todo：首次进入 overdue 的时间
-  dueAt: null                   // 仅 todo：deadline 的 ISO 8601 timestamp；null 表示无期限
+  value: "Alice 家的厨房",
+  evidenceRef: {
+    observationId: "uuid",
+    messageId: 123,
+    contentHash: "sha256:...",
+    quote: "在厨房给你做早餐",
+    changeKind: "establish"
+  },
+  updatedAtMessageId: 123
 }
 ```
 
-`userProfile`、`assistantProfile`、`relationship` 的新 `addItem`/`updateItem` 必须输出 `facet`、`canonicalKey`、`factBasis`。三个 section 分别使用独立的受控 facet/key 枚举。每个 section 的 multi-value key 允许不同 text 的多条 item；其余 canonicalKey 在同一 section 内唯一，已存在时必须 `updateItem`，不得再次 `addItem`。所有 key（包括 multi-value/open）仍受 exact duplicate gate 和维护合并约束。为允许当前 source rebuild/旧 durable proposal 安全收敛，既有未携带上述字段的 legacy item 仍可读取和 replay；新 Provider output schema 不再产生 legacy item。
-
-- `userProfile.facet`：`identity | background | preference | communicationBoundary | communicationStyle | interactionPattern | interest`；canonicalKey：`identity | background | location | expertise | communicationTone | responseFormat | responseLength | followUpQuestions | roleplay | serviceTreatment | topicSeriousness | correctionStyle | emotionalExpression | humorStyle | interest | open`；multi-value key：`background | expertise | interest | open`。
-- `assistantProfile.facet`：`identity | personaTrait | communicationStyle | behavioralTendency | value | limitation`；canonicalKey：`identity | persona | communicationTone | responseFormat | followUpQuestions | roleplayIdentity | emotionalStance | value | limitation | open`；multi-value key：`persona | value | open`。
-- `relationship.facet`：`status | address | trust | interactionPattern | sharedBoundary`；canonicalKey：`relationshipStatus | userToAssistantAddress | assistantToUserAddress | trust | roleStructure | interactionPattern | sharedBoundary | open`；multi-value key：`interactionPattern | open`。
-
-`factBasis=explicit` 表示消息直接陈述跨场景持续成立的长期事实，不是“只要消息明说了某个当下动作就算 explicit”；`factBasis=observedPattern` 表示从窗口内可观察行为归纳稳定模式。Reducer 对后者强制要求至少 3 条来自不同 messageId 的 evidenceRefs，且仍必须至少一条 evidence 来自本轮 new batch。Prompt 还必须要求这些证据覆盖至少两个独立互动片段，而不是同一问答或同一微事件里的相邻台词；片段独立性属于语义约束，由 Proposer 判断。临时对话目标、当前态度、单次角色动作、一次性情绪不得伪装为 profile facet。
-
-`evidenceGroups` 是权威 state 中 item 的证据结构。每个 group 携带自己的 `evidenceKind` + `refs`，是一个可审计、可 recall 的证据单元；group 内多个 ref 共同支撑该单元。普通 add/update item patch 输出 `{ messageId, quote }` 形式的 `evidenceRefs`；Reducer 校验数据库消息后，为每个持久化 ref 补入当时已校验的 `contentHash`，再将其与 `patch.evidenceKind` 包装成新的 `evidenceGroup` 追加到 item。`forgetItem` 的新 evidence 只证明 forget 指令，不追加到已移除 item；`mergeItems` 不接收 Proposer 输出的 `evidenceRefs`，Reducer 从 source items 继承 `evidenceGroups`，各 group 保留各自 evidenceKind。持久化的 `messageId + contentHash` 也是 correction/forget 生成 context-suppression tombstone 的确定性 source key。
-
-item 派生字段由 Reducer 在 apply 时维护：`createdAtMessageId` 取首个写入 group 的最小 messageId（addItem 设定，updateItem 不改；mergeItems 取 source items 中最早的 `createdAtMessageId`）；`updatedAtMessageId` 取全部 `evidenceGroups.refs.messageId` 的最大值。
-
-`scene` 是当前状态，每个字段独立记录值、证据与更新时间。正式 section 共九个：`scene`、`todos`、`standingAgreements`、`recentEpisodes`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`。`previousScene` 和 todo 的 `status=overdue` 是 Reducer 维护的衍生状态，不进入 Proposer `sectionResults`，不拥有 target 或 cursor。
-
-`current`、`working`、`longTerm` 和 `meta` 只是 `memory_state` 的物理存储容器名，不是正式 section 或 target。它们不得作为 patch/event/policy 的 `section`、`task.targetKey` 或 `sectionResults` key；其中的正式 section 始终使用上述九个逻辑名称直接寻址。
-
-`current.previousScene` 为 `null` 或“与 `current.scene` 相同的四个字段快照 + `expiredAt`”对象；字段级 value/evidenceRef/updatedAtMessageId 原样保留。它只能由 Reducer 的 scene TTL lifecycle 写入。到期写入使用 §9.2 的 `system_cleanup: scene_expired` event；若覆盖非 null 的旧值，同一 cleanup revision 还必须写 `system_cleanup: expired_scene_evicted` event。
-
-Todo `addItem` 必须提供 `actor` 与 `requester`，Reducer 强制初始化 `status="active"`、`becameOverdueAt=null`；Proposer 不得输出或修改这两个 lifecycle 字段。`actor` 合法值为 `user | assistant | both`，`requester` 合法值为 `user | assistant`。到达 `dueAt` 后 Reducer 原位改为 overdue。`completeTodo`/`cancelTodo` 可作用于 active 或 overdue item；`updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时可作用于 overdue item，Reducer 原位将 `status` 从 `overdue` 改回 `active` 并清空 `becameOverdueAt`，写 `system_cleanup: todo_revived_from_overdue` event。容量维护与 `mergeItems` 只处理 active todo，不合并 overdue todo。
-
-以下语义不可改变：
-
-- `current.scene` 与 session 完全解耦。
-- scene 到期时 Reducer 将完整旧值写入 `current.previousScene`；它不是正式 section，后续新到期场景直接替换旧值并记录 cleanup event。
-- todo 到期时留在 `working.todos`，Reducer 将其 `status` 从 `active` 改为 `overdue` 并设置 `becameOverdueAt`；不跨数组迁移。
-- `recentEpisodes` 与 `milestones` 联合处理但分别存储。
-- `userProfile` 与 `assistantProfile` 都允许 User 和 Assistant 双方全权 add/update/forget。
-- `worldFacts` 与 `relationship` 同样允许双方 add/update/forget。
-- evidence role 按数据库真实消息校验，但不用 role 限制 User/Assistant 对两个 Profile 的操作权。
-
-add/update/forget 的具体 policy 见 §6；forget 必须与 [write-protocol.md](write-protocol.md) §5 的 tombstone/suppression 事务一起提交。
-
-## 2. 记忆分层
-
-| Section              | 存储位置                        | 作用                             | 生命周期       | 写入原则                                                                       |
-| -------------------- | ------------------------------- | -------------------------------- | -------------- | ------------------------------------------------------------------------------ |
-| `scene`              | `current.scene`                 | 当前地点、时间、氛围、环境锚点   | 高频、覆盖式   | 字段级覆盖；字段级证据                                                         |
-| `todos`              | `working.todos`                 | 明确待完成事项；含 active/overdue 状态 | 中频、事件型 | 完成或取消后移除；到期时 Reducer 原位标记 `status=overdue`，仍可 complete/cancel |
-| `standingAgreements` | `working.standingAgreements`    | 持续互动约定、相处规则、长期承诺 | 中低频、事件型 | 新增、修订、取消；不使用完成语义                                               |
-| `recentEpisodes`     | `working.recentEpisodes`        | 最近几次有意义互动               | 高频、滑动窗口 | 普通 episode 到期自然滚出；重要 episode 可晋升 milestone                       |
-| `milestones`         | `longTerm.milestones`           | 关系或剧情关键转折               | 低频、归档型   | 长期保存，默认新增或合并；普通日常不得进入                                     |
-| `worldFacts`         | `longTerm.worldFacts`           | 世界设定与持续客观事实           | 低频、保守     | 新增只接受 `long_term_fact`；修订/forget 接受双方对应 kind                     |
-| `userProfile`        | `longTerm.userProfile`          | 用户长期档案与稳定特征           | 低频、保守     | 新增只接受 `long_term_fact`；修订/forget 接受双方对应 kind                     |
-| `assistantProfile`   | `longTerm.assistantProfile`     | Assistant 长期档案与稳定特征     | 低频、保守     | 新增只接受 `long_term_fact`；修订/forget 接受双方对应 kind                     |
-| `relationship`       | `longTerm.relationship`         | 持续关系模式与关系事实           | 低频、保守     | 新增只接受 `long_term_fact`；修订/forget 接受双方对应 kind                     |
-
-每个 target 拥有独立 `coveredUntilMessageId`（存于 `meta.targetCursors`）。一个 Proposer 联合处理的多个 section 共享一个 target cursor，禁止"共享 Proposer + 独立 section cursor"。target 之间 cursor 独立推进，互不阻塞；所有写入（普通 task、maintenance task 与 source mutation 处理）共用同一 `userId/presetId` 串行队列，保证 `memory_state` 单行写回无竞争。source mutation（编辑历史、删除、恢复、改变归属/可见性或排序语义）也必须进入该队列，禁止在队列外先修改消息再 best-effort 处理 Memory。一个 target 被 `deferred` 不阻塞同 tick 内其它 eligible target 的处理与 cursor 推进，仅该 target 自身等待 compaction 释放容量后 replay 原 proposal。Maintenance task 不拥有独立 raw-message cursor；它是被 capacity-blocked normal task 派生出的维护任务。
-
-target 与 Proposer、section 的对应关系见 [write-protocol.md](write-protocol.md) §1.2。
-
-## 3. Evidence Kind 合法值
-
-| evidenceKind             | 说明                                                                                                                                                                                                                                           |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `user_request`           | 用户明确请求系统/角色稍后做某事                                                                                                                                                                                                                |
-| `user_commitment`        | 用户明确承诺稍后做某事                                                                                                                                                                                                                         |
-| `assistant_request`      | assistant 明确请求用户稍后做某事                                                                                                                                                                                                               |
-| `assistant_commitment`   | assistant 明确承诺稍后做某事                                                                                                                                                                                                                   |
-| `todo_completion`        | 待办已完成                                                                                                                                                                                                                                     |
-| `todo_cancel`            | 待办被取消                                                                                                                                                                                                                                     |
-| `todo_expiration`        | 短期待办自然失效或被澄清为不再需要                                                                                                                                                                                                             |
-| `scene_change`           | 地点、时间、环境或氛围明确变化                                                                                                                                                                                                                 |
-| `standing_agreement`     | 持续互动约定、相处规则或长期承诺形成或修订                                                                                                                                                                                                     |
-| `agreement_cancel`       | 持续互动约定被明确取消或作废                                                                                                                                                                                                                   |
-| `recent_episode`         | 最近发生的有意义互动                                                                                                                                                                                                                           |
-| `relationship_milestone` | 关系或剧情关键转折                                                                                                                                                                                                                             |
-| `user_correction`        | 用户明确修正旧记忆或设定                                                                                                                                                                                                                       |
-| `assistant_correction`   | assistant 明确修正已有记忆（场景、待办、约定、经历、里程碑、长期事实等）                                                                                                                                                                       |
-| `user_forget`            | 用户明确要求忘记已有长期事实或档案 item                                                                                                                                                                                                         |
-| `assistant_forget`       | assistant 明确撤回并要求忘记已有长期事实或档案 item                                                                                                                                                                                             |
-| `long_term_fact`         | 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 始终是 raw message 短片段——对陈述是原话，对推断是体现该行为的原话（如"我冲过去把门踹开了"）；推断理由写在 value.text 中，不放在 quote |
-| `memory_compaction`      | 基于已有 memory item 的预算维护与去重合并                                                                                                                                                                                                      |
-
-Evidence role 使用数据库真实消息校验：带 `user_` / `assistant_` 发言方语义的 kind 必须与对应真实 role 一致；`long_term_fact` 不绑定单方，User 与 Assistant 的消息都可支持 `worldFacts`、`userProfile`、`assistantProfile`、`relationship` 的新增。role 是 evidenceKind 真实性约束，不是“User 只能维护 userProfile / Assistant 只能维护 assistantProfile”的 section 权限边界。
-
-### 3.1 Per-Proposer 派生 evidenceKind enum
-
-上表是 Reducer 查 policy table（§6）用的 master enum。每个 Proposer 的 output schema enum 列自己合法的子集（per-Proposer 并集，非 per-op）；同一 Proposer 内某 op 的 evidenceKind 合法性由 §6 policy table 在 Reducer 侧裁决。派生关系由 §6 决定，本节为速查：
-
-| Proposer               | 合法 evidenceKind                                                                                                                                                              |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `currentStateProposer` | `scene_change`, `user_correction`, `assistant_correction`                                                                                                                      |
-| `todoProposer`         | `user_request`, `user_commitment`, `assistant_request`, `assistant_commitment`, `todo_completion`, `todo_cancel`, `todo_expiration`, `user_correction`, `assistant_correction` |
-| `agreementProposer`    | `standing_agreement`, `agreement_cancel`, `user_correction`, `assistant_correction`                                                                                            |
-| `episodeProposer`              | `recent_episode`, `relationship_milestone`, `user_correction`, `assistant_correction`                                                                                          |
-| `profileRelationshipProposer`  | `long_term_fact`, `user_correction`, `assistant_correction`, `user_forget`, `assistant_forget`；add/update 的 `factBasis` 另行区分 explicit/observedPattern                                                                                |
-| `worldFactProposer`            | `long_term_fact`, `user_correction`, `assistant_correction`, `user_forget`, `assistant_forget`                                                                                |
-| `compactionProposer`           | `memory_compaction`                                                                                                                                                            |
-
-## 4. Patch Op 合法值与约束
-
-下表同时服务两个视角：Reducer 按 op 校验字段结构，schema/prompt 作者按 Proposer 查合法 op。Reducer 的 section+op 合法性最终查 §6 policy table。
-
-| op                | 含义                       | 适用 Proposer                                                                                |
-| ----------------- | -------------------------- | -------------------------------------------------------------------------------------------- |
-| `setField`        | 设置覆盖式状态字段         | `currentStateProposer`                                                                       |
-| `clearField`      | 清除已失效的覆盖式状态字段 | `currentStateProposer`                                                                       |
-| `addItem`         | 新增 item                  | `todoProposer`, `agreementProposer`, `episodeProposer`, `profileRelationshipProposer`, `worldFactProposer`                       |
-| `updateItem`      | 局部更新已有 item          | `todoProposer`, `agreementProposer`, `episodeProposer`, `profileRelationshipProposer`, `worldFactProposer`                       |
-| `forgetItem`      | 忘记已有长期 item 并抑制其 source | `profileRelationshipProposer`, `worldFactProposer`                                                    |
-| `mergeItems`      | 合并重复或高度重叠 item    | `compactionProposer` |
-| `completeTodo`    | 将待办完成并从数组移除     | `todoProposer`                                                                               |
-| `cancelTodo`      | 将待办取消并从数组移除     | `todoProposer`                                                                               |
-| `expireTodo`      | 将短期待办失效并从数组移除 | `todoProposer`                                                                               |
-| `cancelAgreement` | 将持续约定取消并从数组移除 | `agreementProposer`                                                                          |
-
-字段必填规则：
-
-- `path`：只对 `scene.setField`/`scene.clearField` 必填，值为 `location`/`time`/`mood`/`note`。所有 item section（`todos`、`standingAgreements`、`recentEpisodes`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`）都由 `sectionResults` 的 section key 直接寻址，不使用 `path`。
-- `itemId`：对 `updateItem`/`forgetItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 必填（单个 item 的 id）。
-- `itemIds`（数组）：对 `mergeItems` 必填，指定要合并的多个 itemId，数组长度 ≥ 2。`value` 是合并后的新 item 值，至少包含 `text`。merged item 的 `evidenceGroups` 由 Reducer 从 source items 自动继承，保留 group 边界。Todo 只允许合并 `status=active` 且 `actor`、`requester`、`dueAt` 三者分别相同的 items；Reducer 将三字段原样继承到 merged item，不接受 Proposer 改写。
-- `value`：对 `setField`/`addItem`/`updateItem` 必填。普通非 profile item 的 `addItem`/`updateItem` value 至少包含 `text`；`userProfile`/`assistantProfile`/`relationship` 固定且仅允许 `text`、`facet`、`canonicalKey`、`factBasis` 四个必填字段。Todo 使用更窄的结构：
-  - `todos.addItem`：`value` 必须包含 `text`、`actor`、`requester`；可选 `dueAt` 表达式，缺省时持久化为 `null`。
-  - `todos.updateItem`：`value` 至少包含 `dueChange`，并可包含 `text`、`actor`、`requester`。`dueChange` 是显式判别 union：`{ "mode": "keep" }`、`{ "mode": "clear" }` 或 `{ "mode": "set", "dueAt": <表达式> }`；禁止用字段省略同时表达“不修改”和“清空”。
-  - `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或只含一个单位的 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days` 允许大于等于 0，`months` / `years` 必须大于 0；今天规范表示为 `days=0`，禁止同时携带多个单位或未使用的零值单位。
-  - absolute date 和 relative date 的 deadline 都是目标日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区来自 User 的 IANA time-zone 字段（默认 UTC），并在 task 创建时固化。relative deadline 以本 patch `evidenceRefs` 中 messageId 最大的 evidence message 的数据库 `createdAt` 为 anchor，只使用 anchor 的本地日历日期，不保留其时、分、秒和毫秒。relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。结果日界线落入 DST overlap 时选择较早 instant，落入 DST gap 时按 transition gap 向后顺延（Temporal `compatible` 语义）。禁止使用 task/worker 执行时间作 anchor。Reducer 只负责确定性日期计算和 ISO 8601 格式化；已到期的结果仍可写入，并由同一事务或随后 housekeeping 原位标记 overdue，不能因历史回放发生在 deadline 之后而拒绝事实。
-- `evidenceRefs`：除 `mergeItems` 外，Proposer patch 至少包含一个 `{ messageId, quote }`。Reducer 自行触发的 todo/scene lifecycle 变化不是 Proposer patch，使用 system cleanup event。普通写入 patch 的 `evidenceRefs` 必须来自 Proposer envelope 的 `observedMessages`（见 §5）。对会写入 item 的普通 patch，Reducer 将该数组连同 `patch.evidenceKind` 包装成一个新的 `evidenceGroup`，并为持久化 refs 补入已校验的数据库 `contentHash`。`forgetItem` 的 evidenceRefs 证明本次 forget 指令；被 suppress 的 source 则从目标 item 的既有完整 `evidenceGroups` 收集，不能由 Proposer 自报。
-- `scene.setField`/`scene.clearField` 的 `evidenceRefs` 必须恰好 1 条。`setField` 将已校验 ref 写入目标字段的 `evidenceRef`；`clearField` 将当前字段重置为 `{ value:null, evidenceRef:null, updatedAtMessageId:null }`，clear 指令证据保留在 accepted event 的 `patch_summary/normalized_operation` 中，不作为“当前空值”的 provenance。
-- `quote`：必须是能够支持 patch 的最短连续原文片段，最多 200 个 Unicode code points；Reducer 不自动裁剪，完整校验见 §7。
-- `evidenceKind: "memory_compaction"` 只允许用于 `mergeItems`。Proposer 不输出 `evidenceRefs`；Reducer 根据 `itemIds` 从权威 state 读取 source items 的既有 `evidenceGroups` 并写入 merged item。
-
-## 5. Proposer 输入/输出信封
-
-Proposer 输入使用统一 envelope，区分三类信息：**writable target**（本次允许写入的 sections）、**read-only memory context**（帮助理解对话背景的只读 memory 片段）、**observed messages**（普通模式下 LLM 可见的原始消息观察窗口）。`task.mode` 是判别字段，决定 `trigger`、`writableState`、`readOnlyContext` 和 `observedMessages` 的语义。
-
-Proposer 输入中的 state item 使用 redacted view，不包含 `evidenceGroups`。redacted view 分两级：
-
-- **writableState item**：保留 `id`（Proposer 需要 id 来输出 `updateItem`/`forgetItem`/`mergeItems`/`completeTodo` 等 patch）：
+`previousScene` 为 `null` 或：
 
 ```js
 {
-  id: "todo:uuid-xxx",
-  text: "归还橡皮",
-  createdAtMessageId: 121,
-  updatedAtMessageId: 121,
-  actor: "user",
-  requester: "assistant",
-  status: "active",
-  becameOverdueAt: null,
-  dueAt: null
+  epochId,
+  startedAtMessageId,
+  endedAt,
+  endReason: "explicit_end" | "new_epoch" | "field_ttl",
+  location, time, mood, note
 }
 ```
 
-- **readOnlyContext item**：不含 `id`（readOnlyContext 的 section 不是 writable target，Proposer 不应对其输出 patch，去掉 id 从结构上防止误用）：
+`previousScene` 保存一个 epoch 最后一份完整非空快照。同一 epoch 的字段分批 TTL 到期只能归档一次，后续到期不得用残缺快照覆盖；只有更晚的 epoch 才能替换它。scene 字段各自按自己的 evidence message 时间过期，更新一个字段不会给其他字段续期。
+
+`endedAt` 的确定性来源：`explicit_end/new_epoch` 使用对应 epoch transition evidence message 经数据库复核后的 `createdAt`；`field_ttl` 使用该 epoch 第一个实际到期字段的 expiry instant。不得使用 worker wall clock。
+
+### 1.3 Item、证据组与专用字段
+
+所有 item 的公共 shape：
 
 ```js
 {
-  text: "沉默时先开口说明状态",
-  createdAtMessageId: 116,
-  updatedAtMessageId: 116
-}
-```
-
-Proposer 输入中的 `scene` 字段使用 `{ value, updatedAtMessageId }`，不包含字段级 `evidenceRef`。
-
-### 5.1 信封结构（普通模式）
-
-```json
-{
-  "task": {
-    "taskId": "018f2f5e-7f2a-7b11-9c31-111111111111",
-    "tickId": 12345,
-    "userId": 1,
-    "presetId": "default",
-    "schemaVersion": 2,
-    "sourceGeneration": 0,
-    "baseRevision": 0,
-    "targetKey": "episodes",
-    "cursorBefore": 118,
-    "targetMessageId": 124,
-    "proposer": "episodeProposer",
-    "mode": "normal",
-    "targetSections": ["recentEpisodes", "milestones"],
-    "observedMessageIds": [119, 120, 121, 122, 123, 124],
-    "trigger": { "type": "lagThreshold" },
-    "now": "2026-07-06T22:30:00Z",
-    "userTimeZone": "Asia/Shanghai"
-  },
-  "writableState": {
-    "working": {
-      "recentEpisodes": [
-        {
-          "id": "episode:7",
-          "text": "雨夜争执 > 和解 | 用户表达不安",
-          "createdAtMessageId": 110,
-          "updatedAtMessageId": 110
-        }
-      ]
-    },
-    "longTerm": {
-      "milestones": [
-        {
-          "id": "milestone:2",
-          "text": "关系转折: 第一次明确互相信任",
-          "createdAtMessageId": 80,
-          "updatedAtMessageId": 80
-        }
-      ]
+  id: "todo:uuid",
+  text: "明早为 Alice 做三明治",
+  projectionIdentity: "observation-root-uuid",
+  sourceProjectionIdentities: ["observation-root-uuid"],
+  semanticKey: "meal:breakfast:sandwich",
+  currentFieldLineage: {
+    text: {
+      currentFingerprint: "sha256:...",
+      evidenceGroupIds: ["event-group:patch-1"]
     }
   },
-  "readOnlyContext": {
-    "current": {
-      "scene": {
-        "location": {
-          "value": "屋顶",
-          "updatedAtMessageId": 118
-        },
-        "time": {
-          "value": "深夜",
-          "updatedAtMessageId": 118
-        },
-        "mood": {
-          "value": "雨后安静",
-          "updatedAtMessageId": 119
-        },
-        "note": { "value": null, "updatedAtMessageId": null }
-      }
+  evidenceGroups: [{
+    evidenceGroupId: "event-group:patch-1",
+    evidenceKind: "assistant_commitment",
+    changeKind: "establish",
+    assertedValueFingerprints: {
+      text: "sha256:...",
+      dueAt: "sha256:..."
     },
-    "working": {
-      "todos": [
-        {
-          "text": "归还橡皮",
-          "createdAtMessageId": 112,
-          "updatedAtMessageId": 112,
-          "actor": "user",
-          "requester": "assistant",
-          "status": "active",
-          "becameOverdueAt": null,
-          "dueAt": null
-        }
-      ],
-      "standingAgreements": [
-        {
-          "text": "沉默时先开口说明状态",
-          "createdAtMessageId": 116,
-          "updatedAtMessageId": 116
-        }
-      ]
-    },
-    "longTerm": {
-      "relationship": [
-        {
-          "text": "关系模式: 慢热 > 安全感确认后更依赖",
-          "createdAtMessageId": 50,
-          "updatedAtMessageId": 60
-        }
-      ],
-      "userProfile": [
-        {
-          "text": "偏好: 不喜欢被连续追问",
-          "createdAtMessageId": 45,
-          "updatedAtMessageId": 45
-        }
-      ],
-      "assistantProfile": [
-        {
-          "text": "人格: 主动给空间",
-          "createdAtMessageId": 30,
-          "updatedAtMessageId": 30
-        }
-      ]
-    }
+    observationIds: ["observation-uuid"],
+    occasionIds: ["occasion-uuid"],
+    refs: [{
+      messageId: 696,
+      contentHash: "sha256:...",
+      quote: "明天一定给你做超好吃的三明治"
+    }]
+  }],
+  createdAtMessageId: 696,
+  updatedAtMessageId: 696
+}
+```
+
+静态约束：
+
+- `id` 由 Reducer 生成；
+- 每个非 compaction patch 先把 `observationIds` 解析为排序去重的 root observation ID 集合 `R`。`sourceProjectionIdentities=R`；`|R|=1` 时 `projectionIdentity=R[0]`，`|R|>1` 时使用固定 `projectionSetNamespace` 对 canonical `R.join("\n")` 计算 UUIDv5。compaction 对全部 source item 的 `sourceProjectionIdentities` 做同一函数，不另设身份算法；只有 projectionIdentity 完全相同的跨 section 投影才允许 Renderer 去掉重复表达，集合部分相交不能整项去重；
+- `semanticKey` 是检索/关联提示，不是 authority，不设唯一约束，相同 key 不得触发自动合并；
+- `evidenceGroups` append-only；update 保留历史 group。只有 `correct` 和 `forget` 可以为旧 source 创建 suppression；
+- `evidenceGroupId` 由 accepted patch/event identity 确定性生成；`assertedValueFingerprints` 由 Reducer 对该 group 实际建立/重申/修改的字段和值做 canonical serialization 后计算，Proposer 不输出；
+- `currentFieldLineage` 由 Reducer 维护且不得由 Proposer 输出。每个当前可见语义字段都必须有 `currentFingerprint` 和非空、排序去重、可解析到本 item `evidenceGroups` 的 `evidenceGroupIds`：establish 使用新 group；reaffirm/refine 在仍依赖旧值时合并原 lineage 与新 group；supersede/correct 以新 group 替换；compaction 为每个合并后字段取所有实际支持 source field lineage 的并集，并计算合并后 current fingerprint。correction 必须从 pre-state 对应字段的 lineage 精确收集待 suppress source；lineage 为空、悬空或不能证明当前值时 fail closed。forget 才收集 item 全部 groups；
+- `createdAtMessageId` 是首个 accepted establish group 的最小 message ID；`updatedAtMessageId` 是当前全部 group ref 的最大 message ID；
+- observation 的 waiting/retry 状态不能复制进 item。
+
+`currentFieldLineage` key 集合固定，不能由实现按对象键遍历自行决定：
+
+| section | 必需 lineage keys | 条件 key / 原子性 |
+| --- | --- | --- |
+| 所有 item | `text` | `semanticKey/projectionIdentity/createdAt/updatedAt` 是派生身份/审计，不建 field lineage |
+| `todos` | `actor,requester` | `due` 在 dueAt 非空时必需，fingerprint 原子覆盖 `{dueAt,timeAnchorMessageId}`，不得拆成两个可独立 suppress 的 lineage；`status/becameOverdueAt` 是 lifecycle 派生，不进入 source lineage |
+| `standingAgreements` | `agreementKey` | 与 text 分开，但 update/merge 后必须仍有支持 group |
+| `recentEpisodes/milestones` | 无额外必需 | 非空 `arcId` 时必须有 `arcId` lineage；null 不建 |
+| `userProfile/assistantProfile/relationship` | `facet,canonicalKey,factBasis` | 三者分别维护，不因只改 text 自动替换 |
+| `worldFacts` | 无额外 | 只有 text |
+
+普通 correction 只要求被修改字段具有可验证 pre-state lineage；从默认 null/不存在新建立一个条件字段时没有旧 assertion 可 suppress，可以 establish该字段的新 lineage，但不得把其他字段 source当作“旧 null”的证据。corrected retraction要求该 section 当前所有必需及现存条件 lineage均非空，取并集。`assertedValueFingerprints` 和 normalized operation 使用相同 key/`due`原子化规则。
+
+专用字段：
+
+| section | 专用字段 |
+| --- | --- |
+| `todos` | `actor: user\|assistant\|both`、`requester: user\|assistant`、`status: active\|overdue`、`becameOverdueAt`、`dueAt`、`timeAnchorMessageId` |
+| `standingAgreements` | `agreementKey`；默认来自候选 `semanticKey`，不唯一，更新仍须显式选择 `itemId` |
+| `recentEpisodes` / `milestones` | 可选 `arcId`；任何 open arc 都不创建 item |
+| `userProfile` / `assistantProfile` / `relationship` | `facet`、`canonicalKey`、`factBasis: explicit\|observedPattern` |
+
+profile 枚举：
+
+| section | facet | canonicalKey | multi-value key |
+| --- | --- | --- | --- |
+| `userProfile` | `identity\|background\|preference\|communicationBoundary\|communicationStyle\|interactionPattern\|interest` | `identity\|background\|location\|expertise\|communicationTone\|responseFormat\|responseLength\|followUpQuestions\|roleplay\|serviceTreatment\|topicSeriousness\|correctionStyle\|emotionalExpression\|humorStyle\|interest\|open` | `background\|expertise\|interest\|open` |
+| `assistantProfile` | `identity\|personaTrait\|communicationStyle\|behavioralTendency\|value\|limitation` | `identity\|persona\|communicationTone\|responseFormat\|followUpQuestions\|roleplayIdentity\|emotionalStance\|value\|limitation\|open` | `persona\|value\|open` |
+| `relationship` | `status\|address\|trust\|interactionPattern\|sharedBoundary` | `relationshipStatus\|userToAssistantAddress\|assistantToUserAddress\|trust\|roleStructure\|interactionPattern\|sharedBoundary\|open` | `interactionPattern\|open` |
+
+非 multi-value key 在 section 内唯一，multi-value key 仍受 exact duplicate gate。`factBasis=observedPattern` 至少需要 3 个 distinct `occasionId`，并跨至少 2 个 distinct 非空 `arcId`。计数由持久 observation evidence 确定，不按 message 数或 LLM 自报数字。
+
+### 1.4 Section 与 target
+
+正式 section：
+
+```text
+scene | todos | standingAgreements | recentEpisodes | milestones |
+worldFacts | userProfile | assistantProfile | relationship
+```
+
+正式 target 与 writable section：
+
+| targetKey | workerKey | writable sections |
+| --- | --- | --- |
+| `scene` | `currentStateProposer` | `scene` |
+| `todos` | `todoProposer` | `todos` |
+| `standingAgreements` | `agreementProposer` | `standingAgreements` |
+| `episodes` | `episodeProposer` | `recentEpisodes`, `milestones` |
+| `profileRelationship` | `profileRelationshipProposer` | `userProfile`, `assistantProfile`, `relationship` |
+| `worldFacts` | `worldFactProposer` | `worldFacts` |
+
+`current/working/longTerm/meta/previousScene` 不是 section 或 target。`semanticSignalObserver` 是 source-scan worker，不是 target。
+
+### 1.5 专业 Proposer state projection
+
+`targetKey` 同时确定唯一 writable projection 和允许出现的 read-only section 集；task 不携带可漂移的 section 清单：
+
+| target | writableState | 允许的 readOnlyContext sections |
+| --- | --- | --- |
+| `scene` | `current.scene` 与 `current.previousScene` | `userProfile,assistantProfile,relationship,worldFacts` |
+| `todos` | `todos` | `scene,standingAgreements,userProfile,assistantProfile,relationship` |
+| `standingAgreements` | `standingAgreements` | `scene,todos,userProfile,assistantProfile,relationship` |
+| `episodes` | `recentEpisodes,milestones` | `scene,todos,standingAgreements,worldFacts,userProfile,assistantProfile,relationship` |
+| `profileRelationship` | `userProfile,assistantProfile,relationship` | `scene,standingAgreements,milestones,worldFacts` |
+| `worldFacts` | `worldFacts` | `scene,milestones,userProfile,assistantProfile,relationship` |
+
+`scene` 表示 effective current scene；`current.previousScene` 只作为 scene writer 的 lifecycle state，不是正式 section。read-only todos 默认只含 active；若 candidate 直接关联 overdue item则必须额外保留它。todos writableState 包含全部 active、所有 candidate 直接关联 overdue item，再按 `proposerContext.todosRecentOverdueItems` 取最近 overdue；直接关联项不计入该条数裁剪。取消/完成后已不在 authority state 的 item 不从 event history伪造进 context。
+
+组装顺序固定为：candidate 直接关联的 writable/read-only items → 每个允许 section 的确定性相关项 → 公共背景。直接关联以 observation root/projection identity、现有 evidence observation IDs、arc/occasion、显式 item link 与 canonical entity/action key 的纯代码索引确定，不能靠 text 相似度猜。直接关联项永不因 item/code-point 预算被静默截断；若连同必需 raw evidence 超过 Provider 物理上限，task 进入 `unable_to_decide/missing_context` 或显式 capacity failure，不得调用一个缺必要项的 Proposer。其余内容按 `proposerContext.maxReadOnlyItemsPerSection/maxReadOnlyCodePoints` 稳定裁剪，并在 envelope 写 coverage metadata。
+
+readOnly item 一律移除 `id` 与完整 evidenceGroups，只保留理解背景所需的结构化可见值；它不能成为 patch evidence或 itemId 来源。target 的 writable sections 绝不在 readOnlyContext 重复出现。任何实现额外放入未列 section、遗漏直接关联项，或因 target 调度顺序改变 read-only projection，均为 envelope contract violation。
+
+## 2. 固定枚举
+
+### 2.1 Worker、task 与状态
+
+```text
+workerKey = semanticSignalObserver | currentStateProposer | todoProposer |
+            agreementProposer | episodeProposer | profileRelationshipProposer |
+            worldFactProposer | compactionProposer | systemCleanup
+
+taskType = source_scan | normal | maintenance | system_cleanup
+taskStatus = queued | running | retry_wait | succeeded | failed | cancelled
+
+sourceScanStatus = healthy | retry_wait | halted | rebuilding
+sourcePendingTrigger = debounce | batch_target | provisional_user_deadline |
+  tail_deadline | assistant_complete | flush | drain | recovery | rebuild
+semanticBoundaryPlanVersion = single_source_message_v1
+cycleStatus = proposing | reducing | retry_wait | completed | superseded | halted
+targetHealth = healthy | retry_wait | capacity_blocked | halted | rebuilding
+```
+
+`source_scan` task 的 `targetKey` 必须为 `null`；normal/maintenance 必须使用合法 target；system cleanup 可按归属使用 target 或 `null`。所有 task 必须有 `workerKey`。
+
+`stage` 不是自由文本，按 taskType 使用封闭、单调状态图：
+
+```text
+source_scan:
+  pending -> proposing -> scan_output_persisted -> committing -> committed
+
+normal:
+  pending -> proposing -> proposal_persisted -> reducing
+  reducing -> context_expansion_pending -> proposing
+  reducing -> capacity_blocked -> replaying_original_proposal
+  reducing|replaying_original_proposal -> committed|no_state_change
+  replaying_original_proposal -> replay_failed
+
+maintenance:
+  pending -> proposing -> proposal_persisted -> compacting
+  compacting -> compaction_applied
+  compacting -> compaction_failed
+  proposing|proposal_persisted|compacting ->
+    hygiene_applied|hygiene_noop|hygiene_skipped|hygiene_stale
+
+system_cleanup:
+  pending -> reducing -> committed|no_state_change
+
+任意非终态 stage -> failed|cancelled
+```
+
+Provider/transaction 重试不倒退 stage；`taskStatus=retry_wait` 保留失败时的非终态 stage并要求 `notBefore` 非空，恢复后 CAS 回 running继续该 phase。`status=succeeded` 只允许 source_scan:`committed`、normal:`committed|no_state_change`、maintenance:`compaction_applied|hygiene_applied|hygiene_noop|hygiene_skipped|hygiene_stale`、system_cleanup:`committed|no_state_change`；`status=failed` 只允许 `failed|replay_failed|compaction_failed`，且后两者分别只属于 normal/maintenance；`status=cancelled` 必须 stage=cancelled。queued/running/retry_wait 不得使用终态 stage。进入 `scan_output_persisted|proposal_persisted` 后 `stagePayload.persistedProposal` 必填且 immutable；committed/compaction_applied 中实际改 state 才允许非空 resultRevision，noop/hygiene skipped 等必须为 null。
+
+### 2.2 Observation
+
+```text
+observationKind = scene_state | one_time_commitment | recurring_commitment |
+  interaction_rule | episode_arc | profile_fact | profile_pattern |
+  relationship_fact | relationship_pattern | world_canon |
+  memory_correction | memory_forget
+
+signalRelation = establishes | proposes | accepts | rejects | supports |
+  contradicts | completes | cancels | corrects | forgets |
+  arc_progress | arc_closes
+
+observationStatus = open | superseded | invalidated
+observationTargetStatus = ready | processing | waiting | consumed |
+  excluded | retryable | dead_letter
+subjectRole = user | assistant | both | relationship | world | unknown
+factBasisHint = explicit | observedPattern | not_applicable
+arcStatus = open | closed | invalidated
+occasionStatus = open | closed | invalidated
+```
+
+`waiting` 是正常业务状态，不导致 degraded；`retryable/dead_letter` 是故障状态。observation master 不保存 target 结论。
+
+Arc/occasion 状态机固定为 `open -> closed|invalidated`、`closed -> invalidated`；invalidated 终态不可恢复。append/close 只接受 open，invalidate 接受 open 或被 correction dependency 精确带入 mutable catalog 的 closed 对象。closed→invalidated 必须遵守 projected dependency 先收口的规则，不能只改 registry。
+
+observation append 后 version 增长时，纯代码按新增 relation × target 的 material-impact 表重算 target 行。`accepts|rejects|completes|cancels|corrects|forgets|contradicts|arc_progress|arc_closes` 必须把受影响的 consumed/excluded/waiting target 重新置为 ready；完全重复且不改变证据集合的 `supports` 可以保持原状态。不能把 consumed 理解为 observation 永久关闭。
+
+### 2.3 Evidence、changeKind 与 patch op
+
+```text
+evidenceKind = user_request | user_commitment | assistant_request |
+  assistant_commitment | todo_completion | todo_cancel | todo_expiration |
+  scene_change | standing_agreement | agreement_cancel | recent_episode |
+  relationship_milestone | user_correction | assistant_correction |
+  user_forget | assistant_forget | long_term_fact | memory_compaction
+
+changeKind = establish | reaffirm | refine | supersede | correct | forget | lifecycle
+
+patchOp = setField | clearField | addItem | updateItem | retractItem | forgetItem |
+  mergeItems | completeTodo | cancelTodo | expireTodo | cancelAgreement
+
+cleanupType = scene_epoch_archived | scene_field_expired | scene_epoch_emptied |
+  previous_scene_evicted | todo_became_overdue | todo_revived_from_overdue |
+  recent_episode_evicted
+```
+
+自然演化必须使用 `reaffirm/refine/supersede` 并保留旧 source。`correct` 只表示旧事实当时就是错误的；`forget` 只表示明确遗忘/删除意图；`lifecycle` 用于真实完成、取消、过期、scene epoch 与确定性 housekeeping。
+
+### 2.4 Candidate decision
+
+```text
+candidateOutcome = proposed | waiting | excluded | already_reflected
+
+proposed reason = meets_write_threshold
+waiting reason = insufficient_evidence | awaiting_acceptance | awaiting_outcome |
+                 ambiguous_reference | pattern_threshold_not_met
+excluded reason = target_mismatch | not_memory_worthy | transient_only |
+                  invalid_inference | not_canon | contradicted
+already_reflected reason = duplicate_or_existing_state
+```
+
+### 2.5 Reject reason
+
+Reducer reject reason 至少包括：
+
+```text
+schema_invalid | target_scope_mismatch | observation_not_found |
+observation_version_stale | observation_target_mismatch |
+candidate_coverage_invalid | evidence_not_registered |
+message_id_not_found | evidence_source_mismatch | evidence_role_mismatch |
+quote_too_short | quote_too_long | quote_not_found |
+policy_not_allowed | change_kind_not_allowed | invalid_state_transition |
+item_not_found | duplicate_item | duplicate_profile_key |
+pattern_threshold_not_met | stale_cycle | rebase_conflict |
+item_protected_by_pending_proposal | capacity_exceeded
+```
+
+reject reason 的 retry/terminal 分类以 [Reducer Apply](algorithms/reducer-application.md) 为准；`task=succeeded` 不能把可修复 reject 伪装成 observation 已消费。
+
+## 3. Source scan 与 Observation 契约
+
+### 3.1 Scan envelope
+
+```js
+{
+  task: {
+    taskId, tickId, userId, presetId,
+    schemaVersion: 3,
+    sourceGeneration,
+    workerKey: "semanticSignalObserver",
+    taskType: "source_scan",
+    scanMode: "incremental" | "rebuild" | "late_discovery",
+    contractVersion,
+    semanticBoundaryId,
+    boundaryOrdinal,
+    boundaryPlanVersion: "single_source_message_v1",
+    scanCursorBefore,
+    sourceBoundaryMessageId,
+    detectorVersion,
+    semanticNow,
+    userTimeZone
   },
-  "observedMessages": [
-    { "id": 119, "role": "user", "createdAt": "2026-07-06T22:20:00Z", "contentKind": "raw", "content": "你为什么不说话，是不是又觉得我很烦？", "contentHash": "sha256:8ca61a01fbd79970364c38917cd1f3ebe96713f724af71caa698d65e10e84ce5" },
-    { "id": 120, "role": "assistant", "createdAt": "2026-07-06T22:21:00Z", "contentKind": "raw", "content": "我没有觉得你烦，只是在想怎么开口。", "contentHash": "sha256:d17d057c96c43dce7c9d5a0a1ea53750fad74d5fac47613e203c04767b2c4245" },
-    { "id": 121, "role": "user", "createdAt": "2026-07-06T22:22:00Z", "contentKind": "raw", "content": "我刚才其实很怕你会走，所以才一直不敢抬头。", "contentHash": "sha256:ea43e034be8421d57eb9551b5a582829265d6dd29413ec7d1c186d42b045c29b" },
-    { "id": 122, "role": "assistant", "createdAt": "2026-07-06T22:23:00Z", "contentKind": "raw", "content": "我没有走，我只是想等你愿意看我的时候再靠近。", "contentHash": "sha256:59746af1c43cf67fc4361fcf756f97cf8b93579a5661191045cb6c6c3e45b829" },
-    { "id": 123, "role": "user", "createdAt": "2026-07-06T22:24:00Z", "contentKind": "raw", "content": "那你以后能不能别沉默那么久，我会乱想。", "contentHash": "sha256:e1b948767b9ae12d4a781c67e9935ae854b0256d5d70c56c39016ecf8c553ede" },
-    { "id": 124, "role": "assistant", "createdAt": "2026-07-06T22:25:00Z", "contentKind": "raw", "content": "好，以后我会先开口，不让你一个人等。", "contentHash": "sha256:befdcb11c89b8ade33628f58d69e66a9c84e0f3257f8d6014b7a7aacf6e004df" }
-  ]
+  observedMessages: [/* singleton boundary delta + 有界 supporting context */],
+  newMessageIds: [/* singleton canonical boundary 的唯一 source message */],
+  openObservationCatalog: [/* redacted；仅当前 generation */],
+  mutableArcCatalog: [/* open + 本 correction 直接相关 closed；redacted */],
+  mutableOccasionCatalog: [/* open + 本 correction 直接相关 closed；redacted */]
 }
 ```
 
-字段说明：
+source scan 不包含 writable state，也不能输出 patch。`semanticBoundaryId/boundaryOrdinal/planVersion/range/source key/hash` 必须和 immutable plan row 完全相同；`newMessageIds` 恰有一个 ID 且等于 `sourceBoundaryMessageId`。supporting context 不得冒充未扫描 new message。
 
-- `task`：携带 durable `taskId`、创建时的 `sourceGeneration/baseRevision`、本次 `targetKey`、该 target 的 `cursorBefore`、proposer、mode、target sections、observed message ids、`trigger` 和 `now`。一个 normal task 恰好对应一个 target，因此只有一个 `cursorBefore`、一个 new batch 和一个 `targetMessageId`；正常 apply 前必须重新校验 generation、revision 与 target cursor，任一不匹配都不得直接 apply。compaction 后 replay 原 proposal 时，`baseRevision` 只用于审计，但 `sourceGeneration` 仍必须匹配；其余 stale 判定见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) §2。
-- `writableState`：本次允许写入的目标 sections 当前状态。item 使用 §5 的 writableState redacted view（含 id）；无值字段显式传 null。
-- `readOnlyContext`：可读取的背景 memory，用于理解对话，不得作为新事实证据。item 使用 §5 的 readOnlyContext redacted view（不含 id），固定范围见 §5.3。
-- `observedMessages`：普通模式下 LLM 可见的原始消息观察窗口，与 `observedMessageIds` 一一对应。每项携带真实 `role`、`createdAt` 和 `contentHash`；`contentHash` 固定为 raw `content` 的 UTF-8 SHA-256，格式为 `sha256:` 加 64 位小写十六进制。这些 proposal-time 字段写入 §9.3 durable task 的 immutable `task_payload`，Reducer apply 时与数据库当前行重新核对。普通写入 patch 的 `evidenceRefs.messageId` 必须来自 `observedMessages`。窗口组装规则见 [write-protocol.md](write-protocol.md) §2。
+### 3.2 Scan output
 
-### 5.2 维护模式字段语义
-
-`compactionProposer` 使用 `mode: "maintenance"` 的同形 envelope。各字段在维护模式下的取值与约束：
-
-| Envelope 字段                         | 维护模式取值 / 范围                 | 约束                                                             |
-| ------------------------------------- | ----------------------------------- | ---------------------------------------------------------------- |
-| `task.proposer`                       | `compactionProposer`                | 由长度预算门或 normal commit 后的 high-water hygiene 触发，不参与普通 lag 轮询 |
-| `task.mode`                           | `"maintenance"`                     | Reducer 按维护模式切换 policy：只允许安全合并，不允许新增事实    |
-| `task.targetKey`                      | 来源 normal task 的 targetKey       | 仅用于关联来源 target、event 和 ops log；compaction 不读取或推进该 cursor |
-| `task.targetMessageId`                | 来源 normal task 的 targetMessageId | 标识来源 normal proposal 的 raw-message 边界，用于关联和幂等；只有 lengthBudget 链用于后续 replay，不是 compaction cursor |
-| `task.parentTaskId`                   | 来源 normal task 的 taskId          | maintenance durable task 的父任务关联                                   |
-| `task.resumeEpoch`                    | 首次为 0，人工 resume 每次 +1       | 与 parentTaskId、section 共同参与 maintenance dedupe identity            |
-| `task.targetSections`                 | 仅含被阻塞或达到高水位的一个 section | 禁止跨 section 合并；envelope 不再设置额外的 path 分组字段      |
-| `task.observedMessageIds`             | `[]`                                | 维护任务不观察新的最近对话窗口                                   |
-| `task.trigger`                        | `lengthBudget` 或 `hygiene`         | 前者含 `dimension=maxItems|maxRenderedChars` 与 `limit`；后者含触发时 `itemCount/maxItems/highWatermarkPercent` |
-| `writableState`                       | 目标 section 的全部可合并 items     | item 使用 §5 redacted view；todos 只包含 `status=active` 的 items |
-| `readOnlyContext`                     | `{}`                                | 维护任务只在目标 source items 内判断合并                         |
-| `observedMessages`                    | `[]`                                | 维护任务不读取 raw messages                                      |
-
-维护模式下，`writableState` 不包含既有 `evidenceGroups`。`compactionProposer` 只输出可合并的 `itemIds` 与合并后的 `value.text`，不输出 `evidenceRefs`。Reducer 根据 `itemIds` 从权威 `memory_state` 读取 source items，继承 source `evidenceGroups`。
-
-维护模式示例：
-
-```json
+```js
 {
-  "task": {
-    "taskId": "018f2f5e-7f2a-7b11-9c31-222222222222",
-    "tickId": 12346,
-    "userId": 1,
-    "presetId": "default",
-    "schemaVersion": 2,
-    "sourceGeneration": 0,
-    "baseRevision": 0,
-    "targetKey": "profileRelationship",
-    "targetMessageId": 124,
-    "parentTaskId": "018f2f5e-7f2a-7b11-9c31-111111111111",
-    "resumeEpoch": 0,
-    "proposer": "compactionProposer",
-    "mode": "maintenance",
-    "targetSections": ["userProfile"],
-    "observedMessageIds": [],
-    "trigger": {
-      "type": "lengthBudget",
-      "dimension": "maxRenderedChars",
-      "limit": 1200
-    },
-    "now": "2026-07-06T22:30:00Z",
-    "userTimeZone": "Asia/Shanghai"
+  tickId,
+  proposer: "semanticSignalObserver",
+  sourceBoundaryMessageId,
+  messageAssessments: [{
+    messageId,
+    outcome: "signals" | "no_relevant_signal",
+    signalIndexes: [0],
+    arcActionIndexes: [0],
+    occasionActionIndexes: [0]
+  }],
+  arcActions: [{
+    action: "open" | "append" | "close" | "invalidate",
+    arcId: null,
+    expectedVersion: null,
+    semanticKey: "outing:night",
+    title: "夜间外出",
+    evidenceRefs: [{ messageId, quote }]
+  }],
+  occasionActions: [{
+    action: "create" | "append" | "close" | "invalidate",
+    occasionId: null,
+    expectedVersion: null,
+    arcId: null,
+    arcActionIndex: null,
+    semanticKey: "breakfast-promise",
+    evidenceRefs: [{ messageId, quote }]
+  }],
+  signals: [{
+    action: "create" | "append" | "supersede" | "invalidate",
+    relatedObservationId: null,
+    affectedObservationIds: [],
+    expectedVersion: null,
+    kind: "recurring_commitment",
+    relation: "proposes",
+    semanticKey: "care:daily-breakfast",
+    subjectRole: "assistant",
+    factBasisHint: "explicit" | "observedPattern" | "not_applicable",
+    claim: "Assistant 提议以后每天早上做早餐",
+    candidateTargets: ["standingAgreements"],
+    occasionId: null,
+    occasionActionIndex: null,
+    arcId: null,
+    arcActionIndex: null,
+    evidenceRefs: [{ messageId: 729, quote: "以后每天早上都给你做" }]
+  }]
+}
+```
+
+约束：
+
+1. `messageAssessments` 必须逐一且只逐一覆盖 `newMessageIds`，不能漏消息、重复消息或为 supporting-only 消息创建 assessment；`outcome=signals` 时三个 index 数组的并集必须非空，`no_relevant_signal` 时必须全部为空；
+2. 每个 signal/arc/occasion action 至少引用一个 new message；旧消息只能作为 supporting ref，且必须已在输入 catalog；
+3. observation 的 `append/supersede/invalidate` 必须显式引用同 scope、generation、version 的 `relatedObservationId`；arc/occasion append/close/invalidate 同样必须精确引用输入 catalog 中的 ID/version；相同 `semanticKey` 不能代替引用；
+4. `semanticKey/claim/candidateTargets/factBasisHint` 都是候选分类，不是最终记忆；
+5. 新 observation、arc、occasion ID 由 `(scanTaskId, outputIndex)` 生成稳定 UUIDv5；三类对象使用各自固定 namespace 防止碰撞，重复 delivery 幂等；
+6. `detectorVersion` 是 observer prompt、output schema、routing config 的内容 hash。改变它必须创建新 source generation 并全量重建；
+7. scanner false negative 无法由结构绝对消除，必须通过逐消息 assessment、detector version、golden/metamorphic fixture、late discovery 与 rebuild 管理。
+
+Arc/episode coupling 是 strict schema + 本地交叉校验的一部分：每个 `arcActions.open` 必须在同 output 被恰好一个 `kind=episode_arc, action=create, relation=establishes, candidateTargets` 含 `episodes` 的 signal 通过 `arcActionIndex` 引用；每个 `append/close/invalidate` 必须对该 arc 唯一关联的 episode observation 分别输出 `append + arc_progress`、`append + arc_closes`、`invalidate + contradicts`。因此不存在只更新 arc 而不推进 episode observation version 的合法 output，arc evidence 掉出 recent window 后仍由 observation-target GapBridge 覆盖。Coordinator 在同一事务生成两类 ID并建立 `episode_observation_id`，不依赖 semanticKey 猜关联。
+
+Occasion `create` 产生 open occasion；append/close 只能引用 `mutableOccasionCatalog` 中 status=open 的 exact ID/version，invalidate 可引用 open 或本次 correction dependency lookup 明确带入的 closed 对象。close/invalidate 写 `endedAtMessageId`；同一 arc close/invalidate 时，其全部 open occasions 必须在同 output close/invalidate。只有 status=closed 且未 suppression 的 occasion参与 pattern 门槛，open 不提前计数，invalidated 永不计数。Arc 同理：append/close 只允许 open，invalidate 允许 open|closed；closed 只因 correction dependency直接相关才进入有界 mutable catalog，不做无界全历史目录。
+
+Projected-observation invalidation 必须延后到 Reducer：普通 signal 的 `affectedObservationIds=[]`；只有 `kind=memory_correction|memory_forget` 的 create signal可以列出 exact catalog IDs。若 related observation/arc/occasion 已有 consumed target、active state projection，或作为当前 observed-pattern threshold 的有效依赖，Observer 不得直接 supersede/invalidate 它，而必须 create correction/forget observation，列全 dependency closure 并路由所有受影响 targets。旧对象在 correction/forget patch accepted 前保持有效；Reducer 更新、corrected-retract 或 forget 后，才在同事务按实际已处理 target收口旧 observation target，全部 active projection解除后再 invalidated master。arc/occasion 也只有在所有依赖 projection已安全重判后才可最终 invalidate；pattern threshold 因此下降时必须唤醒相关 profile/relationship candidate，必要时使用 `retractItem+correct`。
+
+Create/open action 的对象 ID 与 `expectedVersion` 必须为 null；append/close/supersede/invalidate 必须带 catalog 中的精确对象 ID 与 `expectedVersion`。Coordinator 只在 compare-and-set 命中时提交。
+
+同一 output 内引用尚未持久化的新对象时使用 action index：occasion action 的 `arcId` 与 `arcActionIndex` 二选一；signal 的 `arcId/arcActionIndex` 二选一、`occasionId/occasionActionIndex` 二选一（允许两组都为空）。action index 必须指向本 output 中真实的 `open/create` action，且 evidence/scope 兼容。Coordinator 先用各固定 namespace 解析稳定 UUID，再原子写对象与引用；LLM 不得自报新 UUID。
+
+完整状态机见 [Source Scan 与 Observation](algorithms/source-scan-and-observation.md)。
+
+## 4. 专业 Proposer 与 Patch 契约
+
+### 4.1 Boundary-cycle envelope
+
+一个 boundary cycle 内所有 target 使用同一冻结 snapshot：
+
+```js
+{
+  task: {
+    taskId, tickId, userId, presetId,
+    schemaVersion: 3,
+    sourceGeneration,
+    boundaryCycleId,
+    cycleLineageId,
+    cycleKind: "boundary" | "semantic_review",
+    reviewEpoch,
+    reviewTrigger: null | "waiting_stale" | "operator_requeue" | "dead_letter_recheck" | "late_discovery",
+    lateDiscoverySourceBoundaryId: null | "uuid",
+    retryEpoch,
+    asOfRevision,
+    contractVersion,
+    sourceBoundaryMessageId,
+    targetKey,
+    workerKey,
+    observationVersions: [{ observationId, version }],
+    semanticNow,
+    userTimeZone
   },
-  "writableState": {
-    "longTerm": {
-      "userProfile": [
-        {
-          "id": "userProfile:1",
-          "text": "偏好: 晚上聊天",
-          "createdAtMessageId": 88,
-          "updatedAtMessageId": 88
-        },
-        {
-          "id": "userProfile:2",
-          "text": "关系模式: 需要慢慢熟悉后再依赖",
-          "createdAtMessageId": 101,
-          "updatedAtMessageId": 101
-        }
-      ]
-    }
-  },
-  "readOnlyContext": {},
-  "observedMessages": []
+  observations: [/* 分配给本 target 的 ready/retryable candidates */],
+  writableState: {/* asOfRevision 中本 target sections 的 redacted view */},
+  readOnlyContext: {/* 同一 snapshot 中最小相关背景 */},
+  observedMessages: [/* observation 已登记 evidence + 必需支持原文 */]
 }
 ```
 
-示例中的 `limit` 只展示 envelope shape，不代表容量默认值；正式值必须来自 §8 的集中配置。
+`writableState` item 保留 `id`；`readOnlyContext` item 不暴露可写 `id`；两者都不暴露完整 evidenceGroups。原始 evidence 只通过 `observedMessages` 与 observation evidence registry 提供。
 
-### 5.3 各 Proposer 的 readOnlyContext 固定范围
+### 4.2 Output
 
-`readOnlyContext` 的 section 范围由 Proposer 类型和目标 sections 固定决定，不随 observed messages 语义变化：
+普通成功 output：
 
-| Proposer                    | Writable target                                        | Read-only context                                                                                                                              |
-| --------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `currentStateProposer`      | `scene`                                                | `working.recentEpisodes`                                                                                                                       |
-| `todoProposer`              | `todos`                                                | `current.scene`、`working.standingAgreements`、`working.recentEpisodes`、`longTerm.userProfile`、`longTerm.assistantProfile`                   |
-| `agreementProposer`         | `standingAgreements`                                   | `current.scene`、`working.todos` active 子集、`working.recentEpisodes`、`longTerm.relationship`、`longTerm.userProfile`、`longTerm.assistantProfile` |
-| `episodeProposer`           | `recentEpisodes`, `milestones`                         | `current.scene`、`working.todos` active 子集、`working.standingAgreements`、`longTerm.relationship`、`longTerm.userProfile`、`longTerm.assistantProfile` |
-| `profileRelationshipProposer` | `userProfile`、`assistantProfile`、`relationship`    | `current.scene`、`working.recentEpisodes`、`working.standingAgreements`、`longTerm.milestones`、`longTerm.worldFacts`                        |
-| `worldFactProposer`         | `worldFacts`                                           | `current.scene`、`working.recentEpisodes`、`working.standingAgreements`、`longTerm.milestones`、`longTerm.userProfile`、`longTerm.assistantProfile`、`longTerm.relationship` |
-| `compactionProposer`        | 被预算阻塞的单个 section                               | `{}`                                                                                                                                           |
-
-`profileRelationshipProposer` 的 `targetSections` 为 `["userProfile", "assistantProfile", "relationship"]`，三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 的 `targetSections` 为 `["worldFacts"]`。两者分别把对方 writable sections 放入 `readOnlyContext`：前者只读 `worldFacts`，后者只读 `userProfile`、`assistantProfile`、`relationship`；两者还都包含 `current.scene`、`working.recentEpisodes`、`working.standingAgreements` 和 `longTerm.milestones` 作为语义背景。维护模式下 `compactionProposer` 的 `readOnlyContext` 固定为空对象。Todo 的 maintenance writableState 只包含 active items；overdue items 不参与 active 容量门且不可被 merge，因此不向 compactionProposer 暴露。
-
-### 5.4 边界规则
-
-**写入范围**
-
-- `sectionResults` 只能包含 `task.targetSections`；Proposer 可读取 `readOnlyContext`，但不得输出非 target section 的 patch。
-- target sections 的当前状态只放在 `writableState`；若某固定背景范围概念上包含 target，本次仍以 `writableState` 为准，不在 `readOnlyContext` 重复放一份。
-- `todoProposer` 的 `writableState.working.todos` 中 overdue todo 只包含最近 N 条（按 `becameOverdueAt DESC`、itemId 稳定打破平局），N 与 Renderer 的 overdue 渲染窗口一致，从集中配置读取；active todo 仍全量传入。其他 Proposer 的 readOnlyContext 中 `working.todos` 仍只包含 active 子集。
-
-**证据（普通模式）**
-
-- `task.trigger` 为 `{ type: "lagThreshold" }`。普通写入 patch 的 `evidenceRefs.messageId` 必须来自 `observedMessages`；不得引用 `readOnlyContext` 中 item 的历史证据来证明新事实。
-- `writableState` 与 `readOnlyContext` 不暴露既有 `evidenceGroups`。
-
-**证据（维护模式）**
-
-- `task.trigger` 为 `{ type: "lengthBudget", dimension, limit }`（容量恢复）或 `{ type: "hygiene", itemCount, maxItems, highWatermarkPercent }`（主动整理）。维护 patch 不输出 `evidenceRefs`；Reducer 从 source items 自动继承 `evidenceGroups`。hygiene 不推进/replay parent，也不因 unable/provider/schema/reducer 无 accepted patch 而改变 target healthy 状态。
-
-**readOnlyContext 组装**
-
-- `readOnlyContext` 必须带结构化 section 名称，不能把 Renderer 文本或旧 summary 整段塞给 Proposer。
-- 固定范围以完整 section 为单位：一旦纳入，全量输入该 section 当前 items 的 redacted view（不含 `id`，见 §5），无值字段显式传 null，不做 last N、相似度筛选或关键词筛选。
-- `readOnlyContext` 可以相对充分，但必须由纯代码按 §5.3 固定范围从 `memory_state` 结构化组装。禁止把 Renderer 文本、旧 summary 或未分区的整块 `memory_state` 无差别塞入。
-- envelope 不保留 `omitted` 清单。调用方不向 LLM 解释哪些 section 没给；Proposer 只能基于实际收到的固定范围判断。
-
-**判断不足时**
-
-- 如果 read-only 背景不足，Proposer 应输出 `unable_to_decide`，而不是把背景猜成事实。
-
-### 5.5 Proposer 输出契约
-
-Proposer 输出必须通过 provider 支持的 schema-constrained structured output 返回（实现可以是 function/tool calling 或 JSON schema response format，由 provider adapter 决定；禁止裸 prompt + `JSON.parse` 作为主路径）。输出形态：
-
-```json
+```js
 {
-  "tickId": 12345,
-  "proposer": "episodeProposer",
-  "sectionResults": {
-    "recentEpisodes": {
-      "status": "patches",
-      "patches": [
-        {
-          "op": "addItem",
-          "value": { "text": "屋顶和解: 用户承认害怕被离开 | assistant 等待并靠近" },
-          "evidenceKind": "recent_episode",
-          "evidenceRefs": [{ "messageId": 121, "quote": "很怕你会走" }]
-        }
-      ]
-    }
-  }
-}
-```
-
-- 每个目标 section 的 `status` 必须是 `patches | noop | unable_to_decide` 之一。非目标 section 不出现在 `sectionResults` 中。
-- `patches` 数组中每个 patch 含 `op`、`path`（仅 scene 字段操作）/`itemId`/`itemIds`（按 §4 必填规则）、`value`（按 §4 必填规则；todo add 必须含 actor/requester，todo update 必须含 dueChange）、`evidenceKind`（§3 枚举）。除 `mergeItems` 外，每个 patch 还必须含 `evidenceRefs`（至少 1 项，每项含 `messageId` integer 和 `quote` string；quote 最多 200 个 Unicode code points）。
-- `evidenceRefs` 是 Proposer patch 字段，不是 item 的权威存储字段。Reducer 对普通非 `mergeItems` patch 校验通过后，add/update item 的 refs 补入已校验的数据库 `contentHash`，再与 `patch.evidenceKind` 包装为 `evidenceGroup`；scene 字段操作沿用字段级 evidenceRef。`forgetItem` 的新 evidence 只证明 forget 指令，不追加到已移除 item。`mergeItems` 的 evidenceGroups 从 source items 继承，各 group 保留各自 evidenceKind。
-- `evidenceKind` 是 Reducer 做 policy gate 的枚举输入（§6）。Reducer 不把它当可信度分数；普通写入证据仍必须通过 `messageId + quote` 校验（§7）。
-- `patchId` 由 Reducer 生成，Proposer 不需要输出，用于 event log 引用。
-- 长期 item 直接由 `sectionResults` 的 `userProfile` / `assistantProfile` / `relationship` / `worldFacts` key 寻址，不使用 `core` 或 `path`。例如以下 patch 位于 `sectionResults.userProfile.patches`：
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "性格: 内向(初识) > 依赖(熟悉后)" },
-  "evidenceKind": "long_term_fact",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我其实挺内向的，但熟了就会很粘人" }]
-}
-```
-
-- `compactionProposer` 的 schema 额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`。输出 `addItem`、`forgetItem`、通用删除、跨 section 合并、`user_correction` 或 `evidenceRefs` 均非法。compaction section 的 `status` 必须是 `patches | unable_to_compact` 之一（不同于普通 Proposer 的 `patches | noop | unable_to_decide`）。
-- `sectionResults` 必须恰好覆盖 `task.targetSections`。缺少 target section、包含非 target section、目标 section 缺少 `status`，均由 tick orchestrator 归类为 `output_schema_invalid`，不交 Reducer、不推进 cursor；首次 Provider 输出边界错误可按 §10 的有界规则持久化后重试，耗尽后按 §9.3-§9.5 原子更新 task、对应 target status 与 ops log，不产生 revision/snapshot。
-
-compaction 输出示例（`patches` 状态，仍使用 `sectionResults`，但只允许 `mergeItems`）：
-
-```json
-{
-  "tickId": 12346,
-  "proposer": "compactionProposer",
-  "sectionResults": {
-    "userProfile": {
-      "status": "patches",
-      "patches": [
-        {
-          "op": "mergeItems",
-          "itemIds": ["userProfile:1", "userProfile:2"],
-          "value": { "text": "偏好/关系模式: 夜间更适合长聊 | 慢热后依赖" },
-          "evidenceKind": "memory_compaction"
-        }
-      ]
+  tickId,
+  proposer,
+  candidateDecisions: [{
+    observationId,
+    outcome: "proposed" | "waiting" | "excluded" | "already_reflected",
+    reasonCode,
+    patchIds: ["patch-1"]
+  }],
+  sectionResults: {
+    todos: {
+      status: "patches" | "noop",
+      patches: [/* patch */]
     }
   }
 }
 ```
 
-compaction 返回 `unable_to_compact` 时，`sectionResults` 中该 section 的 `status` 为 `unable_to_compact`，不含 `patches`。由 tick orchestrator 直接处理：写 ops log、终结 maintenance task、halt 对应 target，不交 Reducer，也不产生 revision/snapshot。
-
-## 6. Patch Policy Table
-
-Reducer 按 `section + op + evidenceKind` 查此表判断是否允许写入。不在表中的组合：Reducer 拒绝并记录 `rejected`（reason: `policy_not_allowed`）。
-
-| section / op                          | 允许的 evidenceKind                                                                                                                            | 备注                               |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `scene.setField` / `scene.clearField` | `scene_change`, `user_correction`, `assistant_correction`                                                                                      | 字段级覆盖；字段级证据             |
-| `todos.addItem`                       | `user_request`, `user_commitment`, `assistant_request`, `assistant_commitment`                                                                 | 必须是可完成、可取消或可过期的事项 |
-| `todos.updateItem`                    | `user_request`, `user_commitment`, `assistant_request`, `assistant_commitment`, `user_correction`, `assistant_correction`                      | 更新待办                           |
-| `todos.mergeItems`                    | `memory_compaction` | 仅合并重复且 actor/requester/dueAt 分别相同的 active 待办 |
-| `todos.completeTodo`                  | `todo_completion`                                                                                                                              | 完成必须有终止证据                 |
-| `todos.cancelTodo`                    | `todo_cancel`, `user_correction`, `assistant_correction`                                                                                       | 取消待办                           |
-| `todos.expireTodo`                    | `todo_expiration`                                                                                                                              | 短期待办失效                       |
-| `standingAgreements.addItem`          | `standing_agreement`                                                                                                                           | 新增持续互动约定                   |
-| `standingAgreements.updateItem`       | `standing_agreement`, `user_correction`, `assistant_correction`                                                                                | 修订持续互动约定                   |
-| `standingAgreements.mergeItems`       | `memory_compaction`                                                           | 合并重复约定                       |
-| `standingAgreements.cancelAgreement`  | `agreement_cancel`, `user_correction`, `assistant_correction`                                                                                  | 取消持续互动约定                   |
-| `recentEpisodes.addItem`              | `recent_episode`                                                                                                                               | 滑动窗口                           |
-| `recentEpisodes.updateItem`           | `recent_episode`, `user_correction`, `assistant_correction`                                                                                    | 更新近期经历                       |
-| `milestones.addItem`                  | `relationship_milestone`                                                                                                                       | 关系或剧情关键转折                 |
-| `milestones.updateItem`               | `user_correction`, `assistant_correction`                                                                                                      | 修订里程碑                         |
-| `milestones.mergeItems`               | `memory_compaction`                                                                                 | 合并重叠里程碑                     |
-| `worldFacts.addItem` / `userProfile.addItem` / `assistantProfile.addItem` / `relationship.addItem` | `long_term_fact` | 新增长期事实 |
-| `worldFacts.updateItem` / `userProfile.updateItem` / `assistantProfile.updateItem` / `relationship.updateItem` | `user_correction`, `assistant_correction` | 修订对应长期事实 |
-| `worldFacts.forgetItem` / `userProfile.forgetItem` / `assistantProfile.forgetItem` / `relationship.forgetItem` | `user_forget`, `assistant_forget` | 移除 item；必须同事务写 source suppression tombstone |
-| `worldFacts.mergeItems` / `userProfile.mergeItems` / `assistantProfile.mergeItems` / `relationship.mergeItems` | `memory_compaction` | 仅合并同一正式 section 内的重叠 item |
-
-对 `worldFacts`、`userProfile`、`assistantProfile`、`relationship`，User 和 Assistant 双方拥有相同的 add/update/forget 权限：`addItem + long_term_fact` 的证据可以来自任一真实 role；update/forget 分别使用与真实发言方一致的 `user_correction`/`assistant_correction` 或 `user_forget`/`assistant_forget`。Reducer 必须按数据库真实 role 校验 evidenceKind，但不得用消息 role 限制双方只能维护某一个 Profile。`forgetItem` 只有在 [write-protocol.md](write-protocol.md) §5 的 item 移除、event/snapshot 与 suppression tombstone 能原子提交时才可 accepted。
-
-普通模式下每个非 `mergeItems` patch 至少一条 evidenceRef 必须满足 `cursorBefore < messageId <= targetMessageId`。全部 evidence 仅来自 overlap 时以 `overlap_only_evidence` 拒绝。`addItem`/`updateItem` 若与同 section 其他既有 item 的 Unicode 规范化 text 完全相同，以 `duplicate_item` 拒绝；profile/relationship 的非 multi-value canonicalKey 已存在时以 `duplicate_profile_key` 拒绝。两者均为确定性结构/文本相等判断，不扩张 Reducer 的语义匹配职责。
-
-## 7. Evidence 校验：Quote 模糊匹配
-
-Evidence source 校验、quote 归一化、信息量判断和统一 Levenshtein 匹配的算法权威来源为 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)。本文件只保留 evidence/evidenceKind/reject reason 的静态 shape 与枚举。
-
-## 8. Memory 容量与长度预算
-
-除本节下述确定性例外外，每个会进入主聊天上下文的 item section 都使用同一容量 shape：
+无法组成合法 decision 时只允许 task-level union：
 
 ```js
 {
-  maxItems,
-  maxRenderedChars
+  tickId,
+  proposer,
+  status: "unable_to_decide",
+  reasonCode: "missing_context" | "ambiguous_reference",
+  requestedContext: { beforeMessageId, afterMessageId }
 }
 ```
 
-`scene` 是固定字段对象而非 item section，因此不使用 `maxItems`，但其可能被 Renderer 输出的 scene values 受独立 `maxRenderedChars` 约束。
+它不关闭 observation；有界扩窗耗尽后转 `retryable`，不能用空 proposal 推进任何 cursor。
 
-容量计算规则：
+成功 output 的约束：
 
-1. `maxItems` 统计该 section 受基础容量门约束的当前 items 数量。
-2. `maxRenderedChars` 按 Unicode code points 统计 Renderer 可能输出的语义文本：普通 item section 计 `item.text`；todo 还计 actor/requester 及非 null dueAt 的渲染值；scene 计非 null 的 field `value`。Renderer 的标题、字段标签、连接词、模板标点不计。
-3. quote、evidenceGroups、hash、ID、provenance、event、task/proposal、compaction audit 等不会作为 Memory 语义文本渲染的内容不计。
-4. proposal apply 后任一维度超过配置上限即视为超容量；普通 item section 进入 deferred/compaction 流程，maintenance trigger 用 `dimension=maxItems|maxRenderedChars` 标明阻塞维度。`scene` 不可 compaction；Reducer 按 patch 顺序模拟字段操作，若某个 `setField` 会令 scene values 总字符数超过 `scene.maxRenderedChars`，只拒绝该 patch（reason=`capacity_exceeded`）并恢复该字段的 pre-patch 值，同 bundle 中其它合法 patch 仍可独立 accepted/rejected。
-5. Memory 业务层不设置 proposal 或 envelope 总字符上限，也不要求 LLM 精确控制 proposal 总字符数。Provider 的 context/output 物理上限属于 Adapter/Provider 能力边界，不得转化成 Memory section 容量。
-6. 所有 item section 的 `maxItems` / `maxRenderedChars` 以及 scene 的 `maxRenderedChars` 都从集中配置读取，禁止散落硬编码。除 quote 最大 200 已确定外，本批不确定具体容量默认值；默认值需结合真实历史分布后写入配置文档。
+- `candidateDecisions` 必须精确覆盖输入 observation/version，每个恰好一次；
+- `proposed` 的 `patchIds` 非空，且每个 ID 指向本 output 中真实 patch；其他 outcome 的 `patchIds=[]`；
+- patch 的 `observationIds` 非空、去重，并与 decision 的 patchIds 双向一致；
+- 所有 writable section 必须有 section result；`noop` 不替代 candidate decision；
+- Proposer 不得输出 `consumed/retryable/dead_letter`，最终 lifecycle 由 Reducer 决定。
 
-确定性例外：
+### 4.3 Patch shape
 
-1. `recentEpisodes` 仍同时受 `maxItems + maxRenderedChars` 约束，但超限时由 Reducer 按 `createdAtMessageId`（再以 itemId 打破平局）滚出最旧 items，直到两项限制均满足，并为每个滚出项写 `system_cleanup: recent_episode_evicted`；不触发 compactionProposer。
-2. `current.previousScene` 是单值字段，新 scene 到期时直接替换旧值；不参与 scene 的 `maxRenderedChars` 容量门，也不触发 compactionProposer。
-3. `todos.maxItems/maxRenderedChars` 只统计并约束 `status=active` 的 items。overdue items 不占 active 容量、不触发 compaction；Renderer 对 overdue 子集使用独立的 `maxRenderedItems + maxRenderedChars` 配置。
+```js
+{
+  patchId: "patch-1",
+  op: "addItem",
+  path: null,
+  itemId: null,
+  itemIds: null,
+  value: { text: "明早做三明治", actor: "assistant", requester: "assistant" },
+  dueChange: {
+    mode: "set",
+    dueAt: { mode: "relative", days: 1 },
+    timeAnchorMessageId: 696
+  },
+  evidenceKind: "assistant_commitment",
+  changeKind: "establish",
+  observationIds: ["observation-uuid"],
+  evidenceRefs: [{ messageId: 696, quote: "明天一定给你做" }]
+}
+```
 
-> **容量 halt 策略说明**：当前 compaction/replay 失败后 halt 对应 target 的策略是临时方案，用于在计划前期通过真实运行数据确定合适容量默认值。待容量默认值稳定后，再引入自动降级策略（见 [容量降级策略（延后）](../deferred/memory-control-v2/capacity-degradation.md)）。
+字段规则：
 
-## 9. Revision、Snapshot、Event 与运行恢复状态
+- `path` 只用于 scene，值为 `location|time|mood|note`；
+- `itemId` 用于单 item 操作（包括 correction-only `retractItem`），`itemIds` 只用于 `mergeItems` 且至少两个；
+- `mergeItems` 只由 `compactionProposer` 输出，不带 observation/evidence refs，Reducer 继承 source item 的完整 evidenceGroups；
+- 非 compaction patch 至少一个 observationId 与 evidenceRef；每个 evidenceRef 必须登记在这些 observation 的当前版本中并分配给当前 target；
+- target patch 可以使用早于本 cycle 的证据，但不能使用任意 overlap/read-only 历史；
+- `todos.addItem.value` 必须含 `text/actor/requester`；top-level `dueChange` 可省略（等价于无期限）或为 `{mode:"set",dueAt,timeAnchorMessageId}`，add 不接受 keep/clear；
+- `todos.updateItem.value` 可省略或含 text/actor/requester，top-level `dueChange` 必须为 `{mode:"keep"}`、`{mode:"clear"}` 或 `{mode:"set",dueAt,timeAnchorMessageId}`。`keep` 要求非空 value 且至少一个字段实际改变；`clear/set` 可无 value但必须实际改变期限。clear 同时清空 persistent dueAt/timeAnchor；归一化后全 noop 的 update 拒绝；
+- relative todo due 的 `timeAnchorMessageId` 必须非空，并是该 observation 中真正承载相对时间表达的 evidence message；absolute 分支必须为 `null`。接受/履约等更晚证据不能替换 relative anchor；
+- profile/relationship observed pattern 的 patch 必须列出支撑它的全部 observation IDs，门槛由 Reducer从 occasion/arc registry 计算。
 
-DDL 的数据库层责任是字段类型、nullable/default、主键、唯一约束、显式外键和索引；带条件的 stage/decision/outcome 枚举与跨字段状态机不变量由 contracts/Repository/应用事务层校验。生产启服前的 schema checker 必须逐表验证本节全部表和字段、关键 nullable/default 以及全部显式索引，不能只检查 v1 字段是否已删除。若未来允许模块外直接写这些表，必须先把相应应用层枚举与跨字段约束下沉为数据库 `CHECK`/trigger，不得绕过当前写入边界。
+due 表达式：
 
-Memory 恢复分为两条独立 authority：
+```text
+{mode:absolute,date:YYYY-MM-DD}
+{mode:relative,days:N>=0} | {mode:relative,months:N>0} | {mode:relative,years:N>0}
+```
 
-- **语义 state**：`memory_state` + 每 revision 完整 snapshot + revision event group/events。
-- **运行状态**：durable task + per-target status + ops log。
+解析规则见 [领域生命周期](algorithms/domain-lifecycle.md)。
 
-运行失败不得写回 `memory_state.meta`。只有成功提交新的权威 state/cursor 才增加 revision 并写 snapshot；Provider/schema 等尚未产生语义提交的失败只更新运行状态。
+### 4.4 Scene epoch transition
 
-### 9.1 Revision 与完整 post-state snapshot
+`scene` section result 可选：
+
+```js
+epochTransition: {
+  patchId: "scene-transition-1",
+  action: "start" | "end",
+  evidenceKind: "scene_change",
+  changeKind: "lifecycle",
+  evidenceRef: { messageId, quote },
+  observationIds: ["uuid"]
+}
+```
+
+`epochTransition` 是带 patchId 的 scene lifecycle operation，参与 candidate decision 的 patchIds 双向覆盖和 candidate atomic unit。`start` 先归档旧 epoch，再创建新 `epochId` 并应用本 result 的字段 patches；`end` 可作为唯一 operation，归档并清空当前 scene。无 transition 的字段 patch 只修改一个字段，不得隐式结束或重启 epoch。
+
+## 5. Policy 与 Evidence 静态约束
+
+### 5.1 Policy table
+
+Reducer 按 `section + op + evidenceKind + changeKind` 校验。未列出的组合拒绝。
+
+| section / op | evidenceKind | changeKind |
+| --- | --- | --- |
+| `scene.epochTransition` | `scene_change` | `lifecycle` |
+| `scene.setField/clearField` | `scene_change` | `establish|refine|supersede|lifecycle` |
+| `scene.setField/clearField` | `user_correction|assistant_correction` | `correct` |
+| `todos.addItem` | request/commitment 四类 | `establish` |
+| `todos.updateItem` | request/commitment 四类 | `reaffirm|refine|supersede` |
+| `todos.updateItem` | correction 两类 | `correct` |
+| `todos.completeTodo` | `todo_completion` | `lifecycle` |
+| `todos.cancelTodo` | `todo_cancel` 或 correction 两类 | `lifecycle|correct`（必须按 evidence 匹配） |
+| `todos.expireTodo` | `todo_expiration` | `lifecycle` |
+| `standingAgreements.addItem` | `standing_agreement` | `establish` |
+| `standingAgreements.updateItem` | `standing_agreement` | `reaffirm|refine|supersede` |
+| `standingAgreements.updateItem` | correction 两类 | `correct` |
+| `standingAgreements.cancelAgreement` | `agreement_cancel` 或 correction 两类 | `lifecycle|correct`（必须按 evidence 匹配） |
+| `recentEpisodes.addItem/updateItem` | `recent_episode` | `establish|refine|supersede` |
+| `recentEpisodes.updateItem` | correction 两类 | `correct` |
+| `recentEpisodes.retractItem` | correction 两类 | `correct` |
+| `milestones.addItem` | `relationship_milestone` | `establish` |
+| `milestones.updateItem` | `relationship_milestone` | `reaffirm|refine|supersede` |
+| `milestones.updateItem` | correction 两类 | `correct` |
+| `milestones.retractItem` | correction 两类 | `correct` |
+| long-term sections `addItem` | `long_term_fact` | `establish` |
+| long-term sections `updateItem` | `long_term_fact` | `reaffirm|refine|supersede` |
+| long-term sections `updateItem` | correction 两类 | `correct` |
+| long-term sections `retractItem` | correction 两类 | `correct` |
+| long-term sections `forgetItem` | forget 两类 | `forget` |
+| 任意允许 compaction 的 item section `mergeItems` | `memory_compaction` | `lifecycle` |
+
+这里的 long-term sections 是 `worldFacts|userProfile|assistantProfile|relationship`。`retractItem` 只用于明确纠正“当前 item 本不应成立”且没有替代 current value 的情形，必须按 currentFieldLineage 执行 correction suppression；自然结束/遗忘不得借用。evidenceKind 带 `user_`/`assistant_` 前缀时必须与数据库真实 role 一致，但 role 不限制哪一方可以维护哪个 profile。
+
+### 5.2 Observation 与 evidence registry gate
+
+每个非 compaction patch 必须通过：
+
+1. observation 存在于当前 generation，版本等于 envelope 冻结版本，且当前 target assignment 为 `processing`；
+2. 每个 evidence ref 的 `(messageId, contentHash, quote)` 可在所列 observation 的 evidence registry 中找到；
+3. message 仍属于同一 user/preset，role、createdAt、contentHash 与 scan 时一致，messageId 不超过 cycle boundary；
+4. source 未被 privacy/suppression gate 排除；
+5. quote 通过 [Evidence 校验](algorithms/evidence-validation.md)；
+6. proposed decision 与 patch/observation 双向覆盖完整。
+
+version 3 不要求“本 task/new batch 至少一个 evidence”，也不接受“在 overlap 里出现过”作为合法性。旧证据的合法性来自 durable observation registry。
+
+### 5.3 Quote 最小信息量
+
+quote 原文最多 200 Unicode code points。归一化去掉统一配置的 whitespace/标点后：
+
+- 每个 ref 至少 1 个信息字符；零字符为 `quote_too_short`；
+- 只有 1–2 个信息字符的短 ref 必须 exact match，不允许模糊匹配；
+- 短 ref 只能作为 `accepts|rejects|supports|completes|cancels` 等辅助/终止关系，不能单独建立新事实；
+- 一个 observation/patch evidence group 至少包含一条实质 ref：CJK/Hangul/Kana 至少 2 个信息字符，其他文字至少 3 个；
+- 因而 `好`、`好吃`、`OK` 可以与一条实质提议证据共同构成接受/支持链，不再因固定三字符门槛丢失；它们不能脱离被接受的提议单独证明长期事实。
+
+### 5.4 Pattern 与 duplicate gate
+
+- `observedPattern`：至少 3 distinct occasion、2 distinct arc，且 observation 都未 invalidated/suppressed；
+- exact duplicate：统一 Unicode 规范化后的 `text` 完全相等时拒绝或确认 already-reflected；Reducer 不做 embedding/语义相似度判断；
+- `semanticKey` 相同不算 duplicate；只有 Proposer 显式选择已有 `itemId`、或 evidence root/projectionIdentity 确定一致时才可更新；
+- profile 的非 multi-value `canonicalKey` 已存在时必须 update，不得 add。
+
+## 6. 持久化 schema
+
+### 6.1 直接替换前置条件
+
+schema 脚本必须在 Memory worker 停止且没有 running task 时执行。脚本先 drop 旧 Memory 派生表/索引，再 create 本节结构；不保留旧列并 backfill。`chat_preset_memory` 是应用共享表，只破坏性重建其 Memory authority 列：
 
 ```sql
-CREATE TABLE chat_memory_snapshots (
-  id              BIGSERIAL PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
+DROP TABLE IF EXISTS chat_memory_scan_assessment_events CASCADE;
+DROP TABLE IF EXISTS chat_memory_scan_assessments CASCADE;
+DROP TABLE IF EXISTS chat_memory_observation_target_transition_events CASCADE;
+DROP TABLE IF EXISTS chat_memory_candidate_decisions CASCADE;
+DROP TABLE IF EXISTS chat_memory_observation_targets CASCADE;
+DROP TABLE IF EXISTS chat_memory_observation_evidence CASCADE;
+DROP TABLE IF EXISTS chat_memory_occasion_evidence CASCADE;
+DROP TABLE IF EXISTS chat_memory_arc_evidence CASCADE;
+DROP TABLE IF EXISTS chat_memory_evidence_observations CASCADE;
+DROP TABLE IF EXISTS chat_memory_semantic_occasions CASCADE;
+DROP TABLE IF EXISTS chat_memory_semantic_arcs CASCADE;
+DROP TABLE IF EXISTS chat_memory_tasks CASCADE;
+DROP TABLE IF EXISTS chat_memory_boundary_cycles CASCADE;
+DROP TABLE IF EXISTS chat_memory_source_scan_pending CASCADE;
+DROP TABLE IF EXISTS chat_memory_semantic_boundaries CASCADE;
+DROP TABLE IF EXISTS chat_memory_source_scan_status CASCADE;
+DROP TABLE IF EXISTS chat_memory_events CASCADE;
+DROP TABLE IF EXISTS chat_memory_event_groups CASCADE;
+DROP TABLE IF EXISTS chat_memory_snapshots CASCADE;
+DROP TABLE IF EXISTS chat_memory_target_status CASCADE;
+DROP TABLE IF EXISTS chat_memory_ops_log CASCADE;
+DROP TABLE IF EXISTS chat_memory_diagnostic_projection_checkpoints CASCADE;
+DROP TABLE IF EXISTS chat_context_quality_diagnostics CASCADE;
+DROP TABLE IF EXISTS chat_memory_recovery_notifications CASCADE;
+DROP TABLE IF EXISTS chat_context_projection_checkpoints CASCADE;
+DROP TABLE IF EXISTS chat_context_suppression_tombstones CASCADE;
+DROP TABLE IF EXISTS chat_memory_privacy_operations CASCADE;
+
+ALTER TABLE chat_preset_memory
+  DROP COLUMN IF EXISTS rolling_summary,
+  DROP COLUMN IF EXISTS rolling_summary_updated_at,
+  DROP COLUMN IF EXISTS summarized_until_message_id,
+  DROP COLUMN IF EXISTS dirty_since_message_id,
+  DROP COLUMN IF EXISTS rebuild_required,
+  DROP COLUMN IF EXISTS core_memory,
+  DROP COLUMN IF EXISTS memory_state;
+ALTER TABLE chat_preset_memory ADD COLUMN memory_state JSONB;
+```
+
+这是唯一 cutover schema workflow：v1 rolling/core、v2 authority 和已有 v3 开发期派生数据一起删除后重建，不另设可独立执行的 legacy cleanup/migration。raw `chat_messages` 不在 drop 清单中。
+
+### 6.2 Scan、arc、occasion 与 observation
+
+```sql
+CREATE TABLE chat_memory_source_scan_status (
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
   source_generation BIGINT NOT NULL,
-  revision        BIGINT NOT NULL,
-  schema_version  INTEGER NOT NULL,
-  state           JSONB NOT NULL,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, revision)
+  detector_version TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  scanned_through_message_id BIGINT NOT NULL DEFAULT 0,
+  stable_boundary_message_id BIGINT NOT NULL DEFAULT 0,
+  rebuild_boundary_message_id BIGINT,
+  status TEXT NOT NULL,
+  consecutive_errors INTEGER NOT NULL DEFAULT 0,
+  last_error_reason TEXT,
+  last_task_id UUID,
+  next_retry_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, preset_id)
 );
-```
 
-规则：
-
-1. `memory_state.meta.revision` 从首次初始化的 0 开始跨 generation 单调递增；首次 state 同步写 revision 0 完整 snapshot。自动 rebuild 初始化新 generation 时使用前一 revision `+1`，不得重置 revision；snapshot 内的 generation/revision 必须与行值一致。
-2. 一个 task bundle 即使包含多个 patch/event，也最多形成一个新 revision 和一份 snapshot；该事务中的所有 accepted operation 与 cursor 终态共同属于同一个 event group。
-3. revision N 的 post-state snapshot 已天然构成 revision N+1 的 pre-state；禁止为每次提交再复制一份 pre-state snapshot。
-4. accepted patch、system cleanup、cursor 推进或 source generation 初始化导致 `memory_state` 变化时形成 revision。纯 Provider/schema 失败、retry_wait、halt、只写 ops log 等不改变 state/cursor 的运行状态更新不形成 revision 或 snapshot。
-5. snapshot 包含全部语义 section、`meta.sourceGeneration`、`meta.revision` 和全部 target cursors；不包含 task retry、错误计数、halt、nextRetryAt 等运行状态。
-6. checkpoint 与 snapshot 是同一个概念，不再建立 per-section 或文本 checkpoint。
-
-### 9.2 Revision event group 与 events
-
-一个 task bundle 的决策先归入 event group；`result_revision` 非 null 表示该 group 提交了新 state，null 表示只有 deferred/rejected 等审计结果而没有 state/cursor revision。一个经历 capacity-blocked 的多阶段 normal task 允许拥有两个 event group：`result_revision=null` 的"capacity-blocked 审计 group"（只为触发容量阻塞的 patch 写 `deferred`）和 `result_revision` 非 null 的"最终 replay group"（为全部 patch 写最终 `accepted/rejected/noop`）。maintenance task 的 compaction apply 各自形成独立 event group；若 maintenance patches 全部 rejected，必须以 `result_revision=null` 持久化 maintenance 审计 group/events，并与 task/target 失败终态及 ops log 同事务提交。
-
-Source generation 初始化是唯一不创建 semantic event group 的 state revision：raw-source mutation 事务直接写新 generation 的空 state 与完整 snapshot，并以 generation/revision 明确形成恢复边界。事件 replay 从该 snapshot 开始且禁止跨 generation，因此不伪造某个正式 section/target 的 cleanup event。
-
-```sql
-CREATE TABLE chat_memory_event_groups (
-  event_group_id  UUID PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
-  task_id         UUID NOT NULL,
-  target_key      TEXT NOT NULL,
+CREATE TABLE chat_memory_semantic_boundaries (
+  semantic_boundary_id UUID PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
   source_generation BIGINT NOT NULL,
-  schema_version  INTEGER NOT NULL,
-  base_revision   BIGINT NOT NULL,            -- group 实际事务开始时的最新全局 revision；不等同于 task 创建时的 base_revision
-  result_revision BIGINT,
-  cursor_before   BIGINT,
-  cursor_after    BIGINT,
-  group_kind      TEXT NOT NULL,           -- proposal | maintenance | system_cleanup
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, result_revision)
-);
-```
-
-`base_revision` 语义：每个 event group 的 `base_revision` 是该 group 实际提交事务开始时的最新全局 revision，不是 normal task 创建时捕获的 `chat_memory_tasks.base_revision`。普通首次提交时两者恰好相等；compaction apply group 和 replay group 取各自事务开始时的最新 revision，因为其他 target 或 compaction 本身可能已推进 revision。对所有 `result_revision IS NOT NULL` 的 event group，必须满足 `result_revision = base_revision + 1`；`result_revision IS NULL` 的审计 group 仍记录事务开始时的最新 revision。`source_generation` 必须匹配当前 state；任何 group/task 都不得跨 generation 关联或 replay。
-
-每个 patch 产生一行 event；`noop` 产生一行占位。Reducer 自行改变持久化 state 时必须产生 `system_cleanup` event，禁止 silent mutation。
-
-二次 `unable_to_decide` 等“无 semantic operation、只推进 cursor”的 revision 可以拥有零条 `chat_memory_events`；其原因保留在 ops log，event group 的 `cursor_before/cursor_after` 与 result_revision 足以确定性 replay。不得伪造 noop 或 accepted event 来填充空 group。
-
-```sql
-CREATE TABLE chat_memory_events (
-  id              BIGSERIAL PRIMARY KEY,
-  event_group_id  UUID NOT NULL REFERENCES chat_memory_event_groups(event_group_id),
-  event_index     INTEGER NOT NULL,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
-  task_id         UUID NOT NULL,
-  tick_id         BIGINT,
-  target_key      TEXT NOT NULL,             -- scene | todos | standingAgreements | episodes | profileRelationship | worldFacts；maintenance event 记录来源 normal target
-  section         TEXT NOT NULL,
-  event_kind      TEXT NOT NULL,             -- proposal_decision | system_cleanup
-  decision        TEXT NOT NULL,             -- accepted | rejected | deferred | noop | system_cleanup
-  patch_id        TEXT,                    -- Reducer 生成的 patch 唯一 id（如有）
-  op              TEXT,                    -- patch op（如有）
-  item_id         TEXT,                    -- 目标 item id（如有）；mergeItems 时为 null
-  result_item_id  TEXT,                    -- add/merge 后的新 item id（如有）
-  merged_from_item_ids JSONB,              -- mergeItems 的完整 source item ID 数组（如有）
-  evidence_kind   TEXT,                    -- evidenceKind（如有）
-  reject_reason   TEXT,                    -- 拒绝原因码（仅 rejected 时）
-  maintenance_task_id UUID,                -- 关联 maintenance task（如有）
-  patch_summary   JSONB,                   -- patch 的精简摘要（op + value + evidenceRefs if present）
-  normalized_operation JSONB,              -- accepted/system cleanup 的完整确定性 replay operation
-  cleanup_type    TEXT,                     -- 仅 system_cleanup；合法领域类型见下文
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  boundary_ordinal BIGINT NOT NULL,
+  source_start_exclusive BIGINT NOT NULL,
+  source_boundary_message_id BIGINT NOT NULL,
+  source_message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  plan_version TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,source_generation,boundary_ordinal),
+  UNIQUE (user_id,preset_id,source_generation,source_boundary_message_id),
+  CHECK (boundary_ordinal >= 1),
+  CHECK (source_boundary_message_id = source_message_id),
+  CHECK (source_boundary_message_id > source_start_exclusive),
+  CHECK (plan_version = 'single_source_message_v1')
 );
 
-CREATE INDEX idx_memory_events_user_preset
-  ON chat_memory_events(user_id, preset_id, created_at DESC);
+CREATE TABLE chat_memory_source_scan_pending (
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  pending_through_message_id BIGINT NOT NULL,
+  pending_boundary_count INTEGER NOT NULL,
+  backlog_started_at TIMESTAMPTZ NOT NULL,
+  freeze_deadline_at TIMESTAMPTZ NOT NULL,
+  tail_deadline_at TIMESTAMPTZ NOT NULL,
+  trigger_reason TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id),
+  FOREIGN KEY (user_id,preset_id,source_generation,pending_through_message_id)
+    REFERENCES chat_memory_semantic_boundaries
+      (user_id,preset_id,source_generation,source_boundary_message_id),
+  CHECK (pending_through_message_id > 0),
+  CHECK (pending_boundary_count >= 1),
+  CHECK (freeze_deadline_at <= tail_deadline_at),
+  CHECK (trigger_reason IN ('debounce','batch_target','provisional_user_deadline',
+    'tail_deadline','assistant_complete','flush','drain','recovery','rebuild'))
+);
 
-CREATE INDEX idx_memory_events_target_decision
-  ON chat_memory_events(user_id, preset_id, target_key, decision);
+CREATE INDEX idx_memory_source_scan_pending_due
+  ON chat_memory_source_scan_pending(freeze_deadline_at,user_id,preset_id);
 
-CREATE UNIQUE INDEX idx_memory_events_group_order
-  ON chat_memory_events(event_group_id, event_index);
+CREATE TABLE chat_memory_semantic_arcs (
+  arc_id UUID PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  episode_observation_id UUID NOT NULL UNIQUE,
+  semantic_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at_message_id BIGINT NOT NULL,
+  ended_at_message_id BIGINT,
+  last_source_boundary_message_id BIGINT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_by_scan_task_id UUID NOT NULL,
+  created_output_index INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (created_by_scan_task_id,created_output_index)
+);
 
-CREATE UNIQUE INDEX idx_memory_events_group_patch
-  ON chat_memory_events(event_group_id, patch_id)
-  WHERE patch_id IS NOT NULL;
+CREATE INDEX idx_memory_semantic_arcs_scope
+  ON chat_memory_semantic_arcs(user_id,preset_id,source_generation,status,updated_at);
+
+CREATE TABLE chat_memory_arc_evidence (
+  arc_id UUID NOT NULL REFERENCES chat_memory_semantic_arcs(arc_id) ON DELETE CASCADE,
+  arc_version INTEGER NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  action TEXT NOT NULL,
+  source_boundary_message_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (arc_id,message_id,content_hash,action)
+);
+
+CREATE TABLE chat_memory_semantic_occasions (
+  occasion_id UUID PRIMARY KEY,
+  arc_id UUID REFERENCES chat_memory_semantic_arcs(arc_id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  semantic_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  first_message_id BIGINT NOT NULL,
+  last_message_id BIGINT NOT NULL,
+  ended_at_message_id BIGINT,
+  last_source_boundary_message_id BIGINT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_by_scan_task_id UUID NOT NULL,
+  created_output_index INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (created_by_scan_task_id,created_output_index)
+);
+
+CREATE INDEX idx_memory_semantic_occasions_scope
+  ON chat_memory_semantic_occasions(user_id,preset_id,source_generation,status,updated_at);
+
+CREATE TABLE chat_memory_occasion_evidence (
+  occasion_id UUID NOT NULL REFERENCES chat_memory_semantic_occasions(occasion_id) ON DELETE CASCADE,
+  occasion_version INTEGER NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  action TEXT NOT NULL,
+  source_boundary_message_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (occasion_id,message_id,content_hash,action)
+);
+
+CREATE TABLE chat_memory_evidence_observations (
+  observation_id UUID PRIMARY KEY,
+  root_observation_id UUID NOT NULL,
+  parent_observation_id UUID,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  observation_kind TEXT NOT NULL,
+  semantic_key TEXT NOT NULL,
+  subject_role TEXT NOT NULL,
+  fact_basis_hint TEXT NOT NULL,
+  claim TEXT NOT NULL,
+  status TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  first_source_boundary_message_id BIGINT NOT NULL,
+  last_source_boundary_message_id BIGINT NOT NULL,
+  created_by_scan_task_id UUID NOT NULL,
+  created_output_index INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (created_by_scan_task_id,created_output_index)
+);
+
+CREATE INDEX idx_memory_observations_scope
+  ON chat_memory_evidence_observations(user_id,preset_id,source_generation,status,observation_kind,semantic_key);
+
+ALTER TABLE chat_memory_semantic_arcs
+  ADD CONSTRAINT fk_memory_arc_episode_observation
+  FOREIGN KEY (episode_observation_id)
+  REFERENCES chat_memory_evidence_observations(observation_id);
+
+CREATE TABLE chat_memory_observation_evidence (
+  observation_id UUID NOT NULL REFERENCES chat_memory_evidence_observations(observation_id) ON DELETE CASCADE,
+  observation_version INTEGER NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  occasion_id UUID REFERENCES chat_memory_semantic_occasions(occasion_id),
+  arc_id UUID REFERENCES chat_memory_semantic_arcs(arc_id),
+  source_boundary_message_id BIGINT NOT NULL,
+  mutation_scan_task_id UUID NOT NULL,
+  phase_identity TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (observation_id,message_id,content_hash,relation)
+);
+
+CREATE INDEX idx_memory_observation_evidence_source
+  ON chat_memory_observation_evidence(message_id,content_hash,observation_id);
+
+CREATE TABLE chat_memory_scan_assessments (
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  first_scan_task_id UUID NOT NULL,
+  last_scan_task_id UUID NOT NULL,
+  outcome TEXT NOT NULL,
+  observation_ids JSONB NOT NULL,
+  arc_ids JSONB NOT NULL,
+  occasion_ids JSONB NOT NULL,
+  assessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id,source_generation,detector_version,message_id,content_hash)
+);
+
+CREATE TABLE chat_memory_scan_assessment_events (
+  assessment_event_id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  scan_task_id UUID NOT NULL,
+  scan_mode TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  observation_ids JSONB NOT NULL,
+  arc_ids JSONB NOT NULL,
+  occasion_ids JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (scan_task_id,message_id,content_hash)
+);
+
+CREATE TABLE chat_memory_observation_targets (
+  observation_id UUID NOT NULL REFERENCES chat_memory_evidence_observations(observation_id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  target_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  observation_version INTEGER NOT NULL,
+  last_evaluated_version INTEGER,
+  reason_code TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  last_task_id UUID,
+  last_cycle_lineage_id UUID,
+  last_review_epoch INTEGER,
+  last_reviewed_at TIMESTAMPTZ,
+  next_retry_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (observation_id,target_key)
+);
+
+CREATE INDEX idx_memory_observation_targets_ready
+  ON chat_memory_observation_targets(user_id,preset_id,source_generation,target_key,status,next_retry_at);
 ```
 
-`decision` 合法值（per-patch，非 section 聚合）：
+`chat_memory_semantic_boundaries` 是 canonical `semanticBoundaryPlan` 的 normalized authority。`single_source_message_v1` 固定令每条按 source order 排列的完整、有效 User/Assistant message 恰好形成一个 boundary；`source_start_exclusive` 是前一 boundary endpoint，`source_boundary_message_id=source_message_id`。同 generation 的行只允许按 ordinal 追加且 immutable，ID 使用固定 namespace 对 `(scope,sourceGeneration,sourceMessageId,contentHash)` 生成 UUIDv5。session、turn、时间间隔、debounce、`batchMaxMessages` 和一次 SQL 预取多少消息都不能改变行数或 endpoint；source edit/delete/reorder 通过新 generation 重建整份 plan。
 
-- `accepted`：该 patch 被 apply。
-- `rejected`：该 patch 被拒（policy/quote/schema 等）。一个 section 一个 tick 的多个 patch 可能部分 `accepted` 部分 `rejected`，各自落行。
-- `deferred`：该 item patch 被长度预算阻塞，capacity-blocked 审计 group 中写 `deferred`（`result_revision=null`），已触发 maintenance task。
-- `noop`：Proposer 明确判断该 section 无变化。占位行，`patch_id`/`op`/`item_id`/`evidence_kind`/`patch_summary` 为 null。一个 section 一个 tick 最多一行 noop。
-- `system_cleanup`：Reducer/housekeeping 的确定性持久化变化；必须携带 `cleanup_type` 与完整 `normalized_operation`，不伪装成普通 message evidence。
+`chat_memory_source_scan_pending` 是 task 冻结前唯一可变的 durable tail accumulator，并在已冻结 boundary 完成前保留 recovery proof。完整 source 到达时，在同一短事务追加 boundary-plan row、提升 `stable_boundary_message_id`，并以 CAS 执行：`pending_through_message_id=GREATEST(old,new)`、重算尚未取得 cycle/no-candidate 终局的 `pending_boundary_count`、`freeze_deadline_at=LEAST(old,newCandidate)`；`backlog_started_at/tail_deadline_at` 在该 backlog 完全排空前不后移。assistant 完成、batch target、flush/drain/rebuild 或已到期 recovery 只能把 deadline 提前并提升 trigger reason，不能延期。pending row 只在 checkpoint 已追到它的 boundary、该 boundary 的 cycle/no-candidate 终局已封存且没有并发 promotion 后删除。
 
-领域 lifecycle 固定使用以下 `cleanup_type`：
+到 `freeze_deadline_at` 后，Coordinator 锁 status/pending，选择 checkpoint 后最早的 immutable boundary row，并在同一事务创建恰好覆盖该 row 的 source-scan task；task payload复制 boundary ID/ordinal/planVersion/source key/hash，之后绝不扩张 endpoint。一个 wake 可以批量预取多个 boundary 的 raw rows，但只能逐 boundary 执行 `freeze task → scan commit → pre-cycle/cycle terminal`，再冻结下一 task。若进程在任意阶段退出，due pending row、immutable boundary row和已冻结 task分别恢复“尚未建 task”“已建未提交”“已提交待 cycle”三种状态。
 
-- `scene_expired`：把到期的完整 `current.scene`（含字段 provenance）写入 `current.previousScene`，令 `expiredAt = scene anchor message.createdAt + 配置 TTL`，再把 current.scene 四个固定字段分别重置为 `{ value:null, evidenceRef:null, updatedAtMessageId:null }`。
-- `expired_scene_evicted`：上述写入覆盖了非 null 的旧 `previousScene`；与 `scene_expired` 写在同一 cleanup revision/event group，不调用 compaction。
-- `todo_became_overdue`：当 `now >= dueAt` 且 item 仍为 active 时，原位设 `status="overdue"`、`becameOverdueAt=dueAt`；保留 itemId、actor、requester、dueAt 和全部 provenance。重复 housekeeping 必须 noop，不能重写首次时间。
-- `todo_revived_from_overdue`：当 overdue todo 的 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时，原位设 `status="active"`、`becameOverdueAt=null`；保留 itemId、actor、requester、dueAt（新值）和全部 provenance。
-- `recent_episode_evicted`：`recentEpisodes` 超过 §8 滑动窗口限制时滚出最旧 item；每个被移除 item 各写一行 event。
+`semantic_key` 在任何上述表都不设 UNIQUE。
 
-Cleanup event 使用正式 section/target 映射：两个 scene cleanup 均为 `section=scene,target_key=scene`；todo cleanup 为 `section=todos,target_key=todos`；episode cleanup 为 `section=recentEpisodes,target_key=episodes`。System cleanup task 不拥有或推进 raw-message cursor。
+`chat_memory_scan_assessments` 是每条 source message 的当前 assessment master；events 是 append-only 审计。`late_discovery` 不回退或推进 source scan checkpoint：它写 event，并以 compare-and-set 把 master 的 outcome 更新为 signals、对 observation/arc/occasion IDs 做集合并集、version+1。原来的 no-signal 结论仍保留在 event 历史中。
 
-Scene/Todo housekeeping 读取同一事务捕获的 `now`。若 lifecycle 变化由一个 proposal 的模拟 post-state 直接触发（例如新增已到 deadline 的 todo 或 recentEpisodes apply 后超窗口），对应 `system_cleanup` events 与 proposal decisions 共用该 proposal event group、revision 和完整 snapshot，保证最终 post-state 原子满足 lifecycle/容量规则。没有 proposal 的后台 housekeeping 才创建 `group_kind=system_cleanup` 的独立 revision/group。两种路径都复用同一纯代码 lifecycle 函数；无变化不创建空 revision。
+`chat_memory_observation_evidence.observation_version` 表示该 evidence 首次进入 observation 的 resulting version；版本 `v` 的 evidence registry 是同一 observation 中 `observation_version <= v` 且未被 suppression 的稳定并集。`mutation_scan_task_id + phase_identity` 使历史 candidate decision 能直接复核其精确 version，不依赖无限保留整份 Provider proposal。
 
-Replay 与 ID 规则：
-
-1. 只有 `accepted` 和 `system_cleanup` event 携带可 apply 的完整 `normalized_operation`；event replay 不重新调用 LLM。
-2. add event 的 `result_item_id` 不得为 null。Reducer 在事务中先预留 event IDs、生成最终 item IDs、构造 state，再插入 events，解决 eventId/itemId/provenance 的循环依赖。
-3. 语义 replay 只消费 `result_revision IS NOT NULL` 的 groups，按 `event_index` replay normalized operations，再校验并应用 `cursor_after`；`result_revision IS NULL` 的 groups 只用于审计/运行恢复，不占 revision 序列。必须验证 schema version、revision 连续性、cursor 连续性以及 group/task/target 一致性。
-4. compaction/replay 的专用 revision 阶段在 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) 定义：compaction apply 和原 proposal replay 在同一 source generation 内各自形成明确 revision，并各自同步 snapshot；capacity-blocked 审计 group 的 `result_revision` 为 null，最终 replay group 基于执行时最新全局 revision。本批不引入 state hash。
-5. 提交事务必须先按 `task_id` 锁定并读取 task，再校验 source generation、target `cursor_before`、当前 revision 与该 stage 的预期执行 revision；normal successor 与 revision stale 见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4，compaction/replay 的专用 stale 条件见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) §2。
-6. 每个 task phase 使用稳定的 event group identity；同一 group 内的 `patch_id` 以及非 null `result_revision` 都有唯一约束。capacity-blocked 审计与最终 replay 是两个稳定 phase/group，因此允许同一原 patchId 在两组中分别出现 deferred 与最终 decision。Phase identity、重复 delivery、提交结果不确定与新 maintenance child 的幂等规则见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §6–§8。
-
-target 级 cursor 推进按 `target_key` 聚合，并同时检查该 normal proposal 的全部 `sectionResults` 与 pre-patch outcome。普通 proposal attempt 中，任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 event 为 `deferred` 时均不推进；只有所有 target sections 都形成可推进终局，且至少产生一行 `accepted`/`noop`/普通 `rejected` event 时才推进。唯一例外是 §9.2 已定义的二次 `unable_to_decide` 终结分支：扩大一次上下文后仍无法判断时，可以创建零条 event 的 cursor-only revision，并以 event group 的 `cursor_before/cursor_after` 确定性 replay（见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §3、§5.2）。除该特例外，不能只凭某一 section 的 accepted event 推进联合 target。可 compaction 的 item section 容量超限不产生 patch 级 `rejected`，而是由 `deferred`（审计 group）和 task 级 `compaction_failed` / `replay_failed` 表达（见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)）；不可 compaction 的 `scene` 是明确例外：单字段超限写 `rejected: capacity_exceeded`，按普通 rejected 语义推进 cursor，且不创建 maintenance task。
-
-`reject_reason` 合法值（仅 `rejected` 时填写）：
-
-- `schema_invalid`：patch 结构不合规。
-- `message_id_not_found`：evidenceRefs 的 messageId 不存在。
-- `evidence_source_mismatch`：数据库消息的 scope、role、createdAt 或 `contentHash` 与 proposal-time observed message 不一致。
-- `evidence_role_mismatch`：evidenceKind 的明确发言方语义与数据库真实 role 不一致。
-- `quote_too_short`：归一化 quote 少于 3 个信息字符，或原始 quote 为空/只有 whitespace、punctuation、symbol。
-- `quote_too_long`：原始 quote 超过 200 个 Unicode code points。
-- `quote_not_found`：quote 模糊匹配失败。
-- `policy_not_allowed`：section + op + evidenceKind 不在 policy table。
-- `invalid_state_transition`：section + op + evidenceKind 本身合法，但目标 item 当前 lifecycle 状态不允许该操作（例如 overdue todo 执行 `expireTodo`，或以 keep/clear/已过期 dueAt 执行 `updateItem`）。
-- `item_not_found`：itemId 指向不存在的 item。
-- `item_protected_by_pending_proposal`：compaction patch 的 itemIds 与该 target 的 pending proposal 引用的 itemId 集合相交（见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) §2）。
-- `capacity_exceeded`：仅用于不可 compaction 的 `scene`；该字段 patch 会令 scene values 的语义文本超过集中配置的 `maxRenderedChars`，因此拒绝且不创建 maintenance task。
-`item_id` 列：对单 item 操作（`updateItem`/`forgetItem`/`completeTodo`/`cancelTodo`/`expireTodo`）存目标 item id；对 `mergeItems` 存 null（source item IDs 由 `merged_from_item_ids` 列存储）；对 `addItem`/`setField`/`clearField`/`noop` 存 null。完整信息在 `patch_summary` JSONB 中。`merged_from_item_ids` 列：仅 `mergeItems` event 使用，存储持久化 patch 中的稳定顺序 source item ID 数组；其他 event 为 null。
-
-### 9.3 Durable task
+### 6.3 Boundary cycle、task 与 proposal decision
 
 ```sql
+CREATE TABLE chat_memory_boundary_cycles (
+  boundary_cycle_id UUID PRIMARY KEY,
+  cycle_lineage_id UUID NOT NULL,
+  semantic_boundary_id UUID NOT NULL REFERENCES chat_memory_semantic_boundaries(semantic_boundary_id),
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  detector_version TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  source_start_exclusive BIGINT NOT NULL,
+  source_boundary_message_id BIGINT NOT NULL,
+  cycle_kind TEXT NOT NULL,
+  review_epoch INTEGER NOT NULL DEFAULT 0,
+  review_trigger TEXT,
+  late_discovery_source_boundary_id UUID REFERENCES chat_memory_semantic_boundaries(semantic_boundary_id),
+  retry_epoch INTEGER NOT NULL DEFAULT 0,
+  as_of_revision BIGINT NOT NULL,
+  semantic_now TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL,
+  last_error_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (cycle_kind IN ('boundary','semantic_review')),
+  CHECK (review_epoch >= 0 AND retry_epoch >= 0),
+  CHECK ((cycle_kind = 'boundary' AND review_epoch = 0 AND review_trigger IS NULL)
+      OR (cycle_kind = 'semantic_review' AND review_epoch > 0
+          AND review_trigger IN ('waiting_stale','operator_requeue','dead_letter_recheck','late_discovery'))),
+  CHECK ((review_trigger = 'late_discovery' AND late_discovery_source_boundary_id IS NOT NULL)
+      OR (review_trigger IS DISTINCT FROM 'late_discovery' AND late_discovery_source_boundary_id IS NULL)),
+  UNIQUE (semantic_boundary_id,review_epoch,retry_epoch),
+  UNIQUE (cycle_lineage_id,retry_epoch)
+);
+
 CREATE TABLE chat_memory_tasks (
-  task_id                    UUID PRIMARY KEY,
-  dedupe_key                 TEXT NOT NULL,
-  user_id                    BIGINT NOT NULL,
-  preset_id                  TEXT NOT NULL,
-  target_key                 TEXT NOT NULL,
-  source_generation          BIGINT NOT NULL,
-  task_type                  TEXT NOT NULL,     -- normal | maintenance | system_cleanup
-  parent_task_id             UUID,              -- maintenance task 指向来源 normal task（如有）
-  predecessor_task_id        UUID,              -- successor task 指向被取消的旧 task（如有，见规则 8）
-  resume_epoch               INTEGER NOT NULL DEFAULT 0,  -- maintenance task 的 resume 轮次；normal/system_cleanup 固定 0，每次人工 resume 创建新 child 时 +1（见规则 9）
-  status                     TEXT NOT NULL,     -- queued | running | retry_wait | succeeded | failed | cancelled
-  stage                      TEXT NOT NULL,
-  cursor_before              BIGINT,
-  target_message_id          BIGINT,
-  base_revision              BIGINT NOT NULL,
-  task_payload               JSONB NOT NULL,    -- immutable proposal-time input/evidence metadata（创建后不可变）
-  stage_payload              JSONB,             -- 当前阶段运行数据：normalContextWindow、persistedProposal、expandedEnvelope、schemaInvalidAttempts、schemaRepairFeedback、maintenanceTaskId、identities、compaction 进度等；可变
-  attempt                    INTEGER NOT NULL DEFAULT 0,
-  context_expansion_attempt  INTEGER NOT NULL DEFAULT 0,
-  not_before                 TIMESTAMPTZ,
-  last_error_reason          TEXT,
-  result_revision            BIGINT,
-  created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  task_id UUID PRIMARY KEY,
+  dedupe_key TEXT NOT NULL,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  worker_key TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  target_key TEXT,
+  task_type TEXT NOT NULL,
+  scan_mode TEXT,
+  semantic_boundary_id UUID REFERENCES chat_memory_semantic_boundaries(semantic_boundary_id),
+  boundary_cycle_id UUID REFERENCES chat_memory_boundary_cycles(boundary_cycle_id),
+  parent_task_id UUID,
+  resume_epoch INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  source_start_exclusive BIGINT,
+  source_boundary_message_id BIGINT,
+  as_of_revision BIGINT,
+  task_payload JSONB NOT NULL,
+  stage_payload JSONB,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  context_expansion_attempt INTEGER NOT NULL DEFAULT 0,
+  not_before TIMESTAMPTZ,
+  last_error_reason TEXT,
+  result_revision BIGINT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,dedupe_key)
 );
 
 CREATE INDEX idx_memory_tasks_recovery
-  ON chat_memory_tasks(status, not_before, updated_at);
+  ON chat_memory_tasks(status,not_before,updated_at);
 
-CREATE UNIQUE INDEX idx_memory_tasks_scope_dedupe
-  ON chat_memory_tasks(user_id, preset_id, dedupe_key);
+CREATE TABLE chat_memory_candidate_decisions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  boundary_cycle_id UUID NOT NULL REFERENCES chat_memory_boundary_cycles(boundary_cycle_id),
+  task_id UUID NOT NULL REFERENCES chat_memory_tasks(task_id),
+  observation_id UUID NOT NULL,
+  observation_version INTEGER NOT NULL,
+  target_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  patch_ids JSONB NOT NULL,
+  reducer_outcome TEXT,
+  reducer_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (task_id,observation_id,target_key)
+);
+
+CREATE TABLE chat_memory_observation_target_transition_events (
+  transition_event_id UUID PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  observation_id UUID NOT NULL REFERENCES chat_memory_evidence_observations(observation_id) ON DELETE CASCADE,
+  observation_version INTEGER NOT NULL,
+  target_key TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  source_task_id UUID REFERENCES chat_memory_tasks(task_id),
+  boundary_cycle_id UUID REFERENCES chat_memory_boundary_cycles(boundary_cycle_id),
+  candidate_decision_id BIGINT REFERENCES chat_memory_candidate_decisions(id),
+  phase_identity TEXT NOT NULL,
+  detail JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,source_generation,observation_id,target_key,phase_identity)
+);
 ```
 
-Task 行是运行阶段、attempt、notBefore 和 proposal/window 局部恢复状态的 authority；进程内队列或计数器不是 authority。字段之间的顺序敏感约束、stage 状态机、dedupe key、successor、resume epoch、cursor 与 crash recovery 见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md)；capacity-blocked 的 stage payload、maintenance child 和 replay 见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)。
+Task 跨字段约束：`source_scan` 必须 `target_key/boundary_cycle_id/as_of_revision=NULL`，且 `scan_mode/semantic_boundary_id/source_start_exclusive/source_boundary_message_id` 非空并与该 immutable boundary row 完全一致；`normal` 必须有 target/cycle/as-of 且 `scan_mode=NULL`；`maintenance` 必须有 target 与 parent task；`system_cleanup` 不拥有 scan progress。`scan_mode` 只允许 `incremental|rebuild|late_discovery`。`task_type/status/stage/not_before/result_revision/stage_payload` 还必须满足 §2.1 状态图。以上约束由数据库 CHECK（封闭 enum/终态组合）与唯一 repository transition validator（有向边/CAS/payload 条件）共同强制，不能只依赖 prompt。
 
-### 9.4 Per-target status
+`chat_memory_tasks.resume_epoch` 只用于 source-scan fresh invocation 或 maintenance child resume identity，不表示 normal semantic evaluation 的重试维度；normal task 唯一使用其 boundary cycle 的 `retry_epoch`。实现不得把 `attempt/resume_epoch/retry_epoch/review_epoch` 互相回填或兼容读取。
+
+cycle 是 immutable 审计对象，两个 epoch 维度不得混用：
+
+- `cycle_lineage_id` 表示一次语义 evaluation 的 immutable visibility lineage；其 `retry_epoch=0` 冻结 `as_of_revision`、snapshot identity、source cutoff、semanticNow、candidate set/versions 与 raw refs。同一 boundary 的 Provider/schema/事务等**技术 retry**只创建同 lineage 的 `retry_epoch+1`，完整继承 retry 0 visibility；不得读取同-boundary已经提交的其他 target state。
+- 普通 scan boundary cycle 固定 `cycle_kind=boundary, review_epoch=0, review_trigger=NULL`。`waiting_stale`、人工 requeue、dead-letter 根因修复或 late discovery 新候选的**语义重判**不得复用旧 lineage：调度器在当前 generation 最新已封存 `semantic_boundary_id` 上创建 `cycle_kind=semantic_review` 的新 `cycle_lineage_id`，按该 boundary 锁内分配单调 `review_epoch>0`，并从当时最新完整 state 捕获新的 as-of/snapshot、当前 observation versions 与新的 semanticNow；其首轮 `retry_epoch=0`。若没有新 raw source，固定 `source_start_exclusive=source_boundary_message_id`，且不伪造 scan/assessment/checkpoint 进展。late discovery 另以 `late_discovery_source_boundary_id` 保存触发它的历史 singleton boundary，只作为 provenance，不得把 review visibility cutoff 降回该历史位置。
+- semantic review 的全部 evidence/ref 仍必须 `messageId <= source_boundary_message_id`，且 observation current version 的 registered evidence 必须在该上界内。最新 boundary 仍 active 或更早 evaluation 尚未封存时只排队 review，不能把候选塞进既有 cycle。
+
+因此，normal task dedupe 至少绑定 `{cycleLineageId}:{retryEpoch}:{targetKey}:{candidateSetDigest}`。技术 retry 不提升 `review_epoch`；语义重判不沿用旧 `cycle_lineage_id/as_of_revision/semantic_now`。v3 不读取或回填旧 `cycle_epoch` 字段。
+
+`candidate_decisions` 只记录专业 Proposer 对候选的判断。每次 `chat_memory_observation_targets` status/version/reason 变化还必须在同一事务追加 transition event：Provider/Reducer 路径关联 decision/task/cycle；source scan observation/occasion mutation、suppression、generation cancellation、retry exhaustion 或人工操作允许 `candidate_decision_id/boundary_cycle_id` 为空，但必须有稳定 `phase_identity`，能关联 task 时必须填写 `source_task_id`。系统 reason 至少包括 `observation_version_advanced | occasion_status_changed | observation_superseded | observation_invalidated | source_suppressed | generation_cancelled | retry_exhausted | operator_requeued | operator_confirmed_exclusion`；不得伪造空 candidate decision 或 semantic event group。
+
+### 6.4 Revision、snapshot 与 event
+
+```sql
+CREATE TABLE chat_memory_snapshots (
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  revision BIGINT NOT NULL,
+  state JSONB NOT NULL,
+  task_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id,revision)
+);
+
+CREATE TABLE chat_memory_event_groups (
+  event_group_id UUID PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  task_id UUID,
+  boundary_cycle_id UUID,
+  target_key TEXT,
+  group_kind TEXT NOT NULL,
+  base_revision BIGINT NOT NULL,
+  result_revision BIGINT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,result_revision)
+);
+
+CREATE TABLE chat_memory_events (
+  event_id BIGSERIAL PRIMARY KEY,
+  event_group_id UUID NOT NULL REFERENCES chat_memory_event_groups(event_group_id) ON DELETE CASCADE,
+  event_index INTEGER NOT NULL,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  target_key TEXT,
+  section TEXT,
+  event_kind TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  patch_id TEXT,
+  op TEXT,
+  item_id TEXT,
+  result_item_id TEXT,
+  observation_ids JSONB,
+  evidence_kind TEXT,
+  change_kind TEXT,
+  reject_reason TEXT,
+  patch_summary JSONB,
+  normalized_operation JSONB,
+  cleanup_type TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (event_group_id,event_index),
+  UNIQUE (event_group_id,patch_id)
+);
+```
+
+`decision = accepted|rejected|deferred|noop|system_cleanup`。`decision=system_cleanup` 当且仅当 `cleanup_type` 为 §2.3 的固定枚举之一；其它 decision 的 `cleanup_type` 必须为 null。proposal post-state normalization 产生的 cleanup event 即使与 accepted patch 同 group，也使用 `decision=system_cleanup`。所有实际 patch event 保存有界 `patch_summary`（至少 op/path/item identity，隐私删除时可定位清除）；只有 accepted/system cleanup 携带可 replay 的完整 `normalized_operation`。纯 waiting/excluded/already-reflected 且 state 未变化时写 candidate decision，但不创建空 revision；candidate audit 不依赖 semantic event 冒充。rejected/deferred-only group 可以 `result_revision=NULL`，供诊断/恢复审计，不伪造 state revision。
+
+`revision` 在同一 `(userId,presetId)` 下跨 source generation 全局单调且不重置；generation 初始化使用当前 revision 的下一值。因此 snapshot 主键与 event group 的非空 result-revision 唯一约束都不得包含 generation 来放宽重复。generation 仍是每行必填 fence，replay 先验证 generation transition event/snapshot，再验证全局连续 revision。
+
+`normalized_operation` 使用 strict `operationVersion=1` union；accepted/system-cleanup event 必填，其他 decision 必须为 null：
+
+```js
+{
+  operationVersion: 1,
+  section, targetKey,
+  op,                         // canonical patch op 或 cleanup_type 对应内部 op
+  patchId: null | "...",
+  cleanupType: null | "...",
+  precondition: {
+    identity: "<section:path|itemId|epochId>",
+    expectedFingerprint: null | "sha256:..." // add/首次建立为 null
+  },
+  mutation:
+    { kind: "item_upsert", itemId, postItem } |
+    { kind: "item_remove", itemId } |
+    { kind: "item_merge", sourceItemIds, resultItem } |
+    { kind: "scene_replace", postScene, postPreviousScene },
+  dueResolution: null | {
+    dueExpression,
+    timeAnchorMessageId,
+    resolvedDueAt,
+    userTimeZone
+  },
+  postFingerprint: "sha256:..."
+}
+```
+
+`postItem/resultItem` 是该 event 后完整 schemaVersion 3 item，必须包含全部专用字段、`projectionIdentity/sourceProjectionIdentities/currentFieldLineage/evidenceGroups`；`scene_replace` 同样包含 event 后完整 current scene 与 previousScene。`item_remove` 只需稳定 itemId，因为其完整删除前 provenance 已存在于 pre-state，correction/forget 的 suppression source keys另存 tombstone。merge 的 `sourceItemIds` 就是唯一 canonical `mergedFromItemIds`；maintenance 归属通过 `event_group.task_id → task.parent_task_id` 解析，不增设冗余 event 列。Todo add/update 的 due expression、relative/absolute anchor、冻结时区和 resolved instant 必须同时出现在 `dueResolution` 与 postItem中且交叉一致。
+
+Replayer 按 event group revision、`event_index` 顺序校验 operation schema与 precondition fingerprint，再应用 mutation并校验 `postFingerprint`；任一不匹配即停止恢复，不能跳过或按当前代码重新推导历史 operation。`patch_summary` 不是 replay 输入。
+
+### 6.5 运行健康与 ops log
 
 ```sql
 CREATE TABLE chat_memory_target_status (
-  user_id             BIGINT NOT NULL,
-  preset_id           TEXT NOT NULL,
-  target_key          TEXT NOT NULL,
-  source_generation   BIGINT NOT NULL,
-  rebuild_boundary_message_id BIGINT,
-  status              TEXT NOT NULL,     -- healthy | retry_wait | capacity_blocked | halted | rebuilding
-  consecutive_errors  INTEGER NOT NULL DEFAULT 0,
-  last_error_reason   TEXT,
-  last_task_id        UUID,
-  next_retry_at       TIMESTAMPTZ,
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, preset_id, target_key)
-);
-```
-
-Recovery 字段归属固定为：
-
-| 旧语义 | 新 authority |
-| --- | --- |
-| `consecutiveErrors` | per-target status |
-| `awaitingContextExpansion` | durable task 的 `context_expansion_attempt` + `stage_payload.expandedEnvelope` |
-| `lastErrorReason` / halt 原因 | per-target status + ops log |
-| `lastErrorTickId` | ops log 的 taskId/attempt；target status 保存 `last_task_id` |
-| retry attempt / notBefore | durable task |
-| 完整错误历史 | ops log |
-
-每个 target 独立维护 status；不存在 `memory_state.meta.halted` 或 user/preset 全局 halt。某 target halted 不修改其它 target 的 status/cursor，也不删除其最后一次稳定 state。`capacity_blocked` 表示 normal task 处于 `capacity_blocked` 或 `replaying_original_proposal` 阶段，或 maintenance task 处于 `compacting`/退避等待阶段；Observer 不为 `capacity_blocked` target 创建新 normal task。maintenance child 因 Provider 可重试错误进入 `retry_wait` 时，child task 的 `not_before` 仍是细粒度重试 authority，但 target 必须保持 `capacity_blocked`，不能退化为普通 `retry_wait`；parent/replay 在 child 到期并成功前不得继续。容量/compaction/replay 导致的 halted 在 resume 时变为 `capacity_blocked`；`output_schema_invalid` 或 Provider 重试/连续失败达到阈值导致的 halted，在根因排除后仍保持 `halted` 并创建新的 normal task。所有分支都只有恢复 task 成功、cursor 推进并提交 snapshot 后才恢复 `healthy`，旧 task 保留审计。恢复算法见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5；用户侧映射与 Renderer 告警见 [write-protocol.md](write-protocol.md) §8.1。
-
-`source_generation` 必须等于该 row 所属 state 的当前 generation。Source rebuild 开始时，六个 target 在 raw-source mutation 同一事务进入 `rebuilding`，保存同一个 captured `rebuild_boundary_message_id` 并清除旧 task/error 状态；任一 target 未 force-drain 到该边界前不得恢复 `healthy`。因此“Memory dirty”是由当前 generation 下仍存在 `rebuilding` target 确定性派生的运行状态，不再增加第二个全局 dirty flag。
-
-创建 v2 state 时必须为六个 normal target 各初始化一行 `healthy / consecutive_errors=0`。task 进入 retry_wait 时 task.not_before 与 target.next_retry_at 必须表达同一重试边界；当前 task 是细粒度 authority，target row 是调度/健康汇总，二者在同一事务更新。
-
-### 9.5 Ops log
-
-```sql
-CREATE TABLE chat_memory_ops_log (
-  id              BIGSERIAL PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  target_key TEXT NOT NULL,
   source_generation BIGINT NOT NULL,
-  task_id         UUID NOT NULL,
-  tick_id         BIGINT,
-  target_key      TEXT NOT NULL,
-  section         TEXT,
-  proposer        TEXT,
-  outcome         TEXT NOT NULL,           -- llm_call_failed | safety_policy_blocked | max_output_truncated | output_schema_invalid_retry | output_schema_invalid | unable_to_decide | unable_to_compact | stale_result | reducer_failed | transaction_failed | commit_outcome_unknown
-  attempt         INTEGER NOT NULL,
-  detail          JSONB,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  rebuild_boundary_message_id BIGINT,
+  status TEXT NOT NULL,
+  consecutive_errors INTEGER NOT NULL DEFAULT 0,
+  last_error_reason TEXT,
+  last_task_id UUID,
+  next_retry_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id,target_key)
+);
+
+CREATE TABLE chat_memory_ops_log (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  source_generation BIGINT NOT NULL,
+  task_id UUID NOT NULL,
+  tick_id BIGINT,
+  worker_key TEXT NOT NULL,
+  target_key TEXT,
+  section TEXT,
+  outcome TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  detail JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_memory_ops_log_health
-  ON chat_memory_ops_log(user_id, preset_id, target_key, created_at DESC);
-
-CREATE INDEX idx_memory_ops_log_outcome
-  ON chat_memory_ops_log(user_id, preset_id, outcome, created_at DESC);
+  ON chat_memory_ops_log(user_id,preset_id,worker_key,target_key,created_at DESC);
 ```
 
-`target_key` 和 `task_id` 是 ops log 的必填归属。`section` 只在 outcome 能明确归属某个正式 section 时填写；task 级 outcome 填 `NULL`，禁止用 targetKey 代填。ops log 保存完整的分类与有界诊断历史但不保存 Provider 非法输出原文，也不单独决定当前 status；当前运行状态以 task/target status 为准。
+ops outcome 至少包含 `llm_call_failed|safety_policy_blocked|max_output_truncated|output_schema_invalid_retry|output_schema_invalid|unable_to_decide|unable_to_compact|stale_result|rebase_conflict|reducer_failed|transaction_failed|commit_outcome_unknown`。不得持久化 Provider 非法输出正文或完整 raw prompt。
 
-通用 outcome 至少包括：
+### 6.6 Suppression、projection、diagnostic 与 privacy
 
-- `llm_call_failed`、`safety_policy_blocked`、`max_output_truncated`、`output_schema_invalid_retry`、`output_schema_invalid`：Provider/schema 失败。`max_output_truncated`（Provider 明确因 max tokens/output length 停止）与 schema invalid 分开统计，即使残片可解析也不作为完整 proposal。前三者按退避策略可重试；`output_schema_invalid_retry` 表示首次 Provider 输出边界失败获得的唯一即时修复重试，其 detail 只含 boundary、经过字符白名单及条数/长度限制的 validation path/message 和同一 `schemaRepairFeedback`；最终 `output_schema_invalid` 表示输入边界错误或输出重试耗尽；
-- `unable_to_decide`：Proposer 自认信息不足，扩窗口 attempt 属于 task；
-- `unable_to_compact`：compactionProposer 判定无安全合并空间，对应 maintenance task/target 进入失败或 halt；
-- `stale_result`：revision/cursor/generation 校验失败后丢弃旧执行结果；
-- `reducer_failed`：Reducer 执行过程中发生纯代码异常（非业务拒绝），如内存错误、数据结构不兼容等；不增加 revision/snapshot；
-- `transaction_failed`：数据库事务在 COMMIT 前明确失败且已确认回滚（非业务逻辑拒绝），如死锁、序列化异常或事务执行阶段连接断开；必须在回滚后按 task phase identity 重新校验状态；
-- `commit_outcome_unknown`：数据库连接在 COMMIT 发送后断开，无法确认提交结果。worker 必须先按 event group 的 phase identity 查询是否已持久化（`result_revision` 是否存在），不能直接重试写入；若已提交则返回既有结果，未提交则在当前最新 revision 基础上重试。
-
-后续批次可增加专用 outcome，但不得复用这些值表达不同语义。
-
-### 9.6 原子提交与 Crash Recovery
-
-Revision 事务、generation 初始化事务、无 revision 事务、phase identity、COMMIT 结果不确定与运行恢复的完整规范见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §7–§8；source generation 变化与 rebuild/force-drain 见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)。本节的 DDL 字段必须按这些算法共同提交，不得把 snapshot 当成运行状态 authority。
-
-调试信息只记录结构化元数据（taskId、targetKey、reason、attempt、reject_reason 等），用 `logger` 输出到应用日志，不进表。禁止将完整 raw prompt、完整 state diff 或完整 message content 写入 append-only 应用日志，因为这些日志无法按用户或消息精确删除，与 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md) 的 privacy hard delete 要求冲突。如需持久化完整调试 payload 用于离线分析，必须使用可按 `(user_id, preset_id)` 索引和删除的受控 debug 存储表，并在 privacy hard delete 时一并清除。
-
-### 9.7 RAG Projection Checkpoint
-
-RAG 是持久化派生 projection；Recall/Scene Recall 是查询时 enrichment，继承 RAG cutoff，不建立独立 checkpoint。不得从 Memory target cursor 推定 RAG 处理进度：
-
-```sql
-CREATE TABLE chat_context_projection_checkpoints (
-  user_id                      BIGINT NOT NULL,
-  preset_id                    TEXT NOT NULL,
-  projection_key               TEXT NOT NULL,  -- rag
-  processed_generation         BIGINT NOT NULL,
-  processed_boundary_message_id BIGINT,
-  processed_tombstone_id       BIGINT NOT NULL DEFAULT 0,
-  status                       TEXT NOT NULL,  -- healthy | degraded | rebuilding
-  last_error_reason            TEXT,
-  updated_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, preset_id, projection_key)
-);
-```
-
-`processed_generation` 必须与 `memory_state.meta.sourceGeneration` 比较。`processed_tombstone_id` 独立记录该 projection 已物理消费的 suppression tombstone 水位：即使 generation 与 raw-source boundary 均未变化，只要存在更大的 tombstone id，worker 仍必须执行派生数据失效/删除并在同一事务推进该水位。查询末端 tombstone gate 始终是 correctness 保证，物理清理只用于收敛残留。完整 drain、generation 重校与 checkpoint 推进见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)。
-
-### 9.8 Context-suppression tombstone
-
-Forget/correction 的 source suppression tombstone 是独立于 `memory_state`、跨 `sourceGeneration` 保留的 durable sidecar（语义见 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md)）：
+以下 sidecar 仍是 version 3 的必要组成，但在本次开发期替换时同样 drop/recreate，不继承 version 2 行：
 
 ```sql
 CREATE TABLE chat_context_suppression_tombstones (
-  id              BIGSERIAL PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
-  message_id      BIGINT NOT NULL,
-  content_hash    TEXT NOT NULL,
-  reason          TEXT NOT NULL,           -- forget | correction
-  source_item_id  TEXT,
-  source_section  TEXT,
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  message_id BIGINT NOT NULL,
+  content_hash TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source_item_id TEXT,
+  source_section TEXT,
   created_revision BIGINT NOT NULL,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, message_id, content_hash)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,message_id,content_hash,reason)
 );
 
-CREATE INDEX idx_suppression_tombstones_lookup
-  ON chat_context_suppression_tombstones(user_id, preset_id, message_id);
-```
+CREATE TABLE chat_context_projection_checkpoints (
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  projection_key TEXT NOT NULL,
+  processed_generation BIGINT NOT NULL,
+  processed_boundary_message_id BIGINT,
+  processed_tombstone_id BIGINT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  last_error_reason TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id,projection_key)
+);
 
-同一 `(user_id, preset_id, message_id, content_hash)` 重复写入必须幂等（`UNIQUE` 约束保证）。Tombstone 不修改 raw chat message，也不删除历史 event/snapshot；它只作为 RAG/Recall 查询末端和 rebuild 候选过滤的 correctness gate。Privacy hard delete 时，tombstone 本身也必须物理清除。
-
-### 9.9 Context-quality diagnostics
-
-GapBridge omitted、projection lag、scene capacity rejection 等 context 质量诊断是独立于 `memory_state`、semantic event 和 Memory ops log 的持久化 sidecar（语义见 [Context Coverage 算法](algorithms/context-coverage.md)和[异常诊断投影](algorithms/diagnostic-projection.md)）：
-
-```sql
 CREATE TABLE chat_context_quality_diagnostics (
-  id              BIGSERIAL PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
-  subject_kind    TEXT NOT NULL,           -- target | projection | system
-  subject_key     TEXT NOT NULL,           -- targetKey、projectionKey，或 system 诊断键
-  diagnostic_type TEXT NOT NULL,           -- gap_bridge_omitted | projection_lag | scene_capacity_exceeded | state_* | ...
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_key TEXT NOT NULL,
+  diagnostic_type TEXT NOT NULL,
   source_generation BIGINT,
-  request_id      TEXT,
-  target_cursor   BIGINT,                  -- target cursor/boundary（gap_bridge_omitted、scene_capacity_exceeded 使用）
-  processed_boundary_message_id BIGINT,    -- projection 的 processedBoundary（仅 projection_lag 使用）
-  omitted_upper_message_id BIGINT,         -- GapBridge 的省略上界 messageId，用于确定 resolved 条件
-  recent_window_start BIGINT,              -- 当时的 recent window 起点 messageId
-  original_gap_count INTEGER,
-  original_gap_chars INTEGER,
-  retained_boundary BIGINT,
-  retained_count  INTEGER,
-  omitted_count   INTEGER,
-  omitted_chars   INTEGER,
-  truncated       BOOLEAN NOT NULL DEFAULT FALSE,
-  detail          JSONB NOT NULL DEFAULT '{}'::jsonb, -- 诊断类型专用的结构化开发/运维信息
-  resolved        BOOLEAN NOT NULL DEFAULT FALSE,
-  resolved_at     TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  boundary_message_id BIGINT,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  resolved BOOLEAN NOT NULL DEFAULT FALSE,
+  resolved_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX idx_context_diagnostics_active
-  ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, resolved, created_at DESC);
 
 CREATE UNIQUE INDEX idx_context_diagnostics_one_active
-  ON chat_context_quality_diagnostics(user_id, preset_id, subject_kind, subject_key, diagnostic_type)
+  ON chat_context_quality_diagnostics(user_id,preset_id,subject_kind,subject_key,diagnostic_type)
   WHERE resolved = FALSE;
-```
 
-字段说明：
-
-- `subject_kind` / `subject_key`：标识本诊断归属的主体。`target` + targetKey（如 `todos`）用于 GapBridge omitted、scene capacity 等 per-target 诊断；`projection + rag` 用于 projection lag；Recall 继承该健康状态；`system + memory_state` 用于无法归属具体 target/projection 的 authority-state 诊断。
-- `source_generation`：记录创建/最近更新该诊断时的 source generation。可在 state 尚不存在时为 `NULL`；generation 初始化后，旧的非空 generation active 诊断必须直接 resolve，且不得为这种失效诊断创建“已恢复”通知。
-- `omitted_upper_message_id`：GapBridge 省略的上界 messageId（即 last omitted messageId）。resolved 条件是 `target_cursor >= omitted_upper_message_id`，而非依赖 `recent_window_start - 1` 间接推导。
-- `omitted_upper_message_id` 和 gap 统计字段仅用于 `diagnostic_type = gap_bridge_omitted`；`target_cursor` 还被 `scene_capacity_exceeded` 用来记录最近处理 event group 的 `cursor_after`。`processed_boundary_message_id` 仅用于 `projection_lag`。GapBridge/projection 诊断保存 `recent_window_start`，projection 以它计算本次 `requiredBoundary`。
-- `diagnostic_type = scene_capacity_exceeded` 表示最近有一个或多个 scene 字段 patch 因长度预算被拒绝；`detail.rejectedPaths` 保存仍待成功写入的字段，`detail.sourceEventGroupId/sourceGeneration/sourceRevision` 保存最近来源。它由[异常诊断投影](algorithms/diagnostic-projection.md)从已提交 event 派生，不由 Reducer 或 capacity maintenance 事务直接写入。
-
-同一 `(user_id, preset_id, subject_kind, subject_key, diagnostic_type)` 最多存在一条 active 记录，写入必须使用数据库唯一约束支持的原子 upsert。诊断记录保持 active（`resolved=FALSE`），直到满足对应类型的明确 resolved 条件：GapBridge omitted 由 cursor 覆盖其省略上界，或在锁定当前 generation/state 后查询原省略 source 区间为空来证明缺口已消失；不得仅因一次历史 `upToMessageId` 查询返回空而清除。projection lag 由本次 required boundary 已覆盖证明；`scene_capacity_exceeded` 仅在 `detail.rejectedPaths` 中每个字段都出现后续 accepted scene patch 后恢复；authority-state 诊断仅在合法 state 恢复后清除。不能只因请求结束而清除。
-
-异常投影拥有独立持久化 checkpoint：
-
-```sql
 CREATE TABLE chat_memory_diagnostic_projection_checkpoints (
-  user_id           BIGINT NOT NULL,
-  preset_id         TEXT NOT NULL,
-  projection_key    TEXT NOT NULL,          -- scene_capacity_diagnostics
-  processed_event_id BIGINT NOT NULL DEFAULT 0,
-  last_error_reason TEXT,
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, preset_id, projection_key)
-);
-```
-
-成功投影时，checkpoint 推进、diagnostic 更新/恢复和 recovery notification 必须在同一投影事务中提交。投影失败不得影响已提交的 Memory task，且不得推进 `processed_event_id`；失败原因用独立 best-effort 事务写入 `last_error_reason`。runtime poll、启动 reconciliation 和 context assembly 均可按 checkpoint 幂等重试。
-
-### 9.10 Recovery notification
-
-恢复通知记录"Memory 已追平到相应 boundary"的 delivery 状态，提供 best-effort once 通知语义（语义见 [write-protocol.md](write-protocol.md) §8.1 规则 3）：
-
-```sql
-CREATE TABLE chat_memory_recovery_notifications (
-  id              BIGSERIAL PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  preset_id       TEXT NOT NULL,
-  subject_kind    TEXT NOT NULL,           -- target | projection | system
-  subject_key     TEXT NOT NULL,           -- targetKey、projectionKey，或 system 诊断键
-  notification_type TEXT NOT NULL,         -- recovered
-  boundary_message_id BIGINT NOT NULL DEFAULT 0,  -- 0 表示无具体 boundary（如全量恢复）
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  projection_key TEXT NOT NULL,
   source_generation BIGINT NOT NULL,
-  delivered       BOOLEAN NOT NULL DEFAULT FALSE,
-  delivered_at    TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, subject_kind, subject_key, notification_type, source_generation, boundary_message_id)
+  processed_event_id BIGINT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  last_error_reason TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id,projection_key)
 );
 
-CREATE INDEX idx_recovery_notifications_pending
-  ON chat_memory_recovery_notifications(user_id, preset_id, delivered, created_at DESC);
-```
+CREATE TABLE chat_memory_recovery_notifications (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_key TEXT NOT NULL,
+  notification_type TEXT NOT NULL,
+  boundary_message_id BIGINT NOT NULL DEFAULT 0,
+  source_generation BIGINT NOT NULL,
+  delivered BOOLEAN NOT NULL DEFAULT FALSE,
+  delivered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id,preset_id,subject_kind,subject_key,notification_type,source_generation,boundary_message_id)
+);
 
-`boundary_message_id` 使用 `NOT NULL DEFAULT 0` 而非 nullable，确保 PostgreSQL `UNIQUE` 约束对无具体 boundary 的通知也能正确去重（PostgreSQL 中多个 NULL 不被视为相等）。
-
-恢复事务提交时同事务写入 notification 行（`delivered=FALSE`）。context compiler 在下次响应中读取未投递 notification 并把 notification ID/文案放入响应 payload；响应传输成功后，由响应层 best-effort 将对应行更新为 `delivered=TRUE, delivered_at=NOW()`。数据库事务不跨越网络响应边界。
-
-`subject_kind/subject_key` 与健康来源一致：Memory target 使用 `target + targetKey`，RAG 及其查询时 Recall 使用 `projection + rag`，无法归属前两者的全局恢复使用 `system + <diagnosticKey>`。通知语义为 **best-effort once**：系统保证同一恢复事件只创建一行 notification（`UNIQUE` 约束）；存在下一次成功响应时至少尝试投递一次。不保证恰好一次 delivery——并发响应可能同时读到未投递行，或响应已成功但 `delivered` 更新前进程崩溃，因而允许重复投递。这是当前为降低复杂度明确接受的语义；如需恰好一次，需要另行引入客户端 ACK/幂等消费。Privacy hard delete 时 notification 行也必须清除。
-
-### 9.11 Privacy operation
-
-```sql
 CREATE TABLE chat_memory_privacy_operations (
-  user_id             BIGINT NOT NULL,
-  preset_id           TEXT NOT NULL,
-  operation_id        UUID NOT NULL,
-  operation_mode      TEXT NOT NULL, -- rebuild | delete_scope | reset_authority
-  source_generation   BIGINT,
+  user_id BIGINT NOT NULL,
+  preset_id TEXT NOT NULL,
+  operation_id UUID NOT NULL,
+  operation_mode TEXT NOT NULL,
+  source_generation BIGINT,
   boundary_message_id BIGINT,
-  status              TEXT NOT NULL, -- purging | verified | draining | completed
-  last_error_reason   TEXT,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, preset_id)
+  status TEXT NOT NULL,
+  last_error_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id,preset_id)
 );
 ```
 
-该表不引用 preset 外键，使整个 preset 被物理删除后仍可恢复外部 store 的 purge verification。详细状态机见 [Suppression、Hard Delete 与 Retention](algorithms/suppression-and-retention.md) §5。
+诊断 projector 只锁定并读取已经提交的 source events；diagnostic upsert/resolve、recovery notification 与 projection checkpoint 推进必须位于同一个后续投影事务。Privacy hard delete 还必须删除 task payload、observation claim/evidence、scan assessment、arc/occasion、cycle/decision、event/snapshot、RAG/Recall 和受控 debug 副本。
 
-### 9.12 Retention 不变量
+## 7. 容量与集中配置
 
-Snapshot/event/task/ops log 的 anchor 提升、连续 replay 链和可清理条件见 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md) §6。DDL 与外键/引用策略必须保证该算法不会删除仍被 active task 或 retained event group 依赖的数据。
+### 7.1 容量
 
-## 10. Provider Adapter 契约
-
-Proposer 的 LLM 调用必须经由 Memory 专用的归一化 Provider Adapter 层，而非复用裸文本解析路径或在 tick orchestrator 里直接调 provider SDK。配置以显式 adapter ID 选择协议实现；Adapter 必须使用 provider 原生 JSON schema、tool 或 function structured-output 能力，并在返回后再做本地 schema 校验。未知 adapter 在配置加载时拒绝；已知 adapter 对具体 Provider/model 的真实能力由完整 schema preflight 验证，不能由布尔环境变量自行宣称。Adapter 把不同 provider 的响应与错误映射为统一结果，使上层无需关心 `finish_reason` 取值差异。
-
-DeepSeek 首版使用 `deepseek-strict-tools`：端点必须为官方 `/beta` strict tool calling，指定 `strict=true` 并强制调用唯一输出 tool；schema compiler 将业务 schema 转换为 Provider 支持的子集。DeepSeek 传输 schema 中，`const` 转换为带显式 primitive `type` 的单值 `enum`，原本只有 `enum` 的节点也必须补出同质 primitive `type`；混合类型 enum 不得猜测转换。`anyOf` 的每个直接分支必须有 `type` 或 `$ref`，由可选 object 展开或业务 union 产生的纯嵌套 `anyOf` 必须展平。上述规则只约束 Provider 传输方言，不改变 §5.5 的业务 schema；未由 Provider 强制的长度、数组等约束仍由本地完整契约校验。高频 Memory 调用通过独立 Provider 配置显式发送 `thinking.type=disabled`；不得继承主聊天的 thinking 设置。OpenAI-compatible 原生 JSON Schema 端点使用独立的 `openai-json-schema` adapter。
-
-Adapter 输入：Proposer prompt（system + user）+ 输出 schema（§5.5）。Adapter 输出：
+每个 item section 使用：
 
 ```js
-// 成功
-{ status: "ok", output: { /* §5.5 的 Proposer 输出结构 */ } }
-
-// 失败
-{ status: "error", reason: "llm_call_failed" | "safety_policy_blocked" | "max_output_truncated" | "output_schema_invalid", detail: { /* finish_reason / 有界错误分类或校验 path/message；不得含原始响应正文 */ } }
+{ maxItems, maxRenderedChars }
 ```
 
-识别规则：
+scene 仅使用 `maxRenderedChars`。字符按 Unicode code point 计算，只统计 Renderer 可能输出的语义值，不统计 ID、hash、quote、evidence、标题或模板标点。
 
-- `safety_policy_blocked`：provider 返回 `finish_reason`/`stop_reason` 含 `content_filter`，或返回 refusal 标记，或输入被 provider 拒绝。此错误必须显式记录，不得伪装成 noop 或静默跳过（见 [write-protocol.md](write-protocol.md) §6）。
-- `max_output_truncated`：provider 明确因 max tokens/max output length 停止，或响应元数据表明 structured payload 被输出上限截断。即使残片碰巧能被解析，也不得作为完整 proposal 交给 Reducer；该原因必须与一般 schema invalid 分开统计。
-- `output_schema_invalid`：输入 envelope 不符合契约，或 provider 返回了内容但 adapter/tick orchestrator 无法验证为 §5.5 schema。命名上与 events 表的 `schema_invalid`（Reducer 校验 patch 字段结构）区分：本码发生在 patch 产生之前。输入边界错误立即 halt；输出边界错误最多获得一次持久化即时修复重试，首次记录为 `output_schema_invalid_retry` 并持久化有界 `schemaRepairFeedback`，耗尽后才记录最终错误并 halt。非法输出原文不得写入 task、ops log 或修复 prompt。
-- `llm_call_failed`：网络异常、超时、provider 5xx、其它未归类异常。
+- scene 单字段 patch 超限：只拒绝该 patch，`capacity_exceeded`；
+- recentEpisodes 超限：确定性滚出最旧项并写 cleanup event；
+- todos 容量只统计 active；overdue 使用独立 render 上限；
+- previousScene 不参与 scene 容量；
+- 其他 item section 超限：进入 compaction + original proposal replay；不得静默截断。
 
-Provider/model 的物理 context window、最大输出和 schema/tool 限制由 Adapter 在请求前校验并按上述统一结果处理；这些上限不得折算、复用或写回为 §8 的 Memory section `maxItems/maxRenderedChars` 容量规则。
+### 7.2 Compaction 字段兼容
 
-Provider wire schema 可以为适配已知方言限制而使用可逆的、更窄表示，但必须在业务 schema 校验前归一化，且不得放宽 §5.5。例如 DeepSeek strict tools 不支持数组 cardinality 约束时，scene patch 在 wire 上使用单个 `evidenceRef` 对象，Adapter 立即归一化为 canonical `evidenceRefs: [ref]`；Reducer、durable proposal 和 event 中只允许 canonical 结构。此转换必须由完整 Provider preflight 覆盖。
+`compactionProposer` 只提出 `itemIds + value.text`；Reducer 只有在下表所有 source 字段兼容时才能确定性生成完整 result item。所有 section 都要求 source item `semanticKey` 完全相同；null 与非-null 不相等。
 
-启用 Memory runtime 时，完整 Provider preflight 是服务监听前的启动门；仅运行独立 probe CLI 不构成启服条件。preflight 成功结果只对当前进程、adapter/model/schema 组合有效。运行请求还必须在传输前检查集中配置的输入能力上限，并显式发送集中配置的最大输出上限；DeepSeek Memory 调用的 `thinking.type` 固定为 `disabled`。
+| section | 额外 eligibility | result 专用字段 |
+| --- | --- | --- |
+| `todos` | 全部 `status=active,becameOverdueAt=null`；`actor/requester/dueAt/timeAnchorMessageId` 分别全等 | 继承这些全等值；status active |
+| `standingAgreements` | `agreementKey` 全等 | 继承 agreementKey |
+| `recentEpisodes` / `milestones` | `arcId` 必须同一非空值 | 继承 arcId；不同/空 arc 不得把独立事件合并 |
+| `worldFacts` | 无其它字段 | 继承 semanticKey |
+| `userProfile` / `assistantProfile` / `relationship` | `facet/canonicalKey/factBasis` 分别全等 | 继承三者 |
 
-tick orchestrator 行为：
+任一条件不满足即 `invalid_state_transition`，不得让 LLM选择或丢弃冲突字段。result text 使用 patch value；`createdAtMessageId=min(source)`，`updatedAtMessageId=max(all inherited refs)`；evidenceGroups完整继承并按 `(source item stable order,evidenceGroupId)` 去重。projection identity 使用 source root union统一算法。每个 result current field lineage：text 取所有 source text lineage group IDs并集后计算新 text fingerprint；继承专用字段取对应 source lineages并集。任一 source current field lineage缺失/悬空即拒绝。
 
-- `status: "ok"` → tick orchestrator 校验 `output.proposer === task.proposer` 且 `output.tickId === task.tickId`，再校验 `sectionResults` 完整覆盖 target sections。不匹配或结构残缺时，不交 Reducer；同事务写 ops log、将 task 置为 failed，并把对应 target status 置为 halted。`unable_to_decide` 写 ops log 并更新 task 的 `context_expansion_attempt`；compactionProposer 返回 `unable_to_compact` 时更新 task/target status。只有 `patches`/`noop` 交 Reducer。
-- `status: "error"` → 不交给 Reducer；按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5 在同一运行状态事务更新 durable task、per-target status 与 ops log，决定 retry_wait 或 halted，不增加 Memory revision/snapshot。
+### 7.3 必填配置
 
-Reducer 永远只处理 `status: "ok"` 且 section 状态为 `patches`/`noop` 的输出，不会看到空输出、伪造输出、`unable_to_decide` 或残缺 `sectionResults`。adapter 在 `status: "error"` 时由 tick orchestrator 直接处理，不把错误结果传给 Reducer。
+集中配置至少包含：
+
+```text
+sourceScan.batchMaxMessages
+sourceScan.supportingContextMessages
+sourceScan.debounceMs
+sourceScan.tailMaxDelayMs
+sourceScan.provisionalUserMaxDelayMs
+sourceScan.detectorVersion
+observation.maxOpenCatalogItems
+observation.retryLimit
+observation.waitingStaleAgeMs
+pattern.minDistinctOccasions = 3
+pattern.minDistinctArcs = 2
+boundaryCycle.targetOrder
+boundaryCycle.retryLimit
+boundaryCycle.contractVersion
+quote.maxCodePoints = 200
+quote.similarityThreshold
+各 section 容量、TTL、Provider/adapter、retry、retention、health、projection 配置
+```
+
+batch/session/turn/time gap 都不能成为语义资格门。`tailMaxDelayMs` 必须固化为 durable pending `tail_deadline_at/freeze_deadline_at`，到期后才冻结 immutable task；不得只靠进程内 timer或预建可扩张的 not-before task。
+
+`contractVersion` 是 version 3 state schema、专业 Proposer prompts/output schemas、patch policy、candidate reason table、canonical target order 与 lifecycle 规则的内容 hash；它进入 scan status、cycle、task 与 dedupe identity。版本变化使旧未终态 task/cycle stale。若变化会改变既有历史投影资格，必须创建新 source generation 从 raw 全量重建；只改变无语义的日志/渲染措辞时不应提升该版本。
+
+## 8. Provider Adapter
+
+Memory LLM 调用必须通过支持 schema-constrained structured output 的专用 adapter；scan output 与每个 target output 使用独立 schema。adapter 先使用 Provider 原生 JSON schema/tool/function 约束，返回后再做本地完整 schema 校验。
+
+统一结果：
+
+```js
+{ status: "ok", output }
+{ status: "error", reason: "llm_call_failed" | "safety_policy_blocked" |
+  "max_output_truncated" | "output_schema_invalid", detail: {/* 不含原始正文 */} }
+```
+
+Provider 未能满足完整 schema 时 fail closed，不从半截 JSON 猜测 observation、decision 或 patch。每次 schema/prompt/routing 变化都必须更新对应内容 hash；observer 的变化还必须更新 `detectorVersion` 并触发全量 source generation rebuild。

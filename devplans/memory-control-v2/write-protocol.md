@@ -1,157 +1,224 @@
-# Memory Control v2 写入协议
+# Memory Control v2.1 写入协议
 
-本文定义 Memory v2 的写入链路与组件编排。数据 shape、枚举、查表与 DDL 见 [state-contract.md](state-contract.md)；确定性算法与状态机见 [算法契约索引](algorithms/README.md)；prompt 细节见 [proposer-prompt.md](proposer-prompt.md)；渲染接入见 [rendering-and-context.md](rendering-and-context.md)。
+本文只定义组件职责和编排顺序。数据 shape、枚举与 DDL 以 [状态契约](state-contract.md) 为准；确定性状态机以 [算法契约索引](algorithms/README.md) 为准。当前为开发期直接替换，不保留 version 2 lag/cursor/new-batch pipeline。
 
-## 1. 写入流水线
+## 1. 组件与职责
 
-Memory v2 的写入链路固定为 4 步：
+### 1.1 SourceScanCoordinator（纯代码）
 
-1. **Observer**（纯代码）：读取最近对话、当前 state、各 target cursor，按 lag 阈值计算 eligible proposer tasks，组装结构化输入。
-2. **Proposer**（按记忆族调用，schema-constrained structured output）：每个专用 Proposer 只处理自己负责的一个或多个 sections，输出 patch / noop / unable_to_decide，并按 op 附 evidenceKind；除 `mergeItems` 外附 `evidenceRefs`。
-3. **Reducer**（纯代码）：按 [Reducer Apply 算法](algorithms/reducer-application.md) 执行顺序敏感的校验、模拟、容量处理、apply、事件生成与事务提交。
-4. **Renderer**（纯代码模板）：读取最新 `memory_state`，实时渲染为主聊天模型可读的 memory 文本。
+`SourceScanCoordinator` 负责机械工作：
 
-职责边界：
+1. 确定稳定 source boundary；
+2. 追加 singleton semantic-boundary plan、capture/promote durable pending tail，并在 deadline 到达后创建、恢复和去重 immutable source-scan task；
+3. 组装 singleton scan delta、supporting context、open observation/arc/occasion catalogs；
+4. 调用 `semanticSignalObserver`；
+5. 校验逐消息 assessment、raw evidence、scope/hash/boundary 和 observation/arc/occasion 引用；
+6. 在一个事务内持久化 scan assessment、arc、occasion、observation、evidence、per-target 行并推进 scan checkpoint；
+7. 运行 pre-cycle lifecycle；只有存在 runnable candidate 时才为本 boundary 创建 `boundary cycle` 并调度专业 Proposer，无候选时持久 ledger终局。
 
-- **Observer 只算 lag，不做信号检测**。是否需要更新某 section 由对应专用 Proposer 看到消息后自行判断。
-- **Proposer 只提出候选 patch + evidenceKind 枚举分类**，不判断最终可信度，不输出自由置信度分数。不同记忆族使用不同 prompt/schema，避免单个万能 Proposer 被过多规则污染。
-- **Reducer 不做开放式自然语言理解**；schema/evidence/quote/policy/结构化冲突、领域生命周期、容量与事务提交都按确定性算法执行。
-- **Renderer 不暴露 patch log、event log 或 reducer 细节**给主聊天模型。
-- **异常诊断投影**在 Memory 写入事务提交后读取 semantic events，独立维护用户告警；它不参与 Reducer/capacity 决策，失败也不改变 normal task 的提交结果。权威算法见[异常诊断投影](algorithms/diagnostic-projection.md)。
+它不做自然语言语义判断，不按关键词直接决定最终 Memory，也不把 scan cursor 当作候选已消费的证明。
 
-### 1.1 Observer
+### 1.2 semanticSignalObserver（LLM）
 
-Observer 构造一次 memory tick 的结构化输入，只做三件事：
+`semanticSignalObserver` 对每条稳定 raw message 做信号检查，输出 observation/arc/occasion actions 与逐消息 assessment。它是唯一的通用语义路由调用，但不是最终 Memory writer：
 
-1. 对每个 target 计算 `lag = 该 user/preset 下 id > coveredUntilMessageId 的有效 source 消息数量`（`coveredUntilMessageId` 存于 `meta.targetCursors[targetKey]`），lag 达到阈值的 target 为 eligible。source 按 messageId 连续读取 user/assistant raw messages，可跨 session；Memory Observer 不沿用主聊天 recent window 的 user-boundary 裁剪，也不注入 session boundary 控制标记。
-2. 读取 `chat_memory_target_status`：只有存在 status 行且 status 允许 normal 调度的 target 才形成 eligible intent；缺失 status 行必须视为 degraded 初始化/修复问题，不得按 healthy 放行。`retry_wait` 等到 `nextRetryAt`，`capacity_blocked/halted/rebuilding` 不形成普通 proposal。每个 normal target 唯一映射到一个专用 Proposer。
-3. eligible intents 进入同一 `userId/presetId` 串行执行位后，才逐个创建 durable task，并在创建事务中捕获当时最新 `baseRevision`、该 target cursor、observed messages/evidence metadata，组装 immutable `task_payload` 与 Proposer envelope。禁止在一个 tick 开头为多个 targets 预先固化同一个 baseRevision，否则前一 target 正常提交会让后续 task 被误判 stale。
+- 可以识别候选事实、承诺、接受/拒绝、完成、纠正、遗忘、scene 变化、episode arc 和模式证据；
+- 可以把新证据 append 到输入 catalog 中的 observation/arc/occasion；
+- 不能输出 section patch、itemId、最终 profile/relationship 结论或 Renderer 文本；
+- false negative 不能由架构绝对消除，因此 detector 必须有版本、golden/metamorphic 验收和全量重建能力。
 
-Observer 不检测 `userCorrection`、`todoSignal` 等语义信号——这些由 Proposer 看到消息后自行判断。Observer 只记录每个 target 的 `trigger: { type: "lagThreshold" }`。user-boundary 裁剪只属于主聊天 recent window 的对话可读性规则，不能让 Assistant 消息从 Memory source 中消失。
+`semanticSignalObserver` 的输出 shape 见状态契约 §3，算法见 [Source Scan 与 Observation](algorithms/source-scan-and-observation.md)。
 
-### 1.2 Proposer
+### 1.3 专业 Proposer（LLM）
 
-Proposer 按记忆族拆分调用，每个调用都必须使用 provider 支持的 schema-constrained structured output 强制输出 schema（见 [state-contract.md](state-contract.md) §5.5）。LLM 调用经由 [state-contract.md](state-contract.md) §10 的 Memory 专用 Provider Adapter 层；配置必须显式选择已实现的协议 adapter，真实模型/端点还必须通过完整 schema preflight。adapter 把正常输出、网络/Provider 失败、refusal/safety block、max-output truncation 和 schema invalid 归一化为不同结果；`status: "error"` 不交给 Reducer，由 tick orchestrator 直接写 ops_log 并按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §5 恢复。
+正式 target 与 Proposer 固定映射：
 
-首版固定 7 个 Proposer：
-
-| targetKey / 类型            | Proposer                      | 负责 sections                                                                                    | 更新特征                           |
-| --------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------- |
-| `scene`                     | `currentStateProposer`        | `scene`                                                                                          | 高频、覆盖式、字段级证据           |
-| `todos`                     | `todoProposer`                | `todos`；overdue 是 todo item 的 Reducer 衍生状态                                                 | 中频、事件型、需要完成/取消/到期   |
-| `standingAgreements`        | `agreementProposer`           | `standingAgreements`                                                                             | 中低频、事件型、持续互动约定       |
-| `episodes`                  | `episodeProposer`             | `recentEpisodes`, `milestones`                                                                   | 近期经历与长期里程碑的晋升判断     |
-| `profileRelationship`       | `profileRelationshipProposer` | `userProfile` / `assistantProfile` / `relationship`                                               | 低频、保守、长期档案和关系模式     |
-| `worldFacts`                | `worldFactProposer`           | `worldFacts`                                                                                      | 低频、保守、世界设定事实           |
-| 维护任务（无 raw cursor）   | `compactionProposer`          | 被阻塞或达到 hygiene 高水位的单个 item section（`recentEpisodes` 暂不触发，由滑动窗口处理）          | 维护型、处理安全合并与去重         |
-
-前 6 个是正常写入 Proposer，由 Observer 按 lag 调度。`compactionProposer` 是维护 Proposer，不参与普通 lag 轮询：它由 Reducer 的长度预算门，或成功 normal revision 后 section 达到集中配置的 hygiene 高水位且相对上次 hygiene 增长达到最小 item delta 时触发。相比原设计的 5 个 normal Proposers，所有 targets 同时 eligible 时的最大 normal LLM 调用数增至 6；Observer 仍只调用达到触发条件的 target，不得每 tick 无条件调用全部 Proposers。
-
-普通 Proposer 不能输出 `mergeItems`；`mergeItems` 只允许 `compactionProposer` 在维护模式下输出。`compactionProposer` 负责预算压力下的兜底合并和去重；normal Proposer 不承担主动去重。
-
-Proposer 的拆分边界是 section family，不是字段级。`scene.location`、`scene.time`、`scene.mood`、`scene.note` 由同一个 `currentStateProposer` 处理。
-
-Proposer 的输入/输出 envelope、字段语义、边界规则和各 Proposer 的 readOnlyContext 固定范围见 [state-contract.md](state-contract.md) §5。每个普通 Proposer 看到自己的 targetSections 后，自行决定每个 section 输出 `patches` / `noop` / `unable_to_decide`。`compactionProposer` 的输出状态为 `patches` / `unable_to_compact`，见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)。
-
-### 1.3 Reducer
-
-Reducer 仍是纯代码的 Policy Gate + State Applier，不使用 LLM，不做开放式自然语言判断、语义冲突检测或语义匹配。完整、顺序敏感的校验与 apply 算法见 [Reducer Apply 算法](algorithms/reducer-application.md)；Evidence/Quote 子算法见 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)。
-
-### 1.4 Renderer
-
-Renderer 把结构化 `memory_state` 渲染为主聊天模型可读的稳定文本。Renderer 输出不是权威状态，不写入独立 DB 列，是纯代码模板，不调用 LLM。具体模板与规则见 [rendering-and-context.md](rendering-and-context.md)。
-
-## 2. 路由与触发
-
-v2 不为每个字段单独调用 Proposer，也不使用单个万能 Proposer。每次 memory tick 按 eligible targets 调度一个或多个专用 Proposer，输出各自负责 section 的 patch bundle；Observer 只负责发现和组装，不预判 section 是否变化。
-
-normal task 的 eligibility、窗口、默认阈值和 force-drain 旁路由 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) 定义。容量阻塞后的 maintenance task、compaction、pending proposal 保护与原 proposal replay 由 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md) 定义。Todo/scene 等状态转换由 [领域生命周期算法](algorithms/domain-lifecycle.md) 定义。
-
-## 3. Cursor 推进规则
-
-Cursor、联合 target 的聚合、retry/resume、successor task、phase identity 与 crash recovery 的完整规范见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md)。容量阻塞的 `deferred`、maintenance task 与 replay 语义见 [Compaction 与 Proposal Replay 算法](algorithms/compaction-and-replay.md)。本协议只规定这些算法由 tick orchestrator、Reducer 和 durable runtime state 共同执行，不另保留第二份状态机。
-
-## 4. 长期档案与世界事实写入机制
-
-`worldFacts`、`userProfile`、`assistantProfile` 和 `relationship` 是四个正式 section。它们的新增只接受 `long_term_fact`：包括明确表达的长期事实，以及 profile/relationship 中由单个观察窗口内清晰行为模式支撑的稳定特征。对已有 item 的改写基于 `user_correction` 或 `assistant_correction`，走 `updateItem`（见 [state-contract.md](state-contract.md) §6 policy table）；`addItem + correction` 不允许，因为修正语义应指向既有 item。
-
-`assistant_correction` 与 `user_correction` 权限相同，均可修正上述四个正式 section。明确 forget 则使用 `forgetItem + user_forget/assistant_forget`，其权限和原子 suppression 规则见 §5；不得把 forget 伪装成 correction。
-
-单次临时剧情、一次性情绪、单场景互动不得进入长期档案或世界事实。行为推断只适用于 profile/relationship，并且只在窗口内有清晰、显著的行为模式时成立；一次性动作不构成 trait。`memory_compaction` 只能用于合并同一 section 内的已有 item，不得作为新增长期事实的证据类型。
-
-长期 section 先由 Reducer 的 new-batch gate、exact text/canonicalKey 唯一门阻止确定性重复；维护任务调用 LLM 前，再用纯代码合并同 section、规范化 text 完全相同的既有 items并完整继承 evidenceGroups。语义近似项由 `compactionProposer` 在容量恢复或主动 hygiene 模式下用 `mergeItems` 处理；normal Proposer 不输出 `mergeItems`。Reducer 不做文本相似度去重，`compactionProposer` 禁止跨 section 合并。
-
-> 跨 tick 重复模式累积晋升（N=3/K=2）需要确定性 ledger + 结构化标签匹配（非语义匹配）才能可靠实现，首版不做，留作未来探索。行为推断在单个 contextWindow 内完成，不依赖跨 tick 累积。
-
-## 5. 删除与遗忘
-
-遗忘是确定性策略，不是摘要模型的副作用。Scene/Todo 等生命周期删除与状态转换由 [领域生命周期算法](algorithms/domain-lifecycle.md) 定义；correction、forget、context-suppression tombstone、RAG/Recall 查询末端过滤和 privacy hard delete 由 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md) 定义。
-
-本协议只保留组件边界：Proposer 不得输出通用 `removeItem`；Reducer 负责原子写入 active state、event/snapshot 与必要 tombstone；projection worker 负责异步清理派生数据，但查询末端过滤始终是 correctness gate。
-
-## 6. NSFW 与安全策略
-
-对成年且 consensual 的成人互动，Proposer 以客观、摘要化方式提出事件本质、双方意愿、关系变化和稳定偏好；Renderer 只渲染已进入 `memory_state` 的摘要化字段，不摘录大段感官描写。
-
-Reducer 不对成人内容做社会规范层面的二次审查；它只校验证据引用、policy gate、冲突和删除规则。Provider 安全策略造成的拦截由 Provider Adapter 识别为 `safety_policy_blocked`（[state-contract.md](state-contract.md) §10），由 tick orchestrator 写入 ops_log，不得伪装成 noop 或静默跳过。
-
-## 7. 迁移原则
-
-Source generation、自动 rebuild、projection checkpoint、`forceDrainTo` 与一次性迁移的完整规范见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)。RAG 及查询时 Recall/Scene Recall 的截止点和请求时健康判断见 [Context Coverage 算法](algorithms/context-coverage.md)。
-
-本协议只保留编排边界：source mutation、normal/maintenance/system-cleanup task 共用同一 user/preset 串行执行域；一次性迁移复用正式 pipeline，不增加长期 runtime task type 或兼容路径。
-
-## 8. 失败与降级
-
-失败时保留上一次稳定 `memory_state`。系统不回退到旧的全文摘要重写路径。各失败决策的恢复语义见 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md)。
-
-- **Target 连续多次 error**：按 task 算法的升级阈值把该 per-target status 置为 halted，保留最后稳定 state；其它 targets 和主聊天不被全局阻断。
-- **输出 schema 错误**（`output_schema_invalid`）：仅当错误发生在 Provider 输出边界时，允许按 `CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX` 对同一 durable task 立即执行一次修复重试，首版上限只能为 0 或 1；重试次数以及经过裁剪的校验 path/message 持久化在 task stage payload。`output_schema_invalid_retry` ops log 记录同一修复反馈，第二次调用在 system prompt 中收到反馈并返回完整替代结果，但不保存或回传非法输出原文。输入 envelope 契约错误不重试；输出重试耗尽后 task failed、对应 target halted并写终态 `output_schema_invalid`。所有路径只更新 task/status/ops log，不产生 revision/snapshot。
-- **进程重启与持续消费**：worker 启动时扫描，并按集中配置的短周期持续读取 queued/running/到期 retry_wait durable task，按最后持久化 stage 继续并重新校验 revision/cursor；进程内队列不是恢复 authority。任一路径把 task 写回 queued/retry_wait 后都不得依赖新的聊天请求来唤醒。
-- **Revision stale（normal task 首次提交时 revision ≠ baseRevision）**：不直接 apply，也不简单失败；创建 successor task，以当前最新 revision 重新组装 envelope 并重新调用 Proposer。
-- **state/schema 损坏**：优先从当前 generation 最新合法 snapshot + 后续 normalized events 恢复；必要时按 source rebuild 算法从 raw messages rebuild。
-- **resume**：手动重置对应 task 的可执行条件后继续，不修改语义 state，不跳过 cursor 后消息；target 在新/恢复 task 真正成功提交 cursor/snapshot 前保持原 degraded 状态。
-
-### 8.1 用户侧健康状态
-
-用户侧只暴露三档聚合状态，不直接暴露内部 task stage 或错误枚举：
-
-| per-target status | 用户侧状态 | 用户可见语义 |
+| targetKey | Proposer | writable sections |
 | --- | --- | --- |
-| `healthy` | `healthy` | 该 target 正常运行 |
-| `retry_wait` | `degraded` | 瞬时错误退避中，该类记忆可能滞后 |
-| `capacity_blocked` | `degraded` | 等待 compaction/replay，该类记忆可能滞后 |
-| `halted` | `degraded` | 该类记忆已暂停且可能滞后，需要服务器维护脚本 resume |
-| `rebuilding` | `rebuilding` | 该类记忆正在从有效 source 重建 |
+| `scene` | `currentStateProposer` | `scene` |
+| `todos` | `todoProposer` | `todos` |
+| `standingAgreements` | `agreementProposer` | `standingAgreements` |
+| `episodes` | `episodeProposer` | `recentEpisodes`, `milestones` |
+| `profileRelationship` | `profileRelationshipProposer` | `userProfile`, `assistantProfile`, `relationship` |
+| `worldFacts` | `worldFactProposer` | `worldFacts` |
 
-聚合时 `rebuilding` 优先于 `degraded`：任一 target 为 `rebuilding`，整体为 `rebuilding`；否则任一 target 非 `healthy`，整体为 `degraded`；全部 target 为 `healthy` 且没有其他 active context-quality 诊断时，整体才为 `healthy`。持久化的 target backlog、GapBridge omitted、state/schema 异常及尚未追平的实际 context projection 等诊断同样参与聚合：重建类诊断映射为 `rebuilding`，其余映射为 `degraded`。
+专业 Proposer 只由 observation-target `ready` 或到期的 `retryable` 行触发。输入必须使用 boundary cycle 的共同 as-of snapshot，并包含候选引用的全部 raw evidence、必要支持上下文、相关 writable items 和只读背景。它必须：
 
-告警规则：
+- 输出完整 target sections；
+- 用 `candidateDecisions` 精确覆盖输入 observations；
+- 让每个 proposed candidate 被至少一个带 `observationIds` 的 patch 引用；
+- 区分 waiting、excluded、already-reflected，不得用无理由 noop 丢弃候选；
+- 只把 observation 当定位/累计账本，最终 evidence 仍引用 raw message。
 
-1. 告警必须持久化或从持久化状态确定性派生；新异常通过集中配置的 `alertDebounceMs` 后，在每次相关响应中持续返回，直到对应 target/status/诊断满足明确恢复条件，不能只弹一次后隐藏。Renderer 的 context 内滞后/重建标记不使用该响应 health-alert 防抖。
-2. 用户文案保持简洁，但必须指出受影响的记忆类别、是否可能滞后，以及可操作时是否需要人工恢复。精确 reason、taskId、target、attempt、cursor/处理边界保留在诊断信息中；halted 告警必须让运维侧可见这些边界。
-3. 恢复时明确产生一次"Memory 已追平到相应 boundary"的恢复通知；恢复通知按健康来源写入 `subject_kind/subject_key`（Memory target、RAG projection〔查询时 Recall/Scene Recall 继承〕或 system 诊断），delivery 状态持久化到 [state-contract.md](state-contract.md) §9.10 的 `chat_memory_recovery_notifications` 表，提供 best-effort once 通知语义。清除 active 告警与创建 notification 使用同一持久化事务，不能先宣称恢复再异步创建通知。
-4. `halted`、`capacity_blocked` 或 `retry_wait` 不产生全局 `chatBlocked`，也不产生 user/preset 级 halt。其他 targets 和主聊天继续运行。
-5. Renderer 继续使用受影响 target 最后一次成功提交的稳定 state，并在上下文中标记该类记忆“可能滞后”；recent window 与该 target 的 GapBridge 仍可补充未写入 Memory 的 raw messages。
-6. resume/rebuild 等服务器维护脚本可操作 halted target；普通 Observer/proposal 在恢复完成前不得绕过该 target 的调度门控。Compaction/replay 成功、cursor 推进并提交 snapshot 后只恢复对应 target，不要求其他 targets 同步恢复。
-7. scene 字段 patch 的 `capacity_exceeded` rejection 不改变 target status；独立诊断投影把它映射为 active `scene_capacity_exceeded`。Renderer 立即按 active diagnostic 标记该类记忆可能滞后，响应健康告警通过配置的 `alertDebounceMs` 后说明“最近一次更新因长度超限未写入”；只有被拒字段后续 accepted 后才清除相应 pending path，全部 pending paths 恢复后才关闭告警。
+专业 Proposer 彼此没有调用依赖。episode 输出不是 profile/relationship 的前置事实源；同 cycle 后运行的 target 也看不到前一个 target 刚生成的派生 state。
 
-### 8.2 运营指标
+### 1.4 Reducer（纯代码）
 
-以下指标只用于观测、容量规划和告警，不因单次样本直接阻断主聊天：
+Reducer 是最终写入权威，只负责：
 
-- 总体及 per-target 的 calls/message、eligible rate、input/output tokens 与 Provider/model latency；
-- `output_schema_invalid_retry`、最终 `output_schema_invalid`、`safety_policy_blocked`、`max_output_truncated`、`llm_call_failed` 与 `unable_to_decide`/`unable_to_compact` rate；
-- quote similarity 分布，以及 quote-too-short/quote-not-found/quote-too-long rate；
-- compaction success/failure、`replay_failed`、target halt rate、deferred proposal age；
-- queue age/backlog、revision/cursor stale；
-- GapBridge raw/truncated/omitted；
-- rebuild duration、RAG projection lag（查询时 Recall/Scene Recall 继承）、Memory degraded/rebuilding 持续时间。
+- schema、target/section/op/changeKind/policy；
+- observation ID、version、target assignment 与 candidate decision 完整性；
+- message ID、scope、generation、source boundary、content hash、role 与 quote；
+- item identity、todo/scene/episode 生命周期、结构化 duplicate gate；
+- pattern 的 distinct occasion/arc 门槛；
+- 容量、revision、cycle/as-of/rebase、task phase 与事务边界；
+- event/snapshot、candidate decision、observation-target、tombstone 的原子提交。
 
-相比原设计的五个 normal Proposer，当前固定为六个 target 调用族，必须按 target 分开观测调用量、eligible rate、tokens 和延迟。只有真实指标表明 `profileRelationship`/`worldFacts` 拆分造成不可接受的 token 消耗或延迟时，才重新评估拆分粒度；不能因 Provider 价格较低而忽略限流、失败率或错误累积。货币费用由运维人员通过 Provider 官方余额变化评估，Memory 运行时和迁移报告不计算、不聚合，也不以费用覆盖率作为门禁。
+Reducer 不做开放式 NLU、语义相似度匹配或 evidence 蕴含证明。`semanticKey` 相同不能由 Reducer 自动合并事实。
 
-### 8.3 集中配置
+### 1.5 Renderer（纯代码）
 
-以下变量由一个 Memory 配置入口加载、校验并供 Adapter/Observer/Reducer/Renderer/worker 共用，禁止在各模块散落默认值：每个 section 的 `maxItems/maxRenderedChars`、scene TTL、overdue todo 的 `maxRenderedItems/maxRenderedChars`（同时作为 todoProposer writableState 中 overdue todo 的传入上限）、每个 target 的 `lagThreshold`、GapBridge raw 字符预算与截断后最近消息数、quote 匹配算法与阈值、Provider adapter/base URL/API key/model/timeout/input 上限、adapter 专用 thinking mode、Provider retry/backoff、schema-invalid 即时重试上限、compaction retry 次数与 target halt 条件、durable task/projection 轮询周期、snapshot/event/debug retention，以及 degraded/rebuilding 告警防抖与恢复条件。用户时区不是 preset/环境配置：它是 User 的 IANA time-zone 字段（默认 UTC），在 task 创建事务中读取并固化到 immutable envelope。Memory Provider 配置只读取 `CHAT_MEMORY_V2_PROVIDER_*`，不得回退到主聊天的 Provider 环境变量。
+Renderer 只读取结构化 `memory_state.version=3` 的 effective view。它不读取 scan task、observation claim、candidate status、cursor 或 prompt 文本。自然语言组织、标题、字段标签和基于同一 `projectionIdentity` 的安全去重由 Renderer 完成。
 
-Evidence quote 最大 200 Unicode code points 是固定协议值；quote 模糊匹配默认阈值为 `0.75`，但允许从同一集中配置调整。其余默认值在实现前依据真实历史分布和 Provider 能力确定，并随配置文档记录；配置缺失或越界必须在启动/加载边界显式失败，不在运行路径临时猜测。
+## 2. 在线写入顺序
+
+每个 `(userId,presetId)` 的 source append、scan、boundary cycle、Reducer、housekeeping、source mutation 共用同一串行 scope lane。Provider 调用可以在 cycle 内有限并发，但所有持久状态转移受 durable task/cycle identity 和数据库事务约束。
+
+一次稳定 boundary 的顺序固定为：
+
+```text
+raw source 稳定提交
+  → durable pending tail + singleton semantic-boundary plan
+  → deadline/trigger 到达后冻结下一 durable immutable source-scan task
+  → semanticSignalObserver
+  → 持久 scan assessment / arc / observation / target rows
+  → 若有 runnable candidate：固化 boundary cycle + asOfRevision
+  → 为相关 targets 同时冻结 envelope
+  → 收集并持久化所有 proposal
+  → 固定 target 顺序执行 Reducer
+  → candidate lifecycle + event/snapshot/tombstone 原子提交
+  → cycle completed（无 candidate 则在 ledger commit 后结束）
+  → 才允许下一 boundary cycle
+```
+
+scan commit 与 pre-cycle lifecycle 后若没有任何 ready/retryable candidate，不创建空 boundary cycle或专业 Proposer task；逐消息 assessment/ledger 已是该 boundary 的 durable no-candidate 证明。世界事实等模块为空是正常结果。
+
+## 3. 稳定 boundary、批处理与尾部
+
+稳定 source 是已经完整提交的 raw message，不含流式半条 assistant 内容。scan status 的 stable max 与 pending endpoint 可以一次跨越多条消息，但 canonical `single_source_message_v1` plan 固定每条完整有效 source 一个 immutable semantic boundary/Observer task。导入、重建、user-only 与完整 user/assistant 对话都使用同一规则。
+
+Coordinator 可以为等待正常 assistant 回复延迟 user boundary 的实际执行，但不得晚于 `provisionalUserMaxDelayMs`；assistant 到达只提升 pending endpoint并共享 wake/raw prefetch，两条消息仍逐 boundary处理。assistant 失败/断开或显式 flush 时应提前 deadline。`turnId/parent_user_message_id` 仅用于确认回复归属、去重和排障，不进入 boundary或记忆语义。
+
+`batchMaxMessages/debounceMs` 只合并 wake/raw I/O 预取；canonical plan 固定每条完整有效 source 一个 semantic boundary。尾部先写 durable pending row，`tailMaxDelayMs` 是不可无限延后的 freeze deadline 上界：pending endpoint 只能提升、deadline 只能提前；到期后才为最早 boundary 冻结 immutable task。不能只靠进程内 timer或预建一个可扩张的 not-before task，服务重启必须从 pending row、boundary plan和已冻结 task分别恢复。
+
+普通 trigger：
+
+- pending freeze reason：`debounce | batch_target | provisional_user_deadline | tail_deadline | assistant_complete | flush | drain | recovery | rebuild`；历史复查另使用 `scanMode=late_discovery` 并逐既有 boundary 建 task；
+- target normal：`candidateReady | candidateRetry`；
+- maintenance：`lengthBudget | hygiene`。
+
+version 3 没有 `lagThreshold` 语义门，也没有 per-target raw cursor。
+
+## 4. Observation 路由与成立条件
+
+默认路由：
+
+| 语义 | target |
+| --- | --- |
+| 当前地点/活动/参与者/氛围变化 | `scene` |
+| 一次性请求、承诺、完成、取消 | `todos` |
+| 反复适用规则、边界、习惯性承诺 | `standingAgreements` |
+| 有长期回忆价值的共同经历/转折 | `episodes` |
+| 稳定显式档案或跨场合模式 | `profileRelationship` |
+| 持久虚构 canon/世界规则 | `worldFacts` |
+
+一个 observation 可以分配多个 target，但每个 target 拥有独立 consumption 行。每个投影必须增加该 section 独有语义；Renderer 只按共享 `projectionIdentity` 去掉重复表达，不阻止合法的多投影。
+
+成立条件按类型区分，不能统一要求双方接受：
+
+- 明确 user request、用户自我承诺、明确个人边界可以由单条直接证据成立；
+- assistant 提议或共同计划可先 waiting，后续接受/拒绝 append 到同一 observation；
+- 明确单方长期承诺可成立，另一方接受用于加强或消歧，不是机械必填；
+- 从行为推断的 profile/relationship 模式至少需要 3 个独立 occasion，且跨至少 2 个 semantic arc；
+- 所有 open episode arc 留在 observation 层；只有明确关闭后才交 episode Proposer 判断是否值得写入；
+- 无 canon 的现实/临时场景不能为了填充 worldFacts 而写入。
+
+## 5. 证据与自然演化
+
+所有最终 patch evidence 必须回到 raw message。候选旧证据只在以下条件全部满足时合法：
+
+1. message 已持久登记在 patch 所列 observation 的 evidence 行；
+2. observation version 与 task 冻结版本一致；
+3. observation-target 属于当前 target；
+4. message 未超过 cycle source boundary，且未被 suppression/privacy gate 移除；
+5. quote/hash/role/scope 校验通过。
+
+未登记 observation 的 overlap、readOnlyContext、已有 episode/profile summary 不能证明新事实。late discovery 必须创建独立、可审计 observation。
+
+长期状态变化使用 `changeKind`：
+
+- `establish`：首次建立；
+- `reaffirm`：追加支持证据，不强制改 text；
+- `refine`：增加限定或提高准确性；
+- `supersede`：真实的新稳定状态替代旧投影；
+- `correct`：旧投影源自错误事实；只有此类更新 suppress 被替换来源；
+- `forget`：明确遗忘/撤销；
+- `lifecycle`：todo/scene/episode 的确定性状态变化。
+
+自然演化不能伪装成 correction，否则会错误删除 RAG/Recall 中当时真实的历史。
+
+## 6. Candidate decision、Reducer rejection 与重试
+
+Proposer decision 只是建议；最终 observation-target 状态由事务结果决定：
+
+| Proposer/Reducer 结果 | target 状态 |
+| --- | --- |
+| proposed 且所有关联必要 patch accepted | `consumed` |
+| already_reflected 且确定性 identity/现状态检查通过 | `consumed` |
+| waiting | `waiting`；observation version 增加前不重复调用 |
+| excluded | `excluded` |
+| capacity deferred | 保持 `processing`，进入 maintenance/replay |
+| 可修复 schema/quote/ref/item/state 错误 | `retryable`，受限修复重试 |
+| duplicate 与已有 projection 确实等价 | `consumed: already_reflected` |
+| policy/target contract 违反 | `retryable`；耗尽后 `dead_letter` |
+| retry budget 耗尽 | `dead_letter`，target degraded/halted |
+
+不得把所有 rejected 都永久重试，也不得把所有 rejected 都当语义成功。分类权威见 [Reducer Apply](algorithms/reducer-application.md)。task `succeeded` 只表示该 workflow 已终结；只有 scan 已覆盖、无 processing/retryable/dead-letter、且所有候选都有显式 lifecycle 结果时，系统才可报告语义 healthy。正常 waiting 本身不 degraded，但必须在 inspect 中可见。
+
+## 7. Revision、cycle 与 compaction
+
+同 cycle target proposals 使用同一个 `asOfRevision`。proposal 全部持久化后按固定 target 顺序 apply。由于正式 targets 的 writable sections 不重叠，后提交 target 可以在以下条件全部满足时跨其它 target 的 revision rebase：
+
+- source generation、cycle、observation versions 不变；
+- 当前 target sections 与 as-of snapshot 深度相等；
+- 没有 housekeeping/source mutation 插入 cycle；
+- proposal 未读取未来 raw/source boundary。
+
+任一条件失败时，整个未完成 cycle 进入 retry/halt；不能偷偷用最新 state 重跑某个 target 并让它看到同 cycle 的未来派生结果。
+
+容量 deferred 继续使用 maintenance task 和 original proposal replay，但 replay 还必须复核 observation version/target status/cycle。compaction 只能合并既有同 section items，继承 evidence/projection identity，不产生 observation 或新事实。
+
+## 8. Source rebuild
+
+重建是 boundary-major/event-time 的时间线重放，而不是逐 target 扫完整段历史。开发期切换直接清空 v2 派生表、创建 version 3 generation，从 raw messages 开始：
+
+1. 按 source 时间和稳定 boundary 顺序运行与在线相同的 scan/cycle/Reducer；
+2. 每个 cycle 的 `semanticNow` 使用 [Source Rebuild 与 Projection](algorithms/source-rebuild-and-projection.md) §3.3 的单调 `replayNow(boundary)`；相对日期使用包含时间表达的 `timeAnchorMessageId` 和冻结用户时区；
+3. 同一 boundary cycle / semantic evaluation 的 targets 共享 as-of snapshot；不能读取未来 state；
+4. 到最终 raw boundary 且候选均为 consumed/excluded/waiting 后，单独以当前 wall clock 运行一次确定性 housekeeping，使未完成 todo 正确 overdue、scene 正确到期；
+5. scan retryable/dead-letter、candidate retryable/dead-letter、未完成 cycle 或 projection 未追平时不得报告完成。
+
+waiting 候选是明确业务状态，可以随重建完成保留；它不等于静默缺口。算法见 [Source Rebuild 与 Projection](algorithms/source-rebuild-and-projection.md)。
+
+## 9. Source mutation、forget 与隐私
+
+消息编辑、删除、恢复、归属/可见性/排序变化进入同一 scope lane并提升 `sourceGeneration`。普通 append 不提升 generation。generation 变化使旧 scan/cycle/observation-target/task 失效，并从剩余 raw source 重建；旧派生行按 retention/privacy 规则清理。
+
+`correct`/`forget` 的 active-state、event/snapshot、candidate decision 和 suppression tombstone 必须原子提交。Privacy hard delete 必须物理清除 raw source 及 task payload、observation claim/quote/evidence、scan assessment/event、semantic arc/occasion、cycle、candidate decision、Memory history、RAG/Recall 和受控 debug 中的对应内容，再从剩余 source 重建。详细算法见 [Suppression、Hard Delete 与 Retention](algorithms/suppression-and-retention.md)。
+
+## 10. 健康、诊断与指标
+
+用户侧仍聚合为 `healthy | degraded | rebuilding`：
+
+- source scan halted/retry、cycle halted、candidate retryable/dead-letter、capacity blocked、state 无效或 projection lag → degraded/rebuilding；
+- `waiting` 候选只在内部/inspect 展示，不单独降级；超过领域配置的最大合理等待年龄时可产生 `candidate_stale_waiting` 诊断，但仍不得自动编造结论；
+- 一个 target 故障不删除其它 target 的稳定 state，source scan 全局 halt 则阻止所有新 target 调度；
+- 恢复通知只有在对应 scan/target/projection 真正追平并清除失败候选后生成。
+
+必须观测：scan calls/tokens/latency、逐消息 assessment、signals/no-signal、observation create/append、ready/waiting/consumed/excluded/retryable/dead-letter、target calls/tokens/patches、Reducer reject reason、late discovery、跨窗口补全、pattern 晋升、cycle duration、tail age、online/rebuild metamorphic 结果。
+
+## 11. 集中配置
+
+除原有 section 容量、quote、Provider、retry、retention、health 与 projection 配置外，必须显式配置状态契约 §7.2 的 source scan、observation、pattern 和 boundary-cycle 参数。`detectorVersion` 必须等于 observer prompt + output schema + routing config 的内容 hash；`contractVersion` 必须覆盖专业 Proposer/schema、policy、target order 与 lifecycle 的语义版本；不一致时拒绝启服。会改变既有历史 projection 资格的版本变化必须新 source generation rebuild。
+
+任何配置都不能把 batch/session/turn 变成语义资格门。运行费用由 Provider 官方统计评估，不作为跳过尾部或候选的理由。
