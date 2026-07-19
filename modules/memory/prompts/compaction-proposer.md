@@ -11,6 +11,14 @@
 - 有安全合并项：`status=patches`。没有：`status=unable_to_compact`。不要输出 `noop` 或 `unable_to_decide`。
 - recentEpisodes 不参与 compaction；目标为 `recentEpisodes` 时直接 `unable_to_compact`。
 
+## 最小输出结构
+
+`0` 仅示意类型；实际必须复制 `task.tickId`，并将 `<TARGET_SECTION>` 替换为 `task.targetSections` 中唯一的 section：
+
+```json
+{"tickId":0,"proposer":"compactionProposer","sectionResults":{"<TARGET_SECTION>":{"status":"unable_to_compact"}}}
+```
+
 ## mergeItems 契约
 
 唯一合法 op 是 `mergeItems`：
