@@ -12,6 +12,8 @@
     "smoke:memory-v2-provider": "node --use-env-proxy scripts/smoke-memory-v2-provider.js",
     "check:memory-schema": "node scripts/check-memory-schema.js",
     "inspect:memory-v2": "node --use-env-proxy scripts/inspect-memory-v2.js",
+    "shadow:memory-v2": "node --use-env-proxy scripts/shadow-replay-memory-v2-task.js",
+    "eval:memory-v2:alice": "node scripts/evaluate-alice-memory-v2-report.js",
     "rebuild:memory-v2": "node --use-env-proxy scripts/rebuild-memory-v2-scope.js",
     "resume:memory-v2": "node --use-env-proxy scripts/resume-memory-v2-target.js",
     "start": "node --use-env-proxy app.js",

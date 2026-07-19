@@ -3,8 +3,6 @@
 > 文档性质：近期实施与验收计划
 >
 > 目标：先修复已经由 Alice 数据证明的问题，再决定是否继续扩展架构
->
-> 延后方向见 [Memory Control v2.1 延后项](deferred/memory-control-v2.1/readme.md)
 
 ## 1. 当前判断
 
@@ -51,7 +49,7 @@
 
 ## 4. 实施顺序
 
-### 4.1 先建立可复现评测
+### 4.1 先建立可复现评测（已完成）
 
 新增只读的 task shadow replay 能力，能够读取已持久化 `task_payload`，使用当前 prompt/model 重新生成 proposal，但不写入 memory state、cursor、event 或 task 状态。真实 rebuild 不属于 shadow replay，仍需单独执行和确认。
 
@@ -65,6 +63,8 @@
 - Alice 行为断言的通过情况。
 
 先用同一批输入比较当前 HEAD、当前模型与较强模型。不得再根据一次 `inspect` 结果直接继续堆叠 prompt 规则。
+
+使用 `npm run shadow:memory-v2 -- --taskId <uuid>` 重放单个任务；需要模型对照时显式增加 `--model <model>`，需要保存报告时增加 `--report <new-file.json>`。通用报告包含原 proposal、新 proposal、来源信息、schema 校验和 Reducer 预检。Alice 断言独立使用 `npm run eval:memory-v2:alice -- --report <shadow-report.json>`，不进入 Memory 系统模块。
 
 ### 4.2 阻止 silent loss
 

@@ -15,6 +15,7 @@ const { createMemoryRetention } = require("./application/retention");
 const { createPrivacyHardDelete } = require("./application/privacyHardDelete");
 const { createMemoryMigration } = require("./application/migration");
 const { createMemoryRuntime } = require("./application/runtime");
+const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay");
 const { createMemoryMetrics } = require("./application/metrics");
 const repositories = require("./infrastructure/repositories");
 const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("./infrastructure/providers/memoryProviderAdapter");
@@ -78,6 +79,15 @@ module.exports = Object.freeze({
     return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow });
   },
   createMemoryRuntime,
+  createMemoryTaskShadowReplay,
+  createDefaultMemoryTaskShadowReplay({ config, providerAdapter } = {}) {
+    if (!config?.enabled) throw new Error("Memory v2 must be enabled for task shadow replay");
+    const adapter = providerAdapter || createMemoryProviderAdapter({
+      invokeStructured: createStructuredTransport(config.provider),
+      promptLoader: loadProposerPrompt,
+    });
+    return createMemoryTaskShadowReplay({ repositories, config, providerAdapter: adapter });
+  },
   createMemoryMetrics,
   createProviderAdmission,
   createMigrationProviderTelemetry,

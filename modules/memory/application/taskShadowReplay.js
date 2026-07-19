@@ -1,0 +1,261 @@
+const crypto = require("node:crypto");
+const { validateProposerOutput, assertMemoryState } = require("../contracts");
+const { reduceProposal } = require("../domain/reducer");
+const { sourceKey } = require("../domain/suppression");
+const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
+const { loadProposerPrompt } = require("../prompts");
+
+function rowValue(row, snake, camel = snake) {
+  return row?.[snake] ?? row?.[camel];
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value) {
+  const content = typeof value === "string" ? value : stableJson(value);
+  return `sha256:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`;
+}
+
+function deterministicId(taskId, index) {
+  const hex = crypto.createHash("sha256").update(`${taskId}:shadow:${index}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "5";
+  hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
+  const value = hex.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
+function proposalSummary(proposal, targetSections = []) {
+  const statuses = { patches: 0, noop: 0, unable_to_decide: 0, unable_to_compact: 0 };
+  let patchCount = 0;
+  for (const section of targetSections) {
+    const result = proposal?.sectionResults?.[section];
+    if (Object.prototype.hasOwnProperty.call(statuses, result?.status)) statuses[result.status] += 1;
+    if (Array.isArray(result?.patches)) patchCount += result.patches.length;
+  }
+  return { sectionStatuses: statuses, patchCount };
+}
+
+function reducerSummary(reduction) {
+  const decisions = { accepted: 0, rejected: 0, noop: 0, deferred: 0 };
+  const rejectReasons = {};
+  for (const event of reduction?.events || []) {
+    if (Object.prototype.hasOwnProperty.call(decisions, event.decision)) decisions[event.decision] += 1;
+    if (event.decision === "rejected") {
+      const reason = event.rejectReason || "unknown";
+      rejectReasons[reason] = (rejectReasons[reason] || 0) + 1;
+    }
+  }
+  return {
+    status: "passed",
+    outcome: reduction.outcome,
+    decisions,
+    rejectReasons,
+    capacityViolation: reduction.capacityViolation || null,
+    resultRevision: reduction.state?.meta?.revision ?? null,
+    events: (reduction?.events || []).map((event) => ({
+      section: event.section ?? null,
+      decision: event.decision ?? null,
+      op: event.op ?? null,
+      rejectReason: event.rejectReason ?? null,
+      cleanupType: event.cleanupType ?? null,
+    })),
+  };
+}
+
+async function loadEvidenceMessages(repositories, envelope) {
+  if (envelope.task.mode === "maintenance") return [];
+  const messages = await repositories.source.getByIds(
+    envelope.task.userId,
+    envelope.task.presetId,
+    envelope.task.observedMessageIds,
+  );
+  const tombstones = envelope.task.trigger?.type !== "forceDrain" && repositories.sidecars?.listTombstones
+    ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, {
+      messageIds: envelope.task.observedMessageIds,
+    })
+    : [];
+  const suppressed = new Set(tombstones
+    .filter((row) => {
+      const createdRevision = Number(rowValue(row, "created_revision", "createdRevision"));
+      return !Number.isSafeInteger(createdRevision) || createdRevision <= envelope.task.baseRevision;
+    })
+    .map((row) => sourceKey(
+      rowValue(row, "message_id", "messageId"),
+      rowValue(row, "content_hash", "contentHash"),
+    )));
+  return messages.filter((message) => !suppressed.has(sourceKey(message.id, message.contentHash)));
+}
+
+function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, promptLoader = loadProposerPrompt } = {}) {
+  if (!repositories?.runtime?.getTask || !repositories?.audit?.getSnapshot || !repositories?.source?.getByIds) {
+    throw new Error("Task shadow replay requires read-only Memory repositories");
+  }
+  if (!config?.enabled || !config?.provider) throw new Error("Memory v2 must be enabled for task shadow replay");
+  if (!providerAdapter?.propose) throw new Error("Task shadow replay providerAdapter is required");
+
+  async function replay(taskId) {
+    const row = await repositories.runtime.getTask(taskId);
+    if (!row) throw new Error(`Memory task not found: ${taskId}`);
+    const envelope = structuredClone(rowValue(row, "task_payload", "taskPayload"));
+    if (!envelope?.task) throw new Error(`Memory task has no replayable task_payload: ${taskId}`);
+
+    const prompt = await promptLoader(envelope.task.proposer);
+    const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections);
+    const persistedProposal = rowValue(row, "stage_payload", "stagePayload")?.persistedProposal ?? null;
+    const report = {
+      reportVersion: 1,
+      mode: "read_only_task_shadow_replay",
+      status: "running",
+      task: {
+        taskId: envelope.task.taskId,
+        taskType: rowValue(row, "task_type", "taskType") ?? envelope.task.mode,
+        status: row.status ?? null,
+        stage: row.stage ?? null,
+        userId: envelope.task.userId,
+        presetId: envelope.task.presetId,
+        targetKey: envelope.task.targetKey,
+        proposer: envelope.task.proposer,
+        sourceGeneration: envelope.task.sourceGeneration,
+        baseRevision: envelope.task.baseRevision,
+        sourceBoundary: {
+          cursorBefore: envelope.task.cursorBefore ?? null,
+          targetMessageId: envelope.task.targetMessageId,
+        },
+        observedMessageIds: envelope.task.observedMessageIds.slice(),
+      },
+      provenance: {
+        adapter: config.provider.adapter,
+        requestedModel: config.provider.model,
+        thinkingMode: config.provider.thinkingMode ?? null,
+        promptHash: sha256(prompt),
+        outputSchemaHash: sha256(outputSchema),
+        windowConfig: {
+          configured: config.targets?.[envelope.task.targetKey] ?? null,
+          persistedContextWindow: rowValue(row, "stage_payload", "stagePayload")?.normalContextWindow ?? null,
+          observedCount: envelope.task.observedMessageIds.length,
+        },
+      },
+      baseline: persistedProposal ? {
+        proposalHash: sha256(persistedProposal),
+        summary: proposalSummary(persistedProposal, envelope.task.targetSections),
+        proposal: persistedProposal,
+      } : null,
+      replay: null,
+    };
+
+    const providerAttempts = [];
+    let providerResult;
+    const schemaRetryMax = Number(config.providerRecovery?.schemaInvalidRetryMax ?? 0);
+    for (let attempt = 0; attempt <= schemaRetryMax; attempt += 1) {
+      const repairFeedback = attempt === 0 ? null : {
+        attempt,
+        errors: providerResult?.detail?.errors ?? [],
+      };
+      providerResult = await providerAdapter.propose(envelope, { repairFeedback });
+      providerAttempts.push({
+        attempt,
+        status: providerResult.status,
+        reason: providerResult.reason ?? null,
+        model: providerResult.model ?? config.provider.model,
+        usage: providerResult.usage ?? null,
+      });
+      const retryableSchemaFailure = providerResult.status === "error"
+        && providerResult.reason === "output_schema_invalid"
+        && providerResult.detail?.boundary === "output";
+      if (!retryableSchemaFailure) break;
+    }
+    if (providerResult.status !== "ok") {
+      report.status = "provider_error";
+      report.replay = {
+        model: providerResult.model ?? config.provider.model,
+        usage: providerResult.usage ?? null,
+        providerAttempts,
+        provider: { status: "error", reason: providerResult.reason, detail: providerResult.detail ?? null },
+        schemaValidation: providerResult.reason === "output_schema_invalid"
+          ? { passed: false, errors: providerResult.detail?.errors ?? [] }
+          : null,
+        reducerPreflight: null,
+        proposal: null,
+      };
+      return report;
+    }
+
+    const validation = validateProposerOutput(providerResult.output, envelope.task);
+    const replay = {
+      model: providerResult.model ?? config.provider.model,
+      usage: providerResult.usage ?? null,
+      providerAttempts,
+      provider: { status: "ok" },
+      proposalHash: sha256(providerResult.output),
+      summary: proposalSummary(providerResult.output, envelope.task.targetSections),
+      schemaValidation: { passed: validation.ok, errors: validation.errors },
+      reducerPreflight: null,
+      proposal: providerResult.output,
+    };
+    report.replay = replay;
+    if (!validation.ok) {
+      report.status = "schema_invalid";
+      return report;
+    }
+
+    const snapshot = await repositories.audit.getSnapshot(
+      envelope.task.userId,
+      envelope.task.presetId,
+      envelope.task.baseRevision,
+    );
+    if (!snapshot) {
+      report.status = "preflight_unavailable";
+      replay.reducerPreflight = { status: "unavailable", reason: "base_snapshot_missing" };
+      return report;
+    }
+    const snapshotGeneration = Number(rowValue(snapshot, "source_generation", "sourceGeneration"));
+    if (snapshotGeneration !== envelope.task.sourceGeneration) {
+      report.status = "preflight_unavailable";
+      replay.reducerPreflight = { status: "unavailable", reason: "base_snapshot_generation_mismatch", snapshotGeneration };
+      return report;
+    }
+
+    try {
+      const state = assertMemoryState(structuredClone(snapshot.state));
+      const databaseMessages = await loadEvidenceMessages(repositories, envelope);
+      let nextId = 0;
+      const reduction = reduceProposal({
+        state,
+        task: envelope.task,
+        proposal: providerResult.output,
+        observedMessages: envelope.observedMessages,
+        databaseMessages,
+        now: envelope.task.now,
+        timeZone: envelope.task.userTimeZone,
+        config,
+        idFactory: () => deterministicId(envelope.task.taskId, nextId++),
+      });
+      replay.reducerPreflight = reducerSummary(reduction);
+      report.status = "completed";
+    } catch (error) {
+      report.status = "preflight_failed";
+      replay.reducerPreflight = {
+        status: "failed",
+        reason: error?.code ?? error?.name ?? "reducer_error",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return report;
+  }
+
+  return Object.freeze({ replay });
+}
+
+module.exports = {
+  createMemoryTaskShadowReplay,
+  proposalSummary,
+  reducerSummary,
+  sha256,
+  stableJson,
+};
