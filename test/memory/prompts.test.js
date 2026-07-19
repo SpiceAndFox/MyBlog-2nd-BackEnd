@@ -84,6 +84,7 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
   assert.match(prompt, /active 和 overdue todo 都可以.*completeTodo.*cancelTodo.*expireTodo/s, "todoProposer must allow every semantic terminal operation for overdue todos");
   assert.match(prompt, /鸡蛋炒好.*快尝尝.*好吃.*completeTodo/s, "todoProposer must recognize implicit completion through action and acceptance");
   assert.match(prompt, /明天.*我给你做.*days.*1.*不得输出 days=0/s, "todoProposer must inherit relative dates from adjacent context");
+  assert.match(prompt, /同一句话.*行动承诺.*提醒请求.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
 });
 
 test("agreement prompt distinguishes explicit long-term commitments from emotional rhetoric", async () => {
@@ -110,6 +111,13 @@ test("profile prompt requires durable facts and cross-episode pattern evidence",
   assert.match(prompt, /一次行为不能推出技能、人格、动机或关系模式/);
   assert.match(prompt, /相邻.*提议→回应.*一个互动片段/s);
   assert.match(prompt, /证据不足.*输出.*noop.*不要输出.*unable_to_decide/s);
+  assert.match(prompt, /User 与 Assistant.*三个 section.*不按消息 role/s);
+  assert.match(prompt, /模型错误.*坏习惯.*不能固化.*assistant 人格/s);
+});
+
+test("world fact prompt keeps role-neutral canon authority", async () => {
+  const prompt = await loadProposerPrompt("worldFactProposer");
+  assert.match(prompt, /User 与 Assistant.*新增.*修正.*遗忘/s);
 });
 
 test("reflective prompts stay compact and contain no Alice-session fixture details", async () => {

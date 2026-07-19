@@ -2,7 +2,7 @@
 
 本文定义 Memory Control v2 的最小可验收测试边界。Harness 的目标不是证明 LLM 永远正确，而是证明 LLM 即使输出不稳定、局部错误或被 provider 拦截，最终 memory state 仍然可控、可审计、可恢复。
 
-顶层设计见 [../memory-control-v2-overview.md](../memory-control-v2-overview.md)。状态契约见 [state-contract.md](state-contract.md)，写入协议见 [write-protocol.md](write-protocol.md)，渲染接入见 [rendering-and-context.md](rendering-and-context.md)。
+顶层设计见 [memory-control-v2-overview.md](memory-control-v2-overview.md)。状态契约见 [state-contract.md](state-contract.md)，写入协议见 [write-protocol.md](write-protocol.md)，渲染接入见 [rendering-and-context.md](rendering-and-context.md)。
 
 ## 1. Harness 原则
 
@@ -309,7 +309,7 @@ Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 sna
 - `memory_compaction` accepted 后，Reducer 将 source items 既有 `evidenceGroups` 完整继承到 merged item，并保留 group 边界。
 - `memory_compaction` accepted 后，merge event 的 `item_id` 为 null，`merged_from_item_ids` 存储完整 source item ID 数组（按持久化 patch 中的稳定顺序），`result_item_id` 存储新 merged item ID。
 - `memory_compaction` accepted 后，merged item 的 `updatedAtMessageId` 取所有 source evidenceGroups refs 的最大 `messageId`。
-- `memory_compaction` 的 `value.text` 不得引入 source items 未表达的新事实——此约束由 compactionProposer prompt 承担（[proposer-prompt.md](proposer-prompt.md) §2.4/§4.7），Reducer 不做语义检测，仅 LLM smoke 覆盖。
+- `memory_compaction` 的 `value.text` 不得引入 source items 未表达的新事实——此约束由 compactionProposer prompt 承担（[proposer-prompt.md](proposer-prompt.md) §2.4），Reducer 不做语义检测，仅 LLM smoke 覆盖。
 - Proposer 输出非 target section 时记 `output_schema_invalid`；若这是首次 Provider 输出边界错误则持久化一次 retry 后重新调用，第二次仍非法才 halt 对应 target。item patch 携带 `path` 时同样由 schema 拒绝，只按本 task 的 `targetKey` 决定 cursor，其它 target cursor 不受影响。
 - Todo add 缺 actor/requester 或输出非法枚举时 schema 拒绝；合法 add 初始化 `status=active`、`becameOverdueAt=null`，dueAt 缺省为 null。
 - Todo update 的 dueChange 分别覆盖 keep/clear/set；dueChange 缺失或分支混合时 schema 拒绝。relative dueAt 必须以 evidence message createdAt 为 anchor；fixture 故意令 task.now 与 message.createdAt 不同，证明实现未误用执行时间。absolute date 和 relative 运算必须使用 task 创建时从 User 字段固化的用户时区（默认 UTC），并统一落到目标日期结束后的首个日界线；fixture 覆盖 `days=0` 在当天结束前保持 active、到日界线后 overdue，以及非 UTC 时区和月末截断（如 1 月 31 日 + 1 个月 = 2 月 28/29 日）。

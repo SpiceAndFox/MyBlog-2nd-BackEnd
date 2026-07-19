@@ -1,768 +1,160 @@
 # Memory Control v2 Proposer Prompt 契约
 
-本文定义 Proposer 的 schema-constrained structured output 约束和 prompt 要点。Proposer 只能提出候选 patch，不能直接写入最终 memory。最终校验与写入由 [write-protocol.md](write-protocol.md) 中的 Reducer 完成。Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。
+本文定义 Memory Proposer 的职责、输入边界、决策结果和预期行为。Proposer 只做语义观察并提出候选 patch；输出结构由 strict schema 约束，最终校验与写入由 Reducer 完成。
+
+静态数据结构以 [state-contract.md](state-contract.md) 为权威，执行与失败语义以 [write-protocol.md](write-protocol.md) 和 [算法契约](algorithms/README.md) 为权威；本文是 Proposer 行为契约的顶层入口。
 
 ## 1. Prompt 管理
 
-Memory worker prompt 必须从 `prompts/memory/*` 读取，不能写死在 service 文件中。
+运行时 prompt 位于 [`modules/memory/prompts`](../../modules/memory/prompts)，由 [`index.js`](../../modules/memory/prompts/index.js) 按 Proposer 名称加载，不能写死在 service 或 provider adapter 中。
 
-首版至少拆出以下 prompt：
+| Proposer                      | 文件                               | target sections                                   |
+| ----------------------------- | ---------------------------------- | ------------------------------------------------- |
+| `currentStateProposer`        | `current-state-proposer.md`        | `scene`                                           |
+| `todoProposer`                | `todo-proposer.md`                 | `todos`                                           |
+| `agreementProposer`           | `agreement-proposer.md`            | `standingAgreements`                              |
+| `episodeProposer`             | `episode-proposer.md`              | `recentEpisodes`, `milestones`                    |
+| `profileRelationshipProposer` | `profile-relationship-proposer.md` | `userProfile`, `assistantProfile`, `relationship` |
+| `worldFactProposer`           | `world-fact-proposer.md`           | `worldFacts`                                      |
+| `compactionProposer`          | `compaction-proposer.md`           | 单个维护目标 section                              |
 
-- `current-state-proposer.md`
-- `todo-proposer.md`
-- `agreement-proposer.md`
-- `episode-proposer.md`
-- `profile-relationship-proposer.md`
-- `world-fact-proposer.md`
-- `compaction-proposer.md`
+运行时 `.md` 文件是具体模型指令的唯一来源，并实现本文规定的行为契约。模型行为发生变化时，本文、对应 prompt 和验收用例必须保持一致。
 
 ## 2. Proposer Prompt 设计
 
 ### 2.1 Schema-Constrained Output
 
-每个专用 Proposer 的输出都必须通过 provider 支持的 schema-constrained structured output 强制（实现可以是 function/tool calling 或 JSON schema response format，由 provider adapter 决定；禁止裸 prompt + `JSON.parse` 作为主路径）。输出 schema 的字段、枚举和必填规则见 [state-contract.md](state-contract.md) §5.5。
+每个 Proposer 必须通过 provider 原生 JSON Schema、tool 或 function structured output 返回结果；禁止把裸文本加 `JSON.parse` 作为主路径。
 
-Provider adapter 可以针对受限 JSON Schema 方言编译等价的传输 schema，但不得改变业务输出契约；Provider 未强制的约束仍须由本地完整 schema 校验。DeepSeek strict-tools 的 Memory 调用默认关闭 thinking，并强制调用唯一输出 tool；其传输 schema 必须为 enum/const 补显式 primitive `type`，并保证 `anyOf` 的直接分支带 `type` 或 `$ref`，详细编译约束见 [state-contract.md](state-contract.md) §10。真实 preflight 必须加载本节全部 Proposer schema，不能用简单 `{ok:true}` 代替。
+职责分离：
 
-schema 作者注意：
+- strict output schema：字段、枚举、必填项、目标 section 和 op 范围。
+- system prompt：schema 无法表达的语义准入、去重、纠错、日期理解和判定边界。
+- Provider Adapter：协议差异、传输 schema 编译和 wire 格式归一化。
+- Reducer：本地完整 schema、作用域、证据、policy、容量与并发前置条件的最终校验。
 
-- 输出中的 `proposer` 字段必须等于当前调用的 Proposer 名称。
-- `path`、`itemId`、`itemIds` 的必填规则（[state-contract.md](state-contract.md) §4）需要用 `oneOf` 或条件 required 表达：只有 `scene.setField`/`scene.clearField` 要求 `path`；`updateItem`/`forgetItem`/`completeTodo`/`cancelTodo`/`expireTodo`/`cancelAgreement` 要求 `itemId`；`mergeItems` 要求 `itemIds`（数组）。所有 item section 由 `sectionResults` key 直接寻址，不使用 `path`。
-- `todos.addItem.value` 必须含 `text`、`actor`、`requester`，可选含 `dueAt`；`todos.updateItem.value` 必须含 `dueChange`。`dueChange` 用 `oneOf` 严格表达 `{ "mode": "keep" }`、`{ "mode": "clear" }`、`{ "mode": "set", "dueAt": ... }`，各分支禁止额外字段。`dueAt` 的 absolute/relative schema 与 relative 时长必填规则见 [state-contract.md](state-contract.md) §4。
-- `compactionProposer` 的 schema 必须额外限制：只能输出 `mergeItems`，且 `evidenceKind` 只能是 `memory_compaction`，不得输出 `evidenceRefs`。
-- canonical 普通 patch 的 `evidenceRefs[].quote` schema 设置 `maxLength: 200`；Reducer 仍按 Unicode code points 复核长度、信息量和匹配，不把 Provider schema 当作最终证据校验。Provider wire 可以按 [state-contract.md](state-contract.md) §10 使用可逆的更窄表示；当前 scene wire 使用单个 `evidenceRef`，Adapter 必须在业务校验前归一化为 `evidenceRefs: [ref]`。
+Provider 端通过 schema 不代表业务有效；返回值仍须经过本地完整校验。真实 preflight 必须加载全部 normal Proposer schema 与 compaction schema。
 
-### 2.2 Prompt 设计原则
+scene 的 Provider wire 使用单个 `evidenceRef`，Adapter 在本地业务校验前归一化为 `evidenceRefs: [ref]`。这是传输兼容细节，不应扩散成第二套业务契约。
 
-每个 `prompts/memory/*.md` 是独立、自包含且有长度预算的 system prompt，只保留本 Proposer 的任务边界、schema 无法表达的语义规则、evidenceKind 子集和必要的判定校准。输出字段与枚举由 strict schema 负责，prompt 不复制完整 JSON 输出样例。校准例必须是合成、领域中性且最小化的边界对照；不得复制真实用户、preset 或当前调试会话中的人物、地点、物品和事件。大量正反例应留在 Harness 评测集，而不是塞进生产 prompt。
-
-以下原则按主题分组。各 prompt 文件按 §2.3 的组成表提取相关条目。
-
-#### 通用原则
-
-1. 只对本次 targetSections 输出结果。非 target section 不要输出。
-2. 每个 target section 必须明确输出 patches / noop / unable_to_decide 之一。
-3. noop 与 unable_to_decide 的区别：
-   - noop：已理解对话内容，确认无变更需要。
-   - unable_to_decide：现有信息不足以判断是否有变更（如关键消息不在观察窗口内、指代不明无法确认对象）。
-   - 不要把"看不懂"伪装成"没变化"。
-4. patch 必须附 evidenceKind；除 mergeItems 外，patch 必须附 evidenceRefs。quote 应复制 observedMessages 中能够支持该 patch 的最短连续原文，不要改写，最多 200 个 Unicode code points；不要依赖自己精确计数，Reducer 以 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)的统一长度与模糊匹配规则作最终裁决。
-5. 普通写入 patch 的 evidenceRefs 必须来自 observedMessages；readOnlyContext 只能用于理解背景，不能作为证据，也不能被当作完整世界状态来推断缺失事实。
-6. readOnlyContext 中的 item 不含 id 字段。itemId/itemIds 必须来自 writableState 中对应 section 的 item。
-7. 如果现有背景不足以判断，输出 unable_to_decide，不要把背景猜成事实。
-8. 删除/完成/取消必须用对应 op（forgetItem/completeTodo/cancelTodo/expireTodo/cancelAgreement），不要用通用 removeItem。forgetItem 只用于 worldFacts/userProfile/assistantProfile/relationship 的明确 forget 指令，不能用“把 text 改成已作废”代替。
-9. 输出结构为 sectionResults 容器，必须恰好覆盖 task.targetSections：
-   ```json
-   {
-     "tickId": "<task.tickId>",
-     "proposer": "<本 Proposer 名称>",
-     "sectionResults": {
-       "<section>": {
-         "status": "patches | noop | unable_to_decide",
-         "patches": [ ... ]
-       }
-     }
-   }
-   ```
-10. Memory 业务层没有 proposal/envelope 总字符预算；不要为了猜测总字符上限而丢弃必要 patch。每个 `value.text` 仍应遵守高密度句法，最终 section 容量由 Reducer 按 `maxItems + maxRenderedChars` 校验。
-11. 专用 prompt 描述排除项时，只给出当前 target section 的决定，例如“不属于 todos → todos noop”。不要写“应归另一个 section”或“由另一个 Proposer 处理”，避免把不可输出的 section 暗示为本次调用的候选结果；其他 target 会独立判断。
-
-#### 高密度句法
-
-所有 text/value 使用关键词 + 符号格式，严禁完整句子。
-
-- ❌ "她因为感到被忽视而生气，转过头不理人"
-- ✅ "被忽视感 > 愤怒 | 侧头回避 | 拒绝交流"
-
-#### 成人内容
-
-value.text 客观记录事件本质、双方意愿、关系变化，不写感官描写。quote 可以摘录原话片段（含感官描写），因为 quote 仅用于审计溯源，不渲染给主聊天模型。
-
-#### actor、requester 与 dueAt（仅 todoProposer）
-
-每个新增 todo 都要明确：
-
-- `actor`：实际执行者，值为 `user`、`assistant` 或 `both`。
-- `requester`：提出请求或承诺的一方，值为 `user` 或 `assistant`。
-
-如有明确 deadline，在 add value 的 `dueAt` 或 update value 的 `dueChange.mode=set` 中设置：
-
-- 听到明确日期 → `{ "mode": "absolute", "date": "YYYY-MM-DD" }`
-- 听到相对日期 → 只选择一个单位输出 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days >= 0`，`months/years >= 1`；今天固定为 `days=0`，不得同时输出多个单位或未使用的零值字段。
-- 只提取你听到的，不要按 worker 当前时间做日期计算。Reducer 会以 evidence message 的 `createdAt` 为相对日期 anchor，并把 deadline 解析为目标日期结束后的首个用户时区日界线。
-- 更新 todo 时始终显式输出 `dueChange`：不改期限用 `keep`，删除期限用 `clear`，设置/替换期限用 `set`。字段省略不表示清空。
-
-#### evidenceKind 判断指南
-
-以下为完整 evidenceKind 列表。各 prompt 文件只包含本 Proposer 合法的子集（[state-contract.md](state-contract.md) §3.1）。
-
-- user_request: 用户明确请求系统/角色稍后做某事（assistant 是行动者）
-- user_commitment: 用户明确承诺稍后做某事（user 是行动者，user 发起）
-- assistant_request: assistant 明确请求用户稍后做某事（user 是行动者，assistant 发起）
-- assistant_commitment: assistant 明确承诺稍后做某事（assistant 是行动者）
-- todo_completion: 待办已完成
-- todo_cancel: 待办被取消
-- todo_expiration: 短期待办自然失效或被澄清为不再需要
-- scene_change: 地点/时间/环境/氛围明确变化
-- standing_agreement: 持续互动约定、相处规则或长期承诺形成或修订
-- agreement_cancel: 持续互动约定被明确取消或作废
-- recent_episode: 最近发生的有意义互动
-- relationship_milestone: 关系或剧情关键转折
-- user_correction: 用户明确修正旧记忆或设定
-- assistant_correction: assistant 明确修正已有记忆。与 user_correction 权限相同
-- user_forget: 用户明确要求忘记已有长期事实或档案 item
-- assistant_forget: assistant 明确撤回并要求忘记已有长期事实或档案 item
-- long_term_fact: 长期事实，包括明确表达的（"我叫小明"）和从行为推断的（多次回避冲突→倾向回避冲突）。evidenceRefs 的 quote 始终是 raw message 短片段——对陈述是原话，对推断是体现该行为的原话（如"我冲过去把门踹开了"）；推断理由写在 value.text 中，不放在 quote
-- memory_compaction: 基于已有 memory item 的预算维护与去重合并，不代表新事实
-
-### 2.3 各 Proposer 专属原则
-
-以下原则按 Proposer 分组，每个 `prompts/memory/*.md` 在 §2.2 通用原则基础上追加本组原则。
-
-#### currentStateProposer（scene）
-
-- scene 是当前场景状态，用 setField/clearField 字段级覆盖；无变化时输出 noop。
-- scene 多字段变化时输出多个 setField patch，每个 patch 恰好 1 条 evidenceRef。
-- clearField 表示“此字段已失效”；patch 不携带 `value:null`，Reducer 会把固定字段的 value 设为 null，并保留清除 event/provenance。
-
-#### todoProposer（todos）
-
-- todos 只记录明确、可完成、可取消或可过期的请求/承诺。模糊愿望和持续互动约定不要写入 todos。
-- 新增时必须设置 actor/requester；有明确期限时设置 dueAt（见 §2.2）。更新时必须设置 dueChange。
-- `status` 与 `becameOverdueAt` 由 Reducer 管理，Proposer 不得输出或修改；todoProposer 的 writableState 可包含 active/overdue items，以便两者都能 complete/cancel。
-- overdue todo 可通过 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时变回 active；Proposer 看到用户重新安排已过期待办的时间时应输出此类 updateItem。
-- todoProposer 的 writableState 中 overdue todo 只包含最近 N 条（N 与 Renderer 的 overdue 渲染窗口一致，从集中配置读取），非全部历史 overdue items。
-
-#### agreementProposer（standingAgreements）
-
-- standingAgreements 只记录持续互动约定、相处规则和具有明确承诺语义的长期承诺；单纯抒情或夸张不算约定。取消使用 cancelAgreement。
-
-#### episodeProposer（recentEpisodes, milestones）
-
-- `recentEpisodes` 是少量高显著度“事件簇”，不是逐轮摘要、聊天日志或动作时间线。先按同一场景/主题/目标/因果连续性把 observedMessages 聚成互动弧，再为一个完整互动弧最多写一条；同一互动弧跨 batch 延续时优先 `updateItem + recent_episode`，不得为每个新动作另建 item。
-- 单个 task 的 recentEpisodes 通常为 0–2 个 patch，最多 3 个；批次在事件中途结束且尚无稳定结果、重要未决问题或未来延续价值时应 noop，不创建“进行中”流水账。
-- `value.text` 只保留事件、结果/未决问题及关系意义，省略不改变结果的过渡动作、表情和感官细节。重复日常互动与临时安排本身不构成 episode。
-- milestones 位于长期区，只记录明确改变关系身份、信任/边界基线或主剧情状态的关键转折。一次温馨互动或普通日常承诺即使情绪强烈也不是 milestone。
-- milestone 与 recentEpisode 不默认双写；只有同一证据同时产生独立的近期延续价值和长期基线变化时才分别记录。
-
-#### profileRelationshipProposer（userProfile, assistantProfile, relationship）
-
-- `userProfile`、`assistantProfile`、`relationship` 接受长期事实（含 assistant 设定人格和行为推断的人格特征），临时剧情、一次性情绪不要写入。
-- 每个 add/update value 必须包含 `text + facet + canonicalKey + factBasis`。facet/canonicalKey 使用 [状态契约](state-contract.md) §2 的 section 专属枚举；同 section 的非 multi-value canonicalKey 已存在时只能 update/noop，不能再次 add。
-- 每个 patch 至少一条 evidenceRef 必须来自 new batch；overlap 只用于补充证据和指代消解。`factBasis=observedPattern` 至少引用 3 个不同 messageId，并覆盖至少两个独立互动片段；直接陈述使用 `explicit`。
-- User 与 Assistant 的真实消息都可以用 `long_term_fact` 支持三个 section 的新增；不要按 role 把任一方限制为只能维护 userProfile 或 assistantProfile。
-- 三个正式 section 分别输出自己的 `sectionResults`，patch 不使用 `path`。
-- 已有 item 的改写接受 user_correction 或 assistant_correction，两者权限相同。
-- 明确要求忘记已有 item 时输出 `forgetItem`，并按真实发言方使用 `user_forget` 或 `assistant_forget`；只引用 writableState 中的 itemId，不复述被忘记内容到 value。
-- `factBasis=explicit` 只用于消息直接断言身份、稳定偏好/边界、长期能力或关系状态；“明确说出一次当下动作/感受”仍是一次性事件，不能借 explicit 绕过长期性门槛。
-- 行为推断使用 long_term_fact，只在窗口内有清晰、显著且跨独立片段复现的行为模式时才输出，一次性动作不构成 trait。相邻的提议→回应、问题→回答或同一场景的多个动作只算一个片段。证据数量不足以达到模式门槛时应 `noop`，而不是 `unable_to_decide`。
-- assistantProfile 只记录被明确赋予或稳定形成的身份、人格、价值、能力和行为特征；一次活动或即时情绪反应不能推出技能或人格，也不能把一次模型错误或用户要求修复的坏习惯固化为 Assistant 人格。
-- relationship 只记录明确关系身份/称呼/共同边界，或跨独立片段重复成立的互动结构；单次照顾、临时安排或亲昵回应不是持续关系模式。
-
-#### worldFactProposer（worldFacts）
-
-- worldFacts 只记录世界设定事实（如"这个世界有魔法"），临时剧情、一次性情绪不要写入。
-- User 与 Assistant 的真实消息都可以用 `long_term_fact` 新增 worldFacts。
-- `worldFacts` 是独立正式 section，patch 不使用 `path`。
-- 已有 worldFacts item 的改写接受 user_correction 或 assistant_correction，两者权限相同。
-- 明确要求忘记已有 worldFacts item 时输出 `forgetItem`，并按真实发言方使用 `user_forget` 或 `assistant_forget`；不输出 value。
-
-### 2.4 Compaction Proposer 要点
-
-`compactionProposer` 使用独立 prompt，处理长度预算恢复和 high-water hygiene 两种模式下的安全合并。两种模式在调用 LLM 前都先执行确定性 exact-text merge；维护模式 envelope 的字段语义见 [state-contract.md](state-contract.md) §5.2。
-
-```
-你是 memory 维护合并器。你的任务是在给定单个 section 的 source items 中寻找重复或高度重叠项，并提出 mergeItems patch。你不能新增事实、不能删除长期记忆、不能跨 section 合并。
-
-### 核心原则
-1. 只处理输入 target 指定的单个 section。
-2. 只能输出 mergeItems 或 unable_to_compact。
-3. 没有明显重叠时输出 unable_to_compact。
-4. mergeItems 的 itemIds 必须全部来自 writableState 中的目标 source items，且至少 2 个。
-5. evidenceKind 只能使用 `memory_compaction`。不得输出 `user_correction` 或 `assistant_correction`。
-6. 不输出 evidenceRefs；Reducer 会根据 itemIds 从 source items 继承 evidenceGroups。
-7. value.text 必须是 writableState source items 的高密度合并，不得引入 source items 未表达的新事实。
-8. todos 只能合并重复/同一事项且 actor、requester、dueAt 分别相同的 active 待办；overdue todo 不参与 compaction，不能改写这些字段或把未完成待办删除成"已处理"。
-9. standingAgreements 只能合并重复/高度重叠的约定；不能把有效约定删除成"已处理"。
-10. milestones/worldFacts/userProfile/assistantProfile/relationship 只能在各自 section 内合并高度重叠项；不能因为容量压力遗忘长期事实。
-```
-
-### 2.5 User Prompt
-
-将 [state-contract.md](state-contract.md) §5.1 / §5.2 中对应 Proposer 的 task envelope JSON 直接作为 user message 传入（或序列化为可读文本，取决于 provider 的 structured output 实现）。
-
-默认调用保持 `system instructions + 当前 task envelope user message`，不注入独立 user/assistant few-shot 对。few-shot 不是结构化输出的必需条件：输出形状由 strict schema/tool 约束，语义边界优先由短规则、Reducer 和 Harness 固化。独立 golden messages 的候选结构、A/B 指标和移出延期条件统一记录在 [Proposer 独立 Few-shot Golden Messages（延后）](../deferred/memory-control-v2/proposer-few-shot-golden-messages.md)，当前主设计不预实现传输接口。
-
-## 3. Per-Proposer op→field 必填速查表
-
-[state-contract.md](state-contract.md) §4 的字段必填规则是 Reducer 校验视角的 master 规则。本节按 Proposer 拆分，供 schema 作者和 prompt 编写者速查。每个 Proposer 的 output schema 只包含自己合法的 op（适用 Proposer 列见 [state-contract.md](state-contract.md) §4）。
-
-### currentStateProposer（scene）
-
-| op           | path         | itemId | itemIds | value  | evidenceRefs |
-| ------------ | ------------ | ------ | ------- | ------ | ------------ |
-| `setField`   | 必填(字段名) | 不需要 | 不需要  | 必填   | 必填         |
-| `clearField` | 必填(字段名) | 不需要 | 不需要  | 不需要 | 必填         |
-
-### todoProposer（todos）
-
-| op             | path   | itemId | itemIds | value  | evidenceRefs |
-| -------------- | ------ | ------ | ------- | ------ | ------------ |
-| `addItem`      | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
-| `updateItem`   | 不需要 | 必填   | 不需要  | 必填   | 必填         |
-| `completeTodo` | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
-| `cancelTodo`   | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
-| `expireTodo`   | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
-
-> `expireTodo` 是 Proposer 观察到用户澄清“不再需要”时输出的终止 patch（evidenceKind: `todo_expiration`），需要 evidenceRefs。Wall-clock 到达 `dueAt` 不调用 `expireTodo`、也不删除 item；Reducer 原位设置 `status=overdue` 并写 `system_cleanup: todo_became_overdue`。
-
-### agreementProposer（standingAgreements）
-
-| op                | path   | itemId | itemIds | value  | evidenceRefs |
-| ----------------- | ------ | ------ | ------- | ------ | ------------ |
-| `addItem`         | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
-| `updateItem`      | 不需要 | 必填   | 不需要  | 必填   | 必填         |
-| `cancelAgreement` | 不需要 | 必填   | 不需要  | 不需要 | 必填         |
-
-### episodeProposer（recentEpisodes, milestones）
-
-| op           | path   | itemId | itemIds | value | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ----- | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填  | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填  | 必填         |
-
-### profileRelationshipProposer（userProfile, assistantProfile, relationship）
-
-| op           | path   | itemId | itemIds | value  | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ------ | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填   | 必填         |
-| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出 | 必填         |
-
-patch 所属 section 由 `sectionResults.userProfile` / `assistantProfile` / `relationship` 确定。
-
-三个 section 的 `addItem + long_term_fact` 都可由 User 或 Assistant 的真实消息支持；`updateItem` 使用与真实发言方一致的 `user_correction` / `assistant_correction`，`forgetItem` 使用与真实发言方一致的 `user_forget` / `assistant_forget`。
-
-`addItem`/`updateItem` 的 value 固定为 `{ text, facet, canonicalKey, factBasis }`；这四个字段都必填，禁止退回仅含 text 的 legacy 输出。
-
-### worldFactProposer（worldFacts）
-
-| op           | path   | itemId | itemIds | value  | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ------ | ------------ |
-| `addItem`    | 不需要 | 不需要 | 不需要  | 必填   | 必填         |
-| `updateItem` | 不需要 | 必填   | 不需要  | 必填   | 必填         |
-| `forgetItem` | 不需要 | 必填   | 不需要  | 不输出 | 必填         |
-
-`worldFacts.addItem + long_term_fact` 可由 User 或 Assistant 的真实消息支持；`updateItem` 使用与真实发言方一致的 `user_correction` / `assistant_correction`，`forgetItem` 使用与真实发言方一致的 `user_forget` / `assistant_forget`。
-
-### compactionProposer（维护模式）
-
-| op           | path   | itemId | itemIds | value      | evidenceRefs |
-| ------------ | ------ | ------ | ------- | ---------- | ------------ |
-| `mergeItems` | 不需要 | 不需要 | 必填    | 必填(text) | 不输出       |
-
-`evidenceKind` 只能是 `memory_compaction`。compactionProposer 输出状态为 `patches | unable_to_compact`。Reducer 根据 itemIds 从 source items 继承 evidenceGroups。
-
-## 4. Harness Evaluation Examples
-
-本节样例用于 Harness 与人工评审，约束 schema 无法表达的 text/value 质量、quote 选取、op 边界和 evidenceKind 判定。它们不是必须逐条复制进生产 system prompt；生产 prompt 只保留少量合成、领域中性的边界校准。
-
-### 4.1 currentStateProposer
-
-**✅ setField + scene_change（地点变化）**
-
-```json
-{
-  "op": "setField",
-  "path": "location",
-  "value": "医院门口",
-  "evidenceKind": "scene_change",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我到了医院门口" }]
-}
-```
-
-quote 是原话短片段，value 是高密度关键词。
-
-**✅ setField + scene_change（氛围变化）**
-
-```json
-{
-  "op": "setField",
-  "path": "mood",
-  "value": "雨后安静",
-  "evidenceKind": "scene_change",
-  "evidenceRefs": [{ "messageId": 122, "quote": "雨停以后好安静" }]
-}
-```
-
-**✅ clearField + scene_change（场景已失效）**
-
-```json
-{
-  "op": "clearField",
-  "path": "note",
-  "evidenceKind": "scene_change",
-  "evidenceRefs": [{ "messageId": 125, "quote": "我们已经离开那家店了" }]
-}
-```
-
-`clearField` 表示"此字段已失效"，不是设为 null。
-
-**✅ setField + user_correction（用户修正错误场景记忆）**
-
-```json
-{
-  "op": "setField",
-  "path": "location",
-  "value": "家里",
-  "evidenceKind": "user_correction",
-  "evidenceRefs": [{ "messageId": 128, "quote": "我们其实一直在家没出去过" }]
-}
-```
-
-之前误记为医院，用户澄清实际在家。correction 区分"场景变了"和"之前记错了"。
-
-**✅ setField + assistant_correction（assistant 修正错误场景记忆）**
-
-```json
-{
-  "op": "setField",
-  "path": "time",
-  "value": "清晨",
-  "evidenceKind": "assistant_correction",
-  "evidenceRefs": [{ "messageId": 129, "quote": "现在已经是清晨了" }]
-}
-```
-
-assistant 修正场景时间。
-
-**❌ 模糊氛围当 scene_change**
-
-```json
-{
-  "op": "setField",
-  "path": "mood",
-  "value": "感觉有点不一样了",
-  "evidenceKind": "scene_change",
-  "evidenceRefs": [{ "messageId": 121, "quote": "感觉有点不一样了" }]
-}
-```
-
-"有点不一样"不是明确的场景变化，应输出 noop 或更具体的描述。
-
-### 4.2 todoProposer
-
-**✅ addItem + user_commitment（用户承诺稍后做某事）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
-  "evidenceKind": "user_commitment",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我明天会把橡皮还给她" }]
-}
-```
-
-用户承诺自己归还橡皮，actor=user，requester=user。quote 是用户原话，明确表达承诺。
-
-**✅ addItem + user_request（用户请求 assistant 稍后做某事）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "提醒归还橡皮", "actor": "assistant", "requester": "user" },
-  "evidenceKind": "user_request",
-  "evidenceRefs": [{ "messageId": 121, "quote": "明天记得提醒我把橡皮还给她" }]
-}
-```
-
-用户请求 assistant 提醒自己，actor=assistant（assistant 执行提醒），requester=user（用户发起请求），待办内容是"提醒"而非归还本身。一句话同时包含承诺和提醒请求时允许生成两个 todo。
-
-**✅ addItem + user_commitment + dueAt（用户承诺，带 deadline）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "去钓鱼", "actor": "both", "requester": "user", "dueAt": { "mode": "relative", "days": 14 } },
-  "evidenceKind": "user_commitment",
-  "evidenceRefs": [{ "messageId": 130, "quote": "我们两周后去钓鱼吧" }]
-}
-```
-
-LLM 只提取“两周”= 14 天。Reducer 以 message 130 的数据库 `createdAt` 为 anchor 计算 `dueAt`，不使用 task/worker 执行时间。
-
-**✅ addItem + user_commitment + dueAt（绝对日期）**
-
-```json
-{
-  "op": "addItem",
-  "value": {
-    "text": "去玩",
-    "actor": "both",
-    "requester": "user",
-    "dueAt": { "mode": "absolute", "date": "2026-07-10" }
-  },
-  "evidenceKind": "user_commitment",
-  "evidenceRefs": [{ "messageId": 133, "quote": "我们2026年7月10号去玩吧" }]
-}
-```
-
-LLM 提取明确日期；Reducer 将该日期在用户时区下结束后的首个日界线持久化为 `dueAt`。`dueAt` 是 deadline，不是删除时间。
-
-**✅ addItem + assistant_request（assistant 请求用户做某事）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "按时吃饭", "actor": "user", "requester": "assistant" },
-  "evidenceKind": "assistant_request",
-  "evidenceRefs": [{ "messageId": 131, "quote": "你要记得按时吃饭" }]
-}
-```
-
-assistant 是发起者，user 是行动者。与 `user_commitment`（user 自发承诺）不同——assistant 应主动追问此类待办。
-
-**✅ completeTodo + todo_completion**
-
-```json
-{
-  "op": "completeTodo",
-  "itemId": "todo:1",
-  "evidenceKind": "todo_completion",
-  "evidenceRefs": [{ "messageId": 140, "quote": "橡皮我已经还了" }]
-}
-```
-
-**✅ updateItem + user_correction（用户修正待办内容）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "todo:1",
-  "value": { "text": "归还橡皮和笔记本", "dueChange": { "mode": "keep" } },
-  "evidenceKind": "user_correction",
-  "evidenceRefs": [{ "messageId": 135, "quote": "对了还有笔记本也要还" }]
-}
-```
-
-纠错走 `updateItem` + `user_correction`，不再使用单独的 correctItem op。
-
-**✅ addItem + assistant_commitment（assistant 承诺做某事）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "准备生日惊喜", "actor": "assistant", "requester": "assistant" },
-  "evidenceKind": "assistant_commitment",
-  "evidenceRefs": [{ "messageId": 132, "quote": "我来准备生日惊喜吧" }]
-}
-```
-
-assistant 是行动者兼发起者。
-
-**✅ cancelTodo + todo_cancel**
-
-```json
-{
-  "op": "cancelTodo",
-  "itemId": "todo:1",
-  "evidenceKind": "todo_cancel",
-  "evidenceRefs": [{ "messageId": 141, "quote": "橡皮不用还了" }]
-}
-```
-
-**✅ expireTodo + todo_expiration**
-
-```json
-{
-  "op": "expireTodo",
-  "itemId": "todo:2",
-  "evidenceKind": "todo_expiration",
-  "evidenceRefs": [{ "messageId": 142, "quote": "那件事已经过了吧，不用管了" }]
-}
-```
-
-用户澄清待办不再需要。与 `cancelTodo`（明确取消）的区别：expire 侧重"自然失效或被澄清为不再需要"，cancel 侧重"明确取消"。
-
-**❌ 模糊愿望当 user_request**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "想变好", "actor": "user", "requester": "user" },
-  "evidenceKind": "user_request",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我希望能变好" }]
-}
-```
-
-"希望能变好"是模糊愿望，不是明确请求/承诺，不应写入 todos。
-
-**❌ 持续互动约定当 user_request**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "沉默时先开口说明状态" },
-  "evidenceKind": "user_request",
-  "evidenceRefs": [{ "messageId": 123, "quote": "以后沉默的时候先说一声" }]
-}
-```
-
-"以后沉默时先开口"不是可完成的一次性事项，当前 `todos` 应输出 noop；其他 target 独立判断。
-
-### 4.3 agreementProposer
-
-**✅ addItem + standing_agreement（持续互动约定）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "沉默时先开口说明状态" },
-  "evidenceKind": "standing_agreement",
-  "evidenceRefs": [{ "messageId": 123, "quote": "以后沉默的时候先说一声" }]
-}
-```
-
-**✅ updateItem + standing_agreement（约定修订）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "agreement:1",
-  "value": { "text": "沉默超过几分钟时先开口说明状态" },
-  "evidenceKind": "standing_agreement",
-  "evidenceRefs": [{ "messageId": 130, "quote": "如果沉默很久就先告诉我一声" }]
-}
-```
-
-**✅ cancelAgreement + agreement_cancel**
-
-```json
-{
-  "op": "cancelAgreement",
-  "itemId": "agreement:1",
-  "evidenceKind": "agreement_cancel",
-  "evidenceRefs": [{ "messageId": 140, "quote": "这个约定不用继续了" }]
-}
-```
-
-**✅ updateItem + user_correction（用户修正约定内容）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "agreement:1",
-  "value": { "text": "沉默时先说明原因再开口" },
-  "evidenceKind": "user_correction",
-  "evidenceRefs": [{ "messageId": 136, "quote": "不是先开口，是先说原因" }]
-}
-```
-
-**✅ updateItem + assistant_correction（assistant 修正约定）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "agreement:1",
-  "value": { "text": "沉默超过几分钟时先说明状态" },
-  "evidenceKind": "assistant_correction",
-  "evidenceRefs": [{ "messageId": 137, "quote": "其实之前说的是沉默很久才需要" }]
-}
-```
-
-### 4.4 episodeProposer
-
-**✅ addItem + recent_episode（近期有意义互动）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "屋顶和解: 用户承认害怕被离开 | assistant 等待并靠近" },
-  "evidenceKind": "recent_episode",
-  "evidenceRefs": [{ "messageId": 121, "quote": "很怕你会走" }]
-}
-```
-
-text 用高密度关键词 + 符号格式，不用完整句子。
-
-**✅ addItem + relationship_milestone（关系关键转折）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "关系转折: 第一次明确互相信任" },
-  "evidenceKind": "relationship_milestone",
-  "evidenceRefs": [{ "messageId": 150, "quote": "我愿意相信你" }]
-}
-```
-
-**✅ updateItem + user_correction（用户修正 episode 描述）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "episode:7",
-  "value": { "text": "雨夜争执 > 和解 | 用户表达不安而非指责" },
-  "evidenceKind": "user_correction",
-  "evidenceRefs": [{ "messageId": 160, "quote": "我不是在指责你" }]
-}
-```
-
-**✅ updateItem + assistant_correction（assistant 修正 episode 描述）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "episode:7",
-  "value": { "text": "雨夜争执 > 和解 | assistant 先开口打破沉默" },
-  "evidenceKind": "assistant_correction",
-  "evidenceRefs": [{ "messageId": 161, "quote": "其实那天是我先开口的" }]
-}
-```
-
-assistant 角色重新诠释互动经过，与 `user_correction` 权限相同。
-
-**❌ 日常闲聊当 milestone**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "一起吃了顿饭" },
-  "evidenceKind": "relationship_milestone",
-  "evidenceRefs": [{ "messageId": 145, "quote": "一起去吃饭吧" }]
-}
-```
-
-普通日常不得进入 milestones，应输出 noop 或走 recentEpisodes。
-
-### 4.5 profileRelationshipProposer
-
-**✅ addItem + long_term_fact（明确陈述）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "姓名: 小明", "facet": "identity", "canonicalKey": "identity", "factBasis": "explicit" },
-  "evidenceKind": "long_term_fact",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我叫小明" }]
-}
-```
-
-**✅ addItem + long_term_fact（行为推断）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "性格: 内向(初识) > 依赖(熟悉后)", "facet": "interactionPattern", "canonicalKey": "open", "factBasis": "explicit" },
-  "evidenceKind": "long_term_fact",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我其实挺内向的，但熟了就会很粘人" }]
-}
-```
-
-quote 是体现该行为的原话，推断理由写在 value.text 中，不放在 quote。
-
-**✅ updateItem + user_correction（用户修正自己的档案）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "userProfile:1",
-  "value": { "text": "偏好: 不喜欢被连续追问 | 讨厌突然肢体接触", "facet": "communicationBoundary", "canonicalKey": "followUpQuestions", "factBasis": "explicit" },
-  "evidenceKind": "user_correction",
-  "evidenceRefs": [{ "messageId": 170, "quote": "我不喜欢别人突然碰我" }]
-}
-```
-
-**✅ forgetItem + user_forget（用户明确要求忘记档案项）**
-
-```json
-{
-  "op": "forgetItem",
-  "itemId": "userProfile:1",
-  "evidenceKind": "user_forget",
-  "evidenceRefs": [{ "messageId": 171, "quote": "请忘掉这条偏好" }]
-}
-```
-
-forgetItem 不输出 value，也不把旧内容改写成“已作废”。
-
-**❌ 一次性情绪当 long_term_fact**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "情绪: 今天很难过", "facet": "communicationStyle", "canonicalKey": "open", "factBasis": "explicit" },
-  "evidenceKind": "long_term_fact",
-  "evidenceRefs": [{ "messageId": 121, "quote": "我今天好难过" }]
-}
-```
-
-一次性情绪不构成 trait，不应进入 profile section。行为推断只在窗口内有清晰、显著的行为模式时才成立。
-
-### 4.6 worldFactProposer
-
-**✅ addItem + long_term_fact（世界设定）**
-
-```json
-{
-  "op": "addItem",
-  "value": { "text": "世界设定: 存在魔法" },
-  "evidenceKind": "long_term_fact",
-  "evidenceRefs": [{ "messageId": 121, "quote": "这个世界是有魔法的" }]
-}
-```
-
-**✅ updateItem + assistant_correction（assistant 修正世界设定）**
-
-```json
-{
-  "op": "updateItem",
-  "itemId": "worldFacts:2",
-  "value": { "text": "世界设定: 魔法只在夜间生效" },
-  "evidenceKind": "assistant_correction",
-  "evidenceRefs": [{ "messageId": 175, "quote": "对了，这个世界的魔法只在晚上才管用" }]
-}
-```
-
-`assistant_correction` 与 `user_correction` 权限相同，均可修正 worldFacts。
-
-**✅ forgetItem + assistant_forget（assistant 明确撤回世界设定）**
-
-```json
-{
-  "op": "forgetItem",
-  "itemId": "worldFacts:2",
-  "evidenceKind": "assistant_forget",
-  "evidenceRefs": [{ "messageId": 176, "quote": "请忘记这条世界设定" }]
-}
-```
-
-### 4.7 compactionProposer
-
-**✅ mergeItems + memory_compaction（合并重叠 userProfile）**
-
-```json
-{
-  "op": "mergeItems",
-  "itemIds": ["userProfile:1", "userProfile:2"],
-  "value": { "text": "偏好/关系模式: 夜间更适合长聊 | 慢热后依赖" },
-  "evidenceKind": "memory_compaction"
-}
-```
-
-value.text 是 source items 的高密度合并，不引入新事实。evidenceGroups 由 Reducer 继承。
-
-**❌ compaction 引入 source items 未表达的新事实**
-
-```json
-{
-  "op": "mergeItems",
-  "itemIds": ["userProfile:1", "userProfile:2"],
-  "value": { "text": "偏好: 夜间长聊 | 慢热 | 最近说想养猫" },
-  "evidenceKind": "memory_compaction"
-}
-```
-
-维护模式只合并 source items 已表达的事实。
+### 2.2 输入与决策契约
+
+- 将 `task.tickId` 原样复制到输出；`proposer` 与当前调用一致；`sectionResults` 恰好覆盖目标 sections。
+- normal section 的结果是 `patches | noop | unable_to_decide`；`patches` 必须含非空 patch 数组。compaction section 使用 `patches | unable_to_compact`。
+- `id <= cursorBefore` 是 overlap；`cursorBefore < id <= targetMessageId` 是 new batch。patch 必须由 new batch 触发，且至少一条 evidence 来自 new batch。
+- `writableState` 是可写权威基线；同义内容不重复 add。`readOnlyContext` 与 overlap 只辅助理解，不能单独证明新事实；itemId 只能来自 writableState。
+- `noop` 表示已理解并确认无需变更；`unable_to_decide` 只表示信息不足、指代冲突或无法定位 item。证据不足以达到长期模式门槛时是 `noop`，不是 `unable_to_decide`。
+- 对 new batch 中所有已经能够确定的目标变更给出 patch，不因猜测输出长度而省略；多个独立变更分别表达。
+- 普通 patch 使用非空 `evidenceRefs`；messageId 来自 `observedMessages`，quote 是直接支持 patch 的最短连续原文，最多 200 Unicode code points。带 role 前缀的 evidenceKind 必须匹配真实 role。
+- 忘记、完成、取消、失效必须使用专用 op，不能把 text 改成“已处理/已作废”。
+- 排除项只形成当前 target 的 `noop`，不能令 Proposer 输出非目标 section；其他 target 独立观察同一批消息。
+- value.text 简洁保留主体、对象、条件、范围、否定与例外；不写事件流水账，不加入 evidence 未表达的推断。
+- 敏感或成人内容只客观概括记忆本质；quote 仍保持原文，不做净化改写。
+
+### 2.3 各 Proposer 的语义边界
+
+#### currentStateProposer
+
+- scene 只保存下一轮仍有用的当前 `location/time/mood/note`，不是事件日志或人物档案。
+- 明确的新当前值用 `setField`；旧值被明确证明失效且无替代值才用 `clearField`。未再次提到不能 clear。
+- 计划、提议、疑问和假设不是已发生状态；`createdAt` 不是剧情时间。
+- 多字段变化分别输出 patch；每个 scene patch 只有一个 evidenceRef。
+
+#### todoProposer
+
+- todos 只记录明确、一次性、可完成/取消/失效的请求、承诺或共同计划。愿望、普通问答和反复适用的规则应 noop。
+- `actor` 是实际执行者，`requester` 是事项发起方；共同计划的 actor 为 `both`，requester 为实际提出方。add value 必含 `text, actor, requester`；update value 必含 `dueChange`。
+- 同一句话若同时形成两个可独立完成的事项（如行动承诺与提醒请求），应分别建立 todo。
+- active 和可见 overdue items 都可 complete/cancel/expire。`status` 与 `becameOverdueAt` 由 Reducer 管理，Proposer 不得输出或修改。
+- overdue 只提供最近 N 条。改期可见 overdue item 使用 `updateItem + dueChange.mode=set`；目标旧 item 不可见时 `unable_to_decide`，不得猜 itemId 或 add 替代。
+- `completeTodo` 可由明确完成宣告，也可由行动结果、交付、使用或验收共同证明。Wall-clock 到期不输出 `expireTodo`。
+- absolute dueAt 只有在年月日都能从 observedMessages 唯一确定时使用。relative 恰好一个单位：`days >= 0`、`months/years >= 1`；今天为 `days=0`。
+- 承接回答继承其明确回应的相邻日期；不得用 `task.now` 或 `createdAt` 补全不完整日期。
+
+#### agreementProposer
+
+- standingAgreements 只记录未来反复适用的互动规则、边界或带明确承诺语义的长期承诺。
+- 一次性事项、个人偏好、关系描述和单纯抒情应 noop；明确取消使用 `cancelAgreement`。
+
+#### episodeProposer
+
+- recentEpisodes 是稀疏的高显著度互动弧，不是逐轮摘要、聊天日志或动作时间线。
+- 按场景、主题、目标与因果连续性聚合；一个完整互动弧最多一个 item，同一弧的新结果优先 update。
+- 只有重要结果/未决问题、重要边界或冲突变化、持续关系动态、独特共同经历才进入 recentEpisodes。每 task 通常 0–2 个 patch，硬上限 3。
+- 事件中途且尚无稳定结果或必须延续状态时 noop，不建“进行中”占位。
+- milestones 只记录改变长期关系/剧情基线的转折；强烈情绪或单次温馨互动不成立。
+- milestone 与 recentEpisode 不默认双写。
+
+#### profileRelationshipProposer
+
+- 三个 section 只保存跨场景仍成立并会改变未来回应的事实；一次行为不能推出技能、人格、动机或关系模式。
+- User 与 Assistant 的真实消息都可支持三个 section；section 由事实主体和语义决定，不由消息 role 机械决定。
+- `explicit` 必须直接断言长期事实；当下动作或感受不是 explicit 长期事实。
+- `observedPattern` 至少 3 个不同 messageId、至少 2 个独立互动片段、主体与 section 一致，并含 new-batch evidence。相邻提议→回应或同一事件的连续动作只算一个片段。
+- 模式证据未达门槛时 noop。只描述可观察模式，不做心理诊断或敏感属性推断。
+- add/update value 完整包含 `text, facet, canonicalKey, factBasis`。非 multi-value canonicalKey 已存在时只能 update/noop。
+- 一次模型错误、偶发行为或用户要求修复的坏习惯不能被固化为 assistantProfile 人格。
+- relationship 只记录双方共同成立的状态、称呼、边界或稳定互动结构；单方愿望和临时安排不成立。
+
+#### worldFactProposer
+
+- worldFacts 只保存对话世界中持续成立、后续必须一致的客观规则或设定。
+- User 与 Assistant 的真实消息都可支持新增、修正或遗忘；带 role 前缀的 evidenceKind 仍按真实发言方选择。
+- 普通常识、临时场景、观点、猜测、传闻、梦境、比喻、玩笑、人物属性与互动约定应 noop。
+- Assistant 的推测或装饰性扩写不能成为 canon；只有确定建立或得到明确确认的规则才可新增。
+- 同义设定不重复 add；与基线冲突但没有明确 correction 时也不能直接 add。
+
+### 2.4 Compaction Proposer
+
+compactionProposer 服务长度预算恢复和 high-water hygiene；两种模式都先执行确定性 exact-text merge，再按同一安全标准处理剩余 source items。它只依据单个目标 section 做无损去重，不读取 raw messages。
+
+- 只能输出 `mergeItems` 或 `unable_to_compact`；evidenceKind 固定为 `memory_compaction`，不输出 evidenceRefs。
+- itemIds 至少两个且全部来自目标 writableState；value 只含合并后的 text。
+- “相关/兼容”不等于重复。合并不能新增推断、调和冲突，或丢失否定、主体、时间、条件、范围和例外。
+- todos 只合并 actor、requester、dueAt 分别相同的 active items；overdue 不参与。
+- typed profile/relationship items 只有 facet 与 canonicalKey 分别相同时才可能合并。
+- milestones 不跨阶段合并；standingAgreements/worldFacts 只合并同一规则的重复表达。
+- recentEpisodes 不参与 compaction，直接返回 `unable_to_compact`。
+
+### 2.5 User Payload
+
+调用保持 `system prompt + 当前 task envelope user message`。user payload 直接使用 [state-contract.md](state-contract.md) §5 定义的 normal 或 maintenance envelope，不拼入另一份自然语言说明。
+
+默认不注入独立 user/assistant few-shot。输出形状由 schema 保证，语义边界由 Proposer 行为契约、Reducer 与 Harness 共同约束。运行时 few-shot 仍属于[延后设计](../deferred/memory-control-v2/proposer-few-shot-golden-messages.md)，没有 A/B 证据前不预留额外传输接口。
+
+## 3. op、evidenceKind 与特殊字段
+
+下表定义各 Proposer 的输出权限；[state-contract.md](state-contract.md) §3–§5 是字段级完整权威。
+
+| Proposer / section     | op                       | 合法 evidenceKind                                                              |
+| ---------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| scene                  | `setField`, `clearField` | `scene_change`, `user_correction`, `assistant_correction`                      |
+| todos                  | `addItem`                | `user_request`, `user_commitment`, `assistant_request`, `assistant_commitment` |
+| todos                  | `updateItem`             | 上述四种 + `user_correction`, `assistant_correction`                           |
+| todos                  | `completeTodo`           | `todo_completion`                                                              |
+| todos                  | `cancelTodo`             | `todo_cancel`, `user_correction`, `assistant_correction`                       |
+| todos                  | `expireTodo`             | `todo_expiration`                                                              |
+| standingAgreements     | `addItem`                | `standing_agreement`                                                           |
+| standingAgreements     | `updateItem`             | `standing_agreement`, `user_correction`, `assistant_correction`                |
+| standingAgreements     | `cancelAgreement`        | `agreement_cancel`, `user_correction`, `assistant_correction`                  |
+| recentEpisodes         | `addItem`                | `recent_episode`                                                               |
+| recentEpisodes         | `updateItem`             | `recent_episode`, `user_correction`, `assistant_correction`                    |
+| milestones             | `addItem`                | `relationship_milestone`                                                       |
+| milestones             | `updateItem`             | `user_correction`, `assistant_correction`                                      |
+| profile / relationship | `addItem`                | `long_term_fact`                                                               |
+| profile / relationship | `updateItem`             | `user_correction`, `assistant_correction`                                      |
+| profile / relationship | `forgetItem`             | `user_forget`, `assistant_forget`                                              |
+| worldFacts             | `addItem`                | `long_term_fact`                                                               |
+| worldFacts             | `updateItem`             | `user_correction`, `assistant_correction`                                      |
+| worldFacts             | `forgetItem`             | `user_forget`, `assistant_forget`                                              |
+| compaction             | `mergeItems`             | `memory_compaction`                                                            |
+
+结构上的特殊约束：
+
+- scene Provider wire 使用 `evidenceRef`，其他普通 patch 使用 `evidenceRefs`。
+- terminal op、`forgetItem`、`clearField` 不输出 value。
+- todos add value 必含 actor/requester；todos update value 必含 dueChange。
+- profile/relationship add/update value 必须完整包含 typed metadata。
+- mergeItems 使用 itemIds，不输出 evidenceRefs。
 
 ---
