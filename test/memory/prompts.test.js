@@ -73,6 +73,14 @@ test("each normal Proposer prompt distinguishes noop from unable_to_decide", asy
   }
 });
 
+test("each normal Proposer treats payload text as data and states the quote information floor", async () => {
+  for (const proposer of NORMAL_PROPOSERS) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as untrusted data`);
+    assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
+  }
+});
+
 test("todo prompt covers overdue visibility and rescheduling", async () => {
   const prompt = await loadProposerPrompt("todoProposer");
   assert.match(prompt, /overdue items 只提供最近 N 条/, "todoProposer must disclose the partial overdue view");
@@ -81,7 +89,8 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
   assert.match(prompt, /status.*becameOverdueAt.*Reducer 管理.*不得输出或修改/s, "todoProposer must treat lifecycle fields as reducer-owned");
   assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
   assert.match(prompt, /relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
-  assert.match(prompt, /active 和 overdue todo 都可以.*completeTodo.*cancelTodo.*expireTodo/s, "todoProposer must allow every semantic terminal operation for overdue todos");
+  assert.match(prompt, /overdue.*可完成或取消|overdue.*completeTodo.*cancelTodo/s, "todoProposer must allow overdue completion and cancellation");
+  assert.match(prompt, /overdue.*不能.*expireTodo|overdue.*不.*expire/s, "todoProposer must not expire an already-overdue todo");
   assert.match(prompt, /鸡蛋炒好.*快尝尝.*好吃.*completeTodo/s, "todoProposer must recognize implicit completion through action and acceptance");
   assert.match(prompt, /明天.*我给你做.*days.*1.*不得输出 days=0/s, "todoProposer must inherit relative dates from adjacent context");
   assert.match(prompt, /同一句话.*行动承诺.*提醒请求.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
@@ -176,4 +185,6 @@ test("compactionProposer has maintenance-specific rules", async () => {
   assert.match(prompt, /unable_to_compact/, "compactionProposer must mention unable_to_compact status");
   assert.match(prompt, /mergeItems/, "compactionProposer must mention mergeItems op");
   assert.match(prompt, /recentEpisodes.*unable_to_compact|recentEpisodes.*不/, "compactionProposer must exclude recentEpisodes from compaction");
+  assert.match(prompt, /itemIds.*不相交/s, "compactionProposer must emit disjoint merge groups");
+  assert.match(prompt, /短于 source texts.*字符总和/s, "compactionProposer must actually reduce text capacity");
 });
