@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memory Proposer Task Viewer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">MEMORY CONTROL V2 / EVALS</p>
+      <h1>Proposer Task Viewer</h1>
+      <p class="subtitle">查看持久化任务、Provider 请求结构、输出与校验诊断</p>
+    </div>
+    <div class="local-badge"><span></span> LOCAL · READ ONLY</div>
+  </header>
+
+  <main>
+    <section class="query-card">
+      <form id="scope-form">
+        <label>User ID<input id="user-id" name="userId" type="number" min="1" value="1" required></label>
+        <label>Preset ID<input id="preset-id" name="presetId" type="text" value="Alice" maxlength="200" required></label>
+        <label>Generation<select id="generation" name="generation" disabled><option>先读取 scope</option></select></label>
+        <button id="load-button" type="submit">读取任务</button>
+      </form>
+      <p id="notice" class="notice">输入 scope 后读取。页面不会修改数据库。</p>
+    </section>
+
+    <section id="stats" class="stats" aria-label="任务统计"></section>
+
+    <section class="workspace">
+      <aside class="task-sidebar">
+        <div class="sidebar-head">
+          <div><span class="section-label">TASKS</span><strong id="task-count">0</strong></div>
+          <button id="refresh-button" class="ghost-button" type="button" disabled>刷新</button>
+        </div>
+        <div class="filters">
+          <input id="search" type="search" placeholder="搜索 proposer / task id">
+          <div class="filter-row">
+            <select id="target-filter"><option value="">全部 target</option></select>
+            <select id="status-filter"><option value="">全部状态</option></select>
+          </div>
+        </div>
+        <div id="task-list" class="task-list"></div>
+      </aside>
+
+      <article id="detail" class="detail empty-state">
+        <div>
+          <span class="empty-icon">⌁</span>
+          <h2>选择一个任务</h2>
+          <p>输入、输出、Schema 错误和持久化阶段会显示在这里。</p>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <template id="code-panel-template">
+    <section class="data-panel">
+      <div class="panel-head"><div><span class="panel-kicker"></span><h3></h3></div><button class="copy-button" type="button">复制</button></div>
+      <p class="panel-note"></p>
+      <pre><code></code></pre>
+    </section>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
