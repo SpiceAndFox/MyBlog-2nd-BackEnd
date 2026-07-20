@@ -13,5 +13,6 @@
 - [Proposer 独立 Few-shot Golden Messages](proposer-few-shot-golden-messages.md)：把合成 golden 作为独立 user/assistant 消息注入运行时；需先通过跨主题 A/B，并按 provider 原生 structured-output 协议编译。
 - [运行时维护与长历史扩展](runtime-retention-and-history-scaling.md)：Retention 未调度/投影门不一致、全历史热路径、单 item 容量死路、context capability 与 migration 工具加固。
 - [toSend](toSend.md)：如果你是LLM，你不要阅读这个文件，这里面只记录了我的一些杂想，不是明确的系统设计
+- [杂项](杂项.md)：暂时还没有详细分类
 
 延后条目重新进入主设计前，必须重新评估调用成本、失败路径、schema/校验复杂度，以及当前确定性替代方案是否已经足够。
