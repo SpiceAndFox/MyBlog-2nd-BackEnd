@@ -3,8 +3,7 @@ const { logger } = require("../../../logger");
 const { createEmbeddings } = require("../../llm/embeddings");
 const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
 const chatRagRepo = require("./repo");
-const memory = require("../../../modules/memory");
-const { contentHash, sourceRefsAreSuppressed } = require("./suppression");
+const { contentHash } = require("./sourceRefs");
 
 function normalizePositiveInteger(value, { name } = {}) {
   const number = Number(value);
@@ -54,10 +53,9 @@ async function indexChatTurn({
 
   if (firstMessageId > lastMessageId) throw new Error("Invalid chat turn message range for RAG indexing");
 
-  const tombstones = await memory.listSuppressionTombstones(normalizedUserId, normalizedPresetId, { messageIds: [firstMessageId, lastMessageId] });
   const prepared = await prepareChatTurnProjection({
     userId: normalizedUserId, presetId: normalizedPresetId, sessionId: normalizedSessionId,
-    userMessage, assistantMessage, userContent, assistantContent, tombstones,
+    userMessage, assistantMessage, userContent, assistantContent,
   });
   if (prepared.reason) return { indexed: 0, reason: prepared.reason };
 
@@ -70,7 +68,7 @@ async function indexChatTurn({
   return { indexed };
 }
 
-async function prepareChatTurnProjection({ userId, presetId, sessionId, userMessage, assistantMessage, userContent, assistantContent, tombstones = [] } = {}) {
+async function prepareChatTurnProjection({ userId, presetId, sessionId, userMessage, assistantMessage, userContent, assistantContent } = {}) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
   const normalizedSessionId = normalizePositiveInteger(sessionId, { name: "sessionId" });
@@ -80,9 +78,6 @@ async function prepareChatTurnProjection({ userId, presetId, sessionId, userMess
   const chunks = buildTurnChunks({ userContent, assistantContent });
   if (!chunks.length) return { chunks: [], reason: "empty_chunks" };
   const metadata = buildTurnMetadata({ userMessage: { ...userMessage, content: userContent }, assistantMessage: { ...assistantMessage, content: assistantContent } });
-  if (sourceRefsAreSuppressed(metadata.sourceRefs, tombstones)) {
-    return { chunks: [], reason: "source_suppressed" };
-  }
   const embeddings = await createEmbeddings({ texts: chunks.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) });
   return {
     chunks: chunks.map((chunk, index) => ({

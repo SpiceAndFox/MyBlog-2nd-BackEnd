@@ -1,7 +1,6 @@
 const crypto = require("node:crypto");
 const { validateProposerOutput, assertMemoryState } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
-const { sourceKey } = require("../domain/suppression");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 
@@ -70,26 +69,11 @@ function reducerSummary(reduction) {
 
 async function loadEvidenceMessages(repositories, envelope) {
   if (envelope.task.mode === "maintenance") return [];
-  const messages = await repositories.source.getByIds(
+  return repositories.source.getByIds(
     envelope.task.userId,
     envelope.task.presetId,
     envelope.task.observedMessageIds,
   );
-  const tombstones = envelope.task.trigger?.type !== "forceDrain" && repositories.sidecars?.listTombstones
-    ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, {
-      messageIds: envelope.task.observedMessageIds,
-    })
-    : [];
-  const suppressed = new Set(tombstones
-    .filter((row) => {
-      const createdRevision = Number(rowValue(row, "created_revision", "createdRevision"));
-      return !Number.isSafeInteger(createdRevision) || createdRevision <= envelope.task.baseRevision;
-    })
-    .map((row) => sourceKey(
-      rowValue(row, "message_id", "messageId"),
-      rowValue(row, "content_hash", "contentHash"),
-    )));
-  return messages.filter((message) => !suppressed.has(sourceKey(message.id, message.contentHash)));
 }
 
 function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, promptLoader = loadProposerPrompt } = {}) {

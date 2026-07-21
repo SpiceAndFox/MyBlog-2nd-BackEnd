@@ -66,7 +66,7 @@ test("projection drain persists a retryable coverage state when staging fails", 
   });
 });
 
-test("projection drain consumes new tombstones even when generation and source boundary are unchanged", async () => {
+test("projection drain ignores retired tombstones when generation and source boundary are unchanged", async () => {
   const state = createInitialMemoryState();
   let checkpointWrite;
   const calls = [];
@@ -75,18 +75,17 @@ test("projection drain consumes new tombstones even when generation and source b
     source: { async getBoundary() { return 20; } },
     sidecars: {
       async getProjectionCheckpoint() { return { processed_generation: 0, processed_boundary_message_id: 20, processed_tombstone_id: 0 }; },
-      async listTombstones() { return [{ id: 5, message_id: 10, content_hash: "sha256:old" }]; },
+      async listTombstones() { throw new Error("tombstones must not be read"); },
       async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
     },
     async withTransaction(work) { return work({}); },
   };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter: {
     async rebuild() { throw new Error("unexpected rebuild"); }, async append() { throw new Error("unexpected append"); },
-    async suppress(args) { calls.push(args.tombstones[0].id); }, async commit() { throw new Error("unexpected commit"); },
+    async suppress(args) { calls.push(args); }, async commit() { throw new Error("unexpected commit"); },
   } });
   const result = await drain.drain(7, "companion");
   assert.equal(result.status, "healthy");
-  assert.deepEqual(calls, [5]);
-  assert.equal(checkpointWrite.processedTombstoneId, 5);
+  assert.deepEqual(calls, []);
+  assert.equal(checkpointWrite.processedTombstoneId, 0);
 });
-

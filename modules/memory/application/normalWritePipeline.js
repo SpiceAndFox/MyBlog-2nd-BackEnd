@@ -3,7 +3,6 @@ const { SCHEMA_VERSION, validateProposerOutput } = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
 const { buildNormalEnvelope, normalDedupeKey } = require("./envelope");
 const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
-const { sourceKey } = require("../domain/suppression");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
 
@@ -59,23 +58,12 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   if (!observer || !providerAdapter || !repositories?.source || !repositories.withTransaction) throw new Error("Normal Memory pipeline dependencies are required");
 
   async function loadEvidenceMessages(envelope, client) {
-    const databaseMessages = await repositories.source.getByIds(
+    return repositories.source.getByIds(
       envelope.task.userId,
       envelope.task.presetId,
       envelope.task.observedMessageIds,
       { client },
     );
-    const tombstones = envelope.task.trigger?.type !== "forceDrain" && repositories.sidecars?.listTombstones
-      ? await repositories.sidecars.listTombstones(envelope.task.userId, envelope.task.presetId, {
-        messageIds: envelope.task.observedMessageIds,
-        client,
-      })
-      : [];
-    const suppressedKeys = new Set(tombstones.map((row) => sourceKey(
-      row.message_id ?? row.messageId,
-      row.content_hash ?? row.contentHash,
-    )));
-    return databaseMessages.filter((message) => !suppressedKeys.has(sourceKey(message.id, message.contentHash)));
   }
 
   const capacity = createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now, idFactory, recordAdapterError, proposeWithSchemaRetry, loadEvidenceMessages });
@@ -391,7 +379,6 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       await repositories.state.writeState(envelope.task.userId, envelope.task.presetId, reduction.state, { client });
       await repositories.audit.insertEventGroup({ event_group_id: groupId, user_id: envelope.task.userId, preset_id: envelope.task.presetId, task_id: envelope.task.taskId, target_key: envelope.task.targetKey, source_generation: envelope.task.sourceGeneration, schema_version: SCHEMA_VERSION, base_revision: state.meta.revision, result_revision: reduction.state.meta.revision, cursor_before: envelope.task.cursorBefore, cursor_after: envelope.task.targetMessageId, group_kind: "proposal" }, { client });
       await repositories.audit.insertEvents(reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)), { client });
-      for (const tombstone of reduction.tombstones) await repositories.sidecars.insertTombstone(envelope.task.userId, envelope.task.presetId, tombstone, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: reduction.state.meta.sourceGeneration, revision: reduction.state.meta.revision, schemaVersion: SCHEMA_VERSION, state: reduction.snapshot }, { client });
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "committed", stage_payload: stagePayload, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null }, { client });
       await recordSuccessfulTarget(repositories, envelope, client);

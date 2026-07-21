@@ -1,12 +1,10 @@
-const { chatRagConfig, memoryV2Config } = require("../../../config");
+const { chatRagConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { createEmbeddings } = require("../../llm/embeddings");
 const { rerankDocuments } = require("../../llm/reranker");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const { generateSceneRecallForSource } = require("./sceneRecall");
 const chatRagRepo = require("./repo");
-const memory = require("../../../modules/memory");
-const { filterRagChunks, filterSuppressedMessages } = require("./suppression");
 
 function parseEmbeddingVector(rawString) {
   const str = String(rawString || "").trim();
@@ -278,7 +276,7 @@ function serializeSource(source) {
   return serialized;
 }
 
-async function attachDialogueMessages(sources, { userId, presetId, beforeMessageId, tombstones = [], signal } = {}) {
+async function attachDialogueMessages(sources, { userId, presetId, beforeMessageId, signal } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length) return [];
 
@@ -288,7 +286,7 @@ async function attachDialogueMessages(sources, { userId, presetId, beforeMessage
   return Promise.all(
     list.map(async (source) => {
       throwIfAborted(signal);
-      let dialogueMessages = await chatRagRepo.listMessagesAroundChunk({
+      const dialogueMessages = await chatRagRepo.listMessagesAroundChunk({
         userId,
         presetId,
         sessionId: source.sessionId,
@@ -299,13 +297,12 @@ async function attachDialogueMessages(sources, { userId, presetId, beforeMessage
         maxMessageId: beforeMessageId,
       });
       throwIfAborted(signal);
-      dialogueMessages = filterSuppressedMessages(dialogueMessages, tombstones);
       return { ...source, dialogueMessages };
     })
   );
 }
 
-async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, tombstones = [], signal } = {}) {
+async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, signal } = {}) {
   const list = Array.isArray(sources) ? sources : [];
   if (!list.length || !chatRagConfig.sceneRecallEnabled) return list;
 
@@ -313,7 +310,7 @@ async function attachSceneRecalls(sources, { userId, presetId, beforeMessageId, 
     list.map(async (source) => {
       try {
         throwIfAborted(signal);
-        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, maxMessageId: beforeMessageId, tombstones, signal });
+        const sceneRecall = await generateSceneRecallForSource({ userId, presetId, source, maxMessageId: beforeMessageId, signal });
         return sceneRecall ? { ...source, sceneRecall } : source;
       } catch (error) {
         if (signal?.aborted) throw signal.reason || error;
@@ -387,9 +384,7 @@ async function retrieveChatRagContextUnsafe({ userId, presetId, query, beforeMes
   });
   throwIfAborted(signal);
 
-  const tombstones = await memory.listSuppressionTombstones(userId, presetId);
-  throwIfAborted(signal);
-  const eligibleRows = filterRagChunks(rows, tombstones, { requireSourceRefs: memoryV2Config.enabled });
+  const eligibleRows = rows;
 
   if (!eligibleRows.length) {
     return {
@@ -490,11 +485,10 @@ async function retrieveChatRagContextUnsafe({ userId, presetId, query, beforeMes
     userId,
     presetId,
     beforeMessageId: normalizedBeforeMessageId,
-    tombstones,
     signal,
   });
   throwIfAborted(signal);
-  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, beforeMessageId: normalizedBeforeMessageId, tombstones, signal });
+  const enrichedRows = await attachSceneRecalls(withDialogue, { userId, presetId, beforeMessageId: normalizedBeforeMessageId, signal });
   throwIfAborted(signal);
   const rendered = buildContextContent(enrichedRows);
   if (!rendered.content) {

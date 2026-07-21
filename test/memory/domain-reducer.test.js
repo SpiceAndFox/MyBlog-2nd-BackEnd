@@ -79,7 +79,7 @@ test("scene patches that exceed the semantic character budget are rejected witho
   assert.equal(result.state.meta.targetCursors.scene, 2);
 });
 
-test("correction preserves item identity, appends evidence, and suppresses replaced sources", () => {
+test("correction preserves item identity and appends evidence without suppression", () => {
   const database = message(2, "user", "更正一下，我住在上海");
   const state = createInitialMemoryState();
   state.longTerm.worldFacts.push(item("worldFact:home", "住在北京"));
@@ -88,11 +88,10 @@ test("correction preserves item identity, appends evidence, and suppresses repla
   const updated = result.state.longTerm.worldFacts[0];
   assert.equal(updated.id, "worldFact:home");
   assert.equal(updated.evidenceGroups.length, 2);
-  assert.deepEqual(result.tombstones, [{ messageId: 1, contentHash: hash("住在北京"), reason: "correction", sourceItemId: "worldFact:home", sourceSection: "worldFacts", userId: 1, presetId: "p", createdRevision: 1 }]);
-  assert.equal(result.tombstones.some((entry) => entry.messageId === 2), false);
+  assert.deepEqual(result.tombstones, []);
 });
 
-test("scene correction suppresses the replaced field provenance", () => {
+test("scene correction replaces the active field without suppression", () => {
   const database = message(2, "user", "更正一下，我们在上海");
   const state = createInitialMemoryState();
   state.current.scene.location = { value: "北京", evidenceRef: { messageId: 1, contentHash: hash("我们在北京"), quote: "我们在北京" }, updatedAtMessageId: 1 };
@@ -104,10 +103,7 @@ test("scene correction suppresses the replaced field provenance", () => {
     }] } } }, idFactory: sequence("patch"),
   });
   assert.equal(result.state.current.scene.location.value, "上海");
-  assert.deepEqual(result.tombstones, [{
-    messageId: 1, contentHash: hash("我们在北京"), reason: "correction", sourceItemId: "scene:location",
-    sourceSection: "scene", userId: 1, presetId: "p", createdRevision: 1,
-  }]);
+  assert.deepEqual(result.tombstones, []);
 });
 
 test("capacity violation atomically defers the triggering patch", () => {

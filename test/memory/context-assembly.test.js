@@ -85,15 +85,15 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   assert.equal(data.diagnostics.every((row) => row.resolved), true);
 });
 
-test("recent window, GapBridge, and time candidates all exclude suppressed raw sources", async () => {
+test("context assembly never reads retired tombstones", async () => {
   const data = makeData();
   const suppressed = data.sourceMessages.find((message) => message.id === 4);
   data.tombstones.push({ message_id: suppressed.id, content_hash: suppressed.contentHash, reason: "forget" });
+  data.repositories.sidecars.listTombstones = async () => { throw new Error("tombstones must not be read"); };
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
   const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "suppressed-context" });
-  assert.equal(result.recent.messages.some((message) => message.content === suppressed.content), false);
-  assert.equal(result.gapBridge.messages.some((message) => message.id === suppressed.id), false);
-  assert.equal(result.timeCandidates.some((message) => message.id === suppressed.id), false);
+  assert.equal(result.needsMemory, true);
+  assert.equal(data.sourceMessages.some((message) => message.id === suppressed.id), true);
 });
 
 test("historical context queries cannot falsely resolve a gap diagnostic outside their source slice", async () => {

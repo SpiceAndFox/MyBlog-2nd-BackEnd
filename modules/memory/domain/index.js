@@ -8,5 +8,6 @@ module.exports = Object.freeze({
   ...require("./renderer"),
   ...require("./contextCoverage"),
   ...require("./health"),
-  ...require("./suppression"),
+  ...require("./semanticCompiler"),
+  ...require("./compiledReducerV201"),
 });

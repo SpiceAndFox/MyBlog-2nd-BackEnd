@@ -1,4 +1,4 @@
-const { contentHash, sourceRefsAreSuppressed } = require("./suppression");
+const { contentHash } = require("./sourceRefs");
 
 function loadProjectionDependencies() {
   return {
@@ -73,7 +73,6 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
       messageId: Number(message.id),
       contentHash: contentHash(message.content),
     }));
-    if (sourceRefsAreSuppressed(sourceRefs, input.tombstones)) continue;
     const metadata = {
       userMessageId: Number(userMessage.id), assistantMessageId: Number(assistantMessage.id),
       userCreatedAt: userMessage.created_at, assistantCreatedAt: assistantMessage.created_at, sourceRefs,
@@ -97,7 +96,6 @@ function createChatRagProjectionAdapter() {
   return Object.freeze({
     rebuild: (input) => stageRagProjection(input),
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
-    suppress: ({ userId, presetId, tombstones, client }) => loadProjectionDependencies().chatRagRepo.deleteSuppressedChunks(userId, presetId, tombstones, { client }),
     async commit({ mode, staged, userId, presetId, client }) {
       const { chatRagRepo } = loadProjectionDependencies();
       if (mode === "rebuild") await chatRagRepo.deleteAllChunks(userId, presetId, { client });

@@ -65,23 +65,15 @@ function resolvePatchDueAt(patch, refs, messagesById, timeZone) {
 function applyPatch(state, section, patch, refs, context, identityKey) {
   const normalized = structuredClone(patch);
   if (patch.op === "setField") {
-    const previous = state.current.scene[patch.path];
-    const tombstones = ["user_correction", "assistant_correction"].includes(patch.evidenceKind) && previous.evidenceRef
-      ? [{ messageId: previous.evidenceRef.messageId, contentHash: previous.evidenceRef.contentHash, reason: "correction", sourceItemId: `scene:${patch.path}`, sourceSection: "scene" }]
-      : [];
     const ref = refs[0];
     state.current.scene[patch.path] = { value: patch.value, evidenceRef: ref, updatedAtMessageId: ref.messageId };
     normalized.evidenceRefs = refs;
-    return { normalized, tombstones };
+    return { normalized };
   }
   if (patch.op === "clearField") {
-    const previous = state.current.scene[patch.path];
-    const tombstones = ["user_correction", "assistant_correction"].includes(patch.evidenceKind) && previous.evidenceRef
-      ? [{ messageId: previous.evidenceRef.messageId, contentHash: previous.evidenceRef.contentHash, reason: "correction", sourceItemId: `scene:${patch.path}`, sourceSection: "scene" }]
-      : [];
     state.current.scene[patch.path] = { value: null, evidenceRef: null, updatedAtMessageId: null };
     normalized.evidenceRefs = refs;
-    return { normalized, tombstones };
+    return { normalized };
   }
 
   const items = sectionItems(state, section);
@@ -135,18 +127,10 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
   if (["completeTodo", "cancelTodo", "expireTodo", "cancelAgreement", "forgetItem"].includes(patch.op)) {
     items.splice(index, 1);
     normalized.evidenceRefs = refs;
-    const tombstones = patch.op === "forgetItem" ? item.evidenceGroups.flatMap((group) => group.refs.map((ref) => ({
-      messageId: ref.messageId, contentHash: ref.contentHash, reason: "forget", sourceItemId: item.id, sourceSection: section,
-    }))) : [];
-    return { normalized, tombstones };
+    return { normalized };
   }
 
   if (patch.op === "updateItem") {
-    const replacedEvidence = ["user_correction", "assistant_correction"].includes(patch.evidenceKind)
-      ? item.evidenceGroups.flatMap((group) => group.refs.map((ref) => ({
-        messageId: ref.messageId, contentHash: ref.contentHash, reason: "correction", sourceItemId: item.id, sourceSection: section,
-      })))
-      : [];
     if (section === "todos" && item.status === "overdue") {
       if (patch.value.dueChange.mode !== "set") return { rejectReason: "invalid_state_transition" };
       if ((patch.value.actor !== undefined && patch.value.actor !== item.actor) || (patch.value.requester !== undefined && patch.value.requester !== item.requester)) {
@@ -177,7 +161,7 @@ function applyPatch(state, section, patch, refs, context, identityKey) {
     item.updatedAtMessageId = Math.max(item.updatedAtMessageId, newestMessageId(refs));
     normalized.value = structuredClone(item);
     normalized.evidenceRefs = refs;
-    return { normalized, tombstones: replacedEvidence };
+    return { normalized };
   }
   return { rejectReason: "schema_invalid" };
 }
@@ -194,7 +178,6 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
   const original = structuredClone(state);
   const working = structuredClone(state);
   const events = [];
-  const tombstones = [];
   const cleanupEvents = [];
   const seen = new Set();
   const messagesById = new Map(databaseMessages.map((message) => [message.id, message]));
@@ -258,7 +241,6 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
         continue;
       }
       keys.forEach((key) => seen.add(key));
-      if (applied.tombstones) tombstones.push(...applied.tombstones);
       events.push({ ...eventBase(section, patch, "accepted", patchId), resultItemId: applied.resultItemId || null, normalizedOperation: applied.normalized });
     }
   }
@@ -281,14 +263,7 @@ function reduceProposal({ state, task, proposal, observedMessages, databaseMessa
   if (task.mode === "normal") finalState.meta.targetCursors[task.targetKey] = task.targetMessageId;
   assertMemoryState(finalState);
   const allEvents = [...events, ...cleanupEvents, ...lifecycle.events];
-  const seenTombstones = new Set();
-  const committedTombstones = tombstones.flatMap((entry) => {
-    const key = `${entry.messageId}:${entry.contentHash}`;
-    if (seenTombstones.has(key)) return [];
-    seenTombstones.add(key);
-    return [{ ...entry, userId: task.userId, presetId: task.presetId, createdRevision: finalState.meta.revision }];
-  });
-  return { outcome: "committable", state: finalState, events: allEvents, tombstones: committedTombstones, cleanupEvents: [...cleanupEvents, ...lifecycle.events], capacityViolation: null, snapshot: structuredClone(finalState), identities: { patchIds, itemIds } };
+  return { outcome: "committable", state: finalState, events: allEvents, tombstones: [], cleanupEvents: [...cleanupEvents, ...lifecycle.events], capacityViolation: null, snapshot: structuredClone(finalState), identities: { patchIds, itemIds } };
 }
 
 module.exports = { reduceProposal, sectionItems, SECTION_TARGETS };

@@ -137,7 +137,7 @@ test("repeated capacity commit preserves the durable maintenance chain", async (
   assert.equal(data.inspect.events.filter((event) => event.decision === "deferred").length, 1);
 });
 
-test("replay re-applies suppression and rejects evidence tombstoned after deferral", async () => {
+test("capacity replay ignores retired correction tombstones", async () => {
   const data = store();
   const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];
   const pipeline = createNormalWritePipeline({
@@ -150,10 +150,10 @@ test("replay re-applies suppression and rejects evidence tombstoned after deferr
     } },
   });
   const result = await pipeline.processIntent(1, "default", intent);
-  const replayEvent = data.inspect.events.findLast((event) => event.task_id === result.taskId && event.decision === "rejected");
+  const replayEvent = data.inspect.events.findLast((event) => event.task_id === result.taskId && event.decision === "accepted");
   assert.equal(result.status, "committed");
-  assert.equal(replayEvent.reject_reason, "message_id_not_found");
-  assert.equal(data.inspect.state.working.todos.length, 1, "suppressed add must not re-enter state during replay");
+  assert.equal(replayEvent.op, "addItem");
+  assert.equal(data.inspect.state.working.todos.length, 2, "active-state changes do not suppress raw replay sources");
 });
 
 test("fully rejected maintenance persists a null-revision audit group and accurate attempt", async () => {

@@ -3,7 +3,6 @@ const { logger } = require("../../../logger");
 const { createChatCompletion } = require("../../llm/chatCompletions");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const chatRagRepo = require("./repo");
-const { filterSuppressedMessages } = require("./suppression");
 
 function collapseWhitespace(value) {
   return String(value || "")
@@ -111,12 +110,12 @@ function normalizeSceneRecall(rawText) {
   return clipText(cleaned, chatRagConfig.sceneRecallMaxOutputChars);
 }
 
-async function generateSceneRecallForSource({ userId, presetId, source, maxMessageId, tombstones = [], signal } = {}) {
+async function generateSceneRecallForSource({ userId, presetId, source, maxMessageId, signal } = {}) {
   if (!chatRagConfig.sceneRecallEnabled) return "";
 
   const contextTurns = Number(chatRagConfig.sceneRecallContextTurns) || 0;
   const beforeMessages = contextTurns * 2;
-  const rawMessages = await chatRagRepo.listMessagesAroundChunk({
+  const messages = await chatRagRepo.listMessagesAroundChunk({
     userId,
     presetId,
     sessionId: source.sessionId,
@@ -126,8 +125,6 @@ async function generateSceneRecallForSource({ userId, presetId, source, maxMessa
     afterMessages: 0,
     maxMessageId,
   });
-  const messages = filterSuppressedMessages(rawMessages, tombstones);
-
   if (!messages.length) return "";
 
   const prompt = buildPrompt({ source, messages });

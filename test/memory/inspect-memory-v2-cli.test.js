@@ -66,7 +66,7 @@ test("Memory v2 inspector renders non-profile sections with target health marker
   ].join("\n\n"));
 });
 
-test("Memory v2 inspector applies runtime suppression and renders without writing", async () => {
+test("Memory v2 inspector ignores retired tombstones and renders without writing", async () => {
   const queries = [];
   const state = memoryContracts.createInitialMemoryState();
   const ref = { messageId: 3, contentHash: `sha256:${"a".repeat(64)}`, quote: "旧偏好" };
@@ -106,9 +106,10 @@ test("Memory v2 inspector applies runtime suppression and renders without writin
     sections: ["userProfile", "assistantProfile"],
   });
 
-  assert.equal(output, "[该类记忆可能滞后]\n[User 核心档案]\n(无)\n\n[Assistant 核心档案]\n- 风格: 温和");
+  assert.equal(output, "[该类记忆可能滞后]\n[User 核心档案]\n- 偏好: 旧偏好\n\n[Assistant 核心档案]\n- 风格: 温和");
   assert.equal(queries.length, 1);
   assert.deepEqual(queries[0].params, [7, "companion"]);
   assert.match(queries[0].sql, /^\s*SELECT/);
+  assert.doesNotMatch(queries[0].sql, /suppression_tombstones/i);
   assert.doesNotMatch(queries[0].sql, /\b(?:INSERT|UPDATE|DELETE)\b/i);
 });

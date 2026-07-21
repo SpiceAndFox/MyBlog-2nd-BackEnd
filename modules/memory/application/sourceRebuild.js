@@ -1,22 +1,8 @@
 const { createInitialMemoryState, assertMemoryState, SCHEMA_VERSION, TARGETS, TARGET_KEYS } = require("../contracts");
-const { filterRebuiltState } = require("../domain/suppression");
 const { isDeepStrictEqual } = require("node:util");
-const crypto = require("node:crypto");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
-
-function stableUuid(value) {
-  const hex = crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 32).split("");
-  hex[12] = "5";
-  hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
-  const normalized = hex.join("");
-  return `${normalized.slice(0, 8)}-${normalized.slice(8, 12)}-${normalized.slice(12, 16)}-${normalized.slice(16, 20)}-${normalized.slice(20)}`;
-}
-
-function itemContainer(state, section) {
-  return ["todos", "standingAgreements", "recentEpisodes"].includes(section) ? state.working : state.longTerm;
-}
 
 function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work(), now = () => new Date() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.source || !repositories.runtime || !repositories.audit || !repositories.sidecars) throw new Error("Source rebuild repositories are required");
@@ -80,63 +66,6 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
       if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
       if (Number(rowValue(status, "source_generation", "sourceGeneration")) !== sourceGeneration) return { status: "stale", reason: "target_generation_mismatch" };
       if ((state.meta.targetCursors[targetKey] ?? 0) < boundaryMessageId) throw new Error(`Target ${targetKey} has not reached its rebuild boundary`);
-      const tombstones = await repositories.sidecars.listTombstones(userId, presetId, { client });
-      const filtered = filterRebuiltState(state, tombstones);
-      const cleanupEvents = [];
-      const next = structuredClone(state);
-      for (const section of TARGETS[targetKey].sections) {
-        if (section === "scene") {
-          for (const [path, field] of Object.entries(state.current.scene)) {
-            const filteredField = filtered.state.current.scene[path];
-            if (!isDeepStrictEqual(field, filteredField)) {
-              cleanupEvents.push({ section, itemId: null, cleanupKind: "suppressed_scene_field_cleared", normalizedOperation: { cleanupKind: "suppressed_scene_field_cleared", sceneSlot: "scene", path } });
-            }
-          }
-          next.current.scene = structuredClone(filtered.state.current.scene);
-          if (state.current.previousScene && filtered.state.current.previousScene) {
-            for (const path of Object.keys(state.current.previousScene)) {
-              if (!isDeepStrictEqual(state.current.previousScene[path], filtered.state.current.previousScene[path])) {
-                cleanupEvents.push({ section, itemId: null, cleanupKind: "suppressed_scene_field_cleared", normalizedOperation: { cleanupKind: "suppressed_scene_field_cleared", sceneSlot: "previousScene", path } });
-              }
-            }
-            next.current.previousScene = structuredClone(filtered.state.current.previousScene);
-          }
-          continue;
-        }
-        const beforeItems = itemContainer(state, section)[section];
-        const afterItems = itemContainer(filtered.state, section)[section];
-        const retainedIds = new Set(afterItems.map((item) => item.id));
-        for (const item of beforeItems) {
-          if (!retainedIds.has(item.id)) cleanupEvents.push({ section, itemId: item.id, cleanupKind: "suppressed_item_removed", normalizedOperation: { cleanupKind: "suppressed_item_removed", itemId: item.id } });
-        }
-        itemContainer(next, section)[section] = structuredClone(afterItems);
-      }
-      if (cleanupEvents.length) {
-        next.meta.revision = state.meta.revision + 1;
-        assertMemoryState(next);
-        const phase = `${userId}:${presetId}:${sourceGeneration}:${targetKey}:terminal_suppression:${state.meta.revision}`;
-        const groupId = stableUuid(phase);
-        const taskId = rowValue(status, "last_task_id", "lastTaskId") || stableUuid(`${phase}:task`);
-        await repositories.state.writeState(userId, presetId, next, { client });
-        await repositories.audit.insertEventGroup({
-          event_group_id: groupId, user_id: userId, preset_id: presetId, task_id: taskId,
-          target_key: targetKey, source_generation: sourceGeneration, schema_version: SCHEMA_VERSION,
-          base_revision: state.meta.revision, result_revision: next.meta.revision,
-          cursor_before: null, cursor_after: null, group_kind: "system_cleanup",
-        }, { client });
-        await repositories.audit.insertEvents(cleanupEvents.map((event, index) => ({
-          event_group_id: groupId, event_index: index, user_id: userId, preset_id: presetId,
-          task_id: taskId, tick_id: null, target_key: targetKey, section: event.section,
-          event_kind: "system_cleanup", decision: "system_cleanup", patch_id: null, op: null,
-          item_id: event.itemId, result_item_id: null, merged_from_item_ids: null,
-          evidence_kind: null, reject_reason: null, maintenance_task_id: null, patch_summary: null,
-          normalized_operation: event.normalizedOperation, cleanup_type: event.cleanupKind,
-        })), { client });
-        await repositories.audit.insertSnapshot(userId, presetId, {
-          sourceGeneration, revision: next.meta.revision, schemaVersion: SCHEMA_VERSION, state: next,
-        }, { client });
-        state = next;
-      }
       const snapshot = await repositories.audit.getSnapshot(userId, presetId, state.meta.revision, { client });
       if (!snapshot || Number(snapshot.source_generation ?? snapshot.sourceGeneration) !== sourceGeneration) throw new Error("Current rebuild revision has no valid generation snapshot");
       assertMemoryState(snapshot.state);
@@ -152,20 +81,6 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         expectedRevision += 1;
       }
       if (expectedRevision - 1 !== state.meta.revision) throw new Error("Rebuild event/snapshot chain does not reach authority state");
-      const terminal = filterRebuiltState(state, tombstones);
-      const targetSections = new Set(TARGETS[targetKey].sections);
-      const suppressedInTarget = terminal.removedItemIds.some((id) => {
-        for (const section of targetSections) {
-          const container = ["todos", "standingAgreements", "recentEpisodes"].includes(section) ? state.working : state.longTerm;
-          if (container[section]?.some((item) => item.id === id)) return true;
-        }
-        return false;
-      });
-      const sceneSuppressed = targetKey === "scene" && (
-        !isDeepStrictEqual(terminal.state.current.scene, state.current.scene)
-        || !isDeepStrictEqual(terminal.state.current.previousScene, state.current.previousScene)
-      );
-      if (suppressedInTarget || sceneSuppressed) throw new Error(`Target ${targetKey} still contains suppressed source after rebuild`);
       await repositories.runtime.upsertTargetStatus(userId, presetId, {
         targetKey, sourceGeneration, rebuildBoundaryMessageId: null, status: "healthy", consecutiveErrors: 0,
         lastErrorReason: null, lastTaskId: rowValue(status, "last_task_id", "lastTaskId") ?? null, nextRetryAt: null,

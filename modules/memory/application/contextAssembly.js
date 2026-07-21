@@ -3,7 +3,6 @@ const { TARGET_KEYS } = require("../contracts/constants");
 const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage } = require("../domain/contextCoverage");
 const { aggregateMemoryHealth } = require("../domain/health");
 const { renderMemory } = require("../domain/renderer");
-const { filterRecall, filterRebuiltState } = require("../domain/suppression");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
 
 function camelDiagnostic(row) {
@@ -44,7 +43,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     ? createDiagnosticProjection({ repositories })
     : null;
 
-  async function resolveRecoveredDiagnostics(userId, presetId, state, sourceMessages, tombstones, active) {
+  async function resolveRecoveredDiagnostics(userId, presetId, state, sourceMessages, active) {
     const resolved = [];
     for (const diagnostic of active) {
       if (diagnostic.diagnosticType !== "gap_bridge_omitted" || diagnostic.subjectKind !== "target" || !TARGET_KEYS.includes(diagnostic.subjectKey)) continue;
@@ -55,9 +54,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
         const loadedUpper = Math.max(0, ...sourceMessages.map((message) => message.id));
         const diagnosticMessages = loadedUpper >= diagnostic.omittedUpperMessageId
           ? sourceMessages
-          : filterRecall({
-            rawMessages: await repositories.source.listUpTo(userId, presetId, diagnostic.omittedUpperMessageId, { client }),
-          }, tombstones).rawMessages;
+          : await repositories.source.listUpTo(userId, presetId, diagnostic.omittedUpperMessageId, { client });
         const sourceExists = sourceStillContainsOmitted(diagnosticMessages, diagnostic, cursor);
         if (cursor < diagnostic.omittedUpperMessageId && sourceExists) return false;
         const row = typeof repositories.sidecars.resolveGapDiagnosticIfProven === "function"
@@ -120,9 +117,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
   }
 
   return async function assembleMemoryContext({ userId, presetId, upToMessageId, requestId, requestNow = new Date().toISOString() } = {}) {
-    const rawSourceMessages = await repositories.source.listUpTo(userId, presetId, upToMessageId);
-    const tombstones = await repositories.sidecars.listTombstones(userId, presetId);
-    const sourceMessages = filterRecall({ rawMessages: rawSourceMessages }, tombstones).rawMessages;
+    const sourceMessages = await repositories.source.listUpTo(userId, presetId, upToMessageId);
     const recent = selectRecentWindow(sourceMessages, recentWindowMaxChars);
     const recentWindowStartMessageId = recent.messages[0]?.id ?? null;
     const debug = { memorySkipReason: null };
@@ -150,7 +145,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
           try { Promise.resolve(scheduleStateRecovery({ userId, presetId })).catch((error) => onBackgroundError?.(error)); }
           catch (error) { onBackgroundError?.(error); }
         }
-      } else state = filterRebuiltState(rawState, tombstones).state;
+      } else state = rawState;
     }
 
     const targetStatuses = state ? await repositories.runtime.getTargetStatuses(userId, presetId) : [];
@@ -189,7 +184,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       activeDiagnostics = activeDiagnostics.filter((row) => !recoveredIds.has(row.id));
     }
     if (state) {
-      const resolvedIds = new Set(await resolveRecoveredDiagnostics(userId, presetId, state, sourceMessages, tombstones, activeDiagnostics));
+      const resolvedIds = new Set(await resolveRecoveredDiagnostics(userId, presetId, state, sourceMessages, activeDiagnostics));
       activeDiagnostics = activeDiagnostics.filter((diagnostic) => !resolvedIds.has(diagnostic.id));
     }
 

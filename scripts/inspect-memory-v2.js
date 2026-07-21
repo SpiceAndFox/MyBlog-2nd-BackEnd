@@ -138,12 +138,7 @@ async function inspectMemory({ db, memory, userId, presetId, sections }) {
           AND diagnostic_row.preset_id = pm.preset_id
           AND diagnostic_row.resolved = FALSE
           AND (diagnostic_row.subject_kind <> 'projection' OR diagnostic_row.subject_key = 'rag')
-      ), '[]'::jsonb) AS diagnostics,
-      COALESCE((
-        SELECT jsonb_agg(to_jsonb(tombstone_row) ORDER BY tombstone_row.message_id, tombstone_row.id)
-        FROM chat_context_suppression_tombstones tombstone_row
-        WHERE tombstone_row.user_id = pm.user_id AND tombstone_row.preset_id = pm.preset_id
-      ), '[]'::jsonb) AS tombstones
+      ), '[]'::jsonb) AS diagnostics
     FROM chat_preset_memory pm
     WHERE pm.user_id = $1 AND pm.preset_id = $2
   `, [userId, presetId]);
@@ -151,8 +146,7 @@ async function inspectMemory({ db, memory, userId, presetId, sections }) {
   if (!rows[0]) throw new Error(`Memory scope not found: userId=${userId}, presetId=${presetId}`);
   if (rows[0].memory_state === null) throw new Error(`Memory state is not initialized: userId=${userId}, presetId=${presetId}`);
 
-  const rawState = memory.contracts.assertMemoryState(rows[0].memory_state);
-  const state = memory.domain.filterRebuiltState(rawState, rows[0].tombstones).state;
+  const state = memory.contracts.assertMemoryState(rows[0].memory_state);
   return renderMemorySections({
     state,
     targetStatuses: rows[0].target_statuses,

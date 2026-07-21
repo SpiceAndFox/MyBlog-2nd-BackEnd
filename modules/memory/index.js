@@ -27,6 +27,8 @@ const { loadProposerPrompt } = require("./prompts");
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
 const { buildMigrationEvidence } = require("./application/migrationEvidence");
+const { buildProposerTaskArtifact, expandProposerTaskArtifact } = require("./application/proposerTaskRenderer");
+const { createSemanticCompiler } = require("./domain/semanticCompiler");
 
 let defaultMemoryRuntime = null;
 
@@ -92,6 +94,9 @@ module.exports = Object.freeze({
   createProviderAdmission,
   createMigrationProviderTelemetry,
   buildMigrationEvidence,
+  buildProposerTaskArtifact,
+  expandProposerTaskArtifact,
+  createSemanticCompiler,
   createDefaultMemoryRuntime(options) {
     if (!defaultMemoryRuntime) defaultMemoryRuntime = createMemoryRuntime({ ...options, repositories });
     return defaultMemoryRuntime;
@@ -111,9 +116,6 @@ module.exports = Object.freeze({
   },
   markRecoveryNotificationsDelivered(ids) {
     return repositories.sidecars.markRecoveryNotificationsDelivered(ids);
-  },
-  listSuppressionTombstones(userId, presetId, options) {
-    return repositories.sidecars.listTombstones(userId, presetId, options);
   },
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,

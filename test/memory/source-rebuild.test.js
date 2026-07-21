@@ -122,7 +122,7 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
-test("target validation commits terminal suppression as a replayable cleanup revision", async () => {
+test("target validation ignores retired tombstones and preserves rebuilt active state", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
   state.meta.revision = 5;
@@ -150,16 +150,16 @@ test("target validation commits terminal suppression as a replayable cleanup rev
       async insertEvents(rows) { events.push(...structuredClone(rows)); },
       async insertSnapshot(_u, _p, row) { snapshots.set(row.revision, { ...structuredClone(row), source_generation: row.sourceGeneration }); },
     },
-    sidecars: { async listTombstones() { return [{ ...fixture.oldSource, reason: "forget" }]; } },
+    sidecars: { async listTombstones() { throw new Error("tombstones must not be read"); } },
   };
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: { createTask() {}, processEnvelope() {} }, config: { targets: {} } });
   const result = await rebuild.validateTarget(7, "companion", "worldFacts", 1, 10);
   assert.equal(result.status, "healthy");
-  assert.equal(state.longTerm.worldFacts.length, 0);
-  assert.equal(state.meta.revision, 6);
-  assert.equal(groups[0].group_kind, "system_cleanup");
-  assert.equal(events[0].cleanup_type, "suppressed_item_removed");
-  assert.equal(snapshots.get(6).state.longTerm.worldFacts.length, 0);
+  assert.equal(state.longTerm.worldFacts.length, 1);
+  assert.equal(state.meta.revision, 5);
+  assert.deepEqual(groups, []);
+  assert.deepEqual(events, []);
+  assert.equal(snapshots.get(5).state.longTerm.worldFacts.length, 1);
 });
 
 test("rebuild reconciliation honors a durable retry_wait boundary before invoking the provider", async () => {
@@ -193,4 +193,3 @@ test("rebuild reconciliation honors a durable retry_wait boundary before invokin
   assert.equal(result.result.notBefore, future);
   assert.equal(providerCalls, 0);
 });
-
