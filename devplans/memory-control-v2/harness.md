@@ -125,7 +125,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - 输出sourceRefs稳定排序；
 - writable ref用作support、read-only ref用作target时 `ref_resolution_failed`；
 - missing/stale ref、section不匹配、item不存在时fail closed；
-- missing message、scope/role/createdAt/hash不一致时 `source_validation_failed`；
+- missing message 或 scope/hash不一致时 `source_validation_failed`；direct source 的 role/createdAt 与 artifact `messageMeta` 不一致时失败；support source 只持久化 messageId/hash，createdAt 使用权威数据库值且 role 必须是有效 User/Assistant；
 - Compiler不自动替换hash、不选择相似item、不把update降级成add。
 
 ### 3.5 Todo 日期
@@ -217,7 +217,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 
 - preflight覆盖六个Semantic normal schemas与compaction schema；
 - unknown adapter拒绝启动，不回退裸JSON解析；
-- `ok/error/deferred`归一化保持；
+- `ok/error/deferred`归一化保持；`deferred/provider_queue_full` 返回 queued，且不增加 attempt/error counter、schema repair、target status、cursor、revision、event 或 snapshot；
 - safety/max-output/network/schema分类保持；
 - repair feedback持久化且跨重启不增加次数；
 - Provider request只包含public input，不包含private ref map；

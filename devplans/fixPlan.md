@@ -12,7 +12,7 @@
 - Memory 以人类可读文本和任务内短引用提供给 LLM；
 - LLM 输出小型领域级 Semantic IR，不输出持久化 Patch；
 - 短引用解析、来源展开、日期规范化和 Patch 组装全部由确定性代码完成；
-- Validator / Reducer 继续掌握最终写入权；
+- Validator / Reducer 继续掌握 Proposer/Semantic 候选的最终写入权；source-generation reset、privacy purge 与 deterministic system cleanup 继续由各自受控算法执行；
 - 删除当前阶段没有明确收益的分类和保护规则，优先得到简单、可观察、易迭代的链路。
 
 目标链路：
@@ -351,7 +351,8 @@ Compiler 不负责：
 
 - LLM 不直接访问或修改数据库；
 - Compiler 不直接写数据库；
-- Validator / Reducer 仍是唯一合法写入入口；
+- Proposer/Semantic 候选只能通过 Validator / Reducer 写入 state；source-generation reset、privacy purge 与 deterministic system cleanup 是由各自算法约束的受控系统写入；
+- 本地 Provider admission 返回 `deferred/provider_queue_full` 时只表示背压：task 保持非终态并等待重投，不增加 attempt/error counter，不改变 target status/cursor/revision/event/snapshot；它与 capacity deferred 是不同状态；
 - Schema、引用、来源展开或 Compiler 转换失败必须形成可见失败，不能伪装成成功 Patch；
 - Semantic IR、Renderer ref map、Compiler 结果与 Reducer decision 应具备可检查性；完整诊断界面的扩建可以后续实施。
 
@@ -429,7 +430,7 @@ Compiler 不负责：
 - 任意 section 的 correction / forget 都不写 context-suppression tombstone；
 - update/set 保留当前 itemId 或 scene path；
 - forget 只改变 active Memory；
-- Validator / Reducer 之外没有数据库写入路径；
+- Proposer/Semantic 候选不存在绕过 Validator / Reducer 的 state 写入路径；受控 source-generation reset、privacy purge 与 deterministic system cleanup 不属于该候选写入路径；
 - event replay 与开发数据库重建适配新的简化契约。
 
 ### Episode

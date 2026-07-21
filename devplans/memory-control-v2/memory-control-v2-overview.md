@@ -40,7 +40,7 @@ Memory State + Raw Messages
 ## 2. 设计目标
 
 1. **语义与存储分离**：LLM 不输出 itemId、op、evidenceKind、quote、contentHash 或数据库字段。
-2. **受控写入**：Compiler 不写数据库；最终写入只能经 Validator/Reducer。
+2. **受控写入**：Compiler 不写数据库；Proposer/Semantic 候选只能经 Validator/Reducer 写入。Source-generation reset、privacy purge 与 deterministic system cleanup 是由各自算法约束的受控系统路径。
 3. **证据可追溯**：当前 Memory 的每个 item/scene field 可追溯到 raw `messageId + contentHash`。
 4. **状态分层**：Scene、Todo、持续约定、近期经历、里程碑、世界事实、两个 Profile 和关系记忆独立维护。
 5. **低漂移**：状态只做局部增删改；不把 LLM 的全文摘要作为 authority。
@@ -182,7 +182,7 @@ Reducer 不再执行 evidenceKind policy、quote matching、new-batch gate、Pro
 | --- | --- | --- |
 | C1 | 当前 authority | `memory_state` JSONB，version=`"2.01"` |
 | C2 | LLM 输出 | Semantic IR，不是持久化 Patch |
-| C3 | 写入权 | Compiler 不写库；Validator/Reducer 唯一写入 |
+| C3 | 写入权 | Compiler 不写库；Proposer/Semantic 候选只能经 Validator/Reducer 写入；generation reset、privacy purge、system cleanup 为受控系统路径 |
 | C4 | Provenance | 扁平 raw `messageId + contentHash` |
 | C5 | Target/cursor | 六个 normal target；联合 sections 共享 cursor |
 | C6 | 来源 | direct message 与 rendered read-only support 均合法；无 new-batch gate |

@@ -101,6 +101,7 @@ Successor：
 
 ## 6. Provider 与 Semantic Schema Error
 
+- Adapter 返回 `deferred/provider_queue_full` 时，表示本地 admission backpressure：当前 task 保持非终态并返回 queued，后续重新投递；不增加 Provider attempt/consecutive errors，不消耗 schema repair，不写错误 ops outcome，不改变 target status/cursor/revision/event/snapshot。该状态与 capacity deferred 无关；
 - `llm_call_failed/safety_policy_blocked/max_output_truncated`：按有限指数退避；达到 task/consecutive阈值后 halt对应 target；
 - Provider输出本地 Semantic Schema invalid：最多一次 durable schema repair；
 - repair feedback只保存有界 path/message，不保存非法输出原文；

@@ -581,6 +581,14 @@ Adapter 成功：
 { status: "ok", output: { /* Semantic IR */ }, usage, model }
 ```
 
+Adapter admission deferred：
+
+```js
+{ status: "deferred", reason: "provider_queue_full" }
+```
+
+`deferred` 表示本地 Provider admission backpressure，不表示 Provider/model 调用失败，也不同于 capacity proposal 的 `decision=deferred`。它不消耗 Provider attempt 或 schema-repair 次数，不写错误 ops outcome，不改变 target status，不推进 cursor，也不产生 revision/event/snapshot。当前 durable task 保持非终态并返回 queued，随后由正常 worker/recovery 调度重新投递。
+
 Adapter 错误：
 
 ```js

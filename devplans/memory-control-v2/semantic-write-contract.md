@@ -137,7 +137,14 @@ Normal Proposer 保留 per-section 终局：
   "sectionResults": {
     "recentEpisodes": {
       "status": "changes",
-      "changes": []
+      "changes": [
+        {
+          "action": "update",
+          "ref": "E1",
+          "text": "用户需要暂停并不代表拒绝关系；双方冷静后恢复了沟通。",
+          "evidenceMessageIds": [1151]
+        }
+      ]
     },
     "milestones": {
       "status": "noop"
@@ -224,7 +231,7 @@ Compiler 必须：
 2. 用 writable ref 映射真实 itemId 或 scene path；
 3. 用 read-only ref 展开对应权威 Memory 对象的 `sourceRefs`；
 4. 合并直接消息来源与 support 来源，按 `messageId + contentHash` 去重；
-5. 从数据库重新校验消息存在、scope、role、createdAt 与 contentHash；
+5. 从数据库重新校验消息存在、scope、有效 User/Assistant role 与 contentHash；direct source 还必须将 role/createdAt 与 artifact `messageMeta` 对照，support source 的 createdAt 以当前权威数据库行为准；
 6. 规范化 Todo 日期和其他确定性字段；
 7. 将 Semantic action 映射为持久化 op；
 8. 生成完整 compiled proposal；
@@ -329,7 +336,7 @@ Capacity-blocked replay 使用已持久化 compiled proposal，不重新调用 P
 - LLM 永远看不到真实 itemId、contentHash 或持久化 op。
 - LLM 不能直接写数据库。
 - Compiler 不做开放式语义判断，也不写数据库。
-- Validator/Reducer 之外不存在 state 写入路径。
+- Proposer/Semantic 候选引发的 state 变化不得绕过 Validator/Reducer；source-generation reset、privacy purge 与 deterministic system cleanup 是由各自算法约束的受控系统写入，不属于 Proposer 写入路径。
 - 当前 state 只保存 raw source provenance，不保存 Memory-to-Memory 图。
 - old-only direct evidence、support-only、direct+support 混合来源都合法。
 - correction/forget 不产生 context-suppression tombstone，不影响 raw source、RAG/Recall 或后续 rebuild。
