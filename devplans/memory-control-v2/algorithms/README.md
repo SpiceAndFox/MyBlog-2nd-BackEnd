@@ -1,39 +1,33 @@
-# Memory Control v2 算法契约索引
-
-本目录保存 Memory Control v2 的确定性算法与状态机契约。拆分目的不是简化或重新解释已经确认的规则，而是让每个算法只有一个权威定义，避免同一算法散落在状态、写入、渲染和 Harness 文档中后产生冲突。
+# Memory Control 2.01 算法契约索引
 
 ## 权威边界
 
-- [状态契约](../state-contract.md)：只负责数据 shape、枚举、policy table、DDL、索引和静态字段约束。
-- [写入协议](../write-protocol.md)：只负责 Observer、Proposer、Reducer、Renderer 之间的编排顺序和算法调用关系。
-- 本目录：负责算法步骤、状态转移、失败分支、幂等规则和运行不变量。
-- [Proposer Prompt 契约](../proposer-prompt.md)：负责 LLM 输出行为约束，不重新定义 Reducer 算法。
-- [Harness 验收契约](../harness.md)：负责测试覆盖，不重新定义算法；断言应引用本目录中的权威规则。
-- [延后设计](../../deferred/memory-control-v2/readme.md)：只记录当前未采用的方案，不重新定义当前算法。
+算法文档定义顺序敏感的确定性步骤、状态转移、失败分支和幂等规则。静态 shape/DDL 见 [状态契约](../state-contract.md)，Semantic/Compiler shape 见 [Semantic 写入契约](../semantic-write-contract.md)。
 
-当其他文档需要说明算法时，只保留必要的编排摘要并链接本目录；不得复制另一份可独立解释的状态转移表、伪代码或失败规则。
+任何实现改变算法行为时，应先修改对应算法文档和 Harness；不得在 service/repository 内形成第二套未记录状态机。
 
 ## 算法清单
 
-- [Evidence 校验与 Quote 匹配](evidence-validation.md)
-- [Reducer Apply 算法](reducer-application.md)
-- [领域生命周期](domain-lifecycle.md)
-- [Task 执行、Cursor 与幂等](task-execution-and-idempotency.md)
-- [Compaction 与 Proposal Replay](compaction-and-replay.md)
-- [Source Rebuild 与 Projection](source-rebuild-and-projection.md)
-- [Context Coverage](context-coverage.md)
-- [异常诊断投影](diagnostic-projection.md)
-- [Suppression、Hard Delete 与 Retention](suppression-and-retention.md)
+| 文档 | 权威范围 |
+| --- | --- |
+| [Semantic 编译与 Source 校验](evidence-validation.md) | ref resolution、support provenance 展开、source validation、date anchor、action→op、compile failure |
+| [Reducer Apply](reducer-application.md) | compiled patch 校验、模拟、apply、event 与 revision 提交 |
+| [Task 执行、Cursor 与幂等](task-execution-and-idempotency.md) | task stage、cursor、retry、successor、phase identity 与 crash recovery |
+| [Compaction 与 Proposal Replay](compaction-and-replay.md) | capacity-blocked、semantic merge、compile、compiled proposal replay |
+| [领域生命周期](domain-lifecycle.md) | Scene TTL、Todo、Episode 滑动窗口和 effective view |
+| [Source Rebuild 与 Projection](source-rebuild-and-projection.md) | sourceGeneration、force drain、RAG generation/boundary checkpoint |
+| [Active Forget、Privacy 与 Retention](suppression-and-retention.md) | active-state forget、privacy hard delete、snapshot/event/task retention |
+| [Context Coverage](context-coverage.md) | recent window、needsMemory、GapBridge、RAG/Recall cutoff 与健康 |
+| [异常诊断投影](diagnostic-projection.md) | 从 committed events 派生 scene capacity 等诊断 |
 
-## 算法文档统一结构
+`evidence-validation.md` 与 `suppression-and-retention.md` 保留旧文件名以避免链接失效，但 2.01 已不包含 evidenceKind/quote matcher 或 context-suppression tombstone。
 
-每篇算法文档按适用情况包含：
+## 通用结构
 
-1. 目的与非目标；
-2. 输入与输出；
-3. 权威步骤或状态转移表；
-4. 不变量；
-5. 失败、重试与幂等；
-6. 使用的集中配置；
-7. 产生的 event、ops log 或 diagnostic；
-8. Harness 覆盖入口。
+每个算法文档应说明：
+
+1. 输入与 authority；
+2. 顺序敏感步骤；
+3. 失败分类和是否推进 cursor/revision；
+4. 幂等/恢复条件；
+5. Harness 落点。

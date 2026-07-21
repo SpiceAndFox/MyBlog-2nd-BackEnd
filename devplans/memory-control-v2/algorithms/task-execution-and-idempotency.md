@@ -1,161 +1,162 @@
 # Task 执行、Cursor 与幂等算法
 
-本文是 normal/maintenance/system-cleanup task 的创建与恢复、cursor 推进、revision stale、successor task、retry/resume、phase identity、事务结果和 crash recovery 的单一权威来源。Task、target status、event group、ops log 的 DDL 与枚举见 [状态契约](../state-contract.md) §9。
+本文是 2.01 normal/maintenance/system-cleanup task 创建、Renderer artifact、Semantic/Compiler阶段、cursor、retry/resume、phase identity 和 crash recovery 的单一权威来源。
 
 ## 1. 串行与 Task 创建
 
-当前只支持单实例。同一 `userId/presetId` 的普通 task、maintenance task、system cleanup 和 source mutation 共用同一个进程内串行队列。进程内队列只负责运行时串行，不是 crash recovery authority；durable task、per-target status 和 ops log 才是运行恢复 authority。
+当前只支持单实例。同一 `userId/presetId` 的 normal、maintenance、system cleanup 和 source mutation 共用一个进程内串行 lane。进程内队列不是恢复 authority；durable task、per-target status、ops log、events/snapshots才是。
 
-Observer 可以一次发现多个 eligible targets，但只能先排 intent。每个 durable task 必须在进入 user/preset 串行执行位时用最新 state 创建并固化 `base_revision/cursor_before/task_payload`，不能在一个 tick 开头为多个 targets 预先固化同一个 baseRevision。
-
-`task_id` 与 `dedupe_key` 在任务首次创建后保持稳定。相同调度事实的重复 wake-up 必须命中同一 dedupe key 并读取既有 task，不得新建第二行：
-
-- normal task 的 key 至少绑定 generation、target、`cursor_before` 与 `target_message_id`；
-- maintenance task 还绑定 `parent_task_id`、阻塞 section 与 `resume_epoch`；
-- system cleanup task 绑定确定性 cleanup 边界。
-
-key 的具体编码由实现集中定义，不进入 Prompt。
-
-## 2. Proposer 调度窗口
-
-检测频率与上下文窗口是两个独立参数：
-
-- `lagThreshold`（N）：检测频率。`lag = 该 user/preset 下 id > coveredUntilMessageId 的消息数量`，lag >= N 时该 target eligible。
-- `contextWindow`（M ≥ N）：发给 Proposer 的观察窗口大小上限。
-- `newBatch`：从 `coveredUntilMessageId` 之后按 `id ASC` 取最早的 `min(N, lag)` 条未处理消息。
-- `overlap`：从 `coveredUntilMessageId` 及之前取最近的 `M - newBatch.length` 条消息，按 `id ASC` 放在 `newBatch` 前。
-- `observedMessageIds = overlap + newBatch`，`targetMessageId = max(newBatch.id)`。窗口内 `id > coveredUntilMessageId` 的消息是本轮新消息，`id <= coveredUntilMessageId` 的消息只作重叠上下文。普通写入 patch 的 evidenceRefs 可以引用 observedMessages 中的任意消息（含重叠部分），但 patch 应反映本轮新消息。
-
-上述查询都基于跨 session 的完整有效 source，不做 user-boundary 裁剪。普通聊天中 `0 < lag < lagThreshold` 的尾批允许暂留；后续消息到达后再一起处理。若尾批离开 recent window，主聊天由 [Context Coverage](context-coverage.md) 的 per-target GapBridge 补齐，不通过修改 cursor 或提前调用 Proposer 来掩盖 gap。
-
-Source rebuild、一次性迁移和服务器维护排查不受普通 `lagThreshold` 限制，调用 [Source Rebuild 与 Projection](source-rebuild-and-projection.md) 的 `forceDrainTo(capturedBoundaryMessageId)`。
-
-Observer 将 eligible targets 列为 `eligibleTasks`，每个 normal target 对应一个 task 和一个专用 Proposer。只有目标 section 出现在该 Proposer 的输入和输出契约中；非目标 section 不出现在 `sectionResults` 中。目标 section 是否实际变化，由对应 Proposer 读取 envelope 后输出 patch 或 noop，Observer 不预判。
-
-触发与上下文窗口建议（可调，数量单位均为 raw User/Assistant message；一次常见问答通常占 2 条）：
-
-| targetKey | lagThreshold | contextWindow | 理由 |
-| --- | --- | --- | --- |
-| `scene` | 4 | 16 | 场景变化高频，及时捕捉；额外 overlap 用于消解地点、时间和动作指代 |
-| `todos` | 8 | 48 | 待办中频；覆盖提出、确认、执行和完成的完整短链路，同时避免每个问答都调用 |
-| `standingAgreements` | 16 | 64 | 持续约定低频；先观察承诺是否真正形成、修订或取消，避免把即时客套写成长期约定 |
-| `episodes` | 32 | 96 | 近期经历属于后台反思；用较大 new batch 聚合同一互动弧，用 64 条 overlap 跨批次延续事件而不是逐轮切片 |
-| `profileRelationship` | 32 | 128 | 长期档案属于低频巩固；用 96 条 overlap 判断跨片段稳定模式，同时由 new-batch evidence gate 抑制 overlap 重提取 |
-| `worldFacts` | 16 | 96 | 世界设定低频；覆盖多轮叙事逐步确立、修正或撤销的背景事实 |
-
-`scene` / `todos` 是需要较快落地的工作状态；`episodes` / `profileRelationship` 是需要先积累再归纳的反思状态。不要为了让所有 target 使用整齐的相同数值而牺牲这一区别。扩大 `contextWindow` 只增加 overlap，不改变 cursor 的 new batch 边界；扩大 `lagThreshold` 同时降低调用频率并增加单次 new batch，因此必须配合对应 Proposer 的事件聚类和长期性门槛。
-
-## 3. Cursor 推进
-
-`cursor` 指当前 target 的 `coveredUntilMessageId`，存于 `meta.targetCursors[targetKey]`。
-
-核心原则：Proposer 已经看过消息并给出了明确判断（patches 或 noop），且 Reducer 不需要外部维护任务才能完成决策，则消息视为已处理，cursor 推进。Proposer 无法判断（`unable_to_decide`）、技术性失败（`error`）、预算维护暂缓（`deferred`）时不推进。
-
-| 决策 | Cursor 行为 | 落地表 | 触发条件 |
-| --- | --- | --- | --- |
-| `accepted` | 推进 | events | 至少一个 patch 被 apply |
-| `noop` | 推进 | events | Proposer 明确说无变化；记 `decision=noop` 占位行 |
-| `rejected` | 推进 | events | patches 被拒（policy/quote/schema/item 校验等；scene 还包括 `capacity_exceeded`） |
-| `deferred` | 不推进 | events | item patch 被长度预算阻塞，已触发 maintenance task |
-| `unable_to_decide` | 不推进 | ops_log | Proposer 自认判断不了；扩大上下文重试，仍无法判断后推进 cursor |
-| `unable_to_compact` | 不推进 | ops_log | compactionProposer 判定无安全合并空间；halt 对应 target |
-| `error` | 不推进 | ops_log | Provider Adapter 返回错误；按本文件恢复策略处理 |
-
-cursor 按整个 normal proposal 的 target 级结果聚合，而不是按单个 section 或单行 event 判断。联合 target 的所有 `sectionResults` 必须都形成可推进终局：任一 section 为 `unable_to_decide`、任务发生 `error`，或任一 patch 为 `deferred` 时，整个 target cursor 不推进。全部 section 均已终局且不存在上述阻塞结果时，有任一 `accepted`/`noop`/普通 `rejected` event 即推进。
-
-一个 section 的 `patches` 数组里可能多个 patch 独立校验，部分 `accepted`、部分普通 `rejected` 时可以推进；有任一 `deferred` 时不推进。Capacity-blocked 时禁止 accepted + deferred 非原子混合提交，完整规则见 [Compaction 与 Proposal Replay](compaction-and-replay.md)。
-
-## 4. Revision、Generation 与 Cursor Stale
-
-提交事务必须先按 `task_id` 锁定并读取 task，再校验 source generation、target `cursor_before`、当前 revision 与该 stage 的预期执行 revision。
-
-- task generation 与 `memory_state.meta.sourceGeneration` 不同：task stale，必须取消且不得 replay/apply。
-- normal task 首次提交时，若当前 revision 与 task 创建时的 `base_revision` 相同：允许继续校验和提交。
-- normal task 首次提交时，若当前 revision 不同但 generation 仍匹配：不得直接 apply，也不得简单失败；创建 successor task。
-- compaction/replay：按各阶段开始时捕获的最新 revision 创建下一 revision；其他 target 导致的 revision 增长不单独使 proposal stale。其余 stale 条件见 [Compaction 与 Proposal Replay](compaction-and-replay.md)。
-- cursorBefore 失配：不得 apply，记录 `stale_result`。
-
-### 4.1 Successor Task
-
-当 normal task 首次提交时发现当前 revision ≠ task 创建时的 `base_revision`（且 `sourceGeneration` 仍匹配）：
-
-1. 取消旧 task（status=`cancelled`）；
-2. 创建 successor task：新 `task_id`、新 `dedupe_key`、`predecessor_task_id` 指向旧 task；
-3. successor task 以当前最新 revision 作为新 `base_revision`；
-4. 重新读取 state、重新组装 envelope并重新调用 Proposer；
-5. 旧 task 的 `stage_payload.persistedProposal`（如有）不复用；
-6. successor task 的 `dedupe_key` 必须与旧 task 不同，例如加入 predecessor_task_id 或新 base_revision。
-
-readOnlyContext 可能已因其他 target 的 revision 而变化，因此必须重新组装，不能在新 revision 上直接 apply 旧 proposal。
-
-## 5. Retry 与 Resume
-
-任何成功 revision 都必须在同一事务把对应 durable task 写到终态，并将该 target 的 `consecutiveErrors` 重置为 0、清除 retry 时间；不能先提交 state/snapshot，再异步修复 task/status。
-
-### 5.1 Provider Adapter Error
-
-- tick orchestrator 不把 error 交给 Reducer。它在一个运行状态事务中写 ops log、更新 durable task 的 attempt/notBefore/status，并更新对应 per-target status；cursor 不推进，revision/snapshot 不增加。
-- 可重试调用失败（`llm_call_failed`/`safety_policy_blocked`/`max_output_truncated`）：target status 的 `consecutiveErrors + 1`；未超过 `CHAT_MEMORY_V2_PROVIDER_RETRY_MAX` 且尚未达到连续错误 halt 阈值时，task 进入 `retry_wait` 并写有限指数退避的 `notBefore/nextRetryAt`，任一上限触发则 task failed、target halted。三类原因分别记录指标。
-- maintenance child 是容量恢复链的一部分：可重试错误时 child task 进入 `retry_wait` 并持久化 `notBefore`，但 target status 保持 `capacity_blocked`。parent normal task/replay 必须读取 child 的当前状态并尊重 `notBefore`，到期前不得再次调用 Provider，也不得将 target 暂时标成普通 `retry_wait`。
-- `output_schema_invalid` 必须区分边界：输入 envelope 校验失败直接令 task failed、对应 target halted；Provider 输出通过原生 structured channel 返回但本地完整 schema 校验失败时，先在 task `stage_payload.schemaInvalidAttempts` 持久化计数，并把经过条数/长度限制的本地校验 path/message 写入 `stage_payload.schemaRepairFeedback`，同时写含同一修复反馈的 `output_schema_invalid_retry` ops log。随后对同一 immutable envelope 立即请求完整替代输出，system prompt 明确携带该修复反馈但不携带非法输出原文。首版配置上限只能为 0 或 1；次数耗尽后的第二次错误才令 task failed、对应 target halted并写终态 `output_schema_invalid`。进程在首次记录后退出时，恢复扫描读取已持久化的计数与反馈，不重新获得额外次数，也不得退化为无反馈重试。
-- 可重试错误达到配置的 task retry 上限或 `consecutiveErrors` halt 阈值后，只将对应 target 置为 halted；其他 targets 不受影响。
-
-### 5.2 unable_to_decide
-
-1. normal task 创建时把本 task 的 `normalContextWindow` 固化在 stage payload。首次 unable 时写 ops log，把当前 durable task 的 `contextExpansionAttempt` 从 0 更新为 1，并在同一 task 行的 `stage_payload.expandedEnvelope` 固化完整扩大输入；不修改 per-target 长期错误计数或 `memory_state`。
-2. 扩大窗口首版固定为已固化 `normalContextWindow` 的 2 倍，保持同一 `cursorBefore/targetMessageId/taskId`，只向前扩展 overlap，不纳入 captured target boundary 之后的消息。下一 attempt、重复 delivery 与进程恢复必须读取已持久化的 `expandedEnvelope`，不得按当前配置或变化后的 source 窗口重新组装。
-3. 扩大 1 次仍 `unable_to_decide`：先执行与普通提交相同的 generation/cursor/baseRevision stale 校验。revision 已变化时必须取消旧 task、创建 successor 并重新调用 Proposer；只有 baseRevision 仍匹配时，才能以一个只推进该 target cursor 的 revision 终结 task，并在同事务写 event group、snapshot、task 终态和 healthy target status。
-
-### 5.3 Rejected
-
-普通 rejected 推进 cursor 并写 event，不重试；重跑同输入大概率得到相同结果。默认情况下 rejected 不自动告警，依靠 `chat_memory_events` 和指标排查。明确例外是 `section=scene + reject_reason=capacity_exceeded`：normal 提交事务仍只持久化 rejection 事实，提交后由[异常诊断投影](diagnostic-projection.md)独立派生并维护 `scene_capacity_exceeded` 告警；该例外不改变 cursor、revision 或 target status 语义。
-
-### 5.4 手动 Resume
+Observer 可以一次发现多个 eligible target，但只能先排 intent。每个 task 进入串行位后，以最新 state 创建并固化：
 
 ```text
-CLI: npm run resume:memory-v2 -- --userId 1 --presetId default --targetKey todos
+sourceGeneration
+baseRevision
+cursorBefore / targetMessageId
+Renderer artifact publicInput
+private writable/read-only ref map
+messageMeta
+normalContextWindow
 ```
 
-- `retry_wait` target：清除 task 的 notBefore 并将原 task 重新置为 queued；target 继续保持 `retry_wait`，直到恢复 task 成功提交。
-- 容量/compaction/replay 失败导致的 `halted` target：重置为 `capacity_blocked`，创建新的 maintenance child task；不复用已终态旧 task。完整规则见 [Compaction 与 Proposal Replay](compaction-and-replay.md)。
-- `output_schema_invalid` 导致的 halted target：修复 model/prompt/schema/adapter 根因后创建新 normal task；target 保持 `halted` 到新 task 成功，旧 task 保留审计。
-- Provider 可重试错误达到重试/连续错误阈值导致的 halted target：排除 Provider/网络/输出预算故障后创建新 normal task；target 保持 `halted` 到新 task 成功，旧 task 保留审计。
+同一调度事实的重复 wake-up 命中同一 dedupe key。Normal key至少绑定 generation/target/cursorBefore/targetMessageId；maintenance 还绑定 parent/section/resumeEpoch；cleanup 绑定 deterministic boundary。
 
-Resume 不改 `memory_state`，不产生 revision/snapshot，不重置其他 targets。worker 从 durable task 或该 target cursor 继续，不跳过消息。
+## 2. 调度窗口
 
-## 6. Maintenance Resume Epoch
+- `lagThreshold=N` 决定调用频率；
+- `contextWindow=M` 决定 observed window；
+- newBatch 从 cursor 后取最早 `min(N,lag)` 条；
+- overlap 从 cursor 及之前补足到 M；
+- `targetMessageId=max(newBatch.id)`。
 
-当 maintenance task 已进入终态（`compaction_applied`/`compaction_failed`）且 parent normal task 仍处于 `capacity_blocked` 时，resume 不复用原 maintenance task：
+这些边界继续决定 cursor覆盖和任务调度，但不再限制 change source：direct source 可以来自本 task 显示的 overlap/newBatch任一消息；support source 可展开到 observed window之外。
 
-1. 创建新 maintenance child task；
-2. 新 `task_id`；
-3. `resume_epoch = 前一个 + 1`；
-4. `parent_task_id` 指向同一 normal task；
-5. 新 child task 的 `dedupe_key` 包含新 `resume_epoch`；
-6. parent normal task 的 `stage_payload.maintenanceTaskId` 更新为新 child task ID；
-7. 原 maintenance task 的终态保留用于审计。
+建议默认值继续保留：
 
-## 7. Phase Identity 与提交结果
+| target | lagThreshold/contextWindow |
+| --- | --- |
+| scene | 4 / 16 |
+| todos | 8 / 48 |
+| standingAgreements | 16 / 64 |
+| episodes | 32 / 96 |
+| profileRelationship | 32 / 128 |
+| worldFacts | 16 / 96 |
 
-每个 task phase 使用稳定的 event group identity。同一 phase/task/patchId 的重复 delivery、进程恢复或提交结果不确定时，先读取既有终态：已提交则返回原结果，未提交才继续；不得产生第二组 events、第二个 state revision、重复 snapshot 或重复 cursor 推进。
+Force drain忽略 lagThreshold 到 captured boundary。
 
-Normal commit 以 durable task 行锁作为 phase 幂等入口：事务必须先锁 task，再查询 normal-commit 与 capacity-blocked 的稳定 event group identity。若 capacity-blocked 审计 group 已存在，只能读取并返回既有 `maintenanceTaskId/blockingViolation/identities`，禁止先把 task 改回 `reducing` 或覆盖 `stage_payload`。发现 task 已处于 capacity stage 但缺少对应稳定 group/维护链时视为内部不变量损坏，不得猜测重建。
+## 3. Normal Stage
 
-运行失败 outcome：
+```text
+pending
+→ proposing
+→ semantic_result_persisted
+→ compiling
+→ compiled_proposal_persisted
+→ reducing
+├→ committed
+├→ capacity_blocked → replaying_compiled_proposal → committed | replay_failed
+└→ failed/cancelled
+```
 
-- `reducer_failed`：Reducer 执行过程中发生纯代码异常；不增加 revision/snapshot。
-- `transaction_failed`：数据库事务在 COMMIT 前明确失败且已确认回滚，如死锁、序列化异常或事务执行阶段连接断开；在回滚后按 task phase identity 重新校验状态。
-- `commit_outcome_unknown`：COMMIT 已发送但连接断开，无法确认提交结果。worker 必须先按 event group 的 phase identity 查询是否已持久化；若已提交则返回既有结果，未提交则在当前最新 revision 基础上重试。
+持久化边界：
 
-## 8. 原子提交与 Crash Recovery
+1. Provider成功且 Semantic Schema通过后，短事务保存 `semanticResult`；
+2. Compiler成功且 compiled schema通过后，短事务保存 `compiledProposal`；
+3. Reducer事务开始前两者都必须 durable；
+4. crash恢复看到 Semantic result时不重调LLM，重新执行确定性 Compiler；
+5. 看到 compiled proposal时不重调LLM/Compiler，直接 Reducer；
+6. successor/显式 context expansion是允许重新调用LLM的例外。
 
-1. Revision 事务：`memory_state` post-state、generation/revision、完整 snapshot、event group/events、cursor、task 终态和对应 target status 同事务提交。
-2. Generation 初始化事务：raw source mutation、generation/revision、空 state/cursors、完整 snapshot、旧 task 取消和六个 rebuilding target rows 同事务提交；不创建虚假 semantic event group。
-3. 无 revision 事务：Provider/schema 等运行失败只更新 durable task、per-target status 和 ops log；deferred group 还必须与原 task stage、派生 maintenance task 同事务提交。
-   Provider 返回并通过本地 schema 校验后，normal 与 maintenance task 必须先用独立短事务把完整输出写入 `stage_payload.persistedProposal` 并进入 `proposal_persisted`，随后才允许开始 Reducer/commit 事务。恢复扫描遇到 `proposal_persisted`（或已知 commit 事务失败但 proposal 仍在的恢复 stage）必须复用该输出，不得再次调用 Provider；创建 successor 或显式扩大上下文时除外。
-4. 语义恢复：从当前 generation 最新 schema-valid snapshot 开始，按 result_revision 连续 replay normalized operations；不得跨 generation。
-5. 运行恢复：从非终态 durable task、per-target status 与 ops log 恢复 retry/halt/context-expansion，不从 snapshot 推断运行状态。
+## 4. Cursor
 
-## 9. Harness
+| 终局 | Cursor |
+| --- | --- |
+| accepted/noop/普通 rejected | 推进 |
+| capacity deferred | 不推进 |
+| 首次 unable | 不推进，扩展一次 |
+| 二次 unable | cursor-only revision推进 |
+| Provider/schema/compile/runtime error | 不推进 |
+| unable_to_compact/replay_failed | 不推进 |
 
-验收用例见 [Harness 验收契约](../harness.md) §3.3、§3.5、§3.7、§3.10。
+联合 target 必须所有 sections共同形成可推进终局。Capacity-blocked 禁止 accepted+deferred 混合提交。
+
+取消 new-batch evidence gate不改变 cursor：只要 Proposer已经处理本轮 target boundary并产生合法终局，即可推进，即使 accepted change完全由 old direct/support source支持。
+
+## 5. Stale 与 Successor
+
+提交/compile前按 task行锁校验：
+
+- generation mismatch：cancel旧 task；
+- cursor mismatch：cancel旧 task；
+- normal首次执行 revision mismatch：cancel旧 task并创建 successor；
+- compaction/replay按阶段捕获的最新 revision和专用条件校验。
+
+Successor：
+
+1. 新 taskId/dedupe key；
+2. predecessor指向旧 task；
+3. 读取最新 state；
+4. 重新生成 Renderer artifact/ref map；
+5. 重新调用 Proposer和Compiler；
+6. 不复用旧 Semantic IR、compiled proposal或refs。
+
+## 6. Provider 与 Semantic Schema Error
+
+- `llm_call_failed/safety_policy_blocked/max_output_truncated`：按有限指数退避；达到 task/consecutive阈值后 halt对应 target；
+- Provider输出本地 Semantic Schema invalid：最多一次 durable schema repair；
+- repair feedback只保存有界 path/message，不保存非法输出原文；
+- 重试耗尽：`semantic_schema_invalid`，task failed/target halted；
+- 输入 artifact/schema invalid是内部错误，不重试LLM。
+
+Maintenance child重试时 target保持 capacity_blocked，不切成普通 retry_wait。
+
+## 7. Compiler Error
+
+`ref_resolution_failed/source_validation_failed/date_anchor_invalid/compile_invariant_failed` 是确定性错误：
+
+- 先重校 stale；若 state已变化走 stale/successor；
+- 否则 task failed、target halted、ops log记录有界 detail；
+- 不自动重复调用LLM/Compiler；
+- 不推进 cursor，不写 event/revision/snapshot；
+- 修复代码/schema/source根因后手动 resume创建新 normal task。
+
+## 8. unable_to_decide
+
+首次 unable：
+
+1. `context_expansion_attempt=1`；
+2. 只向前扩展 observed raw messages到原 contextWindow两倍，不超过 captured target boundary；
+3. Memory public text与 private ref map沿用首次 artifact；
+4. expanded public input持久化，retry/restart复用；
+5. 不修改 target长期错误计数。
+
+二次 unable：重新做 generation/cursor/revision校验；revision变化走 successor，否则提交 cursor-only revision/event group/snapshot/task/status，不伪造 noop event。
+
+## 9. Resume
+
+- retry_wait：清 notBefore并重新排原 task，target保持 degraded到成功；
+- capacity/replay halted：创建新 maintenance child，resumeEpoch+1；
+- normal Provider/schema/Compiler halted：根因修复后创建新 normal task，重新 render/propose/compile；
+- maintenance Provider/schema/Compiler halted：根因修复后创建新 maintenance task；有 blocked parent 时增加 resumeEpoch，不复用终态 child；
+- Resume不直接改 state/revision/cursor，不影响其他 targets。
+
+## 10. Phase Identity
+
+每个 task phase使用稳定 event-group identity。同 phase重复 delivery或 COMMIT结果不确定时先读取既有终态：
+
+- 已提交：返回原结果；
+- 未提交：基于当前 state重新校验后继续；
+- 不产生重复 event/revision/snapshot/cursor推进。
+
+Capacity-blocked audit、maintenance apply和 final replay是不同稳定 phase。
+
+## 11. 原子事务
+
+- revision事务：state、snapshot、group/events、cursor、task终态、target status；
+- generation事务：raw mutation、new generation空 state、snapshot、旧 task取消、六 target rebuilding；
+- no-revision事务：Provider/schema/compile error只更新 task/status/ops；
+- deferred事务：audit group、parent stage、child task、target capacity_blocked；
+- Semantic/compiled产物各自先短事务持久化，再跨越下一不可重复边界。
+
+## 12. Harness
+
+覆盖 artifact/ref稳定、stage恢复、不重复LLM/Compiler、cursor聚合、successor生成新refs、schema repair、compile halt、unable expansion、capacity replay、phase identity和commit outcome unknown。

@@ -1,4 +1,4 @@
-# Memory v2 运行时维护与长历史扩展（延后）
+# Memory Control 2.01 运行时维护与长历史扩展（延后）
 
 ## 定位
 
@@ -17,7 +17,7 @@
 
 默认最短 retention 是 30 天，fresh cutover 首日没有 eligible v2 rows；用户 privacy hard delete 是独立即时路径。暂缓必须同时满足：
 
-1. rehearsal/生产库没有已超过 retention window 的 v2 rows；
+1. rehearsal/生产库没有已超过 retention window 的 2.01 rows；
 2. 数据库容量足以覆盖至少一个确定交付周期，且有表增长告警；
 3. 在第一批数据到期前同时交付 scheduler 和投影集合修复；
 4. 对外没有已经生效的更短数据保留承诺。
@@ -35,7 +35,7 @@
 
 ### 当前行为
 
-- `contextAssembly.js:122-126` 每次请求调用 `source.listUpTo` 并读取全部 tombstones；
+- 当前热路径每次请求读取并哈希该 preset 的大范围 raw history；2.01 不再读取 correction/forget tombstone；
 - `sourceRepository.js:39-46` 的 SQL 没有 LIMIT/下界，且对每条 content 做 SHA-256；
 - recent window、GapBridge、诊断恢复和 time candidates 随后多次遍历同一全量数组；实际 time context 只需要末两条候选。
 
@@ -44,7 +44,7 @@
 ### 验收
 
 - SQL 分别按 recent 字符窗、各 target gap 范围、scene anchor 和末两条 time candidates 做有界查询；
-- tombstones 按相关 message ids/range 查询；
+- 若未来启用完整 suppression 设计，其过滤记录按相关 message ids/range 查询，不能恢复全量热路径；
 - 10 万消息 scope benchmark 中，DB 返回行数与进程驻留对象有显式上界，已完全被 cursor 覆盖的旧历史不再线性增加单请求延迟/RSS。
 
 ### 升级条件

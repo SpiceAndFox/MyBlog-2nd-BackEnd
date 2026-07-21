@@ -7,13 +7,13 @@
 **两条独立调用链**，需要分别考虑：
 
 1. **主聊天 context**：system prompt + RAG + Memory render text + GapBridge + recent window。这是当前问题主要关注的链，因为各 component 并列注入同一请求。
-2. **Proposer context**：system prompt + writableState + readOnlyContext + observedMessages。Memory 业务层当前明确不设 Proposer envelope 总字符上限，只通过 Observer 缩小 batch 来处理；Provider 物理上限由 Adapter 处理。
+2. **Proposer context**：system prompt + ProposerTaskRenderer 的 `publicInput`（任务说明、当前 target 的稳定短引用、固定 read-only 参考区和 observed messages）。`refMap/messageMeta` 是 Compiler 私有 artifact，不发送给 Provider，也不计入模型输入。
 
 两条链的预算算法应独立设计：主聊天的优先保证可用性（降级），Proposer 的优先保证正确性（缩小窗口而非砍内容）。
 
 ## 当前临时方案
 
-当前部署使用 1M context window 的模型，主聊天 context 突破物理上限的概率极低，暂不实现统一裁剪。详见 [../memory-control-v2-overview.md](../memory-control-v2-overview.md) §3 部署假设。
+当前部署使用 1M context window 的模型，主聊天 context 突破物理上限的概率极低，暂不实现统一裁剪。当前边界与部署前提见 [Context Coverage](../../memory-control-v2/algorithms/context-coverage.md) §5。
 
 ## 延后原因
 
@@ -22,7 +22,7 @@
 - 总预算如何基于 provider/model 最大输入动态计算？
 - 降级优先级如何确定（哪些部分先砍、哪些保留到最后）？
 - 仍无法容纳单条消息时返回什么明确错误？
-- 降级是否影响 Memory 正确性（如砍掉 Memory readOnlyContext 是否影响 Proposer 判断）？
+- Proposer 固定可见的 writable/read-only 短引用本身超限时，是 halt、拆分 target，还是引入新的确定性分页协议？
 
 当前引入会增加 context compiler 的复杂度，且 1M context 模型下收益极低。
 
@@ -36,9 +36,11 @@
 - 仍无法容纳单条消息时返回明确错误，不静默截断。
 
 **Proposer context 预算**（保证正确性）：
-- 不砍 writableState 或 readOnlyContext（砍掉会直接影响 Proposer 判断正确性）；
-- 通过 Observer 缩小 batch 而非在 envelope 内做字符级裁剪；
-- 单条消息仍无法处理时进入 degraded 并显式提醒。
+
+- 不在一次 task 内静默删减已经分配的 writable/read-only refs，否则 ref namespace 与语义判断基线会变化；
+- 优先通过 Observer 缩小 observed batch，并在 task 创建时一次性固化 artifact；
+- task retry/repair/recovery 复用同一 publicInput 与 refMap，不因预算重新编号；
+- 固定引用区或单条消息仍无法容纳时进入 halted/degraded 并显式提醒，等待独立分页/拆分协议。
 
 ## 重新评估条件
 

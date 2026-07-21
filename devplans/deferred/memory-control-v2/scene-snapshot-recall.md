@@ -1,143 +1,114 @@
-# Scene Snapshot 与 Recall 功能设计
+# Scene Snapshot 与 Recall 功能设计（延后）
 
 ## 文档定位
 
-本文定义情感类 AI Chat 的场景快照（Scene Snapshot）与回忆召回（Recall）功能。该功能建立在 [Memory Control v2](memory-control-v2/state-contract.md) 之上，利用 memory item 的 `evidenceGroups.refs.messageId` 作为 join key，将结构化 memory 与原始消息拼合为可回溯的"回忆"上下文。
+本文定义情感类 AI Chat 的场景快照（Scene Snapshot）与回忆召回（Recall）候选方案。它建立在 [Memory Control 2.01](../../memory-control-v2/state-contract.md) 之上，使用持久化 item 的扁平 `sourceRefs[].messageId` 作为 raw-message join key。
 
-本文只定义 Scene Snapshot / Recall 的数据表、写入副作用与召回流程。Memory v2 的核心契约以 [state-contract.md](memory-control-v2/state-contract.md) 为准。
+本文不是 2.01 首版要求。当前 RAG/Recall 边界以 [Context Coverage](../../memory-control-v2/algorithms/context-coverage.md) 为准；本方案重新进入 active devplan 时，必须再次评估是否仍需要独立 Snapshot store。
 
-## 1. 目标与动机
+## 1. 目标与约束
 
-### 1.1 问题
+长期 Memory item 只有高密度语义文本和 raw `sourceRefs`，不保存 quote、evidence group 或 Memory-to-Memory 图。若产品需要“想起当时发生了什么”，可由 source messageId 定位原始消息，并用 Scene Snapshot 补充当时的场景状态。
 
-Memory v2 的长期 item（`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`）携带 `evidenceGroups`，其中每个 ref 的 `quote` 是短片段。对长期 item 而言，quote 脱离场景后上下文价值很薄——"我愿意相信你"这五个字不比 text "关系转折: 第一次明确互相信任" 多传递什么信息。
+候选方案必须满足：
 
-但 `evidenceGroups.refs.messageId` 是精确指针，指向产生这条记忆的原始消息。一个 `evidenceGroup` 是一个 recall 单元；group 内多个 ref 共同构成一次可回溯证据。
-
-### 1.2 目标
-
-建立场景快照表，记录每次场景变化时的完整 `scene` 状态及其对应的 messageId 区间。提供 recall 功能：给定一个 evidenceGroup 或 messageId，能还原当时的场景状态和原始消息窗口，拼合成一段"回忆"注入主聊天上下文。
-
-### 1.3 价值
-
-- **长期 item 的 quote 不再需要承载上下文**——回溯能力由 evidenceGroup + scene_snapshots 承担，quote 只保留短锚点
-- **主聊天模型可以"想起"具体往事**——不只是看到高密度 text，而是看到当时的场景和原话
-- **与 RAG 互补**——RAG 做语义召回，recall 做精确回溯；memory item 是结构化索引，scene_snapshots 是场景容器，raw messages 是细节填充
+- `memory_state` 仍是当前 Memory authority，Snapshot 只是可重建 projection；
+- Recall 只读取当前 `sourceGeneration` 下的 snapshot 与 raw source；
+- 一个 `sourceRef` 是一个精确 anchor，不重新引入 evidence group；
+- correction/forget 不创建 tombstone，也不从 raw history 或 RAG/Recall 中抹除内容；
+- privacy hard delete 与 raw source 编辑/删除继续使相应派生数据失效。
 
 ## 2. 数据模型
-
-### 2.1 chat_scene_snapshots 表
 
 ```sql
 CREATE TABLE chat_scene_snapshots (
   id                BIGSERIAL PRIMARY KEY,
   user_id           BIGINT NOT NULL,
   preset_id         TEXT NOT NULL,
-  source_generation BIGINT NOT NULL,    -- 只属于生成它的 raw-source generation
-  start_message_id  BIGINT NOT NULL,    -- 该场景开始的 messageId（scene_change 证据的 messageId）
-  end_message_id    BIGINT,             -- 该场景结束的 messageId（null = 当前活跃场景）
-  scene             JSONB NOT NULL,     -- { location, time, mood, note }，字段结构同 memory_state.current.scene
+  source_generation BIGINT NOT NULL,
+  start_message_id  BIGINT NOT NULL,
+  end_message_id    BIGINT,
+  scene             JSONB NOT NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_scene_snapshots_lookup
   ON chat_scene_snapshots(user_id, preset_id, source_generation, start_message_id DESC);
 
-CREATE INDEX idx_scene_snapshots_active
+CREATE UNIQUE INDEX idx_scene_snapshots_active
   ON chat_scene_snapshots(user_id, preset_id, source_generation)
   WHERE end_message_id IS NULL;
 ```
 
-### 2.2 字段语义
+字段语义：
 
 | 字段 | 说明 |
 | --- | --- |
-| `source_generation` | 生成该派生 snapshot 时的 `memory_state.meta.sourceGeneration`；Recall 只读取当前 generation |
-| `start_message_id` | 触发场景变化的那条消息的 id（scene_change patch 的 evidenceRefs[0].messageId） |
-| `end_message_id` | 下一次场景变化的前一条消息 id，或 scene TTL 到期前最后一条有效消息 id。null 表示尚未被下一场景/到期 cleanup 关闭 |
-| `scene` | 场景变化**后**的完整 scene 状态（patch apply 后的快照），结构与 `memory_state.current.scene` 同构 |
+| `source_generation` | 生成 snapshot 时的权威 raw-source generation；Recall 只读取当前 generation |
+| `start_message_id` | 触发本次已接受 scene 状态变化的最早 raw source messageId |
+| `end_message_id` | 下一次 scene 状态变化前的最后一条消息；`null` 表示仍活跃 |
+| `scene` | 本次 event group 提交后的完整非空 scene，shape 与 `memory_state.current.scene` 相同 |
 
-scene 字段与 session 无关：`current.scene` 是 user/preset 级状态，与 session 完全解耦（见 [memory-control-v2-overview.md](memory-control-v2-overview.md) §5）。snapshot 的 `start_message_id` / `end_message_id` 是消息 id 区间，不受 session 边界影响。
+Snapshot 按 `(user_id, preset_id)` 隔离，不按 session 隔离。
 
-### 2.3 生命周期
+## 3. Snapshot Projection
 
-一个场景从 `scene_change` 触发开始，到下一次 `scene_change` 或确定性 scene TTL 到期结束：
+### 3.1 输入
 
-```
-msg 1-79:  无场景快照（首次场景变化前，scene 全 null）
-msg 80:    scene_change → snapshot A: start=80, end=null
-msg 121:   scene_change → snapshot A: end=120, snapshot B: start=121, end=null
-msg 200:   scene_change → snapshot B: end=199, snapshot C: start=200, end=null
-...        当前活跃: snapshot C
-```
+Snapshot writer 只消费已提交 event group：
 
-`end_message_id` 的计算：Snapshot writer 在创建新 snapshot 时，只在当前 `source_generation` 内将上一条活跃 snapshot 的 `end_message_id` 设为 `新snapshot.start_message_id - 1`。
+- event group 含 accepted `scene.setField` 或 `scene.clearField` 时，视为一次 scene 状态变化；
+- 2.01 不区分普通 update 与 correction，不读取 `evidenceKind`；
+- `system_cleanup: scene_expired` 关闭当前 snapshot，不创建空 snapshot；
+- `expired_scene_evicted` 不额外创建或关闭 snapshot。
 
-若先发生 `system_cleanup: scene_expired`，writer 按 cleanup 的 `expiredAt` 关闭活跃 snapshot：取该 user/preset 下 `createdAt <= expiredAt` 的最大有效 messageId 作为 `end_message_id`；若区间内只有 start message，至少取 `start_message_id`。TTL 到期只关闭旧 snapshot，不创建一个“空场景 snapshot”。后续 scene_change 再创建新的活跃 snapshot。
+### 3.2 写入规则
 
-## 3. Snapshot 写入时机
+对一个含 scene 变化的已提交 event group：
 
-### 3.1 触发条件
+1. 从 accepted scene events 的 `normalized_operation.sourceRefs` 取最小 messageId 作为 transition anchor；
+2. 关闭当前 generation 的旧 active snapshot，令 `end_message_id = max(old.start_message_id, anchor - 1)`；
+3. 读取该 event group 提交后的完整 scene；
+4. scene 至少一个字段非空时，创建 `start_message_id=anchor` 的新 active snapshot；scene 全空时不创建空 snapshot；
+5. 同一 event group 的多个 scene field patch 只生成一个最终 snapshot。
 
-memory apply 成功提交后，以下任一条件触发 snapshot writer：
+Projection 使用独立 checkpoint 与事务。失败不回滚已提交 Memory revision，但 Recall 必须保持 degraded/rebuilding，并从旧 checkpoint 重试。重复消费同一 event group 必须幂等。
 
-1. 至少一个 `scene.setField` 或 `scene.clearField` patch 被 `accepted`，且 `evidenceKind = "scene_change"`：关闭旧 snapshot 并创建新 snapshot。
-2. 提交了 `system_cleanup: scene_expired`：只关闭当前活跃 snapshot。`expired_scene_evicted` 只是替换 `memory_state.current.previousScene` 的审计，不创建/关闭额外 snapshot。
+### 3.3 TTL
 
-`user_correction` / `assistant_correction` 只更新 `memory_state.current.scene`。
-
-### 3.2 写入流程
-
-Snapshot writer 在 memory 事务提交后执行，关闭旧 snapshot 与创建新 snapshot 使用独立事务：
-
-1. **关闭旧 snapshot**：查找 `(user_id, preset_id, source_generation)` 下 `end_message_id IS NULL` 的 snapshot，将其 `end_message_id` 设为 `本次 scene_change 的 messageId - 1`。
-2. **创建新 snapshot**：插入新行，`source_generation` = 当前权威 generation，`start_message_id` = 本次 scene_change 的 messageId，`scene` = apply 后的完整 scene 状态，`end_message_id = null`。
-
-### 3.3 多个 scene_change patch 在同一 tick
-
-一个 tick 可能有多个 scene_change patch（如 `setField location` + `setField mood`，来自不同 messageId 的证据）。处理规则：
-
-- 取所有 scene_change patch 中最早的 `evidenceRefs[0].messageId` 作为新 snapshot 的 `start_message_id`。
-- `scene` 取 apply 后的最终状态（所有 patch 已应用）。
-
-### 3.4 首次场景变化
-
-对话开始时 scene 全 null，没有 snapshot。第一次 scene_change 创建第一条 snapshot。此前的消息（msg 1 到 start_message_id-1）没有场景快照——recall 这些消息时 `scene` 字段返回 null，只返回 raw messages。
-
-### 3.5 失败处理
-
-Snapshot 写入失败**不回滚已提交的 memory revision**，但必须把 Recall projection checkpoint 保持在失败边界之前并进入 degraded/rebuilding；写入失败时记录诊断并由 projection worker 重试。未追平前不得把 Recall projection 标记为当前状态。
+`system_cleanup: scene_expired` 按 event 中的 `expiredAt` 关闭 active snapshot。可使用 `createdAt <= expiredAt` 的最大有效 messageId 作为结束点；若不存在更晚消息，至少取 `start_message_id`。
 
 ## 4. Recall 工作流
 
-### 4.1 整体流程
-
+```text
+用户消息
+  → 触发检测
+  → 定位 Memory item 或 RAG hit
+  → 展开 raw source anchors
+  → 查询 Scene Snapshot 与 raw message windows
+  → 合并并裁剪
+  → 注入 recall segment
 ```
-用户消息 → [触发检测] → [定位 memory item] → [查 scene snapshot] → [拉 raw messages] → [拼合 recall 上下文] → [注入 context]
-```
 
-### 4.2 触发检测（实现可选）
+### 4.1 触发与定位
 
-何时触发 recall 是主聊天链路的决策，不在本文强制规定。可选方案：
+触发策略可选：主聊天 function call、轻量回忆意图分类或 RAG 命中。结构化定位命中 active Memory item 时，系统读取它的 `sourceRefs`；RAG 命中 raw chunk 时直接使用 chunk messageIds。
 
-- **方案 A：主聊天模型 function calling**。主聊天模型识别用户在回忆往事时，调用 `recall_memory` function，参数为关键词或大致时间描述。系统根据参数匹配 memory item。
-- **方案 B：轻量分类器**。在主聊天前加一个轻量分类，检测消息是否包含回忆意图（"还记得"、"上次"、"那天"等），触发后由系统自动匹配。
-- **方案 C：RAG 语义匹配**。用用户消息对 memory items（`milestones`、`recentEpisodes`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship`）做语义搜索，命中阈值时触发 recall。
+2.01 没有 evidence group。不得把同一 item 的全部 sourceRefs 简单扩成从最小到最大 messageId 的单一窗口，因为多次 update 后的 anchors 可能相距很远。
 
-首版建议方案 A（如果主聊天模型支持 function calling）或方案 C（如果已有 RAG 基础设施）。方案 B 增加链路复杂度，不推荐首版。
+### 4.2 Anchor 分窗
 
-### 4.3 定位 memory item
+对去重并校验过的 anchors：
 
-给定触发信号后，需要定位到具体的 memory item，并进一步得到一个或多个 `evidenceGroups`。定位方式取决于触发方案：
+1. 每个 messageId 建立独立的前后 `N` 条 raw message 候选窗口；
+2. 合并重叠或相邻的窗口，得到稳定 recall blocks；
+3. 每个 block 按其 anchors 查询对应 snapshot，并按时间排序；
+4. 总 blocks 超过 `K` 或总字符超预算时，按触发相关度与时间排序裁剪，但每个保留 block 必须完整覆盖其 anchor；
+5. 不截断单条 raw message，不把未校验的 `contentHash` 不匹配行当作 anchor。
 
-- 方案 A：function 参数直接匹配 memory item 的 text
-- 方案 C：语义搜索结果即为 memory item
+这套规则保留 2.01 的扁平 provenance，不在 Recall 层恢复 evidence group。
 
-定位结果是少量候选 `evidenceGroups`。每个 group 有 1-N 个 refs，每个持久化 ref 有 `messageId`、`contentHash` 和 `quote`。如果命中的是 item 而不是 group，系统展开该 item 的 `evidenceGroups`，先按 context-suppression tombstone 过滤 refs，再按触发信号与 `quote`/raw message 的匹配度选择候选；一个 group 的 refs 全被过滤时跳过，无法细分时取最近的 K 个剩余 group。
-
-### 4.4 查 scene snapshot
-
-对每个候选 `evidenceGroup.refs[i].messageId`，查 `chat_scene_snapshots`：
+### 4.3 Snapshot 查询
 
 ```sql
 SELECT * FROM chat_scene_snapshots
@@ -149,148 +120,71 @@ ORDER BY start_message_id DESC
 LIMIT 1;
 ```
 
-结果是该 messageId 所属场景的 snapshot（可能为空——消息在首次 scene_change 之前）。同一 group 内多个 ref 命中同一 snapshot 时去重；跨 snapshot 时按 messageId 顺序保留多个场景块。
+消息早于第一条 snapshot 时，scene 返回空，仅渲染 raw messages。
 
-### 4.5 拉 raw messages
+### 4.4 Raw 查询与渲染
 
-以 `evidenceGroup` 为单位，取 `min(refs.messageId)` 和 `max(refs.messageId)`，拉覆盖整个 group 的原始消息窗口：
+每个 recall block 的 raw 查询必须显式携带 `(user_id, preset_id, sourceGeneration, lowerBound, upperBound)`，只读取当前有效 User/Assistant source。渲染形态固定为：
 
-```sql
-SELECT * FROM chat_messages
-WHERE user_id = ? AND preset_id = ?
-  AND id BETWEEN ? - ? AND ? + ?
-ORDER BY id ASC;
-```
-
-参数依次为 `minMessageId`、`N`、`maxMessageId`、`N`。`N` 建议默认 10。group 内所有未 suppressed ref 必须落在窗口内；拉取后按当前 raw content 的 `messageId + contentHash` 再过滤 tombstone，匹配消息不得进入 recall 文本。超出预算时优先保留覆盖全部剩余 refs 的最短窗口，再向两端裁剪。
-
-### 4.6 拼合 recall 上下文
-
-将 scene snapshot + raw messages 拼合为可读文本：
-
-```
-[回忆: 屋顶之夜]
+```text
+[回忆]
 场景: 屋顶 | 深夜 | 雨后安静
 ---
-用户: 你为什么不说话，是不是又觉得我很烦？
-assistant: 我没有觉得你烦，只是在想怎么开口。
-用户: 我刚才其实很怕你会走，所以才一直不敢抬头。
-assistant: 我没有走，我只是想等你愿意看我的时候再靠近。
-用户: 那你以后能不能别沉默那么久，我会乱想。
-assistant: 好，以后我会先开口，不让你一个人等。
+用户: ……
+assistant: ……
 ```
 
-渲染规则：
+- snapshot 不存在时省略场景行；
+- 多个 block 按时间顺序分块；
+- 相同 raw message 只渲染一次；
+- recall segment 使用独立逻辑预算，但仍受主模型物理 context 上限约束；
+- 查询上界继承 [Context Coverage](../../memory-control-v2/algorithms/context-coverage.md) 的 RAG/Recall cutoff，不能读取 recent window 之后的隐藏未来消息。
 
-- 场景行：从 snapshot 的 `scene` 字段渲染，格式与 [rendering-and-context.md](memory-control-v2/rendering-and-context.md) §5 的 `[当前状态]` 模板一致。
-- 分隔线后：raw messages 按 id ASC 排列，`用户:` / `assistant:` 前缀。
-- 如果没有 snapshot（消息在首次 scene_change 之前），省略场景行，只渲染 raw messages。
-- 如果一个 evidenceGroup 跨多个 snapshot，按时间顺序渲染多个场景块。
-- 如果命中多个 evidenceGroups，按 group 分块渲染，最多渲染 K 个 group。
+## 5. 与 2.01 的边界
 
-### 4.7 注入 context
+### 5.1 不修改核心写链
 
-Recall 上下文作为独立 context segment 注入，与 `memory` segment 并列：
+Semantic Proposer、Compiler、Validator/Reducer 的职责不变。Snapshot 是提交后的 projection，不参与 semantic schema、source validation、policy、capacity、cursor 或 revision 决策。
 
-| Segment | 注入时机 | 内容 |
-| --- | --- | --- |
-| `memory` | 始终（超过轮数阈值后） | 当前 memory_state 的实时 render |
-| `recall` | 触发时（见 §4.2） | 场景快照 + raw messages 拼合的回忆文本 |
-| RAG | 按现有逻辑 | 语义召回的相关片段 |
+### 5.2 Forget 与 Correction
 
-`recall` segment 的 token 预算需要与 `memory` segment 和 RAG 协调。建议 `recall` 单独预算（如 2000 token），不挤占 `memory` 的预算。如果 recall 内容超过预算，优先保留覆盖 group refs 的最短窗口，再从两端裁剪。
+- active item 被 forget 后，结构化 Memory item 不再作为 Recall 入口；
+- item update/correct 后，active item 的 `sourceRefs` 是旧/新 raw sources 的并集；
+- 这些动作不删除 raw history，也不阻止 RAG 从原始消息召回；
+- 若未来产品要求“忘记后也不能从 Recall/RAG 复现”，必须采用 [Correction / Forget Suppression](correction-forget-suppression.md) 的完整延后设计，不能在本 projection 内偷偷增加局部 tombstone。
 
-## 5. 与 Memory v2 的衔接
+### 5.3 Source Mutation 与 Privacy
 
-### 5.1 不修改 memory_state
+消息编辑、删除、restore、归属/可见性或排序变化会增加 `sourceGeneration`。旧 generation snapshot/checkpoint 立即失效，projection 按当前有效 raw messages 重建。
 
-Scene snapshots 不进入 `memory_state`。`memory_state` 保持当前状态 + 工作区 + 长期 item 的精简结构。Snapshots 是独立的衍生数据，由 post-commit snapshot writer 写入 `chat_scene_snapshots` 表。
+Privacy hard delete 必须物理删除相应 snapshots、Recall cache/index 和 debug 副本，并从剩余 source 重建；这与普通 forget 不同。
 
-scene 与 session 解耦：`current.scene` 是 user/preset 级状态，session 不是 scene 的语义边界（见 [memory-control-v2-overview.md](memory-control-v2-overview.md) §5）。snapshot 按 `(user_id, preset_id)` 隔离，不按 session 隔离。
+### 5.4 Retention
 
-### 5.2 不修改 Reducer 的核心职责
+Snapshot 不进入 `memory_state`，也不参与 compaction。未来若清理旧 snapshot，必须保留当前 generation 的可重建 checkpoint 语义，并确保 Recall 不返回已删除 raw source 的孤立快照。
 
-Reducer 的核心校验链（schema → messageId → quote → policy → 冲突 → lifecycle → 预算 → apply → 事件）不变。Snapshot 写入是 memory 事务提交后的副作用，不影响校验决策。`scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`recent_episode_evicted` 仍以 Memory v2 的 system cleanup event/revision/snapshot 为权威；本 Recall 派生表不得改变这些状态。
+## 6. 首版候选范围与验收
 
-### 5.3 evidenceGroups.refs.messageId 的角色变化
+若本方案重新进入 active devplan，最小范围是：
 
-| | 无 recall | 有 recall |
-| --- | --- | --- |
-| `quote` | 审计短锚点 | 审计短锚点 |
-| `messageId` | Reducer 校验 + 审计 | Reducer 校验 + 审计 + **recall join key** |
-| `evidenceGroup` | 证据集合 | **recall 单元** |
+- snapshot 表、projection checkpoint 与幂等 writer；
+- accepted scene event/TTL cleanup 的投影；
+- 以 `sourceRefs[].messageId` 或 RAG hit 为 anchor 的 Recall API；
+- 固定分窗、合并、cutoff 与字符预算算法；
+- generation rebuild、projection lag、privacy purge 测试。
 
-recall 功能让 messageId 从"校验用数字"升级为"回溯用指针"，让 evidenceGroup 成为可还原上下文的最小单位。
+最低验收：
 
-### 5.4 与 RAG 边界的关系
+- 同一 event group 多个 scene patch 只生成一个最终 snapshot；
+- set/clear/correct 均不依赖 `evidenceKind`；
+- 相距很远的 sourceRefs 不生成巨大连续窗口；
+- source hash/generation 不一致时不返回陈旧 Recall；
+- forget 不创建 tombstone，privacy hard delete 会物理清除；
+- Snapshot projection 失败不回滚 Memory commit，但查询明确 degraded/rebuilding。
 
-[rendering-and-context.md](memory-control-v2/rendering-and-context.md) §3 已定义 RAG 边界："RAG 负责召回具体旧场景、原话和细节"。Recall 功能正好落在这个边界上，是 RAG 的结构化增强：
+## 7. 重新评估条件
 
-- **纯 RAG**：语义搜索 raw messages，高召回但可能不精确
-- **Recall**：通过 memory item 的 evidenceGroup 精确定位，高精度但需要 memory item 作为索引
-
-两者互补：RAG 适合"模糊想起"，recall 适合"精确回溯"。首版可以先做 recall，RAG 集成是后续独立工作。
-
-## 6. 边界与约束
-
-### 6.1 不做场景预测
-
-Snapshots 只记录已发生的场景变化，不预测未来场景。`end_message_id IS NULL` 表示尚未被下一次 scene_change 或 scene TTL cleanup 关闭；它本身不能越过 Memory v2 的 effective-view 过期判断而把已到期 scene 声称为当前场景。
-
-`memory_state.current.previousScene` 只是 Renderer 使用的单值“已过期场景/上次已知场景”，由 scene TTL 到期时确定性覆盖；新 scene 到期会替换旧值并写 `expired_scene_evicted`。它不是正式 section，也不是 Recall 历史存储。完整的多场景时间线仍以 `chat_scene_snapshots` 为准，不能用 previousScene 替代 snapshots。
-
-### 6.2 不做 participants snapshot
-
-首版不做 `chat_participant_snapshots`。
-
-### 6.3 跨会话 recall 与隔离边界
-
-Snapshots 按 `(user_id, preset_id)` 隔离，不按 session 隔离。session 只是按天或 UI 划分的存储单元，不是 Memory 或 scene 的语义边界（见 [memory-control-v2-overview.md](memory-control-v2-overview.md) §5）。同一 `(user_id, preset_id)` 下跨 session 的 recall 正常支持。不同 preset 的场景互不可见，这与 memory_state 的隔离边界一致。
-
-### 6.4 消息编辑/删除的失效处理
-
-消息编辑、删除、restore、归属/可见性或排序语义变化会增加权威 `sourceGeneration`。旧 generation 的 snapshot 和 checkpoint 立即失效，不得继续 Recall；projection worker 按当前有效 raw messages 重建，并在 generation 与 captured boundary 仍一致时原子推进自己的 `processedGeneration/processedBoundaryMessageId`。因此不会把证据已被编辑或删除的旧 snapshot 继续当成有效场景。
-
-Correction/forget 的 context-suppression tombstone 跨 generation 保留，并按持久化 ref 的 `messageId + contentHash` 过滤 Recall。它不要求删除整条 scene snapshot，但被 suppress 的 ref 不能定位 snapshot，相应 raw message 也不能出现在 recall window；privacy hard delete 则物理清除受影响 snapshot/Recall 派生数据并从剩余 source 重建。
-
-### 6.5 Snapshot 不参与 compaction
-
-Snapshots 是只追加的日志型数据，不压缩、不合并。一个长会话可能积累几十到几百条 snapshot（取决于场景变化频率），每条数据量小。
-
-如果未来需要清理旧 snapshot，可以按 `created_at` 保留最近 N 天，或按 `start_message_id` 保留最近 M 条。首版不做自动清理。
-
-## 7. 首版范围
-
-### 7.1 首版做
-
-- `chat_scene_snapshots` 表与索引
-- Snapshot writer 在 scene_change apply 提交后写 snapshot（关闭旧 + 创建新）
-- Recall API：给定 evidenceGroup 或 messageId，返回 scene snapshot + raw messages
-- Recall context segment：拼合文本，按需注入主聊天上下文
-- 触发检测：至少实现方案 A（function calling）或方案 C（RAG 语义匹配）之一
-
-### 7.2 首版不做
-
-- `chat_participant_snapshots`
-- Snapshot 自动清理
-- message_id 按 (user_id, preset_id) 分序列号（全局 PK 够用，recall 的范围查询走 `WHERE user_id=? AND preset_id=? AND id BETWEEN ?` 已足够高效）
-- recentEpisodes 滚出滑动窗口时归档到 snapshots（recentEpisodes 有自己的 evidenceGroups，recall 可直接用）
-
-### 7.3 验收标准
-
-- memory apply 提交 scene_change patch 后，snapshot writer 写入对应新行，旧活跃 snapshot 的 `end_message_id` 已关闭
-- 给定一个 memory item 的 evidenceGroups，recall API 能按 group 返回对应场景 snapshot 和 raw messages
-- Recall context segment 的文本格式稳定，相同输入产生相同输出
-- Snapshot 写入失败不阻塞 memory 写入，不影响 cursor 推进
-- 消息在首次 scene_change 之前时，recall 返回空 snapshot + raw messages（不报错）
-
-## 8. 未来扩展
-
-| 扩展 | 触发条件 | 说明 |
-| --- | --- | --- |
-| recentEpisodes 归档 | recentEpisodes 滚出后仍有 recall 需求 | 滚出时将 episode 的 evidenceGroups 写入独立归档表，recall 可查更早的 episode |
-| 跨 preset recall | 用户切换角色后想回忆前一个角色的互动 | 需要跨 preset 的 memory item 索引，边界复杂，暂不规划 |
-| conversation_seq | cursor/lag/scene 区间需要连续无间隙的会话内序列号 | 全局 message_id + per-conversation seq 折中方案，优化范围查询和调试体验 |
-| Snapshot 自动清理 | 存储增长过快 | 按 created_at 或 start_message_id 保留最近 N 条，旧数据归档到冷存储 |
-
----
+- 用户明确需要通过结构化 Memory 精确回溯旧场景；
+- 纯 RAG 无法稳定提供场景边界或精确 source anchor；
+- snapshot 存储、重建和 context 预算已有可测量收益；
+- Correction / Forget 是否应影响 Recall 已形成独立产品决策。

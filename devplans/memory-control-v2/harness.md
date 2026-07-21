@@ -1,432 +1,275 @@
-# Memory Control v2 Harness 验收契约
+# Memory Control 2.01 Harness 验收契约
 
-本文定义 Memory Control v2 的最小可验收测试边界。Harness 的目标不是证明 LLM 永远正确，而是证明 LLM 即使输出不稳定、局部错误或被 provider 拦截，最终 memory state 仍然可控、可审计、可恢复。
+Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer artifact、Compiler、Reducer、durability、Renderer/context 和 rebuild/privacy。任何测试不得通过把 Compiler 语义塞回 Reducer或放宽 source validation 来“修复”fixture。
 
-顶层设计见 [memory-control-v2-overview.md](memory-control-v2-overview.md)。状态契约见 [state-contract.md](state-contract.md)，写入协议见 [write-protocol.md](write-protocol.md)，渲染接入见 [rendering-and-context.md](rendering-and-context.md)。
+## 1. 原则
 
-## 1. Harness 原则
-
-- **Reducer 优先**：大多数 golden case 应直接测试 Reducer，不依赖真实 LLM。
-- **Fixture 可读**：每个 case 明确给出 initial state、input envelope、proposer output、expected events、expected state 和 expected cursor。
-- **拒绝路径一等公民**：`rejected` / `error` 的测试数量不能少于 happy path。
-- **维护路径可回放**：`deferred` / compaction / 最终预算拒绝必须能从 fixture 中复现。
-- **渲染回归基线**：Renderer 是纯代码模板，同一 `memory_state` 在同一版 Renderer 下产生确定性输出。golden snapshot 锁定完整 rendered text，Renderer 代码变更时 golden test 失败以提示回归。
-- **真实 LLM 只做 smoke**：少量端到端 smoke 用真实 provider；可靠性判断主要靠结构化 fixture。
+- Semantic Proposer、Compiler、Reducer 分层测试；
+- Provider mock 返回 Semantic IR，不返回 persistent Patch；
+- Compiler fixture 使用确定性 artifact/ref map/state/source rows；
+- Reducer fixture只接收 compiled proposal；
+- Pipeline fixture覆盖真实 durable stage；
+- Renderer 使用 golden；
+- 所有时间、ID、hash、revision和 source rows固定；
+- 故障注入逐事务写入点验证 rollback；
+- fixture不保存真实用户敏感数据。
 
 ## 2. Fixture 形态
 
-规范 Reducer/Pipeline fixture 使用一个 JSON 文件表达，支持单 tick 和多 tick 场景。单 tick 即 `ticks` 数组只有一个元素。`fixtureKind=reducer|pipeline` 的文件必须通过统一 catalog 校验和断言 matcher；Context/Recovery 可使用具名的 suite-support fixture，但必须声明 `fixtureKind` 并由对应测试显式消费，catalog 不得静默遗漏文件。
+### 2.1 Renderer Artifact
 
 ```json
 {
-  "name": "todo-add-with-valid-evidence",
-  "initialState": {
-    "version": 2,
-    "current": {
-      "scene": {
-        "location": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
-        "time": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
-        "mood": { "value": null, "evidenceRef": null, "updatedAtMessageId": null },
-        "note": { "value": null, "evidenceRef": null, "updatedAtMessageId": null }
-      },
-      "previousScene": null
-    },
-    "working": { "todos": [], "standingAgreements": [], "recentEpisodes": [] },
-    "longTerm": { "milestones": [], "worldFacts": [], "userProfile": [], "assistantProfile": [], "relationship": [] },
-    "meta": { "revision": 0, "sourceGeneration": 0, "targetCursors": {} }
-  },
-  "initialTargetStatuses": {
-    "scene": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
-    "todos": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
-    "standingAgreements": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
-    "episodes": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
-    "profileRelationship": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 },
-    "worldFacts": { "sourceGeneration": 0, "status": "healthy", "consecutiveErrors": 0 }
-  },
-  "ticks": [
-    {
-      "description": "User asks to be reminded about returning an eraser",
-      "input": {
-        "task": {
-          "taskId": "018f2f5e-7f2a-7b11-9c31-111111111111",
-          "tickId": 12345,
-          "userId": 1,
-          "presetId": "default",
-          "schemaVersion": 2,
-          "sourceGeneration": 0,
-          "baseRevision": 0,
-          "targetKey": "todos",
-          "cursorBefore": 0,
-          "targetMessageId": 1,
-          "proposer": "todoProposer",
-          "mode": "normal",
-          "targetSections": ["todos"],
-          "observedMessageIds": [1],
-          "trigger": { "type": "lagThreshold" },
-          "now": "2026-07-06T22:30:00Z",
-          "userTimeZone": "UTC"
-        },
-        "writableState": { "working": { "todos": [] } },
-        "readOnlyContext": {
-          "current": {
-            "scene": {
-              "location": { "value": null, "updatedAtMessageId": null },
-              "time": { "value": null, "updatedAtMessageId": null },
-              "mood": { "value": null, "updatedAtMessageId": null },
-              "note": { "value": null, "updatedAtMessageId": null }
-            }
-          },
-          "working": { "standingAgreements": [], "recentEpisodes": [] },
-          "longTerm": { "userProfile": [], "assistantProfile": [] }
-        },
-        "observedMessages": [
-          {
-            "id": 1,
-            "role": "user",
-            "createdAt": "2026-07-06T22:30:00Z",
-            "contentKind": "raw",
-            "content": "我明天会把橡皮还给她",
-            "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9"
-          }
-        ]
-      },
-      "databaseMessages": [
-        {
-          "id": 1,
-          "userId": 1,
-          "presetId": "default",
-          "role": "user",
-          "createdAt": "2026-07-06T22:30:00Z",
-          "content": "我明天会把橡皮还给她",
-          "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9"
-        }
-      ],
-      "adapterMock": {
-        "status": "ok",
-        "output": {
-          "tickId": 12345,
-          "proposer": "todoProposer",
-          "sectionResults": {
-            "todos": {
-              "status": "patches",
-              "patches": [
-                {
-                  "op": "addItem",
-                  "value": { "text": "归还橡皮", "actor": "user", "requester": "user" },
-                  "evidenceKind": "user_commitment",
-                  "evidenceRefs": [{ "messageId": 1, "quote": "我明天会把橡皮还给她" }]
-                }
-              ]
-            }
-          }
-        }
-      },
-      "expected": {
-        "eventGroup": {
-          "task_id": "018f2f5e-7f2a-7b11-9c31-111111111111",
-          "target_key": "todos",
-          "schema_version": 2,
-          "base_revision": 0,
-          "result_revision": 1,
-          "cursor_before": 0,
-          "cursor_after": 1,
-          "group_kind": "proposal"
-        },
-        "events": [
-          {
-            "event_kind": "proposal_decision",
-            "decision": "accepted",
-            "op": "addItem",
-            "evidence_kind": "user_commitment",
-            "result_item_id": { "_match": "notNull" },
-            "normalized_operation": { "_match": "notNull" }
-          }
-        ],
-        "statePatch": {
-          "working": {
-            "todos": [
-              {
-                "id": { "_match": "string", "prefix": "todo:" },
-                "text": "归还橡皮",
-                "createdAtMessageId": 1,
-                "updatedAtMessageId": 1,
-                "actor": "user",
-                "requester": "user",
-                "status": "active",
-                "becameOverdueAt": null,
-                "dueAt": null,
-                "evidenceGroups": [
-                  {
-                    "evidenceKind": "user_commitment",
-                    "refs": [{ "messageId": 1, "contentHash": "sha256:45ed11fd247a2257e8721fb25c6bbe0202f441464567c4b15d35a4c47bc3eca9", "quote": "我明天会把橡皮还给她" }]
-                  }
-                ]
-              }
-            ]
-          }
-        },
-        "cursor": { "todos": 1 },
-        "snapshot": { "revision": 1, "schema_version": 2 },
-        "task": {
-          "task_id": "018f2f5e-7f2a-7b11-9c31-111111111111",
-          "status": "succeeded",
-          "result_revision": 1
-        },
-        "targetStatus": { "target_key": "todos", "source_generation": 0, "status": "healthy", "consecutive_errors": 0 },
-        "opsLog": [],
-        "meta": { "revision": 1 },
-        "renderEquals": null,
-        "renderContains": ["归还橡皮"]
-      }
-    }
-  ]
+  "state": {},
+  "proposer": "episodeProposer",
+  "messages": [],
+  "expectedPublicText": "...",
+  "expectedWritableRefs": {},
+  "expectedReadOnlyRefs": {},
+  "expectedMessageMeta": {}
 }
 ```
 
-Fixture 不应保存长篇聊天全文。证据 quote 保持短片段，长对话可用最小复现场景。
+### 2.2 Semantic Compiler
 
-Fixture runner 默认用 `initialState` 写 generation 0 / revision 0 完整 snapshot；revision 0 fixture 的所有 cursor 必须为 0。需要模拟已推进 cursor 或后续 generation 的 fixture 必须显式提供匹配的全局 revision 与 generation-boundary/anchor snapshot。测试不得只在内存中构造 state 而跳过 snapshot。`initialTargetStatuses` 独立于 `memory_state` 初始化，且必须为全部六个 normal target 各提供一行相同 generation 的合法初始 status；普通 Reducer fixture 通常从 healthy/0 开始，resume/recovery fixture 可以从 retry_wait/capacity_blocked/halted/rebuilding 开始。`initialState.meta.targetCursors` 只需列出本 fixture 涉及的 target key；未列出的 target cursor 默认为 0，表示该 target 尚未处理任何消息。
+```json
+{
+  "artifact": {},
+  "semanticResult": {},
+  "authorityState": {},
+  "databaseMessages": [],
+  "expectedCompiledProposal": {},
+  "expectedError": null
+}
+```
 
-### Fixture 断言匹配规则
+### 2.3 Reducer
 
-- **statePatch 深合并**：patch 值与 `initialState` 深合并，只覆盖 fixture 中列出的字段。Reducer 生成的字段（`id`）用 matcher 表达。确定性字段（`dueAt`、`status`、`becameOverdueAt`、`createdAtMessageId`、`updatedAtMessageId`）必须显式列出。
-- **events 子集字段匹配**：只检查 fixture 中列出的字段，忽略自增列（`id`、`user_id`、`preset_id`、`tick_id`、`created_at`）。行数必须精确匹配。按插入顺序逐行匹配。`rejected` 行必须包含 `reject_reason`。支持 `maintenance_task_id` 和 `merged_from_item_ids` 字段断言，可用 `{ "_match": "notNull" }` 匹配任意非 null 值。
-- **eventGroup/snapshot/task/targetStatus**：分别校验 revision group、完整 post-state snapshot、durable task 终态和 per-target status；snapshot.state 必须深等于同事务最终 `memory_state`，它们与 events/cursor 必须来自同一事务。
-- **opsLog**：按插入顺序精确匹配 fixture 中列出的字段。
-- **cursor**：精确匹配各 target 的 `coveredUntilMessageId`。
-- **meta**：只比较语义 state 元数据（revision/targetCursors）；不得出现 halted/recovery/retry 字段。
-- **renderEquals**：完整 rendered text 的 golden snapshot 路径，为 `null` 时跳过。Renderer 代码变更时 golden test 失败以提示回归。
-- **renderContains**：宽松子串检查，用于 smoke test。
-- **Matcher 语法**：`{ "_match": "string", "prefix": "todo:" }` 匹配以 `"todo:"` 开头的字符串；`{ "_match": "notNull" }` 匹配任意非 null 值。
+```json
+{
+  "state": {},
+  "task": {},
+  "compiledProposal": {},
+  "expectedState": {},
+  "expectedEvents": []
+}
+```
 
-## 3. 必测用例组
+### 2.4 Pipeline Recovery
 
-### 3.1 Schema 与 patch op
+```json
+{
+  "taskRow": {},
+  "artifact": {},
+  "semanticResult": {},
+  "compiledProposal": {},
+  "crashPoint": "semantic_result_persisted|compiled_proposal_persisted|commit_unknown",
+  "expectedProviderCalls": 0,
+  "expectedCompilerCalls": 0
+}
+```
 
-- 合法 `setField` / `clearField` / `addItem` / `updateItem` / `forgetItem` / `mergeItems` / `completeTodo` / `cancelTodo` / `expireTodo` / `cancelAgreement` 被接受。
-- normal Proposer 输出 `mergeItems` 时拒绝（`mergeItems` 只允许 `compactionProposer`）；`compactionProposer` 输出 `addItem`/`updateItem` 等非 `mergeItems` op 时拒绝。
-- 缺少该 op 按 [state-contract.md](state-contract.md) §4 应必填的字段时拒绝。
-- 非法 section + op 组合拒绝。
-- item section patch 使用 `sectionResults` key 直接寻址；携带多余 `path` 时 schema 拒绝。只有 scene 字段操作允许 `path`。
-- `current`、`working`、`longTerm`、`meta` 作为 `sectionResults` key 或 event/policy `section` 时拒绝；它们只是存储容器。
-- `todos.addItem.value.dueAt` 与 `todos.updateItem.value.dueChange.set.dueAt` 符合 absolute/relative union 时接受；结构非法时拒绝。Todo update 无论是否修改期限都必须显式给出 keep/clear/set 之一。
+## 3. 必测用例
 
-### 3.2 Evidence 与 quote
+### 3.1 Version 与 State
 
-- messageId 不存在时 `rejected: message_id_not_found`。
-- messageId 属于 observedMessages，但数据库中的 userId/presetId/role/createdAt/contentHash 任一项与 proposal-time task payload 不一致时 `rejected: evidence_source_mismatch`。
-- evidence 可以来自 newBatch 或 overlap，但每个普通 patch 至少一条 evidenceRef 必须来自 newBatch；全部 evidence 仅来自 overlap 时以 `overlap_only_evidence` 拒绝。
-- quote 精确命中时接受。
-- 所有 quote 长度都走相同归一化 + 等长窗口 Levenshtein 规则；轻微改写且相似度达到配置阈值时接受，不存在短 quote 精确匹配专用分支。exact-substring 快速路径不受模糊预算影响；模糊路径超过 content 或 candidate-window 的确定性预算时必须 fail closed，并覆盖对抗性重复输入不会造成无界同步 CPU 占用。
-- 大小写、Unicode whitespace 和 `QUOTE_IGNORABLE_PUNCTUATION` 明列标点的差异按统一归一化移除；未列入该集合的字符不得由调用点自行忽略，symbol 不作为信息字符。
-- quote 为空、纯 whitespace/punctuation/symbol，或归一化后只有 1-2 个信息字符时 `rejected: quote_too_short`；恰好 3 个信息字符继续进入模糊匹配。
-- quote 恰好 200 个 Unicode code points 时可进入匹配；201 个时 `rejected: quote_too_long`。用非 BMP 字符覆盖 code point 与 UTF-16 code unit 的差异，Reducer 不得自动裁剪。
-- quote 与消息不匹配时 `rejected: quote_not_found`。
-- 默认阈值读取为 0.75；阈值配置改变时 matcher 使用配置值，不在调用点硬编码。
-- 否定词删除、数字/姓名替换不走专项规则或 NLI；是否接受只由统一相似度阈值决定，测试和文档不得宣称已解决否定翻转。
-- provider/LLM 输出伪造 messageId 时不推进错误写入。
-- 普通写入 patch 引用 `readOnlyContext` 中 item 的历史 messageId，但该 messageId 不在 `observedMessages` 中时拒绝。
-- 普通 add/update patch accepted 后，Reducer 为 `evidenceRefs` 补入数据库复核的 `contentHash`，再连同 `patch.evidenceKind` 包装为一个 `evidenceGroup`（携带 `evidenceKind` + `refs`）；forget evidence 不追加到已移除 item。
-- 普通写入 patch 带多个 `evidenceRefs` 时，`updatedAtMessageId` 取该 group 内最大的 `messageId`。
-- read-only context 可以影响 noop/patch 判断，但不能单独支撑新增事实。
+- `memory_state.version` 只接受字符串 `"2.01"`；number `2.01`、integer `2`、string `"2"` 均拒绝；
+- snapshot/event group/task 的 `schema_version` 使用 `TEXT` 且等于 `"2.01"`；
+- 旧 2.0 state/task/event/snapshot 不读取、不 replay；
+- item 必含 `id/text/sourceRefs/createdAtMessageId/updatedAtMessageId`；
+- sourceRefs 非空、二元去重、稳定排序、hash格式正确；
+- Profile/Relationship 带 facet/canonicalKey/factBasis 时 schema 拒绝；
+- scene populated field必须有非空 sourceRefs；empty field必须为 `sourceRefs=[]/updatedAtMessageId=null`；
+- 全局 itemId 唯一；
+- Todo领域/lifecycle字段完整。
 
-### 3.3 Proposer 输入 envelope
+### 3.2 ProposerTaskRenderer
 
-- 普通模式必须使用 `task.trigger.type = "lagThreshold"`；维护模式允许 `lengthBudget`（带 `dimension=maxItems|maxRenderedChars` 与对应配置 `limit`）或 `hygiene`（带触发时 item count/maxItems/high-water percent）。
-- normal task 必须携带 durable UUID `taskId` 与创建时 `baseRevision`；提交前二者关联的 task row 必须存在，并重新校验 `baseRevision === meta.revision`。若 revision 不匹配（且 `sourceGeneration` 仍匹配），不直接 apply，而是按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task 并重新调用 Proposer。`task.targetKey` 只能是六个合法 targetKey；每个 task 只有一个 `cursorBefore`、new batch 和一个 `targetMessageId`。
-- maintenance task 不携带 `cursorBefore`；其 `targetMessageId` 必须等于来源 normal proposal 的 `targetMessageId`，只用于关联、幂等和后续 replay，不得用于读取 raw messages 或推进 cursor。
-- maintenance task 的 `parent_task_id` 必须指向来源 normal task，并持久化 `resume_epoch`；normal task 在 `capacity_blocked` 阶段的 `stage_payload` 必须至少持久化 `persistedProposal`、`maintenanceTaskId` 和 `resumeEpoch`。
-- normal/maintenance task 的 proposal-time envelope 与 evidence metadata 必须写入 immutable `task_payload`；normal task 创建时还要在 stage payload 固化本 task 的 `normalContextWindow`。普通 retry/restart 不得从变化后的 recent window 临时重组同一个 task input。`unable_to_decide` 是显式例外：首次 unable 时必须使用该固化窗口计算并在 durable task 行中原子保存完整 `stage_payload.expandedEnvelope`，后续 attempt/restart 只复用该 envelope，不重新读取变化后的窗口或配置。Provider 返回并通过 schema 校验后的原始 proposal 写入可变的 `stage_payload.persistedProposal`，不写入 `task_payload`；patchId/itemId 仍由 Reducer 生成，只有进入 capacity/deferred 链时才把用于 replay 的 `identities` 与 proposal 一起持久化。
-- 同一 tick 多个 targets eligible 时只先排 intents；第一个 target 提交 revision 后，第二个 target 创建 task 时必须捕获新 revision，不得因共享 tick 初始 baseRevision 产生伪 `stale_result`。
-- 同一 Proposer、同一 target、同一 `memory_state` 下，即使 observed messages 内容不同，`readOnlyContext` 的 section 形状也必须一致；只允许 `task.observedMessageIds` 和 `observedMessages` 随消息窗口变化。
-- `readOnlyContext` 固定范围内的 section 必须完整输入当前 items；不得做 last N、相似度筛选、关键词筛选或数量截断。`todoProposer.writableState.working.todos` 是明确例外：active 全量，overdue 按 [state-contract.md](state-contract.md) §5.3 只取集中配置规定的最近 N 条。
-- `observedMessages` 按 `coveredUntilMessageId` 之后的分页规则组装：从 `coveredUntilMessageId` 后取最早未处理 batch，再补充 `coveredUntilMessageId` 及之前的 overlap；不得取全局最新 M 条跳过 backlog。
-- normal task 的 `task.targetMessageId` 必须等于本轮 new batch 的最大 messageId，不取 overlap 的 messageId。
-- `working.todos` 同时包含 active 与 overdue items；fixture 应覆盖 wall-clock 到期后 item 原位变 overdue，以及 complete/cancel/expire 终止后才从数组移除。非 todo Proposer 的 readOnlyContext 仍只接收 §5.3 规定的 active 子集。
-- `working.standingAgreements` 全集即 active 子集（取消的 agreement 已从数组移除，见 [state-contract.md](state-contract.md) §4）；fixture 应覆盖 active item 出现、已取消 item 不再出现在数组中的行为。
-- target sections 的当前状态只出现在 `writableState`；`readOnlyContext` 不重复提供 target 作为只读证据来源。
-- `writableState` item 含 `id` 字段；`readOnlyContext` item 不含 `id` 字段（[state-contract.md](state-contract.md) §5）。
-- `profileRelationshipProposer` 只能写 `userProfile`/`assistantProfile`/`relationship`，固定只读 `worldFacts` 及 §5.3 规定的公共背景；`worldFactProposer` 只能写 `worldFacts`，固定只读另外三个长期 sections 及公共背景。两者不得把对方的 writable section 放入自己的 `writableState`。
+- public input只含可读 Memory、short refs、消息和最少 metadata；
+- public input不含真实 itemId、contentHash、sourceRefs、storage container JSON或 compiled op；
+- private writable map含真实 target；read-only map含 sourceRefs；
+- writable/read-only namespace明确区分；
+- item与scene field粒度正确；
+- 同一 artifact 的 retry/schema repair/context expansion/restart/shadow replay refs不变；
+- context expansion只增加更早 messages，不重新编号 Memory refs；
+- successor在新 revision重新 render，允许新 ref编号；
+- 各 Proposer可见范围与 Semantic Contract表一致；
+- fixed read-only scope完整渲染，Todo overdue使用配置窗口。
 
-### 3.4 Policy table
+### 3.3 Semantic Schema
 
-- `scene.setField + scene_change` 接受。
-- `todos.addItem + user_request/user_commitment/assistant_request/assistant_commitment` 接受。
-- `standingAgreements.addItem + standing_agreement` 接受。
-- `standingAgreements.cancelAgreement + agreement_cancel` 接受。
-- `milestones.addItem + recent_episode` 拒绝。
-- `milestones.addItem + relationship_milestone` 接受，并写入 `longTerm.milestones`。
-- `worldFacts`/`userProfile`/`assistantProfile`/`relationship` 的 `addItem + scene_change` 拒绝。
-- 上述四个 section 的 `addItem + long_term_fact` 接受；行为推断只在 profile/relationship 中允许。
-- 上述四个 section 的 `updateItem + long_term_fact` 拒绝。
-- 上述四个 section 的 `updateItem + user_correction/assistant_correction` 接受。
-- 上述四个 section 的 `forgetItem + user_forget/assistant_forget` 接受；其他 section 的 forgetItem、通用 removeItem、`forgetItem + correction` 均拒绝。
-- 对 `worldFacts`/`userProfile`/`assistantProfile`/`relationship` 分别覆盖 User 与 Assistant 消息支持 `addItem + long_term_fact` 的接受用例；不得按 role 把任一方限制为只能维护 userProfile 或 assistantProfile。
-- 上述四个 section 分别覆盖 user 消息支持 `updateItem + user_correction`、assistant 消息支持 `updateItem + assistant_correction`；evidenceKind 与数据库真实 role 不符时 `rejected: evidence_role_mismatch`。
-- 上述四个 section 分别覆盖 user 消息支持 `forgetItem + user_forget`、assistant 消息支持 `forgetItem + assistant_forget`；两种 forget kind 与真实 role 不符时同样 `rejected: evidence_role_mismatch`。
+- normal outer status只允许 `changes/noop/unable_to_decide`；
+- compaction只允许 `changes/unable_to_compact`；
+- sectionResults恰好覆盖 target sections；
+- add禁止 ref；修改/terminal要求 writable ref；
+- supportRefs只接受 read-only namespace；
+- evidenceMessageIds只接受本 task显示消息；
+- normal change direct/support至少一个；
+- compaction merge不带 direct/support；
+- IR 出现 itemId/op/evidenceKind/quote/contentHash/typed Profile字段时拒绝；
+- 所有 item sections接受 add/update/correct/forget Semantic action；
+- scene接受 set/correct/clear/forget；
+- Todo/Agreement领域 terminal actions shape正确；
+- relative Todo要求 anchorMessageId且属于 direct evidence；
+- support-only relative date schema/compile失败；
+- Provider输出schema repair最多一次，非法原文不持久化。
 
-### 3.5 Cursor 推进
+### 3.4 Source Resolution
 
-- 可推进终局中的 `accepted`/`noop`/普通 `rejected` 推进对应 target cursor，并在一个事务形成 `base_revision + 1`（group 的 `base_revision` = 事务开始时最新 revision）、event group/events、完整 post-state snapshot、task 终态和 healthy target status。
-- `noop` 必产生一行 `decision=noop` 占位 event。
-- `deferred` 阻止 cursor 推进：同 target 有任一 `deferred` 行则不推进，无论是否存在 `accepted` 行；无 `deferred` 时有任一 `accepted`/`noop`/`rejected` 即推进。
-- 混合 `accepted`+`deferred` 的非原子混合提交已被禁止：capacity-blocked 时本轮不 apply 任何 patch，只为触发容量阻塞的 patch 写 `deferred`（`result_revision=null` 审计 group），其他 patch 的最终 decision 延迟到 replay group；任何实际提交的 state revision 都必须拥有同号完整 snapshot，未提交 state/cursor 时不得伪造 revision。
-- Provider/schema `error` 由 tick orchestrator 截获，只原子更新 durable task、per-target status 与 ops log；不落 semantic events、不交 Reducer、不增加 revision/snapshot。
-- `unable_to_decide` 首次把当前 task 的 `context_expansion_attempt` 置 1，并原子持久化完整 `expandedEnvelope`；下一 attempt 复用该 envelope。二次仍无法判断时以 cursor-only revision 终结，写 snapshot/task/status。
-- 瞬时 error 连续 3 次后只把对应 target status 置为 halted；`memory_state` 不出现 halt/recovery 字段，其他 targets 的 cursor/status 不变。
-- 长度预算首次阻塞时只为触发容量阻塞的 patch 写 `deferred`（`result_revision=null` 审计 group），触发 maintenance task，per-target status 进入 `capacity_blocked`，且不推进 cursor；一个 target `capacity_blocked` 不阻塞同 tick 其它 target。
-- compaction 成功释放容量后，replay 原 proposal（不重新调 Proposer），使用原稳定 `patchId` 写最终 replay group。
-- compaction 返回 `unable_to_compact` → tick orchestrator 截获，maintenance task failed、对应 target halted；不交 Reducer、cursor 不推进、不增加 revision/snapshot。
-- compaction 成功执行 mergeItems 但 replay 预检仍因容量不足 → normal task 进入 `replay_failed`（reason=`capacity_still_exceeded`）→ halt 对应 target，cursor 不推进。
-- 可 compaction item section 的容量超限不产生 patch 级 `rejected: length_budget_exceeded`；首次阻塞为 `deferred`（审计 group），终局失败由 task 级 `compaction_failed` / `replay_failed` 触发 halt。`scene` 是明确例外：超限字段以 `rejected: capacity_exceeded` 落 event，不创建 maintenance task，其他合法 patch 可继续提交，cursor 按普通 rejected 语义推进。
-- 缺少 target section 或包含非 target section 属于 `output_schema_invalid`，本 task 的 target cursor 不推进；其它 target 不受影响。
-- `episodeProposer` 的 `recentEpisodes` 与 `milestones` 共享 `episodes` cursor：一个 section accepted/noop、另一个 `unable_to_decide` 时整个 target 不推进；两者都形成可推进终局后只推进一次。
-- `profileRelationshipProposer` 的 `userProfile`、`assistantProfile`、`relationship` 三个正式 section 共享 `profileRelationship` cursor；`worldFactProposer` 只推进独立的 `worldFacts` cursor。event 的 `section` 记录实际正式 section，`target_key` 记录共享 cursor 归属。
-- profile/relationship add/update 缺少 facet/canonicalKey/factBasis 时 schema 拒绝；`observedPattern` 少于 3 个不同 messageId 时 Reducer 以 `insufficient_pattern_evidence` 拒绝；全部 evidence 只来自 overlap 时以 `overlap_only_evidence` 拒绝。
-- 同 section Unicode 规范化 text 完全相同的 add/update 以 `duplicate_item` 拒绝；非 multi-value canonicalKey 冲突以 `duplicate_profile_key` 拒绝，multi-value/open key 仍允许不同 text 的多值项。
-- maintenance task 的 `targetKey` 仅关联来源 normal target；它不携带 `cursorBefore`，不读取或推进 raw-message cursor，也不拥有独立 `targetCursors` key。它完成后仍由被阻塞的原 normal target 决定 cursor。
-- ops_log 的 `task_id/target_key` 必填；可明确归属某个 `sectionResults` 的 outcome 填对应正式 section。task 级 outcome 的 `section` 必须为 null，且不得用 targetKey 代填。
+- direct old-overlap-only合法；
+- support-only合法；
+- direct+support混合合法；
+- 不存在 new-batch evidence gate或 overlap_only_evidence；
+- support展开到 observed window外历史 source并成功批量查询；
+- 多个support/direct共享 source时按 messageId+hash去重；
+- 输出sourceRefs稳定排序；
+- writable ref用作support、read-only ref用作target时 `ref_resolution_failed`；
+- missing/stale ref、section不匹配、item不存在时fail closed；
+- missing message、scope/role/createdAt/hash不一致时 `source_validation_failed`；
+- Compiler不自动替换hash、不选择相似item、不把update降级成add。
 
-### 3.6 Reducer 状态安全
+### 3.5 Todo 日期
 
-- 同一 itemId 的合法局部更新只改目标字段。
-- 指向不存在 itemId 的操作拒绝。
-- 普通 patch accepted 后，持久化 evidence ref 包含数据库复核后的 `messageId + contentHash + quote`；Proposer 伪造 contentHash 无法写入 state。
-- correction fixture 断言 active item 保留 itemId、只渲染新 value、追加新的 correction evidenceGroup，旧 event/snapshot 不变；pre-update item 全部 evidenceGroups 的 source keys 均写 tombstone，新 correction message 不被 suppress。
-- forget fixture 先经过多次 update 和 merge，再断言 Reducer 只读取当前 item 的完整 evidenceGroups 即可收齐全部 `messageId + contentHash`；item 移除、accepted event、snapshot 与 tombstones 同事务，逐故障点均整体 rollback。
-- 同一 source tombstone 重复提交幂等；rebuild 候选只要含 suppressed source 就在清 dirty 前移除，除非同时含 messageId 更晚且未 suppressed 的 correction evidenceGroup。该例外保留修正后 item 及完整 provenance；不得为此新增 provenance graph 或遍历完整 event chain。
-- 每个 item section 都从测试注入的集中配置读取 `maxItems` 与 `maxRenderedChars`，不得使用散落硬编码值。
-- `maxItems` 未超但 apply 后 `maxRenderedChars` 超限，以及 `maxRenderedChars` 未超但 `maxItems` 超限，均进入 `deferred` 并触发 maintenance task；maintenance trigger 分别记录正确的 `dimension` 和 `limit`。
-- `updateItem` 等非 add patch 扩大语义文本并导致 `maxRenderedChars` 超限时同样经过容量门，不得只在 `addItem` 上检查。
-- `maxRenderedChars` 按 Unicode code points 只统计 Renderer 可能输出的语义文本；普通 item 计 text，todo 还计 actor/requester/非 null dueAt 的渲染值。quote/evidenceGroups/hash/ID/provenance 与 Renderer 标题、字段标签、连接词、模板标点不计。
-- scene 只校验语义 values 的 `maxRenderedChars`，不虚构 `maxItems`。
-- proposal/envelope 即使很大也不因 Memory 业务层“总字符上限”被拒绝；Provider context/output 硬上限由 Adapter 测试覆盖，不映射成 section capacity reject reason。
-- `recentEpisodes` apply 后超出 `maxItems` 或 `maxRenderedChars` 时，Reducer 按确定性顺序滚出最旧 items 直至两项均满足；不 deferred、不创建 maintenance task。每个滚出项写 `recent_episode_evicted` event，同 revision snapshot 可完整 replay。
-- item section 超出长度预算时 normal task 进入 `capacity_blocked`，只为触发容量阻塞的 patch 写 `deferred` 并创建 maintenance task。compaction 返回 `unable_to_compact`（`compaction_failed`）或 replay 预检仍因容量不足（`replay_failed`）时只 halt 对应 target。
-- `compactionProposer` 的 section `status` 为 `patches` 或 `unable_to_compact`；`status` 为 `patches` 时 patch 的 `op` 只能是 `mergeItems`，输出 `addItem`、跨 section 合并、通用删除时拒绝。
-- `agreementProposer` 输出 `completeTodo`/`cancelTodo`/`expireTodo` 时拒绝。
-- `memory_compaction` 输出 `evidenceRefs` 时拒绝。
-- `memory_compaction` accepted 后，Reducer 将 source items 既有 `evidenceGroups` 完整继承到 merged item，并保留 group 边界。
-- `memory_compaction` accepted 后，merge event 的 `item_id` 为 null，`merged_from_item_ids` 存储完整 source item ID 数组（按持久化 patch 中的稳定顺序），`result_item_id` 存储新 merged item ID。
-- `memory_compaction` accepted 后，merged item 的 `updatedAtMessageId` 取所有 source evidenceGroups refs 的最大 `messageId`。
-- `memory_compaction` 的 `value.text` 不得引入 source items 未表达的新事实——此约束由 compactionProposer prompt 承担（[proposer-prompt.md](proposer-prompt.md) §2.4），Reducer 不做语义检测，仅 LLM smoke 覆盖。
-- Proposer 输出非 target section 时记 `output_schema_invalid`；若这是首次 Provider 输出边界错误则持久化一次 retry 后重新调用，第二次仍非法才 halt 对应 target。item patch 携带 `path` 时同样由 schema 拒绝，只按本 task 的 `targetKey` 决定 cursor，其它 target cursor 不受影响。
-- Todo add 缺 actor/requester 或输出非法枚举时 schema 拒绝；合法 add 初始化 `status=active`、`becameOverdueAt=null`，dueAt 缺省为 null。
-- Todo update 的 dueChange 分别覆盖 keep/clear/set；dueChange 缺失或分支混合时 schema 拒绝。relative dueAt 必须以 evidence message createdAt 为 anchor；fixture 故意令 task.now 与 message.createdAt 不同，证明实现未误用执行时间。absolute date 和 relative 运算必须使用 task 创建时从 User 字段固化的用户时区（默认 UTC），并统一落到目标日期结束后的首个日界线；fixture 覆盖 `days=0` 在当天结束前保持 active、到日界线后 overdue，以及非 UTC 时区和月末截断（如 1 月 31 日 + 1 个月 = 2 月 28/29 日）。
-- 已计算 dueAt 早于 housekeeping now 时不拒绝历史事实：同一 apply/cleanup 或下一次 housekeeping 将 item 原位改为 overdue，写 `todo_became_overdue`，`becameOverdueAt=dueAt`，并保留 itemId、actor、requester、dueAt、evidenceGroups。
-- overdue todo 仍可由 `completeTodo`/`cancelTodo` 终止；active 容量只统计 active items，overdue items 不触发 compaction、不得 merge。
-- overdue todo 通过 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来时，Reducer 原位将 `status` 从 `overdue` 改回 `active`、清空 `becameOverdueAt`，并写 `system_cleanup: todo_revived_from_overdue` event；保留 itemId、actor、requester、dueAt 和全部 evidenceGroups。
-- Todo compaction 仅接受 actor/requester/dueAt 分别相同的 active source items；任一字段不同或包含 overdue item 时拒绝。
-- Scene TTL 到期时写 `scene_expired`，完整 current scene/provenance 进入单值 previousScene 后 current 四字段清空；若替换已有 previousScene，同一 revision 还写 `expired_scene_evicted`。两者均不创建 compaction task。
-- Scene/Todo housekeeping 重复执行必须幂等：状态已转换时不新建空 revision，不重写 expiredAt/becameOverdueAt。
-- `todos`、`standingAgreements`、`milestones`、`worldFacts`、`userProfile`、`assistantProfile`、`relationship` 均需各自的同 section compaction 测试。
+- absolute date按用户时区次日00:00；
+- relative使用显式direct anchor message createdAt，不使用task.now；
+- `days=0`、month-end、leap year、DST gap/overlap；
+- anchor不在direct IDs中 `date_anchor_invalid`；
+- support-only relative失败；
+- Compiler输出ISO dueAt，Reducer不接收relative表达式；
+- rebuild发生在deadline后仍能写入并由lifecycle转overdue。
 
-### 3.7 Provider Adapter 与 per-target recovery
+### 3.6 Action 编译
 
-- 配置加载覆盖已实现/未实现的 structured-output adapter：未知 adapter 必须启动失败，不能回退到裸文本 + `JSON.parse`；已实现 adapter 使用原生 schema/tool/function 并对返回值再做本地完整 schema 校验。真实 Provider preflight 顺序覆盖六个 Normal Proposer 与 Compaction schema，任一 schema 被端点拒绝、返回错误分支或本地验证失败均不通过。
-- mock adapter 返回合法 `status: "ok"` → output 交 Reducer；成功提交时 task/status/events/state/snapshot 同事务完成。
-- proposer/tickId 不匹配、`sectionResults` 残缺或非法 → 首次输出边界错误写 ops log=`output_schema_invalid_retry`，并持久化计数与经过裁剪的 schema 修复反馈；第二次调用必须收到该反馈并返回完整替代结果，进程中断恢复后也必须复用反馈。第二次仍非法才 task failed、对应 target halted、ops log=`output_schema_invalid`。日志和 stage payload 不保存非法输出原文；所有错误路径都不交 Reducer、不推进 cursor、不增加 revision/snapshot。
-- `unable_to_decide` 首次 → task `context_expansion_attempt=1`，写 ops log，并持久化完整 `stage_payload.expandedEnvelope`，不修改 target 长期错误计数；恢复和下一 attempt 必须复用该 envelope，二次仍 unable 才以 cursor-only revision 终结。
-- compactionProposer 返回 `unable_to_compact` → maintenance task failed、对应 target halted、写 ops log；不增加 revision/snapshot。
-- `safety_policy_blocked` / `llm_call_failed` → task `retry_wait`、attempt 递增、写 notBefore，target status=`retry_wait` 且 `consecutive_errors + 1`；第三次只 halt 对应 target。
-- provider 明确因最大输出长度停止时归类 `max_output_truncated`，不得落为 `output_schema_invalid`，即使响应残片可解析也不交 Reducer；它按有界 retry/backoff 处理并单独计数，且不得因此缩小 section 容量。
-- 输入 envelope 的 `output_schema_invalid` 不重试；Provider 输出的 `output_schema_invalid` 最多立即重试一次，计数跨重启保持，第二次失败后 task failed、对应 target halted，且不得发生第三次 Provider 调用。
-- 任一 target halted 时，其他 target 仍可创建/提交 task；halted target 的最后稳定 state 保留。全局 `memory_state.meta.halted` 不得重新出现。
-- resume 指定 target：对于 `retry_wait` target，保持 degraded、清 task notBefore 并重新排队原可恢复 task；对于容量/compaction/replay 失败导致的 `halted` target，重置为 `capacity_blocked`（不立即设 `healthy`），按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §6 创建新 maintenance child task重新进入 compaction；对于 `output_schema_invalid` 或 Provider 重试/连续错误阈值导致的 halted target，修复根因后保持 `halted` 并创建新 normal task。旧 task 保留审计，不修改 state/revision/snapshot，也不重置其他 targets。所有分支都只有恢复 task 实际成功、cursor 推进并提交 snapshot 后才恢复 `healthy`。
-- 任一成功 revision 在同事务将对应 target 恢复 healthy、错误计数归零并终结 task。
-- Reducer 永远只收到 `status: "ok"` 且 section 为 `patches`/`noop` 的 output，不处理空输出、Provider error、unable 或伪造输出。
-- 健康聚合表驱动覆盖全部 per-target status：全 healthy → `healthy`；任一 retry_wait/capacity_blocked/halted → `degraded`；任一 rebuilding → `rebuilding`，且 rebuilding 与 degraded 同时存在时整体仍为 `rebuilding`。
-- active GapBridge omitted、`scene_capacity_exceeded` 或其他 context-quality 诊断也使整体进入 `degraded`/`rebuilding`；只有全部 target healthy 且无 active 诊断时才能恢复 `healthy`。
-- 新异常在 `alertDebounceMs` 内可暂不进入响应 health alert；越过防抖后，非 healthy 告警在连续响应中持续返回，包含受影响记忆类别和“可能滞后/正在重建”语义。恢复事务完成后 active 告警消失，并为该恢复事件恰好创建一行包含已追平 boundary 的 notification。正常路径只投递一次；fixture 还必须允许“响应已包含通知、`delivered` 更新提交前崩溃”后再次投递，不能把 best-effort once 误测为 exactly-once delivery。target、projection、system 三类恢复分别断言正确的 `subject_kind/subject_key`。
-- 任一 target halted 不产生全局 `chatBlocked` 或 user/preset 级 halt；主聊天和其他 targets 的任务继续。resume/rebuild 维护入口可操作 halted target，普通 Observer 不可绕过。
-- halted target 的 Renderer golden 继续包含最后稳定 state：相邻的同 target sections 可在组前只出现一次“该类记忆可能滞后”，不相邻的 sections 必须分别出现。`episodes` 的 milestones 与 recentEpisodes 不相邻，因此两处各出现一次且文案状态一致；rebuilding 使用“该类记忆正在重建”。不得把这些标记写回 `memory_state.meta`。
-- scene `capacity_exceeded` event 由独立 diagnostic projector 转换为 active `target + scene + scene_capacity_exceeded`；同 group 其他字段 accepted 时告警仍存在，只有 `detail.rejectedPaths` 中对应字段后续 accepted 才移除，全部恢复后在同一投影事务 resolve 并创建 recovery notification。重复投影不重复 diagnostic/notification；故障时 checkpoint 不推进、normal task 成功结果不回滚，runtime/context 后续可重试。
-- 重复 wake-up 使用相同 dedupe key 时只存在一个 durable task；模拟“事务已提交但 worker 未收到确认”后再次 delivery 相同 task/patchId，必须返回既有终态，events、revision、snapshot、cursor、compaction/replay 结果均不重复。
-- 提交前分别制造 generation、cursorBefore、当前 revision 失配：generation 失配时普通 proposal 不得 apply 且按 stale 处理；revision 失配时（generation 仍匹配）按 [Task 执行、Cursor 与幂等算法](algorithms/task-execution-and-idempotency.md) §4 创建 successor task；cursorBefore 失配时不得 apply。compaction/replay 则按其 stage 捕获的最新 revision 与 stale 规则执行，不能因其他 target 的合法 revision 增长误判原 proposal stale。
-- 指标断言至少验证 per-target calls 与 observed-message 总数（calls/message 由两者相除）、eligible、tokens/latency，五类 Adapter 结果，quote 失败分布，compaction/replay/halt/deferred age，queue/stale，GapBridge，rebuild/projection lag 与 degraded/rebuilding duration；指标使用稳定标签且不含原始消息正文等高基数字段。货币费用不进入 Memory 指标或报告，由 Provider 官方余额变化评估。
-- 配置测试证明 capacity、scene/overdue、六组 lagThreshold/contextWindow（`scene=4/16`、`todos=8/48`、`standingAgreements=16/64`、`episodes=32/96`、`profileRelationship=32/128`、`worldFacts=16/96`）、GapBridge、quote threshold、retry/backoff、compaction/halt、hygiene high-water/min-item-delta、retention 和告警参数均从同一配置入口注入；固定 quote 上限仍为 200 code points，默认相似度阈值为 0.75，缺失/越界配置显式失败。
+- correct与update生成完全相同compiled op/shape，event不保留区别；
+- scene clear/forget都编译clearField；
+- all item-section forget编译forgetItem；
+- Todo complete/cancel/expire和Agreement cancel映射正确；
+- compaction merge refs映射真实itemIds；
+- 无法唯一编译时 `compile_invariant_failed`；
+- Compiler不做语义判断或数据库写入。
 
-### 3.8 Renderer 稳定性（渲染回归基线）
+### 3.7 Reducer Provenance
 
-- 空 section 使用稳定占位符。
-- 当前状态和长期记忆分区清晰。
-- requestNow 已越过 scene TTL、但 cleanup 尚未持久化时，effective view 把它渲染在 `[已过期场景 / 上次已知场景]`，当前状态为空；同时只幂等唤醒 housekeeping。
-- requestNow 已越过 todo dueAt、但 cleanup 尚未持久化时，effective view 只在 overdue 组渲染该 item。overdue 组按 becameOverdueAt DESC/itemId 稳定排序并同时满足独立条数/字符预算。
-- Todo render 包含 actor/requester，存在 dueAt 时包含 deadline；recentEpisodes 不再硬编码只取最近 3 条。
-- golden snapshot 锁定完整 rendered text，Renderer 代码变更时 golden test 失败以提示回归。
-- render 不包含 patch log、event log、reject reason 或 reducer 内部细节。
+- add item使用compiled sources；
+- update/correct保留itemId/createdAt，合并旧新sources并更新updatedAt；
+- merge继承所有source items sources并生成新ID；
+- scene set支持多source refs；clear写空sourceRefs；
+- forget/terminal移除active对象，动作sources保存在event；
+- correction/forget不写tombstone、不触发RAG invalidation；
+- state/event/snapshot都不含evidenceKind/quote/supportRef；
+- normalized operation足以不调用LLM/Compiler replay。
 
-### 3.9 Context 接入
+### 3.8 Reducer Policy 与状态安全
 
-- 候选历史 raw content 的 Unicode code point 总数不超过集中配置阈值时 `needsMemory=false`，recent window 保留全部消息且不注入 `memory`；不得叠加 message count、tokenizer 或 context 百分比门控。
-- `needsMemory=true` 且 `memory_state` 存在、schema 校验通过时，注入单一 `memory` segment，并由 Renderer 实时生成文本。
-- `needsMemory=true` 但 `memory_state` 不存在、`version` 不支持或 schema 校验失败时，`memory` segment 不注入，debug payload 记录明确原因，不得静默跳过。
-- recent window 可跨 session 且保留 user-boundary 裁剪；Memory Observer fixture 必须证明 Assistant 开头的 source 未被同一规则裁掉，且不注入 session boundary 控制标记。
-- 对每个 target 构造 `coveredUntilMessageId < messageId < recentWindowStartMessageId` 的 gap；预算内完整 raw 注入，重复消息去重但保留 target keys。超预算只保留最近 N 条完整消息并恢复升序，单条超预算计入 omitted，不得截断或调用 LLM 压缩。
-- GapBridge omitted 必须产生 active 的持久化诊断记录（`subject_kind=target`、`subject_key` 为对应 targetKey），携带 `target_cursor` 与 `omitted_upper_message_id` 并触发 degraded；`target_cursor >= omitted_upper_message_id` 后才能 resolved。Projection lag 使用 `subject_kind=projection`、`subject_key=rag` 和独立的 `processed_boundary_message_id`，不得复用 target cursor 字段；查询时 Recall 继承 RAG 健康状态。GapBridge 不推进 cursor、不写 patch/event，也不改变 section 容量。
-- Context assembly 在读取 active diagnostics 前 best-effort 同步 diagnostic projection；active scene capacity diagnostic 令 `[当前状态]` 出现“该类记忆可能滞后”，并在通过 `alertDebounceMs` 后令响应 `memory_health.alerts` 包含“长度超限未写入”。同步失败只记录 debug error 并继续使用最后成功投影状态，不阻断主聊天。
-- RAG context 与 `memory` segment 并列存在，不互相覆盖。
-- RAG chunk 保存全部 source `messageId + contentHash`；任一 source 命中 tombstone 时，已有 chunk 即使尚未异步删除也被查询末端过滤，重新分块跳过整条消息。多事实消息被整条排除的保守副作用应有固定 fixture。
-- Recall 候选 refs、raw window 和最终文本分别覆盖 suppression 过滤；全部 refs 被过滤的 group 不注入，suppressed raw message 不因落在相邻窗口而泄漏。
-- correction 后 Renderer 只出现新值；forget 后既不出现原 item，也不出现“已作废”占位文本。
+- state-contract section/op表全部合法组合接受；
+- normal merge、cross-section merge、scene item op等非法组合拒绝；
+- item/path不存在拒绝；
+- 同bundle同target冲突拒绝；
+- exact normalized text duplicate拒绝；
+- 语义近似但text不相等不由Reducer拒绝；
+- 不存在canonicalKey/observedPattern message-count gate；
+- Todo active/overdue状态表、Scene TTL、Episode淘汰保持；
+- accepted/rejected/noop cursor语义保持。
 
-### 3.10 迁移与恢复
+### 3.9 Capacity 与 Compaction
 
-- 旧 `rolling_summary` / `core_memory` 文本不会直接转换为 v2 权威状态。
-- v1 派生数据清理只允许清空 `chat_preset_memory` 的 rolling/core 及相关运行字段并删除 v1 checkpoint；SQL 与 repository 测试必须证明不对 `chat_messages` 执行 `DELETE`/`UPDATE`，也不删除 v2 state/history/task。该清理在 v1 runtime 停用并双确认后可独立、幂等执行，不以 v2 rehearsal 或 cutover 完成为前提。
-- 首次初始化 generation 0 state 时写 revision 0 完整 snapshot；revision 跨 generation 单调递增，每个成功 revision N 恰好一份带 generation 的同号完整 post-state snapshot，不额外写 pre-state snapshot。
-- 一个 task bundle 含多个 accepted patch 时只增加一次 revision、写一个 event group 和一份 snapshot；add event 的 `result_item_id` 非 null，accepted event 含完整 normalized operation。
-- cursor-only revision（noop、普通 rejected、二次 unable 后推进）也写完整 snapshot；纯 error/retry/halt/deferred 且 state/cursor 未变化时不增加 revision、不写 snapshot。
-- 二次 unable 的 cursor-only event group 可以没有 semantic event，原因只记 ops log；不得伪造 noop/accepted。noop 与普通 rejected 仍保留各自 proposal-decision event。
-- deferred 的 `result_revision` 为 null；其 event group/events、原 task stage、派生 maintenance task 和 target status 必须同事务提交，不能只留下 deferred event 而没有可恢复 task。
-- 注入事务故障点覆盖 state、event group/events、snapshot、cursor、task 终态、target status 的每个写入位置；任一点失败都整体 rollback，不得出现半提交。
-- system cleanup 修改持久化 state 时必须写 `decision=system_cleanup`、具体 cleanup_type 和完整 normalized operation；覆盖 `scene_expired`、`expired_scene_evicted`、`todo_became_overdue`、`todo_revived_from_overdue`、`recent_episode_evicted` 五类。Proposal post-state 触发的 cleanup 与 proposal decisions 同 group/revision；独立后台 housekeeping 才断言 `group_kind=system_cleanup`。
-- 从当前 generation 最新合法 snapshot replay 后续 event groups 可恢复相同 state/cursors；replay 不调用 LLM，并拒绝 generation/revision 断层、cursor 不连续、schema 不兼容或 task/target 不一致的 event group。
-- Retention 清理必须保证 [state-contract.md](state-contract.md) §9.12 的不变量：每个活跃 generation 至少保留一个 schema-valid 完整 anchor snapshot；覆盖“校验新 snapshot → 原子提升 anchor → 清理旧 snapshot/events”的成功与逐故障点 rollback。只要求保留 `result_revision > anchor.revision` 的连续 event groups；从新 anchor replay 后续 groups 必须恢复相同 state/cursors。终态 task 清理不得删除 active task 或 retained event groups 仍引用的 predecessor/parent/task。
-- Retention 在删除任何 event 前先同步 diagnostic projection；同步失败时 retention 不进入清理事务，checkpoint 之后的 event 必须保留供后续重放。
-- snapshot/state 损坏时优先恢复当前 generation 最新合法 snapshot；必要时从 raw messages rebuild。
-- 进程重启会从数据库读取 queued/running/retry_wait task 并从持久化 stage 继续；进程内队列、计数器或 flag 丢失不影响恢复。
-- stale generation/revision/cursor 执行结果写 `stale_result` ops log 并丢弃，不得覆盖新 state；replay 必须先匹配 generation，再检查 target cursor、proposal 活动性、引用 item 与 schema/source hashes；同 generation 的其他 target revision 增长不单独构成 stale。
-- 语义恢复只依赖 snapshot/events；运行状态恢复只依赖 durable task/per-target status/ops log，不能互相推定。
-- 旧 `meta.recovery/halted` 不做 in-place 迁移，新 target status 从 healthy/0 初始化。
-- 普通 append 不增加 `sourceGeneration`；编辑历史、regenerate 截断、删除、session trash/restore/permanent delete、preset/可见性变化和排序语义变化各自覆盖 generation `+1` 路径。
-- source mutation、generation `+1`、captured boundary、旧 generation 全部非终态 Memory task 取消、新 generation 空 state、下一个全局 revision snapshot 和六个 target `rebuilding` 必须同事务；逐写入点故障均整体 rollback，revision 不得因 rebuild 重置为 0。Generation 初始化不伪造 section event group，恢复从该 snapshot 开始。
-- generation 变化后，旧 normal/maintenance/compaction/replay 结果一律 stale 且不能提交；同 generation 内其他 target 导致的 revision 增长仍不单独使 replay stale。
-- rebuild 从当前有效 raw messages 重放，`forceDrainTo(capturedBoundaryMessageId)` 忽略 lagThreshold 并只使用既有 durable normal tasks；六个 cursor 与 state/snapshot/events 校验完成前保持 rebuilding，未追平不得宣告 healthy。
-- rebuild 期间再次改变 source 时，旧 rebuild 结果不得推进新 generation 的 state、cursor 或 status；worker 转而处理最新 generation/boundary。
-- RAG checkpoint 断言 `processedGeneration + processedBoundaryMessageId`；Recall/Scene Recall 不建立空操作 checkpoint并继承该 cutoff。Memory targets 追平不代表 projection 追平。告警条件只基于 `requiredBoundary`（= `recentWindowStartMessageId - 1`）：`processedGeneration != sourceGeneration` → rebuilding；`processedBoundary < requiredBoundary` → degraded；`processedBoundary >= requiredBoundary` 且 generation 一致 → healthy（落后范围在 recent window 内不告警）。projection 只部分覆盖 requiredBoundary 时仍注入已处理部分并标记不完整，不因部分落后完全跳过。
-- 一次性迁移 smoke 按“停服并冻结 raw boundary → 更新 → 确认 v1 派生数据已清除 → 从保留的 raw messages rebuild/force drain → 校验 → 启服”执行；校验失败断言聊天服务保持关闭，且不存在 Flush task/type/table。
-- rehearsal 必须可重复执行，不修改 v1 派生数据；如果 v1 已经通过独立清理退役，rehearsal 既不恢复也不依赖它。rehearsal 不返回可启服状态。每次报告至少记录 scope 数、每 scope 的 raw message 数、Unicode code point 字符数、captured boundary、总耗时、scope 耗时，以及九个正式 section 的 itemCount/textChars；scene 的 itemCount 表示是否存在任一已填字段，textChars 为全部已填 scene value 的 code point 总数。报告还必须保存 code/schema/config 指纹、开始/结束两次全局 source inventory 及 hash、按 target/proposer/model/mode/result 聚合的实际 Provider calls/tokens coverage；schema retry、恢复重试和 compaction 调用不得被 normal task 数量掩盖。token usage coverage 不完整必须显式标记；货币费用不进入报告或证据门禁。
-- cutover 必须要求显式停服确认；若 v1 派生数据尚有 residue，还必须显式确认并执行独立清理。v1 已提前清除时重复清理应幂等。后续 rebuild/校验失败必须返回 `canStartService=false`，不得因 v1 已退役而放宽启服门。
-- 迁移最终校验逐 scope 覆盖：raw boundary 未变化、六个 target 均为同 generation 的 healthy 且 cursor 追平、authority state 与当前 revision snapshot 完全一致、generation 内 event/snapshot revision chain 连续并到达 authority revision、RAG/Recall checkpoint 均为同 generation 且追平 captured boundary。任一失败都必须返回失败报告并保持 `canStartService=false`。
-- context-suppression tombstone 跨 source generation 保留；rebuild 最终 active state、RAG 和 Recall 都不能重新引入匹配的 `messageId + contentHash`。
-- privacy hard delete 覆盖 raw、state、events、snapshots、durable task/proposal payload、tombstones（§9.8）、context-quality diagnostics 及其 RAG projection checkpoint（§9.9）、recovery notifications（§9.10）、RAG 派生数据与受控 debug 存储；从剩余 source rebuild 校验完成前保持 rebuilding，任一存储仍残留时不得恢复。禁止将完整 raw prompt/完整 state diff 写入 append-only 应用日志。
+- maxItems/maxRenderedChars分别触发deferred；
+- update增长text也检查容量；
+- provenance/IDs/artifact/IR/compiled payload不计section容量；
+- scene只检查values且单field capacity rejected；
+- recentEpisodes确定性淘汰、不调用compaction；
+- maintenance Renderer输出short refs，不暴露IDs/provenance；
+- compaction Semantic merge经Compiler生成mergeItems；
+- Profile/Relationship不要求facet/key相等；
+- Todo merge领域字段必须相等；
+- pending item保护、全部protected失败、多section顺序maintenance；
+- original compiled proposal replay不重调normal Proposer/Compiler；
+- compaction/replay失败只halt对应target；resumeEpoch创建新child。
 
-## 4. 端到端 smoke
+### 3.10 Cursor、Task 与 Recovery
 
-真实 Provider 的 schema/channel 能力由 `npm run probe:memory-v2-provider` 验证；最小语义链路由 `npm run smoke:memory-v2-provider` 验证，后者必须让真实 todoProposer 对明确承诺生成可经 Reducer 接受的 `todos.addItem`，不能只回显预制 JSON。它们属于显式联网验收，不并入离线 `test:memory-v2`。其余端到端 smoke 只覆盖少量代表性路径：
+- 同tick多个targets按最新revision逐个创建task；
+- immutable task payload包含artifact；
+- Semantic结果先持久化，再允许Compiler；
+- compiled proposal先持久化，再允许Reducer；
+- semantic_result_persisted恢复不调LLM，只重跑Compiler；
+- compiled_proposal_persisted恢复不调LLM/Compiler；
+- Provider/schema/compile error不推进cursor/revision/snapshot；
+- compile error先发现stale时走successor而非误报compile failure；
+- successor重新render/propose/compile，不复用旧refs/IR/Patch；
+- unable首次扩窗保持ref map，二次cursor-only revision；
+- capacity deferred不推进；
+- phase identity、duplicate delivery、transaction failed、commit unknown不重复提交；
+- per-target halt不阻塞其他targets/主聊天。
 
-- 新增 todo -> 完成 todo -> render 不再显示未完成待办。
-- 新增带 actor/requester/dueAt 的短期待办 -> evidence message createdAt 锚定期限 -> wall-clock 到期后原位 overdue -> 仍可完成/取消 -> 也可通过 updateItem 设置未来 dueAt 变回 active。
-- scene 到期但 housekeeping 尚未提交 -> effective view 不再称其为当前场景 -> cleanup 持久化为 previousScene；下一 scene 到期时单值替换并审计 evicted。
-- recentEpisodes 超窗口 -> 最旧 item 确定性滚出并写 cleanup event，不触发 compaction。
-- 新增 standing agreement -> 修订 agreement -> 取消 agreement -> render 不再显示已取消约定。
-- 明确长期事实 -> 对应长期 section 新增；临时情绪 -> 不进入长期 sections。
-- 行为推断的长期特征只有在至少 3 个不同 messageId 且覆盖至少两个独立互动片段时才允许 profile/relationship 新增（`long_term_fact`）；Reducer 确定性校验证据数量，Prompt 负责判断片段独立性。一次性动作、同一微事件内的相邻台词不写入，worldFacts 不使用行为 trait 推断。
-- Episode Prompt 质量测试固定要求：先聚合同一互动弧、同一弧跨 batch 优先 update、单 task 最多 3 个 recentEpisodes patch、日常微动作 noop、milestone 不默认与 recentEpisode 双写。以“深夜回家→折返取物→道别→约定次日早餐”为反例时，不得拆成逐动作 item。
-- assistant 修正已有长期 item -> `updateItem + assistant_correction` 接受（四个长期 sections 均可）。
-- 多次更新/合并后的长期 item -> 明确 forget -> active state 原子移除并按完整 evidenceGroups suppress；随后 rebuild/RAG/Recall 均不恢复旧 source。
-- 长期 item correction -> active state 只显示新值，旧 source 从 RAG/Recall 排除，新 correction message 可正常召回。
-- `userProfile` 达到上限 -> 新增被 deferred -> compaction 在同一 section 合并重复项 -> replay 原 proposal 成功，cursor 推进。
-- compaction 无安全合并项 -> 返回 unable_to_compact -> `compaction_failed`，halt 对应 target；resume 指定 target 后创建新 maintenance child task 重新尝试，成功 replay 后恢复 healthy。
-- `todos` 达到上限 -> deferred -> compaction 合并重复待办 -> replay 原 proposal 成功，cursor 推进。
-- `standingAgreements` 达到上限 -> deferred -> compaction 合并重叠约定 -> replay 原 proposal 成功，cursor 推进。
-- Provider Adapter 返回 `safety_policy_blocked` -> 落 ops log，cursor 不推进；连续达阈值后只 halt 对应 target，其他 targets/主聊天继续；resume 指定 target 后从 durable task/cursor 位置继续。
+### 3.11 Event Replay
 
-## 5. 测试落点与入口
+- accepted/system cleanup normalized operation完整；
+- event schema无evidence_kind列；
+- add/update/set/clear/forget/terminal/merge均可replay；
+- clear/forget action sources不丢失；
+- revision/cursor/generation/schema version chain严格验证；
+- replay不调用Proposer、Compiler或source resolver；
+- 2.0 event拒绝；
+- 不存在suppression cleanup type。
 
-离线回归统一使用 Node test runner：`npm run test:memory-v2` 执行 `test/memory/*.test.js`。可复用的结构化场景放在 `modules/memory/harness/fixtures/`，恢复链路的支持数据放在 `modules/memory/harness/recovery-fixtures/`，并由 `modules/memory/harness/runner.js` 按显式 `fixtureKind` 发现、校验和路由。不得再建立第二套 `scripts/memory-v2-verify` runner 或把 fixture 复制到多个目录。
+### 3.12 Provider Adapter
 
-真实 Provider 验收使用 §4 的 `probe:memory-v2-provider` 与 `smoke:memory-v2-provider` 显式入口，不进入离线回归。
+- preflight覆盖六个Semantic normal schemas与compaction schema；
+- unknown adapter拒绝启动，不回退裸JSON解析；
+- `ok/error/deferred`归一化保持；
+- safety/max-output/network/schema分类保持；
+- repair feedback持久化且跨重启不增加次数；
+- Provider request只包含public input，不包含private ref map；
+- metrics记录Semantic result和Compiler，不记录raw prompt/content。
 
-Harness 通过后，v2 才能接入真实主链路。否则 memory v2 只是换了形状的不可控摘要器。
+### 3.13 Main Renderer 与 Context
+
+- MainChatMemoryRenderer与ProposerTaskRenderer各自golden；
+- 主Renderer不显示sourceRefs/IDs/events；
+- empty sections、health markers、effective Scene/Todo、overdue budget稳定；
+- needsMemory/recent window/user-boundary保持；
+- GapBridge完整消息/omitted diagnostic/恢复保持；
+- RAG与Memory并列；
+- correction/forget后RAG/Recall仍可召回旧raw source；
+- raw edit/delete generation变化后旧projection不能作为当前完整结果；
+- context assembly不读取suppression tombstone。
+
+### 3.14 Rebuild 与 Projection
+
+- append不增加generation，source mutation增加并原子初始化rebuilding；
+- forceDrain使用正式2.01 Renderer→Semantic→Compiler→Reducer pipeline；
+- 六target到boundary前保持rebuilding；
+- crash后target boundary reconciliation继续；
+- rebuild不做terminal suppression filter，允许forgotten/corrected raw source再次形成Memory；
+- RAG checkpoint只有generation/boundary，无processedTombstoneId；
+- projection adapter不要求suppress；
+- query-scoped requiredBoundary健康算法保持。
+
+### 3.15 Privacy 与 Retention
+
+- privacy purge覆盖raw、state/events/snapshots、artifact/ref map/messageMeta、Semantic IR、compiled proposal、diagnostics/notifications、RAG和debug store；
+- 任一store残留时operation不completed；
+- 普通forget不执行privacy delete；
+- 无tombstone表不削弱purge verification；
+- anchor snapshot、连续event chain、active task引用、diagnostic projection先行保持；
+- retention可以清理终态artifact/IR/Patch，但不能破坏active task或phase恢复。
+
+## 4. 端到端 Smoke
+
+至少包含：
+
+1. Episode add/update/correct/forget垂直切片；
+2. Profile support-only归纳且无typed metadata；
+3. Todo direct relative日期与support-only relative失败；
+4. Provider schema repair后refs不变；
+5. compile后crash恢复不重复LLM；
+6. capacity→Semantic merge→compile→original compiled replay；
+7. source edit→generation rebuild；
+8. active forget后rebuild允许复活；
+9. privacy hard delete清除artifact/IR/Patch；
+10. Main context同时包含Memory、GapBridge、RAG和健康标记。
+
+## 5. 测试入口
+
+继续使用独立 memory test入口与 Harness runner。Fixture/golden命名应从 `evidence/patch` 迁移到 `semantic/compiler/source/provenance`，删除quote、evidenceKind、typed-profile和suppression fixtures；保留cursor、capacity、lifecycle、recovery、context、rebuild和privacy fixtures并更新2.01 shape。

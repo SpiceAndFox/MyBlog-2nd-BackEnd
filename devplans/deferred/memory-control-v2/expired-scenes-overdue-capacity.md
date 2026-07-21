@@ -10,7 +10,7 @@ Todo 到期后仍保留在 `working.todos`，仅由 Reducer 将 `status` 从 `ac
 
 1. `todos` 的写入容量只统计 `status=active` 的 items；overdue items 不阻塞新 active todo，也不触发 compactionProposer。
 2. Renderer 只按 `becameOverdueAt DESC` 注入配置的最新 N 条 overdue todo，并受独立 `maxRenderedChars` 限制。
-3. 未渲染的旧 overdue todo 仍保留原 itemId、dueAt 和 evidenceGroups，并可被 complete/cancel。
+3. 未渲染的旧 overdue todo 仍保留原 itemId、dueAt 和扁平 `sourceRefs`，并可被 complete/cancel/forget。
 4. 当前不自动 archive 或删除 overdue todo。
 
 ## 延后原因
@@ -19,7 +19,7 @@ Todo 到期后仍保留在 `working.todos`，仅由 Reducer 将 `status` 从 `ac
 
 - 旧 overdue todo 何时转入 archive；
 - archive 是否进入主聊天上下文，如何被检索；
-- 归档/清理后如何保留 event、snapshot 和 evidenceGroups/suppression provenance；
+- 归档/清理后如何保留 event、snapshot 与 `sourceRefs` provenance；若未来引入 suppression，必须采用独立完整方案；
 - 如何避免长期增长同时不丢失尚未完成的任务。
 
 当前个人单用户场景下，上述复杂度的收益不足，因此推迟。

@@ -1,124 +1,136 @@
-# Memory Control v2 渲染与上下文接入
+# Memory Control 2.01 渲染与上下文接入
 
-本文定义 Memory Control v2 如何从结构化状态变成主聊天模型可读上下文，以及它与 context segment、RAG、raw message evidence 的边界。写入协议见 [write-protocol.md](write-protocol.md)。
+本文定义主聊天 Memory Renderer、context segment、RAG/GapBridge 边界，以及它与 `ProposerTaskRenderer` 的区别。写入 artifact 见 [Semantic 写入契约](semantic-write-contract.md)。
 
-## 1. Renderer
+## 1. 两类 Renderer
 
-Renderer 把结构化 `memory_state` 渲染为主聊天模型可读的稳定文本。Renderer 输出不是权威状态，不写入独立 DB 列。
+### 1.1 MainChatMemoryRenderer
 
-Context compiler 还必须与 `memory_state` 同时读取 `chat_memory_target_status` 和 active context-quality diagnostics，作为独立 health sidecar；禁止为了渲染/告警方便把 halted/retry/rebuilding 写回 `memory_state.meta`。健康聚合与持续告警遵循 [write-protocol.md](write-protocol.md) §8.1。
+主聊天 Renderer 把 `memory_state` effective view 渲染为稳定文本：
 
-读取 active diagnostics 前，context assembly 必须 best-effort 同步[异常诊断投影](algorithms/diagnostic-projection.md)。`scene_capacity_exceeded` 令 `[当前状态]` 前出现 `[该类记忆可能滞后]`；响应 `memory_health.alerts` 在通过配置的 `alertDebounceMs` 后说明最近一次更新因长度超限未写入。投影同步失败时保留最后成功投影的告警状态并在 debug 中记录错误，不阻断主聊天。
+- 读取当前 authority state、target status 和 active diagnostics；
+- 不读取 task artifact、Semantic IR 或 compiled patch；
+- 不调用 LLM；
+- 不写独立 render authority；
+- 相同 state、lifecycle anchors、requestNow、配置和代码生成相同文本；
+- 非健康 target 继续使用最后稳定 state，但显示“可能滞后/正在重建”。
 
-Renderer 是纯代码模板，不调用 LLM。具体模板见第 5 节。
+### 1.2 ProposerTaskRenderer
 
-Renderer 必须：
+写入侧 Renderer 为单个 durable task 生成：
 
-- 按 `memory_state` 的结构层级区分长期记忆、工作区记忆与近期状态。
-- 用明确标题标出哪些是当前状态、哪些是历史背景。
-- 不调用 LLM。持久化状态失效、清理和覆盖由 Reducer/housekeeping 维护；但在后台 cleanup 尚未提交时，Renderer 必须按下述同一套纯代码规则构造 effective view。
-- 避免因为渲染文案把旧场景强行延续到当前回复。
-- 保持文本稳定：相同 `memory_state`、相同 lifecycle anchors、相同 requestNow、相同配置与相同 Renderer 代码必须生成相同文本。
-- 对 `retry_wait`、`capacity_blocked`、`halted` target 继续渲染最后一次成功提交的稳定 state，但在其负责的 section 前输出稳定标记“该类记忆可能滞后”；不得把旧 state 无提示地称为当前状态。`rebuilding` target 使用“该类记忆正在重建”标记。
+- 人类可读的 writable Memory；
+- 人类可读的 read-only Memory；
+- 稳定短 refs；
+- observed raw messages；
+- 私有 ref map 与 message metadata。
 
-标记位置按 target 的固定 section 映射确定：`scene` → 当前状态（previousScene 是已过期历史，不附当前 scene 滞后标记），`todos` → todos，`standingAgreements` → standingAgreements，`episodes` → recentEpisodes/milestones，`profileRelationship` → userProfile/assistantProfile/relationship，`worldFacts` → worldFacts。多个 section 共享一个 target 时，若各 section 在模板中相邻，可在该组的第一个 section 前只输出一次标记；若不相邻（如 `episodes` 的 milestones 与 recentEpisodes 之间隔着其他 section），则应在每个 section 前分别输出标记。GapBridge active omitted 与 scene capacity active 诊断按其 target 使用相同“可能滞后”标记。
+它不复用主聊天的完整模板，也不向 Proposer暴露存储 JSON、真实 itemId 或 provenance。详细契约见 [Semantic 写入契约 §3](semantic-write-contract.md)。
 
-### 1.1 请求时 Effective View
+## 2. Main Chat Effective View
 
-请求时 effective view 与 housekeeping 必须调用同一纯代码生命周期函数；完整的 scene TTL、Todo overdue/revive、cleanup event 与幂等规则见 [领域生命周期算法](algorithms/domain-lifecycle.md)。Renderer 只消费转换后的运行时 view，不把它持久化为第二份 authority。
+请求时 effective view 与后台 housekeeping 调用同一组纯代码生命周期函数：
 
-## 2. Context 接入
+- 已过 TTL 的 current scene 在运行时 view 中移到 previousScene；
+- 到期 active Todo 在 view 中显示为 overdue；
+- 发现尚未持久化的 lifecycle 变化时幂等唤醒 housekeeping；
+- effective view 不是第二份 authority。
 
-首版采用实时 render 路径。Recent window、`needsMemory`、状态门控、user-boundary 裁剪、跳过原因和 GapBridge 的顺序敏感规则统一由 [Context Coverage 算法](algorithms/context-coverage.md) 定义。本文件只负责说明 Renderer 如何把最终 effective view 与 health sidecar 组装为 context segment。
+Scene field provenance 已从单个 evidence ref 改成 `sourceRefs[]`，但主聊天 Renderer 只渲染 value，不渲染 provenance。
 
-### 2.1 Per-target GapBridge
+## 3. Context 接入
 
-GapBridge 是 context assembly 的覆盖补偿层，不推进 target cursor、不写 patch，也不替代正常 Memory task。其 gap 计算、完整消息选择、omitted 诊断、持续告警与恢复条件见 [Context Coverage 算法](algorithms/context-coverage.md) §2。
+Recent window、`needsMemory`、user-boundary 裁剪和 GapBridge 顺序继续由 [Context Coverage 算法](algorithms/context-coverage.md) 定义。
 
-## 3. RAG 边界
+- `needsMemory=false`：不注入 Memory；
+- `needsMemory=true` 且 state `version="2.01"`、schema valid：注入单一 `memory` segment；
+- state 缺失、版本不支持或 schema invalid：跳过并记录明确 debug reason；
+- target 非健康或存在 active diagnostic：Renderer 在对应 section 前显示稳定标记；
+- main recent window 可跨 session 并保留 user-boundary 裁剪；Memory Observer 不复用该裁剪。
 
-Memory v2 和 RAG 不互相替代。
+## 4. GapBridge
 
-- Memory 保存当前场景、待办、持续约定、里程碑、长期偏好和关系模式。
-- RAG 负责召回具体旧场景、原话和细节。
-- Memory 高精度、低容量、持续影响当前回复。
-- RAG 高召回、按当前 query 动态取用。
+GapBridge 继续补偿 target cursor 与 recent window 起点之间未被 Memory 覆盖的 raw messages：
 
-只在某次旧对话中重要、但不应持续影响当前关系状态的事实，应留在 RAG，不进入长期 sections。
+- 多 target 去重后注入；
+- 只保留完整消息，不截断单条；
+- 超预算保留最近 N 条完整消息并持久化 omitted diagnostic；
+- 不推进 Memory cursor，不写 Semantic IR/Patch，不替代 worker；
+- omitted 令受影响 target degraded，覆盖后恢复并创建 notification。
 
-Projection checkpoint 的推进与 rebuild 见 [Source Rebuild 与 Projection 算法](algorithms/source-rebuild-and-projection.md)；请求时 `requiredBoundary`、有效检索上界、partial coverage 与健康判断见 [Context Coverage 算法](algorithms/context-coverage.md) §3；correction/forget 后的 tombstone 查询过滤和 privacy hard delete 门控见 [Suppression 与 Retention 算法](algorithms/suppression-and-retention.md)。
+## 5. RAG/Recall 边界
 
-## 4. Proposer 输入与 Gist 边界
+- Memory 保存持续状态和长期档案；
+- RAG/Recall 召回具体旧场景、原话和细节；
+- 二者在 context compiler 并列，不互相替代；
+- RAG/Recall 仍受 `sourceGeneration + processedBoundary + requiredBoundary` 限制；
+- correction/forget 不再创建 suppression tombstone，也不改变 RAG/Recall 查询结果；
+- raw source edit/delete/restore 通过 generation rebuild 处理；
+- privacy hard delete 物理删除对应 RAG/Recall 派生数据。
 
-Proposer 输入/输出 envelope 的结构、字段语义和边界规则见 [state-contract.md](state-contract.md) §5。本节只补充与上下文接入相关的边界：
+RAG chunk 可以继续保存 source refs，用于 generation一致性、来源检查和 privacy purge verification；它们不再用于 correction/forget filtering。
 
-- 普通模式的 `observedMessages` 统一来自原始 `chat_messages`，user 与 assistant 消息都使用 raw content。Observer 传入时必须标注 `contentKind: "raw"`。
-- 普通写入 patch 的 `evidenceRefs.quote` 必须能在对应 raw message content 中校验（校验策略见 [Evidence 校验与 Quote 匹配算法](algorithms/evidence-validation.md)）；read-only memory context 不参与 quote 校验。
-- 维护模式不向 Proposer 暴露 raw messages、既有 evidenceGroups 或 quote。
-- assistant gist 不进入 v2 memory proposer 输入，也不作为 evidenceRefs 来源。
+## 6. Proposer 输入边界
 
-## 5. Renderer 模板
+- observed messages 统一来自 raw `chat_messages`；
+- public input 显示 `messageId/role/createdAt/content`，不显示 contentHash；
+- direct `evidenceMessageIds` 只能选本 task 实际显示的消息；
+- read-only `supportRefs` 只能选本 task 实际显示的辅助 Memory；
+- support ref 的底层 source 可以位于 observed window 之外，由 Compiler 查询和验证；
+- `assistant gist` 不进入 Memory Proposer；
+- retry/repair/context expansion 使用同一 Memory ref map；
+- Provider prompt/response 不写入 append-only日志。
 
-Renderer 是纯代码模板，把结构化 `memory_state` 渲染为稳定文本。Renderer 不调用 LLM，不读取 patch/event log，不依赖数据库中的物化 render 文本。
+## 7. 主聊天模板
 
-模板中的 `{renderTargetHealthMarker(targetKey)}` 只读取 health sidecar，并按以下优先级输出：target 为 `rebuilding` 时输出“[该类记忆正在重建]”；否则 target 为 `retry_wait/capacity_blocked/halted`，或存在该 target 的 active `gap_bridge_omitted` / `scene_capacity_exceeded` 诊断时输出“[该类记忆可能滞后]”；其余情况输出空字符串。它不把运行状态写入 `memory_state`。
-
-### 模板
-
-```
+```text
 [长期核心记忆]
-{renderTargetHealthMarker("worldFacts")}
+{health(worldFacts)}
 [长期事实]
-{longTerm.worldFacts.map(f => `- ${f.text}`).join("\n") || "(无)"}
-{renderTargetHealthMarker("profileRelationship")}
+{worldFacts || "(无)"}
+
+{health(profileRelationship)}
 [User 核心档案]
-{longTerm.userProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{userProfile || "(无)"}
 [Assistant 核心档案]
-{longTerm.assistantProfile.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{assistantProfile || "(无)"}
 [关系模式]
-{longTerm.relationship.map(f => `- ${f.text}`).join("\n") || "(无)"}
+{relationship || "(无)"}
 
-{renderTargetHealthMarker("episodes")}
+{health(episodes)}
 [重要里程碑]
-{longTerm.milestones.map(m => `- ${m.text}`).join("\n") || "(无)"}
+{milestones || "(无)"}
 
-{renderTargetHealthMarker("standingAgreements")}
+{health(standingAgreements)}
 [持续约定]
-{working.standingAgreements.map(a => `- ${a.text}`).join("\n") || "(无)"}
+{standingAgreements || "(无)"}
 
-{renderTargetHealthMarker("todos")}
+{health(todos)}
 [待办]
-{working.todos.filter(t => t.status === "active").map(renderTodo).join("\n") || "(无)"}
-
+{activeTodos || "(无)"}
 [已逾期待办]
-{renderOverdueTodosWithinBudget(working.todos, config.overdueTodos)}
+{overdueTodosWithinBudget || "(无)"}
 
-{renderTargetHealthMarker("episodes")}
+{health(episodes)}
 [最近经历]
-{working.recentEpisodes.map(e => `- ${e.text}`).join("\n") || "(无)"}
+{recentEpisodes || "(无)"}
 
-{renderTargetHealthMarker("scene")}
+{health(scene)}
 [当前状态]
-- 地点: {current.scene.location.value || "未知"}
-- 时间: {current.scene.time.value || "未知"}
-- 氛围: {current.scene.mood.value || "未知"}
-- 备注: {current.scene.note.value || ""}
+- 地点: {location || "未知"}
+- 时间: {time || "未知"}
+- 氛围: {mood || "未知"}
+- 备注: {note || ""}
 
 [已过期场景 / 上次已知场景]
-{current.previousScene ? renderScene(current.previousScene) : "(无)"}
-
+{previousScene || "(无)"}
 ```
 
-### 渲染规则
+规则：
 
-- 空字段用 "未知" 或 "(无)" 占位，保持结构稳定。
-- `recentEpisodes` 已由 Reducer 按 section 的 `maxItems + maxRenderedChars` 滚动清理，Renderer 不再硬编码 `.slice(-3)`。
-- `renderTodo` 至少表达 text、actor、requester；dueAt 非 null 时同时表达 deadline。active 与 overdue 来自同一个 `working.todos` section，按 status 分组。
-- overdue 组按 `becameOverdueAt DESC`、itemId 稳定打破平局，在独立 `maxRenderedItems + maxRenderedChars` 内取完整 items；不得截断单条后伪装完整，也不占 active todo 的 section 容量。
-- `current.previousScene` 使用与 scene 相同的四字段快照，并在运行时 view 中额外保留 `expiredAt` 生命周期元数据；首版 `renderScene` 只渲染四个语义字段，不输出该时间戳。它仅在标题 `[已过期场景 / 上次已知场景]` 下渲染，必须明确它不是当前状态。
-- 除 §1.1 的确定性 effective view 外，Renderer 只表达 state 中已经存在的层级和生命周期，不自行推断语义状态。
-- Renderer 只做确定性模板拼接；相同 `memory_state`、相同 lifecycle anchors、相同 requestNow、相同配置与相同 Renderer 代码必须生成相同文本。
-- `renderedText` 是运行时产物，只进入本次 context assembly，不写回 `chat_preset_memory`。
-- 如果未来确实需要 render 缓存，必须作为非权威缓存设计，并带 `renderer_version`；首版不引入。
-
----
+- 只渲染 state value 与 Todo领域字段，不渲染 sourceRefs、IDs、events 或 reducer detail；
+- recentEpisodes 不硬编码 last N，由 Reducer 容量维护；
+- Todo 表达 actor/requester，dueAt 非空时表达期限；
+- overdue 使用独立条数/字符预算；
+- previousScene 明确标成历史，不伪装成当前；
+- `renderedText` 只存在于本次 context assembly。

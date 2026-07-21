@@ -1,6 +1,6 @@
 # 异常诊断投影
 
-本文定义从已提交 Memory semantic event 派生持久化告警的独立投影。该投影只观测事实，不参与 Reducer 决策、normal task 提交或 capacity maintenance 状态机。
+本文定义从已提交 Memory event 派生持久化告警的独立投影。该投影只观测事实，不参与 Reducer 决策、normal task 提交或 capacity maintenance 状态机。
 
 ## 1. 输入与边界
 

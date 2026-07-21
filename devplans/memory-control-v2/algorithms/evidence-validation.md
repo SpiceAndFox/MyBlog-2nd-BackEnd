@@ -1,56 +1,167 @@
-# Evidence 校验与 Quote 匹配算法
+# Semantic 编译与 Source 校验算法
 
-本文是普通 Memory patch 的 evidence source 校验、quote 归一化和 Levenshtein 匹配算法的单一权威来源。Evidence 数据 shape、evidenceKind 枚举和 reject reason 枚举见 [状态契约](../state-contract.md) §3、§4、§9.2。
+本文是 2.01 short ref resolution、support provenance 展开、raw source validation、Todo date anchor 与 action→op 编译的单一算法权威。文件名为兼容旧文档链接保留；2.01 不再使用 evidenceKind、LLM quote 或 quote matcher。
 
-## 1. 适用范围
+## 1. 输入
 
-Reducer 校验普通非 `mergeItems` patch 的 evidence source 与 quote。普通模式下，patch evidence 可以来自 newBatch 或 overlap，每个 `evidenceRefs.messageId` 都必须属于本 task 的 `observedMessages`，且至少一条必须满足 `cursorBefore < messageId <= targetMessageId`；全部 evidence 仅来自 overlap 时以 `overlap_only_evidence` 拒绝。add/update item 校验通过后，Reducer 为 refs 补入数据库 `contentHash`，再连同 `patch.evidenceKind` 包装为新的 `evidenceGroup` 追加到 item；forget evidence 只证明指令，不追加到被移除 item。item 派生字段（`createdAtMessageId`/`updatedAtMessageId`）的维护规则见 [状态契约](../state-contract.md) §1。
+Compiler 输入：
 
-`mergeItems` 不接收 Proposer 输出的 `evidenceRefs`。Reducer 校验 source items 存在且带有结构合法的 `evidenceGroups`，继承到 merged item 并保留 group 边界；merged item 派生字段见 [状态契约](../state-contract.md) §1。source evidence 已在写入 source item 时通过 quote 校验。
+- immutable task metadata；
+- Renderer artifact 的 public input、private ref map 与 messageMeta；
+- 已通过本地 Semantic Schema 的 Semantic IR；
+- task base revision 对应的 authority state；
+- source repository；
+- task 固化的 userTimeZone。
 
-## 2. Evidence source 一致性
+Compiler 输出：
 
-对每个普通 evidenceRef，Reducer 必须重新读取数据库消息并依次校验：
-
-1. `messageId` 存在于 proposal-time task payload 捕获的 `observedMessageIds/observedMessages`，并且数据库消息仍存在。
-2. 数据库消息的 `userId`、`presetId` 与 task scope 完全相同。
-3. 数据库消息的 `role`、`createdAt`、`contentHash` 与 proposal-time task payload 捕获的 observed message 完全相同。
-4. 任一 scope/metadata/`contentHash` 不一致时拒绝对应 patch，reason=`evidence_source_mismatch`；messageId 不属于 task 或数据库消息不存在时使用 `message_id_not_found`。Reducer 不用 envelope 中的 role 覆盖数据库真实 role。
-5. evidenceKind 带有明确发言方语义时按数据库真实 role 校验；例如 `user_correction`/`user_forget` 只接受 user evidence，`assistant_correction`/`assistant_forget` 只接受 assistant evidence。`long_term_fact` 对 user/assistant 都合法。role 与 evidenceKind 不匹配时拒绝，reason=`evidence_role_mismatch`。
-
-## 3. Quote 长度、归一化与信息量
-
-quote 按 Unicode code point（`Array.from(str).length`），不是 UTF-16 code unit 计数。
-
-归一化允许忽略的标点集固定为：
-
-```js
-QUOTE_IGNORABLE_PUNCTUATION = [
-  ",", ".", "!", "?", ";", ":", "\"", "'", "(", ")", "[", "]", "-",
-  "，", "。", "！", "？", "；", "：", "“", "”", "‘", "’", "（", "）",
-  "【", "】", "《", "》", "〈", "〉", "、", "…", "—"
-]
+```text
+compiled proposal
+或结构化 compile error
 ```
 
-该常量属于共享集中配置，正式值只能由统一 matcher 读取；Provider 或调用点不得增删字符或另写归一化逻辑。
+Compiler 不写数据库、不调用 LLM、不做开放式语义判断。
 
-1. 原始 quote 必须非空，且不能只有 Unicode whitespace、punctuation 或 symbol。
-2. 原始 quote 最多 200 个 Unicode code points；超出时拒绝对应 patch，reason=`quote_too_long`，不得自动裁剪。
-3. `normalizeEvidenceText(str)` 是唯一归一化函数：先做 locale-independent `toLowerCase()`，再按 Unicode code point 移除 Unicode `White_Space` property 字符和 `QUOTE_IGNORABLE_PUNCTUATION` 中的字符；不做 NFKC/NFKD、同义词替换、数字转换或 Provider 专属预处理。所有 Provider 与调用点共用同一实现。
-4. 归一化 quote 中 Unicode property 不属于 `White_Space`、`Punctuation`、`Symbol` 的字符为“信息字符”；少于 3 个时拒绝对应 patch，reason=`quote_too_short`。
+## 2. 前置 stale 校验
 
-## 4. 有界 Levenshtein 匹配
+开始 compile 前读取当前 state：
 
-所有长度的合法 quote 使用同一匹配规则，不设置“短文本精确、长文本模糊”的双路径：
+1. `sourceGeneration` 不同：旧 task stale/cancel；
+2. target cursor 不等于 `cursorBefore`：旧 task stale/cancel；
+3. normal task revision 不等于 `baseRevision`：创建 successor，重新 render/propose；
+4. 全部匹配后才能使用 task ref map。
 
-1. 将 normalized quote 与 normalized raw content 都拆成 Unicode code point 数组。
-2. 先对完整 normalized raw content 做线性 exact-substring 快速路径；命中等价于某个等长窗口 `similarity=1`，不是另一套接受规则。raw content 短于 quote 时直接失败。
-3. 未 exact 命中时，只需判定是否存在达到集中配置阈值的等长窗口，不计算阈值以下的精确最大 similarity。令 `k=floor((1-threshold)*quote.length)`；窗口先用 rolling q-gram profile distance 的安全下界过滤（一次 edit 至多改变 `2q` 个 profile entries），再用 band 宽为 `k` 的 bounded Levenshtein，找到首个 `distance<=k` 的窗口即可接受。
-4. 模糊 fallback 具有两个确定性工作上限：normalized content 最多 20,000 code points，且每次 quote 最多对 256 个下界合格窗口执行 bounded Levenshtein。任一上限耗尽时 fail closed 为 `quote_not_found`；不得为了提高召回而在同步请求路径继续无界扫描。完整 content 始终先执行不受这两个模糊上限影响的线性 exact 路径，因此 Proposer 按契约逐字复制的 quote 不会被该限制误拒。
-5. 默认阈值为 0.75；找到 `distance<=k` 的窗口时接受，否则拒绝对应 patch，reason=`quote_not_found`。工作预算可能保守拒绝位于大量模糊候选之后的非逐字 quote，这是为同步 Reducer 的 CPU 上界明确接受的取舍。
+Stale/successor 优先于 compile failure，避免把合法并发变化错误记录成 ref/source failure。
 
-模糊匹配只能容忍复制偏差，不能解决否定词删除、数字/姓名替换等低编辑距离但高语义影响的问题。系统明确接受这一剩余风险，不引入否定词专项规则、“高风险事实”识别或 NLI/自然语言蕴含验证，也不得宣称 Reducer 已证明 quote 语义蕴含 patch。
+## 3. Semantic Schema
 
-## 5. Harness
+- outer `tickId/proposer/sectionResults` 与 task 匹配；
+- sectionResults 恰好覆盖 target sections；
+- status/action/领域字段符合对应 Proposer schema；
+- target ref 只来自 writable namespace；
+- support ref 只来自 read-only namespace；
+- direct messageId 只来自 public input messages；
+- normal change 至少有 direct/support 之一；
+- compaction merge 不带 direct/support sources；
+- relative Todo date 必须有 direct anchorMessageId。
 
-验收用例见 [Harness 验收契约](../harness.md) §3.2。
+Provider 输出边界 schema error 可使用已有一次 repair；耗尽后为 `semantic_schema_invalid`。
+
+## 4. Target Ref Resolution
+
+逐 change 按 section 解析：
+
+- add 禁止携带 target ref；
+- update/correct/forget/terminal 必须携带 writable ref；
+- refMap entry 的 section 必须等于当前 section；
+- item entry 必须包含真实 itemId，且该 item 在 base state 中仍存在；
+- scene entry 必须解析成固定 field path；
+- compaction `refs[]` 至少两个、同 section、各自唯一。
+
+失败返回 `ref_resolution_failed`，detail 只记录 change index、section、ref 和有界 reason，不记录完整 Memory text。
+
+Compiler 不进行相似度匹配，不选择“最像”的 item，也不把无法解析的 update 降级成 add。
+
+## 5. Source Expansion
+
+### 5.1 Direct
+
+每个 `evidenceMessageId`：
+
+1. 必须存在于 artifact `messageMeta`；
+2. 取 artifact 捕获的 role/createdAt/contentHash；
+3. 加入 source candidate set。
+
+Direct message 可以是 overlap 或 new batch；不执行 new-batch gate。
+
+### 5.2 Support
+
+每个 `supportRef`：
+
+1. 必须存在于 `refMap.readOnly`；
+2. entry section/item/field 必须与 artifact 一致；
+3. entry 必须含结构合法的非空 `sourceRefs`；
+4. 展开全部 raw source refs；
+5. 不持久化 supportRef 或 Memory item relation。
+
+Support 底层消息可以位于 observed window 外。Repository 查询不能以 `observedMessageIds` 限制这些历史 IDs。
+
+### 5.3 合并
+
+- 合并 direct 与 support sources；
+- 按 `messageId + contentHash` 去重；
+- 按 `messageId ASC, contentHash ASC` 稳定排序；
+- normal change 合并后不得为空。
+
+## 6. Database Validation
+
+按去重后的 messageIds 批量读取数据库，并对每个 source 依次校验：
+
+1. row 存在；
+2. `userId/presetId` 与 task scope 相同；
+3. role/createdAt 与 artifact metadata 或 persisted support provenance 对应的当前 row 一致；
+4. raw content 的 UTF-8 SHA-256 等于 source contentHash；
+5. message 仍为当前 generation 的有效 User/Assistant source。
+
+任一失败返回 `source_validation_failed`。Compiler 不自动替换 hash、不忽略缺失 source，也不使用 Memory text 代替 raw provenance。
+
+2.01 不做：
+
+- quote substring/fuzzy matching；
+- source role 到 evidenceKind 的映射；
+- overlap-only/new-batch 检查；
+- correction/forget tombstone gate。
+
+## 7. Todo 日期
+
+Absolute：把 `YYYY-MM-DD` 解析为用户时区下该日期结束后的首个日界线。
+
+Relative：
+
+1. `anchorMessageId` 必须属于同 change 的 direct `evidenceMessageIds`；
+2. 读取该消息已校验的数据库 createdAt；
+3. 转为 userTimeZone 本地日期；
+4. 按 days/months/years 做日历运算；
+5. 月末取目标月最后一天；
+6. DST overlap/gap 使用 Temporal `compatible`；
+7. 转为目标日期结束后的首个日界线 ISO timestamp。
+
+support-only change 出现 relative date、anchor 非 direct source 或 anchor metadata 不一致时返回 `date_anchor_invalid`。不得使用 task.now/worker time 猜测。
+
+## 8. Action 编译
+
+按 [Semantic 写入契约 §5.2](../semantic-write-contract.md) 的固定表映射 action→op。
+
+- correct 与 update 同为 updateItem/setField，Compiler 输出中不保留差异；
+- scene forget 与 clear 同为 clearField；
+- item forget 对所有 item section编译为 forgetItem；
+- terminal action 保留本次 sourceRefs 用于 event audit；
+- compaction merge 只映射 refs→itemIds，不从 Proposer读取 sources。
+
+字段无法由 action、target 和明确领域字段唯一确定时返回 `compile_invariant_failed`。
+
+## 9. 持久化与恢复
+
+Semantic IR 通过 schema 后先持久化，再 compile。Compiled proposal 通过本地 compiled schema 后再持久化。进程在任一阶段重启：
+
+- `semantic_result_persisted`：复用 Semantic IR，重新执行确定性 Compiler；
+- `compiled_proposal_persisted`：复用 compiled proposal，直接进入 Reducer；
+- source/revision/cursor 先重新校验；stale 时不得继续。
+
+同一 artifact + Semantic IR + base state + source rows 必须得到字节级可规范化相同的 compiled proposal。
+
+## 10. Harness
+
+至少覆盖：
+
+- writable/read-only namespace 混用；
+- retry/repair/expansion/restart refs 稳定；
+- support-only、old direct-only、mixed sources；
+- support 展开 observed window 外 sources；
+- source dedup/order；
+- missing/stale ref、missing message、scope/hash mismatch；
+- relative date direct anchor、support-only relative reject、月末/DST；
+- correct→update 不保留诊断差异；
+- all-section forget mapping；
+- Compiler crash/recovery 和 determinism；
+- compile error 不推进 cursor/revision。

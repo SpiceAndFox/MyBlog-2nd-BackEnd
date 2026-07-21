@@ -1,6 +1,6 @@
 # Context Coverage 算法
 
-本文是主聊天 recent window、`needsMemory`、per-target GapBridge、RAG/Recall 查询截止点和 projection 查询时健康判断的单一权威来源。Renderer 模板见 [渲染与上下文接入](../rendering-and-context.md) §5；sidecar DDL 见 [状态契约](../state-contract.md) §9.7、§9.9、§9.10。
+本文是主聊天 recent window、`needsMemory`、per-target GapBridge、RAG/Recall 查询截止点和 projection 查询时健康判断的单一权威来源。Renderer 模板见 [渲染与上下文接入](../rendering-and-context.md) §7；status、projection、diagnostic 与 notification sidecar DDL 见 [状态契约](../state-contract.md) §§12–15。
 
 ## 1. Recent Window 与 needsMemory
 
@@ -71,4 +71,4 @@ Renderer 对 `retry_wait`、`capacity_blocked`、`halted` target 继续渲染最
 
 ## 6. Harness
 
-验收用例见 [Harness 验收契约](../harness.md) §3.8、§3.9、§3.10。
+验收用例见 [Harness 验收契约](../harness.md) §3.13、§3.14。
