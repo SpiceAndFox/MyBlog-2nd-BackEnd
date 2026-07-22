@@ -1,4 +1,7 @@
-const { executor } = require("./helpers");
+const { createRepositoryContext } = require("./helpers");
+
+function createMigrationRepository(dependencies = {}) {
+const { executor } = createRepositoryContext(dependencies);
 
 async function hasIncompatibleDerivedData(userId, presetId, schemaVersion, { client } = {}) {
   const normalizedUserId = Number(userId);
@@ -22,4 +25,7 @@ async function hasIncompatibleDerivedData(userId, presetId, schemaVersion, { cli
   return rows[0]?.incompatible === true;
 }
 
-module.exports = { hasIncompatibleDerivedData };
+return Object.freeze({ hasIncompatibleDerivedData });
+}
+
+module.exports = { createMigrationRepository };

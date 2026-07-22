@@ -62,6 +62,9 @@ let completeChat = async () => "assistant";
 let createStreamResponse = async () => { throw new Error("stream not expected"); };
 let readStreamDeltas = async function* empty() {};
 let lastPrivacyOptions = null;
+const transactionClient = { query: async () => ({ rows: [] }) };
+let sourceGuardResult = { sourceGeneration: 0, privacyPending: false };
+const sourceGuardCalls = [];
 let compileContext = async ({ upToMessageId, signal }) => {
   if (signal?.aborted) throw signal.reason;
   events.push(`context:${upToMessageId}`);
@@ -78,6 +81,8 @@ function resetHarness() {
   createStreamResponse = async () => { throw new Error("stream not expected"); };
   readStreamDeltas = async function* empty() {};
   lastPrivacyOptions = null;
+  sourceGuardResult = { sourceGeneration: 0, privacyPending: false };
+  sourceGuardCalls.length = 0;
   compileContext = async ({ upToMessageId, signal }) => {
     if (signal?.aborted) throw signal.reason;
     events.push(`context:${upToMessageId}`);
@@ -101,7 +106,13 @@ const chatModel = {
     return session;
   },
   async touchSession(_userId, sessionId) { return sessions.get(Number(sessionId)); },
-  async createUserMessage(_userId, sessionId, content, { turnId, idempotencyKey }) {
+  async createUserMessage(_userId, sessionId, content, {
+    turnId,
+    idempotencyKey,
+    sourceGeneration,
+    client,
+  }) {
+    assert.equal(client, transactionClient);
     const existing = byIdempotencyKey.get(idempotencyKey);
     if (existing) {
       if (existing.session_id !== Number(sessionId) || existing.content !== content) {
@@ -111,7 +122,7 @@ const chatModel = {
     }
     const message = {
       id: nextMessageId++, session_id: Number(sessionId), preset_id: "companion", role: "user",
-      content, turn_id: turnId, idempotency_key: idempotencyKey, source_generation: 0,
+      content, turn_id: turnId, idempotency_key: idempotencyKey, source_generation: sourceGeneration,
     };
     events.push(`user:${content}`);
     messages.push(message);
@@ -121,16 +132,20 @@ const chatModel = {
   async getAssistantForUserMessage(_userId, parentId) {
     return messages.find((message) => message.role === "assistant" && message.parent_user_message_id === parentId) || null;
   },
-  async createAssistantMessageForTurn(_userId, sessionId, parentId, turnId, content) {
+  async createAssistantMessageForTurn(_userId, sessionId, parentId, turnId, content, {
+    sourceGeneration,
+    client,
+  }) {
+    assert.equal(client, transactionClient);
     const parent = messages.find((message) => message.id === parentId && message.role === "user");
-    if (!parent || parent.turn_id !== turnId || parent.source_generation !== 0) {
+    if (!parent || parent.turn_id !== turnId || parent.source_generation !== sourceGeneration) {
       throw Object.assign(new Error("Stale turn"), { code: "CHAT_TURN_STALE" });
     }
     const existing = await this.getAssistantForUserMessage(_userId, parentId);
     if (existing) return { message: existing, created: false };
     const message = {
       id: nextMessageId++, session_id: Number(sessionId), preset_id: "companion", role: "assistant",
-      content, turn_id: turnId, parent_user_message_id: parentId, source_generation: 0,
+      content, turn_id: turnId, parent_user_message_id: parentId, source_generation: sourceGeneration,
     };
     events.push(`assistant:${content}`);
     messages.push(message);
@@ -164,7 +179,6 @@ replaceModule("../../config", {
   chatRagConfig: { enabled: true, debugIncludeContent: false },
 });
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
-replaceModule("../../modules/chat/rag/indexer", { requestChatTurnIndexing() {}, requestDeleteChunksFromMessageId() {} });
 const testLogger = { debug() {}, warn() {}, error() {} };
 replaceModule("../../logger", { logger: testLogger, withRequestContext: (_req, value) => value });
 const providerCatalog = {
@@ -201,6 +215,10 @@ const memoryRuntime = {
   async assembleContext() { throw new Error("Memory context is disabled"); },
   async processScope() {},
   async rebuildScope() {},
+  async lockSourceWriteGuard(userId, presetId, { client }) {
+    sourceGuardCalls.push({ userId, presetId, client });
+    return sourceGuardResult;
+  },
   async privacyHardDelete(userId, presetId, options) {
     lastPrivacyOptions = options;
     return scopeCoordinator.enqueueByKey(scopeCoordinator.buildKey(userId, presetId), async () => {
@@ -210,7 +228,6 @@ const memoryRuntime = {
     });
   },
 };
-replaceModule("../../services/chat/memoryRuntime", memoryRuntime);
 
 const { createChatModule } = require("../../modules/chat");
 const chatModule = createChatModule({
@@ -246,6 +263,7 @@ const chatModule = createChatModule({
       streamDeltas: llmPort.streamChatCompletionDeltas,
     },
     scopeCoordinator,
+    transaction: { run: (work) => work(transactionClient) },
     logger: testLogger,
     compileContext: (options) => compileContext(options),
   },
@@ -308,6 +326,34 @@ test("two sends in different sessions of one preset commit complete turns in sco
   assert.deepEqual(messages.map((message) => [message.role, message.content]), [
     ["user", "u1"], ["assistant", "a1"], ["user", "u2"], ["assistant", "a2"],
   ]);
+});
+
+test("send forwards the guarded source generation through one transaction client", async () => {
+  sourceGuardResult = { sourceGeneration: 4, privacyPending: false };
+  const response = new TestResponse();
+
+  await chatController.sendMessage(request(11, "generation-four", "generation-key"), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(messages.map((message) => message.source_generation), [4, 4]);
+  assert.equal(sourceGuardCalls.length, 2);
+  assert.equal(sourceGuardCalls.every((call) => call.userId === 7 && call.presetId === "companion" && call.client === transactionClient), true);
+});
+
+test("an active privacy fence rejects a send before any raw message write", async () => {
+  sourceGuardResult = { sourceGeneration: 4, privacyPending: true };
+  let providerCalls = 0;
+  completeChat = async () => { providerCalls += 1; return "must-not-run"; };
+  const response = new TestResponse();
+
+  await chatController.sendMessage(request(11, "blocked", "privacy-key"), response);
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, "CHAT_PRIVACY_PENDING");
+  assert.deepEqual(messages, []);
+  assert.equal(providerCalls, 0);
+  assert.equal(sourceGuardCalls.length, 1);
+  assert.equal(sourceGuardCalls[0].client, transactionClient);
 });
 
 test("concurrent retry with one idempotency key replays the committed turn without another Provider call", async () => {

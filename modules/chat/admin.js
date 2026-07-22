@@ -4,8 +4,4 @@ const { createRecentWindowContextBuilder } = require("./application/context/buil
 module.exports = Object.freeze({
   createChatGistService,
   createRecentWindowContextBuilder,
-  get indexChatTurn() { return require("./rag/indexer").indexChatTurn; },
-  get deleteChunksFromMessageId() { return require("./rag/indexer").deleteChunksFromMessageId; },
-  get listExistingTurnKeys() { return require("./rag/repo").listExistingTurnKeys; },
-  get createChatRagProjectionAdapter() { return require("./rag/projectionAdapters").createChatRagProjectionAdapter; },
 });

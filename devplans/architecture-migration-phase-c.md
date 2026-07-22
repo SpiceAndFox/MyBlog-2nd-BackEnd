@@ -1,5 +1,6 @@
 # 架构迁移 C 阶段：Memory 接线收紧
 
+状态：已完成；2026-07-22 完成审计后已删除外部可变 runtime facade
 完成日期：2026-07-22
 
 ## 1. 本批范围
@@ -11,6 +12,7 @@
 - `modules/memory/index.js` 仅公开 `loadMemoryV2Config` 与 `createMemoryModule`；运行调用方不能再取得 migration、Provider probe、prompt、domain 或 repository 内部能力。
 - migration、inspect、provider probe、shadow replay 与只读 GUI 改用显式次级入口 `modules/memory/admin.js`。
 - 删除 Memory 顶层的 `defaultMemoryRuntime` 缓存以及 `createDefault*` 工厂。每个 runtime、context assembly 和 projection drain 都绑定到 composition 显式创建的 Memory 模块实例。
+- 完成审计进一步删除 `services/chat/memoryRuntime.js` 的 configured singleton facade；`createChatMemoryRuntime` 现在是 `app/composition/memory.js` 中的无状态装配工厂，调用方直接持有返回实例。
 - A 阶段冻结的 5 条 Memory 内部路径导入已全部删除，架构门禁的历史债务清单归零；`admin.js` 被识别为显式次级公开入口。
 
 ## 3. 数据 owner adapter 注入
@@ -19,6 +21,7 @@
 - User time-zone reader 移至 `modules/auth`，由 Auth 持有 `users` 查询，并支持沿用传入的事务 client。
 - RAG projection adapter、RAG/Gist/头像隐私 store、raw source reader 和 scope executor 由 Chat adapter 工厂创建，再由 `app/composition` 注入 Memory。
 - Memory repository 集合不再包含 Chat source repository 或 User repository；migration 的 raw source scope inventory 也改走 Chat source reader。
+- Memory repository 自身也改为 `createMemoryInfrastructureRepositories({ database, transactionExecutor })` 显式构造，不再导入根 `db`；共享 transaction executor 由 composition 同时注入 Chat 与 Memory。
 - `app/composition/memory.js` 为命令行运维流程提供同样的显式 owner adapter 装配，不让 admin 入口反向依赖 Chat 或 Auth 实现。
 
 ## 4. Compiler 分层
@@ -39,13 +42,13 @@
 
 新增 wiring 测试锁定 Memory 最小入口、无默认 runtime、无 Chat/Auth SQL，以及 domain Compiler 无 Repository I/O。完整离线门禁仍为 `npm test`，不包含数据库连接、Provider probe、迁移或任何带 `--apply` 的命令。
 
-完成验证：
+完成审计后的最终验证：
 
-- `npm run check:architecture`：通过，177 个 JavaScript 文件、388 条本地依赖边、无循环、无冻结内部导入债务；
-- `npm test`：293 项离线测试全部通过。
+- `npm run check:architecture`：通过，191 个 JavaScript 文件、361 条本地依赖边、无循环、无冻结内部导入债务；
+- `npm test`：330 项离线测试全部通过。
 
 ## 6. 回退点与下一阶段
 
-本批没有持久化变更，不需要数据库回滚。代码回退边界是 Memory runtime/admin 入口、Chat/Auth owner adapter、composition 接线、Compiler application/domain 分层及对应测试。
+本批没有 database migration，不需要数据回滚。代码回退边界是 Memory runtime/admin 入口、Repository factory、Chat/Auth owner adapter、composition 接线、Compiler application/domain 分层及对应测试。
 
-D 阶段可在此基础上按职责闭环迁移 Chat：Controller 仍通过现有显式配置的 Chat runtime facade 调用 Memory；后续移动 use case 时应把该 facade 的调用逐步改为构造参数注入，不重新引入 Memory 默认实例或内部路径导入。
+后续阶段已完成 Chat use case 注入，生产路径不存在 Memory runtime facade、默认实例或内部路径导入。架构门禁会拒绝业务模块对根依赖、其他模块内部和非 owner SQL 的访问。

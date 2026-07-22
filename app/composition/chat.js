@@ -1,14 +1,13 @@
 const { createAvatarStorage, createChatModule, createChatPersistence, isChatModelAllowed } = require("../../modules/chat");
 
-function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, adapters = {} } = {}) {
-  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator) {
+function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, rag, adapters = {} } = {}) {
+  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !rag) {
     throw new Error("Chat composition dependencies are required");
   }
   const providers = require("../../services/llm/providers");
   const models = require("../../services/llm/models");
   const settingsSchema = require("../../services/llm/settingsSchema");
   const llmCompletions = require("../../services/llm/chatCompletions");
-  const { retrieveChatRagContext, requestChatTurnIndexing, requestDeleteChunksFromMessageId } = require("../../modules/chat");
   const { createChatController } = require("../../controllers/chatController");
   const { createChatRouter } = require("../../routes/chat");
   const uploadPresetAvatar = require("../../middleware/uploadChatPresetAvatar");
@@ -38,10 +37,10 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
       recentWindow: adapters.buildRecentWindowContext ? { build: adapters.buildRecentWindowContext } : undefined,
       contextSegments: adapters.buildContextSegments ? { build: adapters.buildContextSegments } : undefined,
       timeContext: adapters.buildTimeContextState ? { build: adapters.buildTimeContextState } : undefined,
-      rag: {
-        retrieve: adapters.retrieveChatRagContext || retrieveChatRagContext,
-        requestTurnIndexing: adapters.requestChatTurnIndexing || requestChatTurnIndexing,
-        requestDeleteFromMessage: adapters.requestDeleteChunksFromMessageId || requestDeleteChunksFromMessageId,
+      rag: adapters.rag || {
+        retrieve: adapters.retrieveChatRagContext || rag.retrieve,
+        requestTurnIndexing: adapters.requestChatTurnIndexing || rag.requestTurnIndexing,
+        requestDeleteFromMessage: adapters.requestDeleteChunksFromMessageId || rag.requestDeleteFromMessage,
       },
       gist: adapters.gist,
       gistRepository,
@@ -52,6 +51,7 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
         streamDeltas: adapters.streamChatCompletionDeltas || llmCompletions.streamChatCompletionDeltas,
       },
       scopeCoordinator,
+      transaction,
       taskQueue: adapters.taskQueue,
       text: adapters.text,
       avatarStorage,

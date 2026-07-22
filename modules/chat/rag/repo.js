@@ -1,5 +1,6 @@
-const db = require("../../../db");
-const { chatRagConfig } = require("../../../config");
+function createChatRagRepository({ database: db, config: chatRagConfig } = {}) {
+  if (typeof db?.query !== "function") throw new Error("Chat RAG repository database is required");
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG repository config is required");
 
 function normalizePresetId(presetId) {
   const normalized = String(presetId || "").trim();
@@ -380,7 +381,7 @@ async function listMessagesAroundChunk({
     .filter((row) => row.id > 0 && row.id <= normalizedMaxMessageId && row.role && row.content);
 }
 
-module.exports = {
+return Object.freeze({
   upsertChunk,
   deleteAllChunks,
   countChunks,
@@ -389,4 +390,7 @@ module.exports = {
   listExistingTurnKeys,
   searchSimilarChunks,
   listMessagesAroundChunk,
-};
+});
+}
+
+module.exports = { createChatRagRepository };

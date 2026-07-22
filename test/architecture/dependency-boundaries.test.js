@@ -32,6 +32,9 @@ test("the architecture gate detects cycles and dependency-direction violations",
       "shared/clock.js": 'require("../modules/memory");\n',
       "app/composition/index.js": "module.exports = {};\n",
       "modules/chat/application/useCase.js": 'require("../../../app/composition");\n',
+      "modules/chat/infrastructure/leaky-db.js": 'require("../../../db");\n',
+      "modules/chat/infrastructure/leaky-owner.js": 'module.exports = `SELECT * FROM chat_preset_memory`;\n',
+      "db.js": "module.exports = {};\n",
       "services/leaky-config.js": "module.exports = process.env.SECRET;\n",
       "config/allowed.js": "module.exports = process.env.ALLOWED;\n",
     };
@@ -45,6 +48,8 @@ test("the architecture gate detects cycles and dependency-direction violations",
     assert.match(result.errors.join("\n"), /Internal module import is forbidden: modules\/chat\/index\.js -> modules\/memory\/internal\.js/);
     assert.match(result.errors.join("\n"), /shared must not depend on a business module/);
     assert.match(result.errors.join("\n"), /Business modules must not depend on app\/composition/);
+    assert.match(result.errors.join("\n"), /Business module dependencies must stay internal, use shared, or be injected: modules\/chat\/infrastructure\/leaky-db\.js -> db\.js/);
+    assert.match(result.errors.join("\n"), /Business modules must not query another module's tables: modules\/chat\/infrastructure\/leaky-owner\.js -> chat_preset_memory \(memory\)/);
     assert.match(result.errors.join("\n"), /process\.env is restricted.*services\/leaky-config\.js/);
     assert.doesNotMatch(result.errors.join("\n"), /config\/allowed\.js/);
     assert.equal(result.cycles.length, 1);
@@ -87,4 +92,15 @@ test("the migrated Auth module owns its controller, middleware, and repository w
   assert.doesNotMatch(authEntry, /installLegacyAuthBindings/);
   assert.doesNotMatch(authEntry, /controllers\/authController/);
   assert.doesNotMatch(authEntry, /middleware\/authMiddleware/);
+});
+
+test("retired process-global runtime facades and root module dependencies stay absent", () => {
+  const rootDir = path.resolve(__dirname, "../..");
+  assert.equal(fs.existsSync(path.join(rootDir, "services/chat/memoryRuntime.js")), false);
+  const result = analyzeArchitecture();
+  assert.deepEqual(result.dataOwnershipViolations, []);
+  assert.equal(
+    result.boundaryViolations.some((violation) => violation.startsWith("Business module dependencies must stay internal")),
+    false,
+  );
 });

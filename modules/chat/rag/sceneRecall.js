@@ -1,8 +1,10 @@
-const { chatRagConfig } = require("../../../config");
-const { logger } = require("../../../logger");
-const { createChatCompletion } = require("../../../services/llm/chatCompletions");
 const { renderTemplate, normalizeTemplate } = require("./templates");
-const chatRagRepo = require("./repo");
+
+function createChatRagSceneRecall({ config: chatRagConfig, logger, complete, repository: chatRagRepo } = {}) {
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG scene-recall config is required");
+  if (typeof logger?.debug !== "function") throw new Error("Chat RAG scene-recall logger is required");
+  if (typeof complete !== "function") throw new Error("Chat RAG scene-recall LLM port is required");
+  if (typeof chatRagRepo?.listMessagesAroundChunk !== "function") throw new Error("Chat RAG scene-recall repository is required");
 
 function collapseWhitespace(value) {
   return String(value || "")
@@ -141,7 +143,7 @@ async function generateSceneRecallForSource({ userId, presetId, source, maxMessa
     inputChars: prompt.messages.reduce((sum, message) => sum + String(message.content || "").length, 0),
   });
 
-  const response = await createChatCompletion({
+  const response = await complete({
     providerId: chatRagConfig.sceneRecallProviderId,
     model: chatRagConfig.sceneRecallModelId,
     messages: prompt.messages,
@@ -165,8 +167,11 @@ async function generateSceneRecallForSource({ userId, presetId, source, maxMessa
   return normalized;
 }
 
-module.exports = {
+return Object.freeze({
   generateSceneRecallForSource,
   buildPrompt,
   normalizeSceneRecall,
-};
+});
+}
+
+module.exports = { createChatRagSceneRecall };

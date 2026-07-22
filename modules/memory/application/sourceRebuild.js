@@ -99,6 +99,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     affectedFromMessageId: affectedFromOption = null,
   } = {}) {
     return repositories.withTransaction(async (client) => {
+      await repositories.sourceWriteGuard.lockScope(userId, presetId, { client });
       const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
       if (!current) throw new Error("Memory state must be initialized before source mutation");
       const mutationResult = await mutateSource(client);
@@ -151,6 +152,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
 
   async function initializeRecoveryGeneration(userId, presetId, { reason = "state_schema_invalid" } = {}) {
     return repositories.withTransaction(async (client) => {
+      await repositories.sourceWriteGuard.lockScope(userId, presetId, { client });
       const raw = await repositories.state.getRawState(userId, presetId, { client, forUpdate: true });
       if (raw === null) throw new Error("Memory authority row is missing during recovery");
       const head = await repositories.audit.getRecoveryHead(userId, presetId, { client });

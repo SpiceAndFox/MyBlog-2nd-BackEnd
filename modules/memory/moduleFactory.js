@@ -1,15 +1,16 @@
-const coreRepositories = require("./infrastructure/repositories");
+const { createMemoryInfrastructureRepositories } = require("./infrastructure/repositories");
 const { createMemoryRuntime } = require("./application/runtime");
 const { createMemoryContextAssembly } = require("./application/contextAssembly");
 const { createProjectionDrain } = require("./application/projectionDrain");
 
-function createRepositorySet({ sourceReader, userTimeZoneReader } = {}) {
+function createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
   if (!sourceReader?.getByIds || !sourceReader?.listUpTo || !sourceReader?.getBoundary) {
     throw new Error("Memory module requires an injected Chat raw source reader");
   }
   if (!userTimeZoneReader?.getTimeZone) {
     throw new Error("Memory module requires an injected Auth User time-zone reader");
   }
+  const coreRepositories = createMemoryInfrastructureRepositories({ database, transactionExecutor });
   return Object.freeze({
     ...coreRepositories,
     source: sourceReader,
@@ -17,8 +18,8 @@ function createRepositorySet({ sourceReader, userTimeZoneReader } = {}) {
   });
 }
 
-function createMemoryModule({ sourceReader, userTimeZoneReader } = {}) {
-  const repositories = createRepositorySet({ sourceReader, userTimeZoneReader });
+function createMemoryModule({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
+  const repositories = createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader });
 
   function createRuntime(options = {}) {
     return createMemoryRuntime({ ...options, repositories });

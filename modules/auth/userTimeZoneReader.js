@@ -1,4 +1,4 @@
-const { normalizeIanaTimeZone } = require("../../utils/timeZone");
+const { normalizeIanaTimeZone } = require("../../shared/time/timeZone");
 
 function createUserTimeZoneReader({ database } = {}) {
   if (!database?.query) throw new Error("Auth User time-zone reader requires a database query adapter");

@@ -1,9 +1,23 @@
-const { chatRagConfig, memoryV2Config } = require("../../../config");
-const { logger } = require("../../../logger");
-const { createEmbeddings } = require("../../../services/llm/embeddings");
-const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
-const chatRagRepo = require("./repo");
 const { contentHash } = require("./sourceRefs");
+
+function createChatRagIndexer({
+  config: chatRagConfig,
+  memoryConfig: memoryV2Config,
+  logger,
+  createEmbeddings,
+  chunker,
+  repository: chatRagRepo,
+} = {}) {
+  if (!chatRagConfig || !memoryV2Config) throw new Error("Chat RAG indexer config is required");
+  if (typeof logger?.error !== "function") throw new Error("Chat RAG indexer logger is required");
+  if (typeof createEmbeddings !== "function") throw new Error("Chat RAG embedding port is required");
+  if (typeof chunker?.buildTurnChunks !== "function" || typeof chunker?.buildDocumentEmbeddingText !== "function") {
+    throw new Error("Chat RAG chunker is required");
+  }
+  if (typeof chatRagRepo?.upsertChunk !== "function" || typeof chatRagRepo?.deleteChunksFromMessageId !== "function") {
+    throw new Error("Chat RAG indexer repository is required");
+  }
+  const { buildTurnChunks, buildDocumentEmbeddingText } = chunker;
 
 function normalizePositiveInteger(value, { name } = {}) {
   const number = Number(value);
@@ -130,10 +144,13 @@ function requestDeleteChunksFromMessageId(options = {}) {
   return { scheduled: true };
 }
 
-module.exports = {
+return Object.freeze({
   indexChatTurn,
   prepareChatTurnProjection,
   requestChatTurnIndexing,
   deleteChunksFromMessageId,
   requestDeleteChunksFromMessageId,
-};
+});
+}
+
+module.exports = { createChatRagIndexer };

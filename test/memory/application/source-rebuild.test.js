@@ -11,9 +11,12 @@ function makeRebuildHarness() {
   const state = createInitialMemoryState();
   state.meta.revision = 5;
   state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 9]));
-  const data = { state, statuses: {}, snapshots: [], checkpointsMarked: false, cancelled: false, mutationRan: false };
+  const data = { state, statuses: {}, snapshots: [], checkpointsMarked: false, cancelled: false, mutationRan: false, sourceGuardClient: null };
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
+    sourceWriteGuard: {
+      async lockScope(_u, _p, { client }) { data.sourceGuardClient = client; },
+    },
     state: {
       async getState() { return structuredClone(data.state); },
       async writeState(_u, _p, next) { data.state = structuredClone(next); },
@@ -43,6 +46,7 @@ test("source mutation atomically advances generation, preserves global revision,
   const result = await rebuild.initializeGeneration(7, "companion", { mutateSource() { harness.data.mutationRan = true; return "mutated"; } });
   assert.deepEqual(result, { sourceGeneration: 1, revision: 6, boundaryMessageId: 20, mutationResult: "mutated" });
   assert.equal(harness.data.mutationRan, true);
+  assert.deepEqual(harness.data.sourceGuardClient, { transaction: true });
   assert.equal(harness.data.cancelled, true);
   assert.equal(harness.data.checkpointsMarked, true);
   assert.equal(harness.data.state.meta.revision, 6);
@@ -73,6 +77,7 @@ test("source mutation restores the latest unaffected snapshot into the new gener
   const statuses = {};
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
+    sourceWriteGuard: { async lockScope() {} },
     state: {
       async getState() { return structuredClone(current); },
       async writeState(_u, _p, next) { Object.assign(current, structuredClone(next)); },
@@ -134,6 +139,7 @@ test("snapshot restore rejects stale provenance and safely falls back to an empt
   let queried = false;
   const repositories = {
     async withTransaction(work) { return work({}); },
+    sourceWriteGuard: { async lockScope() {} },
     state: {
       async getState() { return structuredClone(current); },
       async writeState(_u, _p, next) { Object.assign(current, structuredClone(next)); },

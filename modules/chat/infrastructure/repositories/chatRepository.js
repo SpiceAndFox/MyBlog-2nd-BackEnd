@@ -15,6 +15,12 @@ function normalizePresetId(rawPresetId) {
   return normalized || null;
 }
 
+function normalizeSourceGeneration(value) {
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 0) throw new Error("Invalid sourceGeneration");
+  return normalized;
+}
+
 function createChatRepository({ database } = {}) {
   if (!database?.query || !database?.getClient) throw new Error("Chat repository requires a database adapter");
   const db = database;
@@ -423,34 +429,34 @@ function createChatRepository({ database } = {}) {
     return rows[0] || null;
   },
 
-  async createUserMessage(userId, sessionId, content, { turnId, idempotencyKey } = {}) {
+  async createUserMessage(userId, sessionId, content, {
+    turnId,
+    idempotencyKey,
+    sourceGeneration,
+    client,
+  } = {}) {
     const normalizedContent = String(content || "").trim();
     const normalizedTurnId = String(turnId || "").trim();
     const normalizedKey = String(idempotencyKey || "").trim();
+    const normalizedSourceGeneration = normalizeSourceGeneration(sourceGeneration);
     if (!normalizedContent || !normalizedTurnId || !normalizedKey) {
       throw new Error("Content, turnId, and idempotencyKey are required");
     }
-    const insert = await db.query(`
+    const insert = await executor(client).query(`
       INSERT INTO chat_messages (
         session_id,user_id,preset_id,role,content,turn_id,idempotency_key,source_generation
       )
-      SELECT s.id,$2,s.preset_id,'user',$3,$4,$5,
-             COALESCE((pm.memory_state->'meta'->>'sourceGeneration')::BIGINT,0)
-      FROM chat_sessions s
-      LEFT JOIN chat_preset_memory pm ON pm.user_id=s.user_id AND pm.preset_id=s.preset_id
-      WHERE s.id=$1 AND s.user_id=$2 AND s.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM chat_memory_privacy_operations po
-          WHERE po.user_id=s.user_id AND po.preset_id=s.preset_id AND po.status<>'completed'
-        )
+       SELECT s.id,$2,s.preset_id,'user',$3,$4,$5,$6
+       FROM chat_sessions s
+       WHERE s.id=$1 AND s.user_id=$2 AND s.deleted_at IS NULL
       ON CONFLICT (user_id,preset_id,idempotency_key)
         WHERE role='user' AND idempotency_key IS NOT NULL
       DO NOTHING
       RETURNING id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
-    `, [sessionId, userId, normalizedContent, normalizedTurnId, normalizedKey]);
+    `, [sessionId, userId, normalizedContent, normalizedTurnId, normalizedKey, normalizedSourceGeneration]);
     if (insert.rows[0]) return { message: insert.rows[0], created: true };
 
-    const existing = await db.query(`
+    const existing = await executor(client).query(`
       SELECT id,session_id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
       FROM chat_messages
       WHERE user_id=$1 AND idempotency_key=$2 AND role='user'
@@ -458,13 +464,6 @@ function createChatRepository({ database } = {}) {
       LIMIT 1
     `, [userId, normalizedKey, sessionId]);
     const message = existing.rows[0] || null;
-    const privacy = await db.query(`
-      SELECT 1 FROM chat_memory_privacy_operations po
-      JOIN chat_sessions s ON s.user_id=po.user_id AND s.preset_id=po.preset_id
-      WHERE s.id=$1 AND s.user_id=$2 AND po.status<>'completed'
-      LIMIT 1
-    `, [sessionId, userId]);
-    if (privacy.rows.length) return { message: null, created: false, blocked: true };
     if (!message) return { message: null, created: false };
     if (Number(message.session_id) !== Number(sessionId) || String(message.content) !== normalizedContent) {
       const error = new Error("Idempotency key was already used for a different message");
@@ -474,8 +473,8 @@ function createChatRepository({ database } = {}) {
     return { message, created: false };
   },
 
-  async getAssistantForUserMessage(userId, parentUserMessageId) {
-    const { rows } = await db.query(`
+  async getAssistantForUserMessage(userId, parentUserMessageId, { client } = {}) {
+    const { rows } = await executor(client).query(`
       SELECT id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
       FROM chat_messages
       WHERE user_id=$1 AND parent_user_message_id=$2 AND role='assistant'
@@ -484,31 +483,30 @@ function createChatRepository({ database } = {}) {
     return rows[0] || null;
   },
 
-  async createAssistantMessageForTurn(userId, sessionId, parentUserMessageId, turnId, content) {
+  async createAssistantMessageForTurn(userId, sessionId, parentUserMessageId, turnId, content, {
+    sourceGeneration,
+    client,
+  } = {}) {
     const normalizedContent = String(content || "").trim();
     const normalizedTurnId = String(turnId || "").trim();
+    const normalizedSourceGeneration = normalizeSourceGeneration(sourceGeneration);
     if (!normalizedContent || !normalizedTurnId) throw new Error("Assistant content and turnId are required");
-    const { rows } = await db.query(`
+    const { rows } = await executor(client).query(`
       INSERT INTO chat_messages (
         session_id,user_id,preset_id,role,content,turn_id,parent_user_message_id,source_generation
       )
       SELECT u.session_id,u.user_id,u.preset_id,'assistant',$5,u.turn_id,u.id,u.source_generation
       FROM chat_messages u
       JOIN chat_sessions s ON s.id=u.session_id AND s.user_id=u.user_id AND s.deleted_at IS NULL
-      LEFT JOIN chat_preset_memory pm ON pm.user_id=u.user_id AND pm.preset_id=u.preset_id
       WHERE u.id=$3 AND u.user_id=$1 AND u.session_id=$2 AND u.role='user' AND u.turn_id=$4
-        AND COALESCE(u.source_generation,0)=COALESCE((pm.memory_state->'meta'->>'sourceGeneration')::BIGINT,0)
-        AND NOT EXISTS (
-          SELECT 1 FROM chat_memory_privacy_operations po
-          WHERE po.user_id=u.user_id AND po.preset_id=u.preset_id AND po.status<>'completed'
-        )
+        AND COALESCE(u.source_generation,0)=$6
       ON CONFLICT (parent_user_message_id)
         WHERE role='assistant' AND parent_user_message_id IS NOT NULL
       DO NOTHING
       RETURNING id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
-    `, [userId, sessionId, parentUserMessageId, normalizedTurnId, normalizedContent]);
+    `, [userId, sessionId, parentUserMessageId, normalizedTurnId, normalizedContent, normalizedSourceGeneration]);
     if (rows[0]) return { message: rows[0], created: true };
-    const existing = await this.getAssistantForUserMessage(userId, parentUserMessageId);
+    const existing = await this.getAssistantForUserMessage(userId, parentUserMessageId, { client });
     if (existing) return { message: existing, created: false };
     const error = new Error("Chat turn became stale before assistant commit");
     error.code = "CHAT_TURN_STALE";

@@ -7,6 +7,10 @@ const memoryEntry = require("../../../modules/memory");
 
 function injectedPorts() {
   return {
+    database: {
+      async query() { return { rows: [], rowCount: 0 }; },
+      async getClient() { throw new Error("not expected"); },
+    },
     sourceReader: {
       async getByIds() { return []; },
       async listUpTo() { return []; },

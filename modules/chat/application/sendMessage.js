@@ -27,6 +27,7 @@ function createSendMessageUseCase({
   rag,
   gist,
   scopeCoordinator,
+  transaction,
   logger,
   timeoutMs,
   randomUUID = crypto.randomUUID,
@@ -45,6 +46,8 @@ function createSendMessageUseCase({
   if (typeof compileContext !== "function") throw new Error("Chat context compiler is required");
   if (!llm?.complete || !llm?.createStreamResponse || !llm?.streamDeltas) throw new Error("Chat LLM port is required");
   if (!memory || typeof memory.processScope !== "function") throw new Error("Chat Memory port is required");
+  if (typeof memory.lockSourceWriteGuard !== "function") throw new Error("Chat Memory source-write guard port is required");
+  if (typeof transaction?.run !== "function") throw new Error("Chat transaction executor is required");
   if (!rag || typeof rag.requestTurnIndexing !== "function") throw new Error("Chat RAG indexing port is required");
   if (!gist || typeof gist.requestGeneration !== "function") throw new Error("Chat gist port is required");
   if (!scopeCoordinator?.enqueueByKey || !scopeCoordinator?.buildKey) throw new Error("Chat scope coordinator is required");
@@ -85,13 +88,24 @@ function createSendMessageUseCase({
   }
 
   async function commitAssistant({ userId, sessionId, presetId, userMessage, assistantContent }) {
-    const { message: assistantMessage } = await chatRepository.createAssistantMessageForTurn(
-      userId,
-      sessionId,
-      userMessage.id,
-      userMessage.turn_id,
-      assistantContent,
-    );
+    const { message: assistantMessage } = await transaction.run(async (client) => {
+      const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
+      if (guard.privacyPending) {
+        const existing = await chatRepository.getAssistantForUserMessage(userId, userMessage.id, { client });
+        if (existing) return { message: existing, created: false };
+        const error = new Error("Chat turn became stale before assistant commit");
+        error.code = "CHAT_TURN_STALE";
+        throw error;
+      }
+      return chatRepository.createAssistantMessageForTurn(
+        userId,
+        sessionId,
+        userMessage.id,
+        userMessage.turn_id,
+        assistantContent,
+        { sourceGeneration: guard.sourceGeneration, client },
+      );
+    });
     const session = await chatRepository.touchSession(userId, sessionId);
     requestPostTurnWork({ userId, presetId, sessionId, userMessage, assistantMessage, assistantContent });
     return { session, assistantMessage };
@@ -148,9 +162,15 @@ function createSendMessageUseCase({
       ) || session;
       errorSession = updatedSession;
 
-      const userInsert = await chatRepository.createUserMessage(userId, sessionId, content, {
-        turnId: randomUUID(),
-        idempotencyKey,
+      const userInsert = await transaction.run(async (client) => {
+        const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
+        if (guard.privacyPending) return { message: null, created: false, blocked: true };
+        return chatRepository.createUserMessage(userId, sessionId, content, {
+          turnId: randomUUID(),
+          idempotencyKey,
+          sourceGeneration: guard.sourceGeneration,
+          client,
+        });
       });
       userMessage = userInsert.message;
       if (!userMessage) {

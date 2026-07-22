@@ -113,6 +113,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
         let mutationResult;
         let resolvedOperationPayload = operationPayload;
         await repositories.withTransaction(async (client) => {
+          await repositories.sourceWriteGuard.lockScope(userId, presetId, { client });
           mutationResult = await deleteRawSource(client);
           if (!mutationResult) return;
           resolvedOperationPayload = typeof operationPayload === "function"

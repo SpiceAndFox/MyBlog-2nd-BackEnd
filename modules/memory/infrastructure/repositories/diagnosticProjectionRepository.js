@@ -1,4 +1,7 @@
-const { normalizeScope, executor } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
+
+function createDiagnosticProjectionRepository(dependencies = {}) {
+const { executor } = createRepositoryContext(dependencies);
 
 async function lockCheckpoint(userId, presetId, projectionKey, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -31,4 +34,7 @@ async function recordProjectionError(userId, presetId, projectionKey, reason, { 
   return rows[0];
 }
 
-module.exports = { lockCheckpoint, listCommittedEventsAfter, advanceCheckpoint, recordProjectionError };
+return Object.freeze({ lockCheckpoint, listCommittedEventsAfter, advanceCheckpoint, recordProjectionError });
+}
+
+module.exports = { createDiagnosticProjectionRepository };

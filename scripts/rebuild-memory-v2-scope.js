@@ -40,17 +40,17 @@ function printUsage(stream = process.stdout) {
   ].join("\n"));
 }
 
-function createScopedMigration({ database } = {}) {
-  const memory = require("../modules/memory/admin");
+function createScopedMigration({ database, config, logger, chatRagProjectionAdapter } = {}) {
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const administration = createMemoryAdministrationComposition({ database });
-  const config = memory.loadMemoryV2Config(process.env);
-  if (!config.enabled) throw new Error("Memory v2 is disabled");
-  const { createChatRagProjectionAdapter } = require("../modules/chat/admin");
+  const memoryConfig = config?.memoryV2Config;
+  if (!memoryConfig?.enabled) throw new Error("Memory v2 is disabled");
+  const projectionAdapter = chatRagProjectionAdapter || require("../app/composition/chatRag")
+    .createChatRagComposition({ config, database, logger }).projectionAdapter;
   return administration.createMigration({
-    config,
+    config: memoryConfig,
     projectionDrains: {
-      rag: administration.createProjectionDrain("rag", createChatRagProjectionAdapter()),
+      rag: administration.createProjectionDrain("rag", projectionAdapter),
     },
   });
 }
@@ -76,25 +76,27 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return { status: "help" };
   }
-  const db = dependencies.db || require("../app/composition/commandContext").createCommandContext().database;
-  const migration = dependencies.migration || createScopedMigration({ database: db });
+  const context = dependencies.context || (!dependencies.migration
+    ? require("../app/composition/commandContext").createCommandContext()
+    : null);
+  const db = dependencies.db || context?.database;
+  const migration = dependencies.migration || createScopedMigration({
+    database: db,
+    config: context.config,
+    logger: context.logger,
+  });
   const result = await rebuildScope({ db, migration, ...options });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }
 
 if (require.main === module) {
-  let db;
-  main(process.argv.slice(2), {
-    get db() {
-      if (!db) db = require("../app/composition/commandContext").createCommandContext().database;
-      return db;
-    },
-  }).catch((error) => {
+  const context = require("../app/composition/commandContext").createCommandContext();
+  main(process.argv.slice(2), { context }).catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);
     process.exitCode = 1;
   }).finally(async () => {
-    if (db) await db.end();
+    await context.database.end();
   });
 }
 

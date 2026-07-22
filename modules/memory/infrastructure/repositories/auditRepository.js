@@ -1,4 +1,4 @@
-const { normalizeScope, executor } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
 const { TARGET_KEYS } = require("../../contracts");
 
 const EVENT_JSONB_FIELDS = new Set(["merged_from_item_ids", "patch_summary", "normalized_operation"]);
@@ -8,6 +8,9 @@ function eventFieldValue(event, field) {
   if (value === null || value === undefined) return null;
   return EVENT_JSONB_FIELDS.has(field) ? JSON.stringify(value) : value;
 }
+
+function createAuditRepository(dependencies = {}) {
+const { executor } = createRepositoryContext(dependencies);
 
 async function insertSnapshot(userId, presetId, { sourceGeneration, revision, schemaVersion, state }, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -136,4 +139,7 @@ async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBe
   if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
   return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, getLatestSnapshotBeforeMessage, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit };
+return Object.freeze({ insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, getLatestSnapshotBeforeMessage, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit });
+}
+
+module.exports = { createAuditRepository };

@@ -69,7 +69,10 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
     return enqueueByKey(`${_userId}:${_presetId}`, async () => {
       const mutationResult = repositories?.withTransaction
-        ? await repositories.withTransaction((client) => mutateSource(client))
+        ? await repositories.withTransaction(async (client) => {
+          await repositories.sourceWriteGuard.lockScope(_userId, _presetId, { client });
+          return mutateSource(client);
+        })
         : await mutateSource(null);
       return { status: "memory_disabled", mutationResult };
     });
@@ -81,6 +84,9 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     if (!privacyDelete) throw new Error("Memory privacy hard delete is unavailable");
     return privacyDelete.execute(userId, presetId, { ...options, resetAuthority: !options.deleteScope });
   }
+  function lockSourceWriteGuard(userId, presetId, { client } = {}) {
+    return repositories.sourceWriteGuard.lockAndRead(userId, presetId, { client });
+  }
   return Object.freeze({
     enabled: false,
     initialize: async () => [],
@@ -89,6 +95,7 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     rebuildScope: disabled,
     mutateSourceAndRebuild,
     privacyHardDelete,
+    lockSourceWriteGuard,
     getPrivacyOperation: (userId, operationId) => repositories?.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null),
     hasIncompletePrivacyOperation: (userId, presetId) => repositories?.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false),
     markRecoveryNotificationsDelivered: (ids) => repositories?.sidecars?.markRecoveryNotificationsDelivered?.(ids) ?? Promise.resolve([]),
@@ -451,6 +458,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return privacyDelete.execute(userId, presetId, options);
   }
 
+  function lockSourceWriteGuard(userId, presetId, { client } = {}) {
+    return repositories.sourceWriteGuard.lockAndRead(userId, presetId, { client });
+  }
+
   function getPrivacyOperation(userId, operationId) {
     return repositories.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null);
   }
@@ -480,6 +491,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     rebuildScope,
     mutateSourceAndRebuild,
     privacyHardDelete,
+    lockSourceWriteGuard,
     getPrivacyOperation,
     hasIncompletePrivacyOperation,
     markRecoveryNotificationsDelivered,

@@ -1,6 +1,8 @@
 const crypto = require("crypto");
-const { chatRagConfig } = require("../../../config");
 const { renderTemplate } = require("./templates");
+
+function createChatRagChunker({ config: chatRagConfig } = {}) {
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG chunker config is required");
 
 function normalizeContent(value) {
   return String(value || "").trim();
@@ -84,9 +86,12 @@ function buildTurnChunks({ userContent, assistantContent } = {}) {
   }));
 }
 
-module.exports = {
+return Object.freeze({
   buildTurnChunks,
   buildEmbeddingText,
   buildDocumentEmbeddingText,
   hashContent,
-};
+});
+}
+
+module.exports = { createChatRagChunker };

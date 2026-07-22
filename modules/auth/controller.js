@@ -1,7 +1,6 @@
 const defaultBcrypt = require("bcryptjs");
 const defaultJwt = require("jsonwebtoken");
-const { logger: defaultLogger, withRequestContext: defaultWithRequestContext } = require("../../logger");
-const { normalizeIanaTimeZone } = require("../../utils/timeZone");
+const { normalizeIanaTimeZone } = require("../../shared/time/timeZone");
 
 function createAuthController({
   jwtSecret,
@@ -9,11 +8,13 @@ function createAuthController({
   userModel,
   bcrypt = defaultBcrypt,
   jwt = defaultJwt,
-  logger = defaultLogger,
-  withRequestContext = defaultWithRequestContext,
+  logger,
+  withRequestContext,
 } = {}) {
   if (typeof jwtSecret !== "string" || !jwtSecret.trim()) throw new Error("Auth jwtSecret is required");
   if (!userModel) throw new Error("Auth user model is required");
+  if (typeof logger?.error !== "function") throw new Error("Auth logger is required");
+  if (typeof withRequestContext !== "function") throw new Error("Auth request-context adapter is required");
 
   return Object.freeze({
     async me(req, res) {

@@ -1,28 +1,5 @@
 const { contentHash } = require("./sourceRefs");
 
-function loadProjectionDependencies() {
-  return {
-    db: require("../../../db"),
-    chatRagConfig: require("../../../config").chatRagConfig,
-    createEmbeddings: require("../../../services/llm/embeddings").createEmbeddings,
-    chunker: require("./chunker"),
-    chatRagRepo: require("./repo"),
-  };
-}
-
-async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
-  const { db } = loadProjectionDependencies();
-  const { rows } = await db.query(`
-    SELECT m.id, m.session_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.created_at
-    FROM chat_messages m
-    JOIN chat_sessions s ON s.id = m.session_id
-    WHERE m.user_id = $1 AND m.preset_id = $2 AND s.user_id = m.user_id AND s.deleted_at IS NULL
-      AND m.role IN ('user','assistant') AND m.id <= $3
-    ORDER BY m.id ASC
-  `, [userId, presetId, boundaryMessageId]);
-  return rows;
-}
-
 function buildTurns(messages, { afterMessageId = 0 } = {}) {
   const turns = [];
   const usersById = new Map();
@@ -62,8 +39,36 @@ function buildTurns(messages, { afterMessageId = 0 } = {}) {
   return turns.sort((left, right) => Number(left.assistantMessage.id) - Number(right.assistantMessage.id));
 }
 
+function createChatRagProjectionAdapter({
+  database: db,
+  config: chatRagConfig,
+  createEmbeddings,
+  chunker,
+  repository: chatRagRepo,
+} = {}) {
+  if (typeof db?.query !== "function") throw new Error("Chat RAG projection database is required");
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG projection config is required");
+  if (typeof createEmbeddings !== "function") throw new Error("Chat RAG projection embedding port is required");
+  if (typeof chunker?.buildTurnChunks !== "function" || typeof chunker?.buildDocumentEmbeddingText !== "function") {
+    throw new Error("Chat RAG projection chunker is required");
+  }
+  if (typeof chatRagRepo?.deleteAllChunks !== "function" || typeof chatRagRepo?.upsertChunk !== "function") {
+    throw new Error("Chat RAG projection repository is required");
+  }
+
+async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
+  const { rows } = await db.query(`
+    SELECT m.id, m.session_id, m.role, m.content, m.turn_id, m.parent_user_message_id, m.created_at
+    FROM chat_messages m
+    JOIN chat_sessions s ON s.id = m.session_id
+    WHERE m.user_id = $1 AND m.preset_id = $2 AND s.user_id = m.user_id AND s.deleted_at IS NULL
+      AND m.role IN ('user','assistant') AND m.id <= $3
+    ORDER BY m.id ASC
+  `, [userId, presetId, boundaryMessageId]);
+  return rows;
+}
+
 async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
-  const { chatRagConfig, createEmbeddings, chunker } = loadProjectionDependencies();
   const { buildTurnChunks, buildDocumentEmbeddingText } = chunker;
   if (!chatRagConfig.enabled) return { chunks: [] };
   const messages = await listSourceMessages(input);
@@ -92,12 +97,10 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
   return { chunks: staged.map((chunk, index) => ({ ...chunk, embedding: embeddings[index] })) };
 }
 
-function createChatRagProjectionAdapter() {
   return Object.freeze({
     rebuild: (input) => stageRagProjection(input),
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
     async commit({ mode, staged, userId, presetId, client }) {
-      const { chatRagRepo } = loadProjectionDependencies();
       if (mode === "rebuild") await chatRagRepo.deleteAllChunks(userId, presetId, { client });
       for (const chunk of staged?.chunks || []) await chatRagRepo.upsertChunk(chunk, { client });
     },

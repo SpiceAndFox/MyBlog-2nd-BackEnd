@@ -1,5 +1,8 @@
 const { TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES } = require("../../contracts");
-const { normalizeScope, executor, withTransaction } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
+
+function createRuntimeRepository(dependencies = {}) {
+const { executor, withTransaction } = createRepositoryContext(dependencies);
 
 async function createTask(task, { client } = {}) {
   if (!TASK_TYPES.includes(task.task_type) || !TASK_STATUSES.includes(task.status) || !TARGET_KEYS.includes(task.target_key)) throw new Error("Invalid Memory v2 task enum");
@@ -97,4 +100,7 @@ async function recordSuccessfulTargetTask(userId, presetId, { targetKey, sourceG
     consecutiveErrors: 0, lastErrorReason: null, lastTaskId: taskId, nextRetryAt: null,
   }, { client });
 }
-module.exports = { createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime };
+return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime });
+}
+
+module.exports = { createRuntimeRepository };

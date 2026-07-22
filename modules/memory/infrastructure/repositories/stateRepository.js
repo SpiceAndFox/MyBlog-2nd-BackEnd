@@ -4,12 +4,15 @@ const {
   SCHEMA_VERSION,
   TARGET_KEYS,
 } = require("../../contracts");
-const { normalizeScope, executor, withTransaction } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
 const { isDeepStrictEqual } = require("node:util");
 
 function assertSupportedMemoryState(state) {
   return assertMemoryState(state);
 }
+
+function createStateRepository(dependencies = {}) {
+const { executor, withTransaction } = createRepositoryContext(dependencies);
 
 async function getState(userId, presetId, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -84,4 +87,7 @@ async function listInitializedScopes({ client } = {}) {
   return rows.map((row) => ({ userId: Number(row.user_id), presetId: row.preset_id }));
 }
 
-module.exports = { getState, getRawState, initializeRevisionZero, writeState, listInitializedScopes, assertSupportedMemoryState };
+return Object.freeze({ getState, getRawState, initializeRevisionZero, writeState, listInitializedScopes, assertSupportedMemoryState });
+}
+
+module.exports = { createStateRepository, assertSupportedMemoryState };

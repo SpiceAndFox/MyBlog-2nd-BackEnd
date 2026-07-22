@@ -12,17 +12,30 @@ test("disabled v2 runtime never constructs provider or repository dependencies",
 
 test("disabled runtime still commits source mutations through the repository transaction", async () => {
   const client = { transaction: true };
+  const calls = [];
   const runtime = createMemoryRuntime({
     config: { enabled: false },
-    repositories: { async withTransaction(work) { return work(client); } },
+    repositories: {
+      async withTransaction(work) { return work(client); },
+      sourceWriteGuard: {
+        async lockScope(userId, presetId, options) {
+          calls.push(["guard", userId, presetId, options.client]);
+        },
+      },
+    },
   });
   const result = await runtime.mutateSourceAndRebuild(1, "default", {
     mutateSource(receivedClient) {
+      calls.push(["mutation", receivedClient]);
       assert.equal(receivedClient, client);
       return { changed: true };
     },
   });
   assert.deepEqual(result, { status: "memory_disabled", mutationResult: { changed: true } });
+  assert.deepEqual(calls, [
+    ["guard", 1, "default", client],
+    ["mutation", client],
+  ]);
 });
 
 test("disabled runtime privacy delete purges authority and derived state", async () => {
@@ -30,6 +43,9 @@ test("disabled runtime privacy delete purges authority and derived state", async
   let operation = null;
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
+    sourceWriteGuard: {
+      async lockScope() { calls.push(["guard"]); },
+    },
     privacy: {
       async purgeDerivedHistory() { calls.push(["derived"]); },
       async purgeAuthorityState() { calls.push(["authority"]); },
@@ -46,9 +62,9 @@ test("disabled runtime privacy delete purges authority and derived state", async
   const result = await runtime.privacyHardDelete(1, "default", { async deleteRawSource() { calls.push(["raw"]); return 1; } });
   assert.equal(result.status, "purging");
   assert.equal(result.rawMutationCommitted, true);
-  assert.deepEqual(calls, [["raw"], ["derived"], ["authority"]]);
+  assert.deepEqual(calls, [["guard"], ["raw"], ["derived"], ["authority"]]);
   await runtime.shutdown();
-  assert.deepEqual(calls, [["raw"], ["derived"], ["authority"], ["rag"]]);
+  assert.deepEqual(calls, [["guard"], ["raw"], ["derived"], ["authority"], ["rag"]]);
   assert.equal(operation.status, "completed");
 });
 

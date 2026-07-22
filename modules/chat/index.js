@@ -8,6 +8,7 @@ const { createChatScopeCoordinator } = require("./application/scopeCoordinator")
 const { createChatPersistence } = require("./infrastructure/persistence");
 const { createAvatarStorage } = require("./infrastructure/avatarStorage");
 const { configureProductionModelPolicy, loadProductionModelPolicy, isChatModelAllowed, isMemoryModelAllowed } = require("./modelPolicy");
+const { createChatRagModule } = require("./rag");
 
 module.exports = Object.freeze({
   createChatModule,
@@ -21,7 +22,5 @@ module.exports = Object.freeze({
   loadProductionModelPolicy,
   isChatModelAllowed,
   isMemoryModelAllowed,
-  get retrieveChatRagContext() { return require("./rag").retrieveChatRagContext; },
-  get requestChatTurnIndexing() { return require("./rag").requestChatTurnIndexing; },
-  get requestDeleteChunksFromMessageId() { return require("./rag").requestDeleteChunksFromMessageId; },
+  createChatRagModule,
 });

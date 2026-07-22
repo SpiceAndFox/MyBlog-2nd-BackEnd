@@ -17,15 +17,8 @@ const database = {
   },
 };
 
-function fake(request, exports) {
-  const filename = require.resolve(request);
-  require.cache[filename] = { id: filename, filename, loaded: true, exports };
-}
-
-fake("../../db", database);
-fake("../../config", { chatRagConfig: {} });
-
-const { listMessagesAroundChunk } = require("../../modules/chat/rag/repo");
+const { createChatRagRepository } = require("../../modules/chat/rag/repo");
+const { listMessagesAroundChunk } = createChatRagRepository({ database, config: {} });
 
 test("dialogue lookup forwards and enforces the effective retrieval cutoff", async () => {
   const messages = await listMessagesAroundChunk({

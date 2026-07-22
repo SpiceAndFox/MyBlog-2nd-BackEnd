@@ -1,10 +1,20 @@
-const { chatRagConfig } = require("../../../config");
-const { logger } = require("../../../logger");
-const { createEmbeddings } = require("../../../services/llm/embeddings");
-const { rerankDocuments } = require("../../../services/llm/reranker");
 const { renderTemplate, normalizeTemplate } = require("./templates");
-const { generateSceneRecallForSource } = require("./sceneRecall");
-const chatRagRepo = require("./repo");
+
+function createChatRagRetriever({
+  config: chatRagConfig,
+  logger,
+  createEmbeddings,
+  rerankDocuments,
+  repository: chatRagRepo,
+  generateSceneRecallForSource,
+} = {}) {
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG retriever config is required");
+  if (typeof logger?.warn !== "function" || typeof logger?.error !== "function") throw new Error("Chat RAG retriever logger is required");
+  if (typeof createEmbeddings !== "function" || typeof rerankDocuments !== "function") throw new Error("Chat RAG retriever LLM ports are required");
+  if (typeof chatRagRepo?.searchSimilarChunks !== "function" || typeof chatRagRepo?.listMessagesAroundChunk !== "function") {
+    throw new Error("Chat RAG retriever repository is required");
+  }
+  if (typeof generateSceneRecallForSource !== "function") throw new Error("Chat RAG scene-recall port is required");
 
 function parseEmbeddingVector(rawString) {
   const str = String(rawString || "").trim();
@@ -568,8 +578,11 @@ async function retrieveChatRagContext(options = {}) {
   }
 }
 
-module.exports = {
+return Object.freeze({
   retrieveChatRagContext,
   parseEmbeddingVector,
   mmrSelect,
-};
+});
+}
+
+module.exports = { createChatRagRetriever };

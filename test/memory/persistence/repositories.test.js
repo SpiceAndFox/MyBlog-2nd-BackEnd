@@ -2,12 +2,63 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { prepareValue } = require("pg/lib/utils");
 const db = require("../../../db");
-const { initializeRevisionZero } = require("../../../modules/memory/infrastructure/repositories/stateRepository");
-const { insertEvents, getLatestSnapshotBeforeMessage } = require("../../../modules/memory/infrastructure/repositories/auditRepository");
-const { upsertTargetStatus } = require("../../../modules/memory/infrastructure/repositories/runtimeRepository");
-const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../../modules/memory/infrastructure/repositories/sidecarRepository");
-const privacyRepository = require("../../../modules/memory/infrastructure/repositories/privacyRepository");
+const { createTransactionExecutor } = require("../../../shared/db/transactionExecutor");
+const { createStateRepository } = require("../../../modules/memory/infrastructure/repositories/stateRepository");
+const { createAuditRepository } = require("../../../modules/memory/infrastructure/repositories/auditRepository");
+const { createRuntimeRepository } = require("../../../modules/memory/infrastructure/repositories/runtimeRepository");
+const { createSidecarRepository } = require("../../../modules/memory/infrastructure/repositories/sidecarRepository");
+const { createPrivacyRepository } = require("../../../modules/memory/infrastructure/repositories/privacyRepository");
+const { createSourceWriteGuardRepository } = require("../../../modules/memory/infrastructure/repositories/sourceWriteGuardRepository");
 const { createChatMemorySourceReader } = require("../../../modules/chat");
+
+const database = {
+  query: (...args) => db.query(...args),
+  getClient: (...args) => db.getClient(...args),
+};
+const transactionExecutor = createTransactionExecutor({ database });
+const dependencies = { database, transactionExecutor };
+const { initializeRevisionZero } = createStateRepository(dependencies);
+const { insertEvents, getLatestSnapshotBeforeMessage } = createAuditRepository(dependencies);
+const { upsertTargetStatus } = createRuntimeRepository(dependencies);
+const {
+  upsertActiveDiagnostic,
+  resolveGapDiagnosticIfProven,
+  resolveProjectionDiagnosticIfCovered,
+  listProjectionCheckpoints,
+} = createSidecarRepository(dependencies);
+const privacyRepository = createPrivacyRepository(dependencies);
+
+test("source-write guard locks and reads generation/privacy on the supplied transaction client", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, params) {
+      calls.push({ sql: sql.replace(/\s+/g, " ").trim(), params });
+      if (sql.includes("AS source_generation")) {
+        return { rows: [{ source_generation: "7", privacy_pending: true }] };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+  };
+  const repository = createSourceWriteGuardRepository(dependencies);
+
+  const result = await repository.lockAndRead(9, " companion ", { client });
+
+  assert.deepEqual(result, { sourceGeneration: 7, privacyPending: true });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /^SELECT pg_advisory_xact_lock\(hashtextextended\(\$1, 0\)\)$/);
+  assert.deepEqual(calls[0].params, ["memory-source:9:companion"]);
+  assert.match(calls[1].sql, /FROM chat_preset_memory/);
+  assert.match(calls[1].sql, /FROM chat_memory_privacy_operations/);
+  assert.deepEqual(calls[1].params, [9, "companion"]);
+});
+
+test("source-write guard rejects calls outside an active transaction", async () => {
+  const repository = createSourceWriteGuardRepository(dependencies);
+  await assert.rejects(
+    repository.lockScope(9, "companion"),
+    /requires an active transaction client/,
+  );
+});
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
   const originalGetClient = db.getClient;

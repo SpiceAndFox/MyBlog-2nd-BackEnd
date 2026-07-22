@@ -2,11 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 
-function replaceModule(request, exports) {
-  const filename = require.resolve(request);
-  require.cache[filename] = { id: filename, filename, loaded: true, exports };
-}
-
 let baseUrl = "http://127.0.0.1/";
 const config = {
   enabled: true,
@@ -28,16 +23,20 @@ const config = {
   sceneRecallEnabled: false,
 };
 
-replaceModule("../../config", { chatRagConfig: config, memoryV2Config: { enabled: true } });
-replaceModule("../../logger", { logger: { warn() {}, error() {} } });
-replaceModule("../../modules/chat/rag/sceneRecall", { generateSceneRecallForSource: async () => "" });
-replaceModule("../../modules/chat/rag/repo", {
-  searchSimilarChunks: async () => [],
-  listMessagesAroundChunk: async () => [],
-});
-replaceModule("../../modules/memory", { listSuppressionTombstones: async () => [] });
-
-const { retrieveChatRagContext } = require("../../modules/chat/rag/retriever");
+require("../../config").configureApplicationConfig({ chatRagConfig: config });
+const { createEmbeddings } = require("../../services/llm/embeddings");
+const { createChatRagRetriever } = require("../../modules/chat/rag/retriever");
+const retrieveChatRagContext = createChatRagRetriever({
+  config,
+  logger: { warn() {}, error() {} },
+  createEmbeddings,
+  rerankDocuments: async () => [],
+  generateSceneRecallForSource: async () => "",
+  repository: {
+    searchSimilarChunks: async () => [],
+    listMessagesAroundChunk: async () => [],
+  },
+}).retrieveChatRagContext;
 
 let behavior = "429";
 let server;

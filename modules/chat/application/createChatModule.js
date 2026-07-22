@@ -64,6 +64,7 @@ function createChatModule({ config, adapters } = {}) {
     rag: adapters.rag,
     gist,
     scopeCoordinator: adapters.scopeCoordinator,
+    transaction: adapters.transaction,
     logger: adapters.logger,
     timeoutMs: config.llm.timeoutMs,
   });

@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 require("module-alias/register");
 const { createCommandContext } = require("./app/composition/commandContext");
-const { database: db, config: { chatRagConfig, memoryV2Config } } = createCommandContext();
-const { indexChatTurn, deleteChunksFromMessageId, listExistingTurnKeys } = require("./modules/chat/admin");
+const commandContext = createCommandContext();
+const { database: db, config, logger } = commandContext;
+const { chatRagConfig, memoryV2Config } = config;
+const { createChatRagComposition } = require("./app/composition/chatRag");
+const { indexChatTurn, deleteChunksFromMessageId, listExistingTurnKeys } = createChatRagComposition({
+  config,
+  database: db,
+  logger,
+}).admin;
 
 function parseArgs(argv) {
   const parsed = {};

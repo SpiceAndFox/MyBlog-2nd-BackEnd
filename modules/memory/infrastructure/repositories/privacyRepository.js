@@ -1,4 +1,7 @@
-const { normalizeScope, executor } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
+
+function createPrivacyRepository(dependencies = {}) {
+const { executor } = createRepositoryContext(dependencies);
 
 async function purgeDerivedHistory(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -74,4 +77,7 @@ async function listIncompleteOperations({ client } = {}) {
   return rows;
 }
 
-module.exports = { purgeDerivedHistory, purgeAuthorityState, upsertOperation, updateOperation, getOperation, getOperationById, hasIncompleteOperation, listIncompleteOperations };
+return Object.freeze({ purgeDerivedHistory, purgeAuthorityState, upsertOperation, updateOperation, getOperation, getOperationById, hasIncompleteOperation, listIncompleteOperations });
+}
+
+module.exports = { createPrivacyRepository };

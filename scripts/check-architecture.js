@@ -119,6 +119,30 @@ function debtKey(importer, target) {
   return `${importer} -> ${target}`;
 }
 
+function tableOwner(tableName) {
+  const table = String(tableName || "").toLowerCase();
+  if (table === "users") return "auth";
+  if (["chat_sessions", "chat_messages", "chat_prompt_presets", "chat_message_gists", "chat_rag_chunks"].includes(table)) {
+    return "chat";
+  }
+  if (table === "chat_preset_memory" || table.startsWith("chat_memory_") || [
+    "chat_context_projection_checkpoints",
+    "chat_context_quality_diagnostics",
+  ].includes(table)) return "memory";
+  if (["articles", "diaries", "tags", "article_tags"].includes(table)) return "blog";
+  return null;
+}
+
+function extractOwnedSqlTables(source) {
+  const tables = new Set();
+  const pattern = /\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    if (tableOwner(match[1])) tables.add(match[1].toLowerCase());
+  }
+  return [...tables].sort();
+}
+
 function findCycles(graph) {
   let nextIndex = 0;
   const indices = new Map();
@@ -175,6 +199,7 @@ function analyzeArchitecture({
   const observedDebt = new Set();
   const boundaryViolations = [];
   const environmentViolations = [];
+  const dataOwnershipViolations = [];
   let edgeCount = 0;
 
   for (const importer of files) {
@@ -183,6 +208,16 @@ function analyzeArchitecture({
     const source = fs.readFileSync(importer, "utf8");
     if (/\bprocess\s*\.\s*env\b/.test(source) && !isEnvironmentBoundary(importerRelative)) {
       environmentViolations.push(`process.env is restricted to configuration/startup boundaries: ${importerRelative}`);
+    }
+    if (importerOwner) {
+      for (const table of extractOwnedSqlTables(source)) {
+        const owner = tableOwner(table);
+        if (owner !== importerOwner) {
+          dataOwnershipViolations.push(
+            `Business modules must not query another module's tables: ${importerRelative} -> ${table} (${owner})`,
+          );
+        }
+      }
     }
     for (const specifier of extractStaticSpecifiers(source)) {
       const target = resolveLocalSpecifier({ importer, specifier, rootDir: normalizedRoot, aliases });
@@ -199,6 +234,13 @@ function analyzeArchitecture({
       }
       if (importerRelative.startsWith("shared/") && targetOwner) {
         boundaryViolations.push(`shared must not depend on a business module: ${debtKey(importerRelative, targetRelative)}`);
+      }
+      if (importerOwner
+        && targetOwner !== importerOwner
+        && !targetRelative.startsWith("shared/")) {
+        boundaryViolations.push(
+          `Business module dependencies must stay internal, use shared, or be injected: ${debtKey(importerRelative, targetRelative)}`,
+        );
       }
       if (importerOwner && targetRelative.startsWith("app/composition/")) {
         boundaryViolations.push(`Business modules must not depend on app/composition: ${debtKey(importerRelative, targetRelative)}`);
@@ -219,7 +261,14 @@ function analyzeArchitecture({
     boundaryViolations: [...new Set([...boundaryViolations, ...staleDebt])].sort(),
     cycles,
     environmentViolations: [...new Set(environmentViolations)].sort(),
-    errors: [...new Set([...boundaryViolations, ...environmentViolations, ...staleDebt, ...cycleViolations])].sort(),
+    dataOwnershipViolations: [...new Set(dataOwnershipViolations)].sort(),
+    errors: [...new Set([
+      ...boundaryViolations,
+      ...environmentViolations,
+      ...dataOwnershipViolations,
+      ...staleDebt,
+      ...cycleViolations,
+    ])].sort(),
   });
 }
 
@@ -254,5 +303,7 @@ module.exports = {
   analyzeArchitecture,
   extractStaticSpecifiers,
   formatReport,
+  extractOwnedSqlTables,
   isEnvironmentBoundary,
+  tableOwner,
 };

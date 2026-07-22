@@ -1,13 +1,15 @@
 const { createCommandContext } = require("../app/composition/commandContext");
 const { database: db, config, logger } = createCommandContext();
-const memoryRuntime = require("../services/chat/memoryRuntime");
 const { createMemoryRuntimeComposition } = require("../app/composition/memory");
-memoryRuntime.configureChatMemoryRuntime(createMemoryRuntimeComposition({
+const { createChatRagComposition } = require("../app/composition/chatRag");
+const chatRag = createChatRagComposition({ config, database: db, logger });
+const memoryRuntime = createMemoryRuntimeComposition({
   database: db,
   config: config.memoryV2Config,
   chatConfig: config.chatConfig,
   logger,
-}));
+  chatRag,
+});
 
 function readArgs(argv) {
   const values = {};

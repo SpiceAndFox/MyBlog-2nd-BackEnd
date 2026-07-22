@@ -1,4 +1,7 @@
-const { normalizeScope, executor } = require("./helpers");
+const { createRepositoryContext, normalizeScope } = require("./helpers");
+
+function createSidecarRepository(dependencies = {}) {
+const { executor } = createRepositoryContext(dependencies);
 
 async function upsertProjectionCheckpoint(userId, presetId, checkpoint, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -92,4 +95,7 @@ async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { c
   }
   return rows;
 }
-module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };
+return Object.freeze({ upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered });
+}
+
+module.exports = { createSidecarRepository };

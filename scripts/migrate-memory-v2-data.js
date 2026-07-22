@@ -87,10 +87,12 @@ function createMigration(config, providerTelemetry, dependencies = {}) {
   if (!administration?.createMigration || !administration?.createProjectionDrain) {
     throw new Error("Memory administration composition is required");
   }
-  const createChatRagProjectionAdapter = dependencies.createChatRagProjectionAdapter
-    || require("../modules/chat/admin").createChatRagProjectionAdapter;
+  const chatRagProjectionAdapter = dependencies.chatRagProjectionAdapter;
+  if (!chatRagProjectionAdapter?.rebuild || !chatRagProjectionAdapter?.commit) {
+    throw new Error("Chat RAG projection adapter is required");
+  }
   const projectionDrains = {
-    rag: administration.createProjectionDrain("rag", createChatRagProjectionAdapter()),
+    rag: administration.createProjectionDrain("rag", chatRagProjectionAdapter),
   };
   return administration.createMigration({ config, projectionDrains, providerTelemetry });
 }
@@ -180,9 +182,15 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
-  const { database: db } = createCommandContext();
+  const { createChatRagComposition } = require("../app/composition/chatRag");
+  const { database: db, config, logger } = createCommandContext();
   const memoryAdministration = createMemoryAdministrationComposition({ database: db });
-  main(process.argv.slice(2), { database: db, memoryAdministration })
+  const chatRag = createChatRagComposition({ config, database: db, logger });
+  main(process.argv.slice(2), {
+    database: db,
+    memoryAdministration,
+    chatRagProjectionAdapter: chatRag.projectionAdapter,
+  })
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);
       process.exitCode = 1;

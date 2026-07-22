@@ -29,8 +29,8 @@ const { runStructuredOutputPreflight } = require("./infrastructure/providers/pro
 const { buildOutputSchema } = require("./infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("./prompts");
 
-function createMemoryAdministration({ sourceReader, userTimeZoneReader } = {}) {
-  const repositories = createRepositorySet({ sourceReader, userTimeZoneReader });
+function createMemoryAdministration({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
+  const repositories = createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader });
 
   function createBoundProjectionDrain(projectionKey, adapter) {
     return createProjectionDrain({ repositories, projectionKey, adapter });

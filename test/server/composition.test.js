@@ -80,6 +80,7 @@ test("composition wires the Chat public module and injected router without start
     async assembleContext() { throw new Error("not called during composition"); },
     async processScope() {},
     async rebuildScope() {},
+    async lockSourceWriteGuard() { return { sourceGeneration: 0, privacyPending: false }; },
     async mutateSourceAndRebuild() {},
     async privacyHardDelete() {},
     async getPrivacyOperation() {},

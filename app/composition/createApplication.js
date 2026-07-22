@@ -6,6 +6,7 @@ const {
   configureApplicationConfig,
 } = require("../../config");
 const databaseEntry = require("../../db");
+const { createTransactionExecutor } = require("../../shared/db/transactionExecutor");
 const {
   createLogger,
   configureLogger,
@@ -26,6 +27,8 @@ const { createBackgroundServices } = require("./backgroundServices");
 const { createHttpApplication } = require("./httpApplication");
 const { createArticleTempImageCleanup } = require("../../modules/blog");
 const { createChatComposition } = require("./chat");
+const { createChatMemoryRuntime } = require("./memory");
+const { createChatRagComposition } = require("./chatRag");
 const { configureProviderEnvironment } = require("../../services/llm/providers");
 const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
 function createApplicationComposition({ environment, loadDotenv, adapters = {} } = {}) {
@@ -42,12 +45,18 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   });
   configureProductionModelPolicy(startupEnvironment);
 
-  const memoryRuntimeEntry = require("../../services/chat/memoryRuntime");
   const database = adapters.database || databaseEntry.createDatabase(config.databaseConfig);
   databaseEntry.configureDatabase(database);
+  const transaction = adapters.transaction || createTransactionExecutor({ database });
 
   const logger = adapters.logger || createLogger({ config: config.logConfig });
   configureLogger(logger);
+  const chatRag = adapters.chatRag || createChatRagComposition({
+    config,
+    database,
+    logger,
+    adapters: adapters.chatRagAdapters,
+  });
 
   const auth = adapters.auth || createAuthModule({
     config: config.authConfig,
@@ -57,12 +66,19 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   });
 
   const scopeCoordinator = adapters.chatScopeCoordinator || createChatScopeCoordinator();
-  const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({ database, scopeCoordinator });
+  const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({
+    database,
+    scopeCoordinator,
+    ragProjectionAdapter: chatRag.projectionAdapter,
+    ragPrivacyStore: chatRag.privacyStore,
+  });
   const memoryModule = adapters.memoryModule || createMemoryModule({
+    database,
+    transactionExecutor: transaction,
     sourceReader: chatMemoryAdapters.sourceReader,
     userTimeZoneReader: auth.userTimeZoneReader || createUserTimeZoneReader({ database }),
   });
-  const memoryRuntime = adapters.memoryRuntime || memoryRuntimeEntry.createChatMemoryRuntime({
+  const memoryRuntime = adapters.memoryRuntime || createChatMemoryRuntime({
     config: config.memoryV2Config,
     recentWindowMaxChars: config.chatConfig.recentWindowMaxChars,
     logger,
@@ -71,8 +87,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     privacyStores: chatMemoryAdapters.privacyStores,
     enqueueByKey: chatMemoryAdapters.enqueueByKey,
   });
-  memoryRuntimeEntry.configureChatMemoryRuntime(memoryRuntime);
-
   const health = adapters.health || createHealthState();
   const requestLogger = createRequestLogger({
     logger,
@@ -86,6 +100,8 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     authMiddleware: auth.middleware,
     withRequestContext,
     scopeCoordinator,
+    transaction,
+    rag: chatRag,
     adapters: adapters.chatAdapters,
   }));
   const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router, auth });
@@ -129,6 +145,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     app,
     auth,
     chat,
+    chatRag,
     config,
     database,
     health,
@@ -136,6 +153,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     logger,
     memoryModule,
     memoryRuntime,
+    transaction,
   });
 }
 
