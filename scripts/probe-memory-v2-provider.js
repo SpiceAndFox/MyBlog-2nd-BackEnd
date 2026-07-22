@@ -6,7 +6,13 @@ async function main() {
   const config = loadMemoryProviderConfig(process.env);
   const invokeStructured = createStructuredTransport(config);
   const probes = await runStructuredOutputPreflight({ invokeStructured, promptLoader: loadProposerPrompt });
-  process.stdout.write(`${JSON.stringify({ status: "supported", adapter: config.adapter, model: config.model, probes })}\n`);
+  process.stdout.write(`${JSON.stringify({
+    status: "supported",
+    adapter: config.adapter,
+    defaultModel: config.model,
+    proposerModels: config.proposerModels,
+    probes,
+  })}\n`);
 }
 
 main().catch((error) => {

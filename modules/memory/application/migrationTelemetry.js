@@ -64,7 +64,7 @@ function createMigrationProviderTelemetry({ expectedModel = null, monotonicNow =
       targetKey: String(envelope?.task?.targetKey ?? "unknown"),
       proposer: String(envelope?.task?.proposer ?? "unknown"),
       taskMode: String(envelope?.task?.mode ?? "normal"),
-      model: String(result?.model ?? expectedModel ?? "unknown"),
+      model: String(result?.model ?? (typeof expectedModel === "function" ? expectedModel(envelope) : expectedModel) ?? "unknown"),
       result: thrown ? "thrown" : result?.status === "error" ? String(result.reason || "error") : String(result?.status || "unknown"),
       taskCallOrdinal,
       durableAttempt,

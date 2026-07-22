@@ -1,5 +1,6 @@
 const { compileDeepSeekSchema } = require("./deepSeekSchemaCompiler");
 const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");
+const { resolveMemoryProviderModel } = require("../../config/loadProviderConfig");
 
 function normalizeBaseUrl(value) {
   const url = new URL(String(value || "").trim());
@@ -28,7 +29,7 @@ function parseToolArguments(value) {
   }
 }
 
-function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
@@ -40,7 +41,9 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
   }
   const endpoint = new URL("chat/completions", normalizedBaseUrl).toString();
 
-  return async function invokeStructured({ systemPrompt, userPayload, responseSchema }) {
+  const providerConfig = { model, proposerModels };
+  return async function invokeStructured({ proposer, systemPrompt, userPayload, responseSchema }) {
+    const requestedModel = resolveMemoryProviderModel(providerConfig, proposer);
     const functionName = responseSchema?.name;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(functionName || ""))) throw new Error("Structured output schema name is not a valid tool name");
     assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
@@ -51,7 +54,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...extraHeaders },
         body: JSON.stringify({
-          model,
+          model: requestedModel,
           stream: false,
           max_tokens: maxOutputTokens,
           thinking: { type: thinkingMode },
@@ -75,7 +78,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         if (isSafetySignal(data?.error?.code, data?.error?.type, data?.error?.message)) {
-          return { safetyBlocked: true, finishReason: data?.error?.code ?? "input_rejected", model: data?.model ?? model, usage: data?.usage ?? null };
+          return { safetyBlocked: true, finishReason: data?.error?.code ?? "input_rejected", model: data?.model ?? requestedModel, usage: data?.usage ?? null };
         }
         const error = new Error(data?.error?.message || `Memory Provider HTTP ${response.status}`);
         error.status = response.status;
@@ -84,7 +87,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
       const choice = data?.choices?.[0];
       const finishReason = choice?.finish_reason ?? choice?.stop_reason;
       if (isSafetySignal(finishReason, choice?.message?.refusal)) {
-        return { safetyBlocked: true, finishReason, model: data?.model, usage: data?.usage };
+        return { safetyBlocked: true, finishReason, model: data?.model ?? requestedModel, usage: data?.usage };
       }
       const toolCall = choice?.message?.tool_calls?.find((entry) => entry?.function?.name === functionName);
       const parsed = toolCall
@@ -93,7 +96,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, timeoutMs,
       return {
         output: parsed.output,
         finishReason,
-        model: data?.model ?? model,
+        model: data?.model ?? requestedModel,
         usage: data?.usage ?? null,
         transportError: parsed.error,
         transportRecovery: parsed.recovery,

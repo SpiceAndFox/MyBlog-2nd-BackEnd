@@ -61,7 +61,13 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
     if (!isDeepStrictEqual(response.output, probe.output)) {
       throw new Error(`Provider did not follow the exact preflight branch for ${probe.name}`);
     }
-    results.push({ name: probe.name, schema: probe.responseSchema.name, finishReason: response.finishReason ?? null });
+    results.push({
+      name: probe.name,
+      proposer: probe.task.proposer,
+      model: response.model ?? null,
+      schema: probe.responseSchema.name,
+      finishReason: response.finishReason ?? null,
+    });
   }
   return results;
 }

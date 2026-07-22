@@ -134,7 +134,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   const memory = dependencies.memory || require("../modules/memory/admin");
   const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
   const providerTelemetry = memory.createMigrationProviderTelemetry({
-    expectedModel: config.provider.model,
+    expectedModel: (envelope) => memory.resolveMemoryProviderModel(config.provider, envelope?.task?.proposer),
   });
   const evidence = memory.buildMigrationEvidence({
     rootDir: path.join(__dirname, ".."),

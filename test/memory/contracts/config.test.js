@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadMemoryV2Config } = require("../../../modules/memory/config/loadConfig");
-const { loadMemoryProviderConfig } = require("../../../modules/memory/config/loadProviderConfig");
+const { loadMemoryProviderConfig, resolveMemoryProviderModel } = require("../../../modules/memory/config/loadProviderConfig");
 
 test("v2 config is inert while feature is disabled", () => assert.deepEqual(loadMemoryV2Config({}), { enabled: false }));
 test("v2 config fails explicitly when enabled configuration is incomplete", () => {
@@ -76,6 +76,31 @@ test("provider config is independently loadable and never falls back to chat pro
   delete env.CHAT_MEMORY_V2_PROVIDER_API_KEY;
   env.DEEPSEEK_API_KEY = "must-not-be-used";
   assert.throws(() => loadMemoryProviderConfig(env), /CHAT_MEMORY_V2_PROVIDER_API_KEY/);
+});
+
+test("provider config supports validated per-proposer model overrides with a default fallback", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({
+    currentStateProposer: "scene-model",
+    profileRelationshipProposer: "profile-model",
+  });
+  const provider = loadMemoryProviderConfig(env);
+  assert.deepEqual(provider.proposerModels, {
+    currentStateProposer: "scene-model",
+    profileRelationshipProposer: "profile-model",
+  });
+  assert.equal(resolveMemoryProviderModel(provider, "currentStateProposer"), "scene-model");
+  assert.equal(resolveMemoryProviderModel(provider, "profileRelationshipProposer"), "profile-model");
+  assert.equal(resolveMemoryProviderModel(provider, "todoProposer"), "structured-model");
+
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = "not-json";
+  assert.throws(() => loadMemoryProviderConfig(env), /must be valid JSON/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ unknownProposer: "model" });
+  assert.throws(() => loadMemoryProviderConfig(env), /unsupported proposer/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: "  " });
+  assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: 42 });
+  assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
 });
 
 test("DeepSeek provider config requires thinking to be explicitly disabled", () => {

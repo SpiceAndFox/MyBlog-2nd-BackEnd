@@ -54,7 +54,7 @@ function createReplay(modelOverride = null, { database } = {}) {
   const loaded = memory.loadMemoryV2Config(process.env);
   if (!loaded.enabled) throw new Error("Memory v2 is disabled");
   const config = modelOverride
-    ? { ...loaded, provider: { ...loaded.provider, model: modelOverride } }
+    ? { ...loaded, provider: { ...loaded.provider, model: modelOverride, proposerModels: {} } }
     : loaded;
   return administration.createTaskShadowReplay({ config });
 }

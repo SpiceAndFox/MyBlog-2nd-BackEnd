@@ -50,6 +50,42 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
   assert.deepEqual(result.output, { ok: true });
 });
 
+test("structured transport routes models by proposer and falls back to the default", async () => {
+  const models = [];
+  const invoke = createStructuredTransport({
+    adapter: "deepseek-strict-tools",
+    baseUrl: "https://api.deepseek.com/beta",
+    apiKey: "test-key",
+    model: "default-model",
+    proposerModels: { currentStateProposer: "scene-model", profileRelationshipProposer: "profile-model" },
+    timeoutMs: 1000,
+    maxInputTokens: 1_000_000,
+  }, {
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      models.push(request.model);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{ function: { name: "probe", arguments: '{"ok":true}' } }] } }],
+        }),
+      };
+    },
+  });
+  const request = {
+    systemPrompt: "prompt",
+    userPayload: {},
+    responseSchema: { name: "probe", schema: { type: "object", properties: { ok: { type: "boolean" } } } },
+  };
+  const scene = await invoke({ ...request, proposer: "currentStateProposer" });
+  const profile = await invoke({ ...request, proposer: "profileRelationshipProposer" });
+  const todo = await invoke({ ...request, proposer: "todoProposer" });
+  assert.deepEqual(models, ["scene-model", "profile-model", "default-model"]);
+  assert.equal(scene.model, "scene-model");
+  assert.equal(profile.model, "profile-model");
+  assert.equal(todo.model, "default-model");
+});
+
 test("structured transport enforces input capability before dispatch", async () => {
   let called = false;
   const invoke = createStructuredTransport({

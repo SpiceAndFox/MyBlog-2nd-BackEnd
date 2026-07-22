@@ -75,3 +75,17 @@ test("migration telemetry preserves schema repair options", async () => {
   await adapter.propose(envelope(), { repairFeedback });
   assert.deepEqual(received, { repairFeedback });
 });
+
+test("migration telemetry resolves the expected model from each proposer when the provider omits it", async () => {
+  const telemetry = createMigrationProviderTelemetry({
+    expectedModel: (value) => value.task.proposer === "profileRelationshipProposer" ? "profile-model" : "default-model",
+  });
+  const adapter = telemetry.wrapAdapter({
+    propose: async () => ({ status: "error", reason: "llm_call_failed" }),
+  });
+  await adapter.propose(envelope());
+  await adapter.propose(envelope({ taskId: "task-2", proposer: "profileRelationshipProposer" }));
+  const report = telemetry.snapshot();
+  assert.equal(report.byModel["default-model"].callCount, 1);
+  assert.equal(report.byModel["profile-model"].callCount, 1);
+});

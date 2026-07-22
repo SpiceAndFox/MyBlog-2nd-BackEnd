@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
+    <div class="brand">
       <p class="eyebrow">MEMORY CONTROL V2 / EVALS</p>
       <h1>Proposer Task Viewer</h1>
       <p class="subtitle">查看持久化任务、Provider 请求结构、输出与校验诊断</p>
@@ -17,14 +17,14 @@
   </header>
 
   <main>
-    <section class="query-card">
+    <section class="query-card" aria-label="任务范围">
       <form id="scope-form">
         <label>User ID<input id="user-id" name="userId" type="number" min="1" value="1" required></label>
         <label>Preset ID<input id="preset-id" name="presetId" type="text" value="Alice" maxlength="200" required></label>
         <label>Generation<select id="generation" name="generation" disabled><option>先读取 scope</option></select></label>
         <button id="load-button" type="submit">读取任务</button>
       </form>
-      <p id="notice" class="notice">输入 scope 后读取。页面不会修改数据库。</p>
+      <p id="notice" class="notice" aria-live="polite">输入 scope 后读取。页面不会修改数据库。</p>
     </section>
 
     <section id="stats" class="stats" aria-label="任务统计"></section>
@@ -57,9 +57,17 @@
 
   <template id="code-panel-template">
     <section class="data-panel">
-      <div class="panel-head"><div><span class="panel-kicker"></span><h3></h3></div><button class="copy-button" type="button">复制</button></div>
-      <p class="panel-note"></p>
-      <pre><code></code></pre>
+      <div class="panel-head">
+        <button class="panel-toggle" type="button" aria-expanded="true">
+          <span class="toggle-mark" aria-hidden="true">−</span>
+          <span><span class="panel-kicker"></span><strong class="panel-title"></strong></span>
+        </button>
+        <button class="copy-button" type="button">复制</button>
+      </div>
+      <div class="panel-content">
+        <p class="panel-note"></p>
+        <pre><code></code></pre>
+      </div>
     </section>
   </template>
 

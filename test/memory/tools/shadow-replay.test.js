@@ -21,7 +21,12 @@ function fixture() {
   const config = {
     ...baseConfig,
     enabled: true,
-    provider: { adapter: "deepseek-strict-tools", model: "test-model", thinkingMode: "disabled" },
+    provider: {
+      adapter: "deepseek-strict-tools",
+      model: "test-model",
+      proposerModels: { todoProposer: "todo-test-model" },
+      thinkingMode: "disabled",
+    },
   };
   const envelope = buildNormalEnvelope({
     userId: 1,
@@ -106,6 +111,7 @@ test("task shadow replay is read-only and reports schema, Reducer, and provenanc
   assert.deepEqual(report.task.sourceBoundary, { cursorBefore: 1077, targetMessageId: 1080 });
   assert.match(report.provenance.promptHash, /^sha256:/);
   assert.match(report.provenance.outputSchemaHash, /^sha256:/);
+  assert.equal(report.provenance.requestedModel, "todo-test-model");
   assert.equal(report.replay.summary.changeCount, 2);
   assert.equal(report.replay.schemaValidation.passed, true);
   assert.equal(report.replay.reducerPreflight.status, "passed");

@@ -1,7 +1,7 @@
 const contracts = require("./contracts");
 const domain = require("./domain");
 const { loadMemoryV2Config } = require("./config/loadConfig");
-const { loadMemoryProviderConfig } = require("./config/loadProviderConfig");
+const { loadMemoryProviderConfig, resolveMemoryProviderModel } = require("./config/loadProviderConfig");
 const { createRepositorySet } = require("./moduleFactory");
 const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
@@ -95,6 +95,7 @@ module.exports = Object.freeze({
   domain,
   expandProposerTaskArtifact,
   loadMemoryProviderConfig,
+  resolveMemoryProviderModel,
   loadMemoryV2Config,
   loadProposerPrompt,
   runStructuredOutputPreflight,

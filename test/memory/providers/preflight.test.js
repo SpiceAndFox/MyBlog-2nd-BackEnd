@@ -17,6 +17,8 @@ test("provider preflight exercises every normal proposer and compaction schema",
   assert.equal(new Set(requests.map((request) => request.responseSchema.name)).size, 7);
   assert.equal(requests.every((request) => request.responseSchema.strict === true), true);
   assert.equal(requests.every((request) => request.systemPrompt.startsWith(`prompt:${request.proposer}`)), true);
+  assert.equal(results.every((entry) => entry.proposer), true);
+  assert.equal(results.every((entry) => entry.model === null), true);
 });
 
 test("provider preflight rejects a schema-valid but wrong result branch", async () => {

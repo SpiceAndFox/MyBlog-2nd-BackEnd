@@ -8,6 +8,7 @@ const { createSemanticCompiler } = require("./semanticCompiler");
 const { isSemanticTaskEnvelope } = require("./envelope");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
+const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
 
 function rowValue(row, snake, camel = snake) {
   return row?.[snake] ?? row?.[camel];
@@ -118,6 +119,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     );
     const prompt = await promptLoader(envelope.task.proposer);
     const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections);
+    const requestedModel = resolveMemoryProviderModel(config.provider, envelope.task.proposer);
     const persistedSemanticResult = stagePayload.semanticResult ?? null;
     const persistedUnableResult = stagePayload.unableResult ?? null;
     const persistedResult = persistedSemanticResult ?? persistedUnableResult;
@@ -145,7 +147,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
       },
       provenance: {
         adapter: config.provider.adapter,
-        requestedModel: config.provider.model,
+        requestedModel,
         thinkingMode: config.provider.thinkingMode ?? null,
         promptHash: sha256(prompt),
         outputSchemaHash: sha256(outputSchema),
@@ -180,7 +182,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         attempt,
         status: providerResult.status,
         reason: providerResult.reason ?? null,
-        model: providerResult.model ?? config.provider.model,
+        model: providerResult.model ?? requestedModel,
         usage: providerResult.usage ?? null,
       });
       const retryableSchemaFailure = providerResult.status === "error"
@@ -191,7 +193,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     if (providerResult.status !== "ok") {
       report.status = "provider_error";
       report.replay = {
-        model: providerResult.model ?? config.provider.model,
+        model: providerResult.model ?? requestedModel,
         usage: providerResult.usage ?? null,
         providerAttempts,
         provider: { status: "error", reason: providerResult.reason, detail: providerResult.detail ?? null },
@@ -206,7 +208,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
 
     const validation = validateSemanticResult(providerResult.output, envelope.artifact);
     const replay = {
-      model: providerResult.model ?? config.provider.model,
+      model: providerResult.model ?? requestedModel,
       usage: providerResult.usage ?? null,
       providerAttempts,
       provider: { status: "ok" },
