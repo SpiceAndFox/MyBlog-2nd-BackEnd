@@ -3,7 +3,6 @@ require("module-alias/register");
 const { loadEnvironment } = require("./environment");
 const {
   loadApplicationConfig,
-  configureApplicationConfig,
 } = require("../../config");
 const databaseEntry = require("../../db");
 const { createTransactionExecutor } = require("../../shared/db/transactionExecutor");
@@ -16,8 +15,14 @@ const {
   createAuthModule,
   createUserTimeZoneReader,
 } = require("../../modules/auth");
-const { createMemoryModule } = require("../../modules/memory");
-const { createChatMemoryAdapters, createChatScopeCoordinator, configureProductionModelPolicy } = require("../../modules/chat");
+const { createMemoryModule, loadMemoryV2Config } = require("../../modules/memory");
+const {
+  createChatLlmCatalog,
+  createChatLlmRuntime,
+  createChatMemoryAdapters,
+  createChatScopeCoordinator,
+  createProductionModelPolicy,
+} = require("../../modules/chat");
 const { createRequestLogger } = require("../../middleware/requestLogger");
 const {
   createHealthState,
@@ -29,21 +34,22 @@ const { createArticleTempImageCleanup } = require("../../modules/blog");
 const { createChatComposition } = require("./chat");
 const { createChatMemoryRuntime } = require("./memory");
 const { createChatRagComposition } = require("./chatRag");
-const { configureProviderEnvironment } = require("../../services/llm/providers");
-const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
 function createApplicationComposition({ environment, loadDotenv, adapters = {} } = {}) {
   const startupEnvironment = loadEnvironment({
     environment: environment || process.env,
     loadDotenv: loadDotenv ?? environment === undefined,
   });
-  const config = loadApplicationConfig(startupEnvironment);
-  configureApplicationConfig(config);
-  configureProviderEnvironment(startupEnvironment);
-  configureOpenRouterAttribution({
-    siteUrl: startupEnvironment.OPENROUTER_SITE_URL,
-    appName: startupEnvironment.OPENROUTER_APP_NAME,
+  const chatLlmCatalog = adapters.chatLlmCatalog || createChatLlmCatalog({ environment: startupEnvironment });
+  const config = loadApplicationConfig(startupEnvironment, {
+    chatLlmCatalog,
+    loadMemoryConfig: loadMemoryV2Config,
   });
-  configureProductionModelPolicy(startupEnvironment);
+  const chatLlm = adapters.chatLlm || createChatLlmRuntime({
+    catalog: chatLlmCatalog,
+    config: config.llmConfig,
+    adapters: adapters.chatLlmAdapters,
+  });
+  const productionModelPolicy = adapters.productionModelPolicy || createProductionModelPolicy(startupEnvironment);
 
   const database = adapters.database || databaseEntry.createDatabase(config.databaseConfig);
   databaseEntry.configureDatabase(database);
@@ -55,6 +61,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     config,
     database,
     logger,
+    llm: chatLlm,
     adapters: adapters.chatRagAdapters,
   });
 
@@ -102,6 +109,8 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     scopeCoordinator,
     transaction,
     rag: chatRag,
+    llm: chatLlm,
+    isModelAllowed: productionModelPolicy.isChatModelAllowed,
     adapters: adapters.chatAdapters,
   }));
   const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router, auth });
@@ -145,6 +154,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     app,
     auth,
     chat,
+    chatLlm,
     chatRag,
     config,
     database,
@@ -153,6 +163,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     logger,
     memoryModule,
     memoryRuntime,
+    productionModelPolicy,
     transaction,
   });
 }

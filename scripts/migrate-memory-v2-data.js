@@ -139,7 +139,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   const evidence = memory.buildMigrationEvidence({
     rootDir: path.join(__dirname, ".."),
     memoryConfig: config,
-    ragConfig: dependencies.chatRagConfig || require("../config").chatRagConfig,
+    ragConfig: dependencies.chatRagConfig,
   });
   const migration = createMigration(config, providerTelemetry, { ...dependencies, memory });
   const inventory = withCallEstimates(await migration.inventory(options.scopes), config);
@@ -183,13 +183,14 @@ if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const { createChatRagComposition } = require("../app/composition/chatRag");
-  const { database: db, config, logger } = createCommandContext();
+  const { chatLlm, database: db, config, logger } = createCommandContext();
   const memoryAdministration = createMemoryAdministrationComposition({ database: db });
-  const chatRag = createChatRagComposition({ config, database: db, logger });
+  const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
   main(process.argv.slice(2), {
     database: db,
     memoryAdministration,
     chatRagProjectionAdapter: chatRag.projectionAdapter,
+    chatRagConfig: config.chatRagConfig,
   })
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);

@@ -7,8 +7,9 @@ const { createChatModule } = require("./application/createChatModule");
 const { createChatScopeCoordinator } = require("./application/scopeCoordinator");
 const { createChatPersistence } = require("./infrastructure/persistence");
 const { createAvatarStorage } = require("./infrastructure/avatarStorage");
-const { configureProductionModelPolicy, loadProductionModelPolicy, isChatModelAllowed, isMemoryModelAllowed } = require("./modelPolicy");
+const { createProductionModelPolicy, loadProductionModelPolicy, isChatModelAllowed, isMemoryModelAllowed } = require("./modelPolicy");
 const { createChatRagModule } = require("./rag");
+const { createChatLlmCatalog, createChatLlmRuntime } = require("./infrastructure/llm");
 
 module.exports = Object.freeze({
   createChatModule,
@@ -18,9 +19,11 @@ module.exports = Object.freeze({
   createChatMemoryAdapters,
   createChatMemoryPrivacyStores,
   createChatMemorySourceReader,
-  configureProductionModelPolicy,
+  createProductionModelPolicy,
   loadProductionModelPolicy,
   isChatModelAllowed,
   isMemoryModelAllowed,
   createChatRagModule,
+  createChatLlmCatalog,
+  createChatLlmRuntime,
 });

@@ -1,7 +1,16 @@
 const { GoogleGenAI } = require("@google/genai");
-const { llmConfig } = require("../../../../config");
-const { getProviderConfig, isBodyParamAllowed } = require("../../providers");
-const { clampNumberWithRange, getGlobalNumericRange, getProviderNumericRange } = require("../../settingsSchema");
+
+function createGoogleGenAiAdapter({ providers, settingsSchema, config: llmConfig, GoogleGenAIClass = GoogleGenAI } = {}) {
+  if (!providers?.getProviderConfig || !providers?.isBodyParamAllowed) {
+    throw new Error("Google GenAI adapter requires a provider registry");
+  }
+  if (!settingsSchema?.getGlobalNumericRange || !settingsSchema?.getProviderNumericRange || !settingsSchema?.clampNumberWithRange) {
+    throw new Error("Google GenAI adapter requires a settings schema");
+  }
+  if (!Number.isFinite(llmConfig?.timeoutMs) || llmConfig.timeoutMs <= 0) throw new Error("Google GenAI adapter timeout is required");
+  if (typeof GoogleGenAIClass !== "function") throw new Error("Google GenAI client constructor is required");
+  const { getProviderConfig, isBodyParamAllowed } = providers;
+  const { clampNumberWithRange, getGlobalNumericRange, getProviderNumericRange } = settingsSchema;
 
 const SUPPORTED_HARM_BLOCK_THRESHOLDS = new Set([
   "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
@@ -259,7 +268,7 @@ async function createChatCompletion({
   rawConfig,
 } = {}) {
   const provider = getProviderConfig(providerId);
-  const ai = new GoogleGenAI({ apiKey: provider.apiKey });
+  const ai = new GoogleGenAIClass({ apiKey: provider.apiKey });
 
   const { signal: abortSignal, cleanup } = ensureAbortSignal(timeoutMs, signal);
 
@@ -304,7 +313,7 @@ async function createChatCompletion({
 
 async function createChatCompletionStreamResponse({ providerId, model, messages, signal, settings, rawConfig } = {}) {
   const provider = getProviderConfig(providerId);
-  const ai = new GoogleGenAI({ apiKey: provider.apiKey });
+  const ai = new GoogleGenAIClass({ apiKey: provider.apiKey });
 
   const { contents, systemInstruction } = buildContentsFromOpenAiMessages(messages);
   const config = buildGenerateContentConfig({
@@ -360,8 +369,11 @@ async function* streamChatCompletionDeltas({ response }) {
   }
 }
 
-module.exports = {
+return Object.freeze({
   createChatCompletion,
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
-};
+});
+}
+
+module.exports = { createGoogleGenAiAdapter };

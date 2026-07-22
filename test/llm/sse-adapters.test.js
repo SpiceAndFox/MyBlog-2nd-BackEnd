@@ -1,10 +1,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const configPath = require.resolve("../../config");
-require.cache[configPath] = { id: configPath, filename: configPath, loaded: true, exports: { llmConfig: { timeoutMs: 1000 } } };
-const openai = require("../../services/llm/adapters/openaiCompatible/chatCompletions");
-const anthropic = require("../../services/llm/adapters/anthropicMessages/chatCompletions");
+const { createOpenAiCompatibleAdapter } = require("../../modules/chat/infrastructure/llm/adapters/openAiCompatible");
+const { createAnthropicMessagesAdapter } = require("../../modules/chat/infrastructure/llm/adapters/anthropicMessages");
+
+const providers = {
+  getProviderConfig() {},
+  getProviderDefinition() {},
+  isBodyParamAllowed() { return true; },
+};
+const settingsSchema = {
+  getGlobalNumericRange() { return null; },
+  getProviderNumericRange() { return null; },
+  clampNumberWithRange(value) { return Number(value); },
+};
+const dependencies = { providers, settingsSchema, config: { timeoutMs: 1000 } };
+const openai = createOpenAiCompatibleAdapter(dependencies);
+const anthropic = createAnthropicMessagesAdapter(dependencies);
 
 function bodyFromChunks(chunks) {
   return (async function* stream() {

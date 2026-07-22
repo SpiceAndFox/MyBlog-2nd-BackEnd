@@ -1,5 +1,7 @@
-const { chatRagConfig } = require("../../config");
-const { buildOpenRouterAttributionHeaders } = require("./providers/openrouter/headers");
+function createEmbeddingClient({ config: chatRagConfig, fetchImpl = globalThis.fetch, openRouterAttribution = {} } = {}) {
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG embedding config is required");
+  if (typeof fetchImpl !== "function") throw new Error("Chat RAG embedding fetch implementation is required");
+  const attributionHeaders = Object.freeze({ ...openRouterAttribution });
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -20,7 +22,7 @@ function buildUrl(baseUrl, path) {
 function buildHeaderExtensions() {
   const baseUrl = String(chatRagConfig.embeddingBaseUrl || "");
   if (!baseUrl.includes("openrouter.ai")) return {};
-  return buildOpenRouterAttributionHeaders();
+  return attributionHeaders;
 }
 
 async function readJsonSafe(response) {
@@ -114,7 +116,7 @@ async function createEmbeddings({ texts, signal } = {}) {
   const url = buildUrl(chatRagConfig.embeddingBaseUrl, "embeddings");
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       method: "POST",
       headers: {
         ...buildHeaderExtensions(),
@@ -156,6 +158,9 @@ async function createEmbeddings({ texts, signal } = {}) {
   }
 }
 
-module.exports = {
+return Object.freeze({
   createEmbeddings,
-};
+});
+}
+
+module.exports = { createEmbeddingClient };

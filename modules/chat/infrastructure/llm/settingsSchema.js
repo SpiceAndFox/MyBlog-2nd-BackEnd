@@ -1,4 +1,8 @@
-const { getProviderDefinition, listSupportedProviders } = require("./providers");
+function createSettingsSchema({ providers } = {}) {
+if (typeof providers?.getProviderDefinition !== "function" || typeof providers?.listSupportedProviders !== "function") {
+  throw new Error("Chat LLM settings schema requires a provider registry");
+}
+const { getProviderDefinition, listSupportedProviders } = providers;
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -169,7 +173,7 @@ function clampNumberWithRange(value, range, { fallback } = {}) {
   return Math.min(range.max, Math.max(range.min, number));
 }
 
-module.exports = {
+return Object.freeze({
   getProviderSettingsSchema,
   getProviderModel,
   getControlOptions,
@@ -180,4 +184,7 @@ module.exports = {
   getGlobalNumericRange,
   clampNumber,
   clampNumberWithRange,
-};
+});
+}
+
+module.exports = { createSettingsSchema };

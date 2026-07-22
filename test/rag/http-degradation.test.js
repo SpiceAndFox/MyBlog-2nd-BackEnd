@@ -23,9 +23,9 @@ const config = {
   sceneRecallEnabled: false,
 };
 
-require("../../config").configureApplicationConfig({ chatRagConfig: config });
-const { createEmbeddings } = require("../../services/llm/embeddings");
+const { createEmbeddingClient } = require("../../modules/chat/rag/infrastructure/embeddings");
 const { createChatRagRetriever } = require("../../modules/chat/rag/retriever");
+const { createEmbeddings } = createEmbeddingClient({ config });
 const retrieveChatRagContext = createChatRagRetriever({
   config,
   logger: { warn() {}, error() {} },

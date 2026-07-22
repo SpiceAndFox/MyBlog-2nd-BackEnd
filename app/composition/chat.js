@@ -1,13 +1,9 @@
-const { createAvatarStorage, createChatModule, createChatPersistence, isChatModelAllowed } = require("../../modules/chat");
+const { createAvatarStorage, createChatModule, createChatPersistence } = require("../../modules/chat");
 
-function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, rag, adapters = {} } = {}) {
-  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !rag) {
+function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, rag, llm, isModelAllowed, adapters = {} } = {}) {
+  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !rag || !llm || typeof isModelAllowed !== "function") {
     throw new Error("Chat composition dependencies are required");
   }
-  const providers = require("../../services/llm/providers");
-  const models = require("../../services/llm/models");
-  const settingsSchema = require("../../services/llm/settingsSchema");
-  const llmCompletions = require("../../services/llm/chatCompletions");
   const { createChatController } = require("../../controllers/chatController");
   const { createChatRouter } = require("../../routes/chat");
   const uploadPresetAvatar = require("../../middleware/uploadChatPresetAvatar");
@@ -29,10 +25,10 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
       chatRepository,
       presetRepository,
       gistRepository,
-      providers: adapters.providers || providers,
-      models: adapters.models || models,
-      settingsSchema: adapters.settingsSchema || settingsSchema,
-      isModelAllowed: adapters.isModelAllowed || isChatModelAllowed,
+      providers: adapters.providers || llm.providers,
+      models: adapters.models || llm.models,
+      settingsSchema: adapters.settingsSchema || llm.settingsSchema,
+      isModelAllowed: adapters.isModelAllowed || isModelAllowed,
       memory: memoryRuntime,
       recentWindow: adapters.buildRecentWindowContext ? { build: adapters.buildRecentWindowContext } : undefined,
       contextSegments: adapters.buildContextSegments ? { build: adapters.buildContextSegments } : undefined,
@@ -45,10 +41,10 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
       gist: adapters.gist,
       gistRepository,
       llm: {
-        complete: adapters.createChatCompletion || llmCompletions.createChatCompletion,
+        complete: adapters.createChatCompletion || llm.createChatCompletion,
         createStreamResponse:
-          adapters.createChatCompletionStreamResponse || llmCompletions.createChatCompletionStreamResponse,
-        streamDeltas: adapters.streamChatCompletionDeltas || llmCompletions.streamChatCompletionDeltas,
+          adapters.createChatCompletionStreamResponse || llm.createChatCompletionStreamResponse,
+        streamDeltas: adapters.streamChatCompletionDeltas || llm.streamChatCompletionDeltas,
       },
       scopeCoordinator,
       transaction,

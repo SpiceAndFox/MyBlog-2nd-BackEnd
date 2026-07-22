@@ -1,4 +1,8 @@
-const { getProviderDefinition } = require("./providers");
+function createModelCatalog({ providers } = {}) {
+if (typeof providers?.getProviderDefinition !== "function") {
+  throw new Error("Chat LLM model catalog requires a provider registry");
+}
+const { getProviderDefinition } = providers;
 
 function normalizeProviderId(providerId) {
   return String(providerId || "").trim();
@@ -36,7 +40,10 @@ function isSupportedModel(providerId, modelId) {
   return listModelsForProvider(normalizedProviderId).some((model) => String(model?.id || "").trim() === normalizedModelId);
 }
 
-module.exports = {
+return Object.freeze({
   listModelsForProvider,
   isSupportedModel,
-};
+});
+}
+
+module.exports = { createModelCatalog };

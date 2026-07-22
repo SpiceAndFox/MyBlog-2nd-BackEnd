@@ -115,8 +115,8 @@ F 阶段对 Blog 的唯一改动是 3 个消费 auth 的路由文件改为工厂
 
 完成审计后的最终验证：
 
-- `npm run check:architecture`：通过，191 个 JavaScript 文件、361 条本地依赖边、无循环；
-- `npm test`：330 项离线测试全部通过（含 21 项 Auth 行为测试、HTTP contract、composition、跨模块事务 guard 与架构 owner 门禁）。
+- `npm run check:architecture`：通过，190 个 JavaScript 文件、337 条本地依赖边、无循环；
+- `npm test`：334 项离线测试全部通过（含 21 项 Auth 行为测试、HTTP contract、composition、跨模块事务 guard、LLM 实例隔离与架构 owner 门禁）。
 
 本阶段没有数据库迁移或外部写入，不需要数据回滚。代码回退边界是 `modules/auth/`（5 文件）、4 个路由工厂、`app/composition/createApplication.js`、`app/composition/httpApplication.js`、`test/auth/auth-behavior.test.js`、`test/server/http-contract.test.js`、`test/architecture/dependency-boundaries.test.js` 及 3 个已删除的遗留文件。
 
@@ -134,25 +134,25 @@ F 阶段对 Blog 的唯一改动是 3 个消费 auth 的路由文件改为工厂
 | 跨模块事务由明确 application use case 拥有 | Chat send use case 持有 transaction，Memory 提供 scope guard 端口 |
 | Memory source/projection/privacy/User time-zone 由外部注入 | `userTimeZoneReader` 随 Auth 归位，仍由 composition 注入 Memory |
 | 不存在重复写入、双 authority 或无期限兼容分支 | 遗留 auth 单例与 delegating 导出已删除 |
-| 全部离线测试通过 | 330 项通过 |
+| 全部离线测试通过 | 334 项通过 |
 
 ## 10. 完成审计与过渡状态清理
 
 F 阶段原记录把 RAG 的根依赖和 `services/chat/memoryRuntime.js` 列为“未处理但不违反门禁”。这个结论与主计划完成标准矛盾，现已修正：
 
-- RAG 改为显式工厂，根 config/database/logger/LLM 只在 `app/composition/chatRag.js` 装配；
+- RAG 改为显式工厂，database/logger 与 Chat LLM runtime 只在 `app/composition/chatRag.js` 装配；
 - Memory runtime facade 删除，实例由 composition 直接创建、持有并注入；
 - Memory Repository 改为显式 database/transaction factory，不再导入根 `db`；
 - Auth controller 不再使用根 logger fallback；通用 time-zone helper 归入 `shared/time`；
 - 架构门禁会拒绝任何业务模块到根文件/`services` 的本地依赖，以及跨 data owner 的 SQL。
 
-Blog controller/model 留在原目录不是边界例外，而是主计划明确的按需非目标；触发条件仍见第 6 节。`services/llm` 暂留原目录也不是依赖债：它只在 composition/启动边界被连接，业务模块不直接依赖它。
+Blog controller/model 留在原目录不是边界例外，而是主计划明确的按需非目标；触发条件仍见第 6 节。Chat LLM 实现已在后续 H 批次归入 Chat owner。
 
 ## 11. 后续跟进：serverLifecycle 归位
 
 F 阶段完成后，按依赖方向修正把 `services/serverLifecycle.js` 迁入 `app/composition/serverLifecycle.js`（2026-07-22）。该模块为进程级生命周期工厂（health 状态、健康端点、生产启动门禁、listen/drain、shutdown 编排、进程信号处理），按边界规则 #1 本属 composition 职责。迁移后其 `services → modules/chat`（读生产模型策略）归正为 `app/composition → modules/chat`。
 
-完成审计又删除了 `services/chat/memoryRuntime.js`。`services/` 现在只保留计划允许的 LLM 实现；是否建立 `shared/llm` 仍由稳定多消费者触发，而不是为了目录统一而移动。
+完成审计删除了 `services/chat/memoryRuntime.js`；后续 H 批次又删除 `services/llm` 的受版本控制实现。是否建立 `shared/llm` 仍由稳定的跨 owner 多消费者触发，而不是为了目录统一而移动。
 
 ## 12. 阶段总结
 

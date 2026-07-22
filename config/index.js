@@ -1,33 +1,24 @@
 const envReaders = require("./readEnv");
-const {
-  getGlobalNumericRange,
-  getProviderNumericRange,
-  clampNumberWithRange,
-  getActiveSchemaControls,
-  getProviderModel,
-  getControlOptions,
-} = require("../services/llm/settingsSchema");
-const { getProviderDefinition } = require("../services/llm/providers");
 
-const CONFIG_KEYS = Object.freeze([
-  "serverConfig",
-  "databaseConfig",
-  "authConfig",
-  "chatConfig",
-  "chatTimeContextConfig",
-  "chatContextConfig",
-  "chatGistConfig",
-  "chatRagConfig",
-  "llmConfig",
-  "logConfig",
-  "articleConfig",
-  "memoryV2Config",
-]);
-
-function loadApplicationConfig(env = {}) {
+function loadApplicationConfig(env = {}, { chatLlmCatalog, loadMemoryConfig } = {}) {
   if (!env || typeof env !== "object" || Array.isArray(env)) {
     throw new Error("Application configuration requires an environment object");
   }
+  if (!chatLlmCatalog?.settingsSchema || !chatLlmCatalog?.providers) {
+    throw new Error("Application configuration requires an injected Chat LLM catalog");
+  }
+  if (typeof loadMemoryConfig !== "function") {
+    throw new Error("Application configuration requires an injected Memory config loader");
+  }
+  const {
+    getGlobalNumericRange,
+    getProviderNumericRange,
+    clampNumberWithRange,
+    getActiveSchemaControls,
+    getProviderModel,
+    getControlOptions,
+  } = chatLlmCatalog.settingsSchema;
+  const { getProviderDefinition } = chatLlmCatalog.providers;
   const readBoolEnv = (name, defaultValue) => envReaders.readBoolEnv(name, defaultValue, env);
   const readFloatEnv = (name, defaultValue) => envReaders.readFloatEnv(name, defaultValue, env);
   const readIntEnv = (name, defaultValue) => envReaders.readIntEnv(name, defaultValue, env);
@@ -917,8 +908,7 @@ const logConfig = {
   debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", false),
 };
 
-const { loadMemoryV2Config } = require("../modules/memory");
-const memoryV2Config = loadMemoryV2Config(env);
+const memoryV2Config = loadMemoryConfig(env);
 
 const articleConfig = {
   tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), {
@@ -966,32 +956,4 @@ return deepFreeze({
 });
 }
 
-let configuredApplicationConfig = null;
-
-function configureApplicationConfig(config) {
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("A loaded application configuration object is required");
-  }
-  configuredApplicationConfig = config;
-  return configuredApplicationConfig;
-}
-
-function getApplicationConfig() {
-  if (!configuredApplicationConfig) {
-    configuredApplicationConfig = loadApplicationConfig(process.env);
-  }
-  return configuredApplicationConfig;
-}
-
-module.exports = {
-  loadApplicationConfig,
-  configureApplicationConfig,
-  getApplicationConfig,
-};
-
-for (const key of CONFIG_KEYS) {
-  Object.defineProperty(module.exports, key, {
-    enumerable: true,
-    get() { return getApplicationConfig()[key]; },
-  });
-}
+module.exports = { loadApplicationConfig };

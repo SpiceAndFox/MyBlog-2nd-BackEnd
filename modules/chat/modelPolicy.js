@@ -1,16 +1,4 @@
-let configuredEnvironment = Object.freeze({});
-
-function configureProductionModelPolicy(env) {
-  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Production model policy environment is required");
-  configuredEnvironment = Object.freeze({ ...env });
-}
-
-function resolveEnvironment(env) {
-  return env && typeof env === "object" ? env : configuredEnvironment;
-}
-
 function isProduction(env) {
-  env = resolveEnvironment(env);
   return String(env.NODE_ENV || "").trim().toLowerCase() === "production";
 }
 
@@ -22,7 +10,7 @@ function normalizedList(value, path) {
 }
 
 function loadProductionModelPolicy(env) {
-  env = resolveEnvironment(env);
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Production model policy environment is required");
   if (!isProduction(env)) return null;
   const raw = String(env.CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON || "").trim();
   if (!raw) throw new Error("Production requires CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON");
@@ -63,8 +51,20 @@ function isMemoryModelAllowed(modelId, env) {
   return policy.memory.includes(String(modelId || "").trim());
 }
 
+function createProductionModelPolicy(environment) {
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
+    throw new Error("Production model policy environment is required");
+  }
+  const env = Object.freeze({ ...environment });
+  return Object.freeze({
+    load: () => loadProductionModelPolicy(env),
+    isChatModelAllowed: (providerId, modelId) => isChatModelAllowed(providerId, modelId, env),
+    isMemoryModelAllowed: (modelId) => isMemoryModelAllowed(modelId, env),
+  });
+}
+
 module.exports = {
-  configureProductionModelPolicy,
+  createProductionModelPolicy,
   loadProductionModelPolicy,
   isChatModelAllowed,
   isMemoryModelAllowed,

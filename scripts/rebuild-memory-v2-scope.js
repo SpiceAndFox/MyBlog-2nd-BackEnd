@@ -40,13 +40,13 @@ function printUsage(stream = process.stdout) {
   ].join("\n"));
 }
 
-function createScopedMigration({ database, config, logger, chatRagProjectionAdapter } = {}) {
+function createScopedMigration({ database, config, logger, chatLlm, chatRagProjectionAdapter } = {}) {
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const administration = createMemoryAdministrationComposition({ database });
   const memoryConfig = config?.memoryV2Config;
   if (!memoryConfig?.enabled) throw new Error("Memory v2 is disabled");
   const projectionAdapter = chatRagProjectionAdapter || require("../app/composition/chatRag")
-    .createChatRagComposition({ config, database, logger }).projectionAdapter;
+    .createChatRagComposition({ config, database, logger, llm: chatLlm }).projectionAdapter;
   return administration.createMigration({
     config: memoryConfig,
     projectionDrains: {
@@ -84,6 +84,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     database: db,
     config: context.config,
     logger: context.logger,
+    chatLlm: context.chatLlm,
   });
   const result = await rebuildScope({ db, migration, ...options });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

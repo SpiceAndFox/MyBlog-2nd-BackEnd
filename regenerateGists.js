@@ -2,13 +2,13 @@
 require("module-alias/register");
 const { createCommandContext } = require("./app/composition/commandContext");
 const {
+  chatLlm,
   database: db,
   logger,
   config: { chatConfig, chatContextConfig, chatGistConfig },
 } = createCommandContext();
 const { createChatPersistence } = require("./modules/chat");
 const { createChatGistService, createRecentWindowContextBuilder } = require("./modules/chat/admin");
-const { createChatCompletion } = require("./services/llm/chatCompletions");
 const { chatRepository, gistRepository } = createChatPersistence({ database: db });
 const buildRecentWindowContext = createRecentWindowContextBuilder({
   config: chatConfig,
@@ -23,7 +23,7 @@ const { requestGeneration: requestAssistantGistGeneration } = createChatGistServ
   contextConfig: chatContextConfig,
   chatRepository,
   gistRepository,
-  llm: { complete: createChatCompletion },
+  llm: { complete: chatLlm.createChatCompletion },
   logger,
 });
 

@@ -9,7 +9,7 @@ E 阶段将 Chat RAG 的 projection、retrieval、repository 和 degradation 归
 - `services/chat/rag/` 的实现迁入 `modules/chat/rag/`，旧入口删除；
 - `services/chat/productionModelPolicy.js` 迁入 `modules/chat/modelPolicy.js`；
 - RAG 所有组件改为显式工厂，配置、database、logger 和 LLM 函数均由调用方提供；
-- `app/composition/chatRag.js` 成为 RAG 与根配置、数据库、日志、`services/llm` 的唯一装配点；
+- `app/composition/chatRag.js` 接收显式 Chat LLM runtime；RAG embedding/reranker 由 Chat RAG 子模块内部的实例工厂创建；
 - 运维脚本通过同一 composition 工厂取得 RAG admin/projection 能力，不再从 Chat admin 入口穿透内部实现。
 
 ## 2. 当前结构与装配
@@ -77,11 +77,11 @@ Chat `sendMessage` application use case 拥有 user/assistant 两个写入事务
 
 锁、fence 读取和 Chat/Memory 写入均在同一 transaction client 上完成，因此不会把原本的原子检查拆成有竞态的独立查询。锁 key 只包含 scope 标识，不包含原始用户数据。
 
-## 5. `services/llm` 决策
+## 5. Chat LLM 最终归属
 
-`services/llm` 暂不迁入 `shared/llm`。它仍由 composition 和进程启动配置调用；业务模块只接收最小函数端口。只有 transport、SSE 或协议适配出现多个稳定消费者时，才评估把对应通用部分移入 `shared/llm`。
+2026-07-23 的补充批次确认 RAG 是 Chat 子模块，而 Memory 使用独立 strict structured-output Provider，因此不存在三个独立 owner 共同消费一个高层 LLM service 的事实。`services/llm` 的受版本控制实现已删除：completion/provider/model/settings/SSE 归入 `modules/chat/infrastructure/llm`，embedding/reranker 归入 `modules/chat/rag/infrastructure`。
 
-这与“业务模块不得直接依赖 `services/llm`”是两件事：目录暂不移动，但依赖方向已经通过 composition 注入归正。
+暂不建立 `shared/llm`。只有 transport、SSE 或协议能力出现跨 owner 的稳定复用时，才提取对应纯基础部分。
 
 ## 6. 完成审计修正
 
@@ -103,8 +103,8 @@ Chat `sendMessage` application use case 拥有 user/assistant 两个写入事务
 
 最终验证（完成审计后）：
 
-- `npm run check:architecture`：191 个 JavaScript 文件、361 条本地依赖边、无循环；
-- `npm test`：330 项离线测试全部通过；
+- `npm run check:architecture`：190 个 JavaScript 文件、337 条本地依赖边、无循环；
+- `npm test`：334 项离线测试全部通过；
 - 架构测试覆盖业务模块根依赖、跨模块内部导入、SQL data owner 和已删除 runtime facade；
 - Memory persistence 测试覆盖 advisory lock、同一 transaction client、generation/privacy fence。
 

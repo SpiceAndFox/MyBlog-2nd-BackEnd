@@ -104,3 +104,27 @@ test("retired process-global runtime facades and root module dependencies stay a
     false,
   );
 });
+
+test("the retired services/llm implementation stays inside the Chat owner without configuration singletons", () => {
+  const rootDir = path.resolve(__dirname, "../..");
+  const retiredRoot = path.join(rootDir, "services/llm");
+  function listJavaScriptFiles(directory) {
+    if (!fs.existsSync(directory)) return [];
+    return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) return listJavaScriptFiles(target);
+      return entry.name.endsWith(".js") ? [target] : [];
+    });
+  }
+
+  assert.deepEqual(listJavaScriptFiles(retiredRoot), []);
+  for (const relativePath of [
+    "modules/chat/infrastructure/llm/providerRegistry.js",
+    "modules/chat/rag/infrastructure/embeddings.js",
+    "modules/chat/rag/infrastructure/reranker.js",
+  ]) {
+    const source = fs.readFileSync(path.join(rootDir, relativePath), "utf8");
+    assert.doesNotMatch(source, /require\(["'][^"']*config["']\)/);
+    assert.doesNotMatch(source, /configuredEnvironment|configureProviderEnvironment|configureOpenRouterAttribution/);
+  }
+});

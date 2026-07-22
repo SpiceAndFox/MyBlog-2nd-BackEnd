@@ -1,8 +1,8 @@
 const { createCommandContext } = require("../app/composition/commandContext");
-const { database: db, config, logger } = createCommandContext();
+const { chatLlm, database: db, config, logger } = createCommandContext();
 const { createMemoryRuntimeComposition } = require("../app/composition/memory");
 const { createChatRagComposition } = require("../app/composition/chatRag");
-const chatRag = createChatRagComposition({ config, database: db, logger });
+const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
 const memoryRuntime = createMemoryRuntimeComposition({
   database: db,
   config: config.memoryV2Config,

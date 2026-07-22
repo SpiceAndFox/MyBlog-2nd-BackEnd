@@ -1,7 +1,16 @@
-const { getProviderConfig, isBodyParamAllowed } = require("../../providers");
-const { llmConfig } = require("../../../../config");
-const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../../settingsSchema");
-const { iterateSseData } = require("../../sse");
+const { iterateSseData } = require("../sse");
+
+function createAnthropicMessagesAdapter({ providers, settingsSchema, config: llmConfig, fetchImpl = globalThis.fetch } = {}) {
+  if (!providers?.getProviderConfig || !providers?.isBodyParamAllowed) {
+    throw new Error("Anthropic Messages adapter requires a provider registry");
+  }
+  if (!settingsSchema?.getGlobalNumericRange || !settingsSchema?.getProviderNumericRange || !settingsSchema?.clampNumberWithRange) {
+    throw new Error("Anthropic Messages adapter requires a settings schema");
+  }
+  if (!Number.isFinite(llmConfig?.timeoutMs) || llmConfig.timeoutMs <= 0) throw new Error("Anthropic Messages adapter timeout is required");
+  if (typeof fetchImpl !== "function") throw new Error("Anthropic Messages adapter fetch implementation is required");
+  const { getProviderConfig, isBodyParamAllowed } = providers;
+  const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = settingsSchema;
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -242,7 +251,7 @@ async function createChatCompletion({
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -289,7 +298,7 @@ async function createChatCompletionStreamResponse({
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "messages");
 
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -354,8 +363,11 @@ async function* streamChatCompletionDeltas({ response }) {
   }
 }
 
-module.exports = {
+return Object.freeze({
   createChatCompletion,
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
-};
+});
+}
+
+module.exports = { createAnthropicMessagesAdapter };

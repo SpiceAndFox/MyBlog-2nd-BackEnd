@@ -1,5 +1,3 @@
-const { buildOpenRouterAttributionHeaders } = require("./headers");
-
 function normalizeModelId(modelId) {
   return String(modelId || "").trim();
 }
@@ -142,7 +140,7 @@ const FREQUENCY_PENALTY_BLOCKLIST = MODELS.map((model) => model.id).filter(
 const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
 const REASONING_DISABLE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelCanDisableReasoning(id));
 
-module.exports = {
+const definition = {
   id: "openrouter",
   name: "OpenRouter",
   adapter: "openai-compatible",
@@ -150,7 +148,7 @@ module.exports = {
   baseUrlEnv: ["OPENROUTER_BASE_URL"],
   openaiCompatible: {
     bodyExtensions: buildBodyExtensions,
-    headers: () => buildOpenRouterAttributionHeaders(),
+    headers: () => ({}),
   },
   settingsSchema: [
     {
@@ -269,3 +267,16 @@ module.exports = {
     thinking: true,
   },
 };
+
+function createOpenRouterDefinition({ attributionHeaders = {} } = {}) {
+  const headers = Object.freeze({ ...attributionHeaders });
+  return Object.freeze({
+    ...definition,
+    openaiCompatible: Object.freeze({
+      ...definition.openaiCompatible,
+      headers: () => headers,
+    }),
+  });
+}
+
+module.exports = { createOpenRouterDefinition };

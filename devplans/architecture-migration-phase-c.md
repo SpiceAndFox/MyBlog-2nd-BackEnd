@@ -44,8 +44,8 @@
 
 完成审计后的最终验证：
 
-- `npm run check:architecture`：通过，191 个 JavaScript 文件、361 条本地依赖边、无循环、无冻结内部导入债务；
-- `npm test`：330 项离线测试全部通过。
+- `npm run check:architecture`：通过，190 个 JavaScript 文件、337 条本地依赖边、无循环、无冻结内部导入债务；
+- `npm test`：334 项离线测试全部通过。
 
 ## 6. 回退点与下一阶段
 

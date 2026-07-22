@@ -1,4 +1,6 @@
-const { chatRagConfig } = require("../../config");
+function createRerankerClient({ config: chatRagConfig, fetchImpl = globalThis.fetch } = {}) {
+  if (!chatRagConfig || typeof chatRagConfig !== "object") throw new Error("Chat RAG reranker config is required");
+  if (typeof fetchImpl !== "function") throw new Error("Chat RAG reranker fetch implementation is required");
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -124,7 +126,7 @@ async function rerankDocuments({ query, documents, signal } = {}) {
   const url = buildUrl(chatRagConfig.rerankerBaseUrl, "rerank");
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -160,8 +162,11 @@ async function rerankDocuments({ query, documents, signal } = {}) {
   }
 }
 
-module.exports = {
+return Object.freeze({
   rerankDocuments,
   clipDocument,
   normalizeScoredResults,
-};
+});
+}
+
+module.exports = { createRerankerClient };

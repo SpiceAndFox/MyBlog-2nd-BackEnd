@@ -4,14 +4,26 @@ const { createChatRagSceneRecall } = require("./sceneRecall");
 const { createChatRagRetriever } = require("./retriever");
 const { createChatRagIndexer } = require("./indexer");
 const { createChatRagProjectionAdapter } = require("./projectionAdapters");
+const { createEmbeddingClient } = require("./infrastructure/embeddings");
+const { createRerankerClient } = require("./infrastructure/reranker");
 
-function createChatRagModule({ config, database, logger, llm } = {}) {
+function createChatRagModule({ config, database, logger, llm, infrastructure = {} } = {}) {
   if (!config?.rag || !config?.memory) throw new Error("Chat RAG module config is required");
   if (typeof database?.query !== "function") throw new Error("Chat RAG database is required");
   if (!logger || typeof logger !== "object") throw new Error("Chat RAG logger is required");
-  if (typeof llm?.createEmbeddings !== "function" || typeof llm?.rerankDocuments !== "function" || typeof llm?.complete !== "function") {
-    throw new Error("Chat RAG LLM ports are required");
-  }
+  if (typeof llm?.complete !== "function") throw new Error("Chat RAG completion port is required");
+
+  const embeddingClient = infrastructure.embeddingClient || createEmbeddingClient({
+    config: config.rag,
+    fetchImpl: infrastructure.fetchImpl,
+    openRouterAttribution: infrastructure.openRouterAttribution,
+  });
+  const rerankerClient = infrastructure.rerankerClient || createRerankerClient({
+    config: config.rag,
+    fetchImpl: infrastructure.fetchImpl,
+  });
+  const { createEmbeddings } = embeddingClient;
+  const { rerankDocuments } = rerankerClient;
 
   const chunker = createChatRagChunker({ config: config.rag });
   const repository = createChatRagRepository({ database, config: config.rag });
@@ -24,8 +36,8 @@ function createChatRagModule({ config, database, logger, llm } = {}) {
   const retriever = createChatRagRetriever({
     config: config.rag,
     logger,
-    createEmbeddings: llm.createEmbeddings,
-    rerankDocuments: llm.rerankDocuments,
+    createEmbeddings,
+    rerankDocuments,
     repository,
     generateSceneRecallForSource: sceneRecall.generateSceneRecallForSource,
   });
@@ -33,14 +45,14 @@ function createChatRagModule({ config, database, logger, llm } = {}) {
     config: config.rag,
     memoryConfig: config.memory,
     logger,
-    createEmbeddings: llm.createEmbeddings,
+    createEmbeddings,
     chunker,
     repository,
   });
   const projectionAdapter = createChatRagProjectionAdapter({
     database,
     config: config.rag,
-    createEmbeddings: llm.createEmbeddings,
+    createEmbeddings,
     chunker,
     repository,
   });

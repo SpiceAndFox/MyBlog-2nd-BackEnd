@@ -187,9 +187,7 @@ const providerCatalog = {
   listConfiguredProviders: () => [],
   listSupportedProviders: () => [],
 };
-replaceModule("../../services/llm/providers", providerCatalog);
 const modelCatalog = { isSupportedModel: () => true, listModelsForProvider: () => [{ id: "deepseek-v4-flash" }] };
-replaceModule("../../services/llm/models", modelCatalog);
 const settingsSchema = {
   getGlobalNumericRange: () => null,
   getProviderNumericRange: () => null,
@@ -199,13 +197,11 @@ const settingsSchema = {
   getControlOptions: () => [],
   validateSettingsWithSchema: () => null,
 };
-replaceModule("../../services/llm/settingsSchema", settingsSchema);
 const llmPort = {
   createChatCompletion: async (options) => ({ content: await completeChat(options) }),
   createChatCompletionStreamResponse: (options) => createStreamResponse(options),
   streamChatCompletionDeltas: (options) => readStreamDeltas(options),
 };
-replaceModule("../../services/llm/chatCompletions", llmPort);
 
 const { createChatScopeCoordinator } = require("../../modules/chat");
 const scopeCoordinator = createChatScopeCoordinator();

@@ -1,30 +1,33 @@
 const { loadEnvironment } = require("./environment");
-const { loadApplicationConfig, configureApplicationConfig } = require("../../config");
+const { loadApplicationConfig } = require("../../config");
 const databaseEntry = require("../../db");
 const { createLogger, configureLogger } = require("../../logger");
-const { configureProviderEnvironment } = require("../../services/llm/providers");
-const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
-const { configureProductionModelPolicy } = require("../../modules/chat");
+const {
+  createChatLlmCatalog,
+  createChatLlmRuntime,
+} = require("../../modules/chat");
+const { loadMemoryV2Config } = require("../../modules/memory");
 
-function createCommandContext({ environment, loadDotenv } = {}) {
+function createCommandContext({ environment, loadDotenv, adapters = {} } = {}) {
   const loadedEnvironment = loadEnvironment({
     environment: environment || process.env,
     loadDotenv: loadDotenv ?? environment === undefined,
   });
-  const config = loadApplicationConfig(loadedEnvironment);
-  configureApplicationConfig(config);
-  configureProviderEnvironment(loadedEnvironment);
-  configureOpenRouterAttribution({
-    siteUrl: loadedEnvironment.OPENROUTER_SITE_URL,
-    appName: loadedEnvironment.OPENROUTER_APP_NAME,
+  const chatLlmCatalog = adapters.chatLlmCatalog || createChatLlmCatalog({ environment: loadedEnvironment });
+  const config = loadApplicationConfig(loadedEnvironment, {
+    chatLlmCatalog,
+    loadMemoryConfig: loadMemoryV2Config,
   });
-  configureProductionModelPolicy(loadedEnvironment);
-
+  const chatLlm = adapters.chatLlm || createChatLlmRuntime({
+    catalog: chatLlmCatalog,
+    config: config.llmConfig,
+    adapters: adapters.chatLlmAdapters,
+  });
   const database = databaseEntry.createDatabase(config.databaseConfig);
   databaseEntry.configureDatabase(database);
   const logger = createLogger({ config: config.logConfig });
   configureLogger(logger);
-  return Object.freeze({ config, database, environment: loadedEnvironment, logger });
+  return Object.freeze({ chatLlm, config, database, environment: loadedEnvironment, logger });
 }
 
 module.exports = { createCommandContext };

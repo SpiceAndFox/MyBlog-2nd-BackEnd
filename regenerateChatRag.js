@@ -2,13 +2,14 @@
 require("module-alias/register");
 const { createCommandContext } = require("./app/composition/commandContext");
 const commandContext = createCommandContext();
-const { database: db, config, logger } = commandContext;
+const { chatLlm, database: db, config, logger } = commandContext;
 const { chatRagConfig, memoryV2Config } = config;
 const { createChatRagComposition } = require("./app/composition/chatRag");
 const { indexChatTurn, deleteChunksFromMessageId, listExistingTurnKeys } = createChatRagComposition({
   config,
   database: db,
   logger,
+  llm: chatLlm,
 }).admin;
 
 function parseArgs(argv) {

@@ -1,7 +1,16 @@
-const { getProviderDefinition } = require("./providers");
-const openaiCompatible = require("./adapters/openaiCompatible/chatCompletions");
-const googleGenAi = require("./adapters/googleGenAi/chatCompletions");
-const anthropicMessages = require("./adapters/anthropicMessages/chatCompletions");
+const { createOpenAiCompatibleAdapter } = require("./adapters/openAiCompatible");
+const { createGoogleGenAiAdapter } = require("./adapters/googleGenAi");
+const { createAnthropicMessagesAdapter } = require("./adapters/anthropicMessages");
+
+function createChatCompletionGateway({ providers, settingsSchema, config, adapters = {}, fetchImpl, GoogleGenAIClass } = {}) {
+  if (typeof providers?.getProviderDefinition !== "function") {
+    throw new Error("Chat completion gateway requires a provider registry");
+  }
+  const dependencies = { providers, settingsSchema, config, fetchImpl, GoogleGenAIClass };
+  const openaiCompatible = adapters.openAiCompatible || createOpenAiCompatibleAdapter(dependencies);
+  const googleGenAi = adapters.googleGenAi || createGoogleGenAiAdapter(dependencies);
+  const anthropicMessages = adapters.anthropicMessages || createAnthropicMessagesAdapter(dependencies);
+  const { getProviderDefinition } = providers;
 
 function resolveAdapter(providerId) {
   const adapterId = String(getProviderDefinition(providerId)?.adapter || "openai-compatible").trim();
@@ -33,8 +42,11 @@ function streamChatCompletionDeltas(options = {}) {
   return resolveAdapter(options.providerId).streamChatCompletionDeltas(options);
 }
 
-module.exports = {
+return Object.freeze({
   createChatCompletion,
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
-};
+});
+}
+
+module.exports = { createChatCompletionGateway };
