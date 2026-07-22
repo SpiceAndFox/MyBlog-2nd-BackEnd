@@ -21,7 +21,7 @@ function maintenanceTaskRow(envelope) {
   const task = envelope.task;
   return {
     task_id: task.taskId, dedupe_key: maintenanceDedupeKey(task), user_id: task.userId, preset_id: task.presetId,
-    target_key: task.targetKey, source_generation: task.sourceGeneration, task_type: "maintenance",
+    target_key: task.targetKey, source_generation: task.sourceGeneration, schema_version: task.schemaVersion, task_type: "maintenance",
     parent_task_id: task.parentTaskId, predecessor_task_id: null, resume_epoch: task.resumeEpoch,
     status: "queued", stage: "pending", cursor_before: null, target_message_id: task.targetMessageId,
     base_revision: task.baseRevision, task_payload: envelope, stage_payload: null, attempt: 0,

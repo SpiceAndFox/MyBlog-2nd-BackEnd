@@ -1,6 +1,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const { TARGETS } = require("../../contracts");
 const { validateProposerOutput } = require("../../contracts/proposal");
+const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
 const { normalizeProviderOutput } = require("./memoryProviderAdapter");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
@@ -60,7 +61,10 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
     if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
     if (isTruncationSignal(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
     if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
-    const validation = validateProposerOutput(normalizeProviderOutput(response?.output, probe.task), probe.task);
+    const normalized = normalizeProviderOutput(response?.output, probe.task);
+    const validation = probe.task.proposer === "episodeProposer"
+      ? validateSemanticResult(normalized, probe.task)
+      : validateProposerOutput(normalized, probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);
       error.detail = {

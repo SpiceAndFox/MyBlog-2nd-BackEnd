@@ -1,6 +1,14 @@
 const crypto = require("node:crypto");
-const { validateProposerOutput, assertMemoryState } = require("../contracts");
+const {
+  validateProposerOutput,
+  validateSemanticResult,
+  assertMemoryState,
+  assertMemoryStateV201,
+} = require("../contracts");
 const { reduceProposal } = require("../domain/reducer");
+const { reduceCompiledProposalV201 } = require("../domain/compiledReducerV201");
+const { createSemanticCompiler } = require("../domain/semanticCompiler");
+const { isSemanticTaskEnvelope } = require("./envelope");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 
@@ -30,14 +38,16 @@ function deterministicId(taskId, index) {
 }
 
 function proposalSummary(proposal, targetSections = []) {
-  const statuses = { patches: 0, noop: 0, unable_to_decide: 0, unable_to_compact: 0 };
+  const statuses = { changes: 0, patches: 0, noop: 0, unable_to_decide: 0, unable_to_compact: 0 };
   let patchCount = 0;
+  let changeCount = 0;
   for (const section of targetSections) {
     const result = proposal?.sectionResults?.[section];
     if (Object.prototype.hasOwnProperty.call(statuses, result?.status)) statuses[result.status] += 1;
     if (Array.isArray(result?.patches)) patchCount += result.patches.length;
+    if (Array.isArray(result?.changes)) changeCount += result.changes.length;
   }
-  return { sectionStatuses: statuses, patchCount };
+  return { sectionStatuses: statuses, patchCount, changeCount };
 }
 
 function reducerSummary(reduction) {
@@ -89,9 +99,11 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     const envelope = structuredClone(rowValue(row, "task_payload", "taskPayload"));
     if (!envelope?.task) throw new Error(`Memory task has no replayable task_payload: ${taskId}`);
 
+    const semantic = isSemanticTaskEnvelope(envelope);
     const prompt = await promptLoader(envelope.task.proposer);
-    const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections);
-    const persistedProposal = rowValue(row, "stage_payload", "stagePayload")?.persistedProposal ?? null;
+    const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections, { semantic });
+    const stagePayload = rowValue(row, "stage_payload", "stagePayload") || {};
+    const persistedProposal = stagePayload[semantic ? "semanticResult" : "persistedProposal"] ?? null;
     const report = {
       reportVersion: 1,
       mode: "read_only_task_shadow_replay",
@@ -170,7 +182,9 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
       return report;
     }
 
-    const validation = validateProposerOutput(providerResult.output, envelope.task);
+    const validation = semantic
+      ? validateSemanticResult(providerResult.output, envelope.artifact)
+      : validateProposerOutput(providerResult.output, envelope.task);
     const replay = {
       model: providerResult.model ?? config.provider.model,
       usage: providerResult.usage ?? null,
@@ -206,20 +220,45 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     }
 
     try {
-      const state = assertMemoryState(structuredClone(snapshot.state));
-      const databaseMessages = await loadEvidenceMessages(repositories, envelope);
       let nextId = 0;
-      const reduction = reduceProposal({
-        state,
-        task: envelope.task,
-        proposal: providerResult.output,
-        observedMessages: envelope.observedMessages,
-        databaseMessages,
-        now: envelope.task.now,
-        timeZone: envelope.task.userTimeZone,
-        config,
-        idFactory: () => deterministicId(envelope.task.taskId, nextId++),
-      });
+      let reduction;
+      if (semantic) {
+        const state = assertMemoryStateV201(structuredClone(snapshot.state));
+        if (Object.values(providerResult.output.sectionResults).some((result) => result.status === "unable_to_decide")) {
+          replay.reducerPreflight = { status: "unavailable", reason: "unable_to_decide" };
+          report.status = "completed";
+          return report;
+        }
+        const compiled = await createSemanticCompiler({ sourceRepository: repositories.source }).compile({
+          artifact: envelope.artifact,
+          semanticResult: providerResult.output,
+          baseState: state,
+          userId: envelope.task.userId,
+          presetId: envelope.task.presetId,
+        });
+        reduction = reduceCompiledProposalV201({
+          state,
+          task: envelope.task,
+          proposal: compiled,
+          now: envelope.task.now,
+          config,
+          idFactory: () => deterministicId(envelope.task.taskId, nextId++),
+        });
+      } else {
+        const state = assertMemoryState(structuredClone(snapshot.state));
+        const databaseMessages = await loadEvidenceMessages(repositories, envelope);
+        reduction = reduceProposal({
+          state,
+          task: envelope.task,
+          proposal: providerResult.output,
+          observedMessages: envelope.observedMessages,
+          databaseMessages,
+          now: envelope.task.now,
+          timeZone: envelope.task.userTimeZone,
+          config,
+          idFactory: () => deterministicId(envelope.task.taskId, nextId++),
+        });
+      }
       replay.reducerPreflight = reducerSummary(reduction);
       report.status = "completed";
     } catch (error) {

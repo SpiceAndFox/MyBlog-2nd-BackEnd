@@ -17,6 +17,9 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
     unsupportedProjectionCheckpoints: [],
   };
   for (const column of base.columns) {
+    if (["chat_memory_snapshots", "chat_memory_event_groups", "chat_memory_tasks"].includes(column.table_name) && column.column_name === "schema_version") {
+      column.data_type = "text"; column.is_nullable = "NO";
+    }
     if (column.table_name === "chat_context_quality_diagnostics" && column.column_name === "detail") {
       column.data_type = "jsonb"; column.is_nullable = "NO"; column.column_default = "'{}'::jsonb";
     }
@@ -41,4 +44,10 @@ test("schema inspection cannot report clean when any v2 table, column, or index 
   assert.equal(evaluateInspection({ ...base, columns: base.columns.filter((column) => !(column.table_name === "chat_memory_events" && column.column_name === "normalized_operation")) }).clean, false);
   assert.equal(evaluateInspection({ ...base, duplicateActiveDiagnostics: [{ user_id: 1, preset_id: "default", active_count: "2" }] }).clean, false);
   assert.equal(evaluateInspection({ ...base, unsupportedProjectionCheckpoints: [{ user_id: 1, preset_id: "default", projection_key: "recall" }] }).clean, false);
+  assert.equal(evaluateInspection({
+    ...base,
+    columns: base.columns.map((column) => column.table_name === "chat_memory_tasks" && column.column_name === "schema_version"
+      ? { ...column, data_type: "integer" }
+      : column),
+  }).clean, false);
 });

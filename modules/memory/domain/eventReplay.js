@@ -1,5 +1,11 @@
 const { isDeepStrictEqual } = require("node:util");
 const { assertMemoryState, createEmptyScene } = require("../contracts/state");
+const {
+  MEMORY_CONTROL_V201_SCHEMA_VERSION,
+  assertMemoryStateV201,
+  createEmptySceneV201,
+  validateSourceRefs,
+} = require("../contracts");
 const { SCHEMA_VERSION, PATCH_OPS, SCENE_FIELDS, TARGETS, EVIDENCE_KINDS } = require("../contracts/constants");
 const { sectionItems } = require("./reducer");
 
@@ -61,11 +67,15 @@ function requirePersistedRefs(refs, label) {
     requireText(ref.quote, `${label}[${index}].quote`);
   });
 }
+function requireSourceRefs(refs, label) {
+  const validation = validateSourceRefs(refs, label);
+  if (!validation.ok) fail(`${label} is invalid`);
+}
 function requireNullish(value, label) {
   if (present(value)) fail(`${label} must be null`);
 }
 
-function validateOperationSection(operation, section) {
+function validateOperationSection(operation, section, v201 = false) {
   const op = operation.op;
   if (["setField", "clearField"].includes(op)) {
     if (section !== "scene") fail(`${op} cannot target section ${section}`);
@@ -75,8 +85,56 @@ function validateOperationSection(operation, section) {
   if (!ITEM_SECTIONS.has(section)) fail(`${op} cannot target section ${section}`);
   if (["completeTodo", "cancelTodo", "expireTodo"].includes(op) && section !== "todos") fail(`${op} requires todos`);
   if (op === "cancelAgreement" && section !== "standingAgreements") fail("cancelAgreement requires standingAgreements");
-  if (op === "forgetItem" && !LONG_TERM_FACT_SECTIONS.has(section)) fail("forgetItem requires a long-term fact section");
+  if (op === "forgetItem" && !(v201 ? ITEM_SECTIONS : LONG_TERM_FACT_SECTIONS).has(section)) fail("forgetItem requires an allowed item section");
   if (op === "mergeItems" && section === "recentEpisodes") fail("mergeItems cannot target recentEpisodes");
+}
+
+function validateAcceptedOperationV201(event, operation) {
+  const section = requireText(event.section, "event section");
+  validateOperationSection(operation, section, true);
+  if (rowValue(event, "op", "op") !== operation.op) fail("event op does not match normalized operation");
+  requireNullish(rowValue(event, "evidence_kind", "evidenceKind"), "2.01 event evidence_kind");
+  requireNullish(rowValue(event, "cleanup_type", "cleanupKind"), "accepted event cleanup_type");
+  const eventItemId = rowValue(event, "item_id", "itemId");
+  const resultItemId = rowValue(event, "result_item_id", "resultItemId");
+  const mergedFrom = rowValue(event, "merged_from_item_ids", "mergedFromItemIds");
+  if (operation.op === "setField") {
+    requireExactKeys(operation, ["op", "path", "value", "sourceRefs"], "2.01 setField operation");
+    requireText(operation.value, "setField value");
+    requireSourceRefs(operation.sourceRefs, "setField sourceRefs");
+  } else if (operation.op === "clearField") {
+    requireExactKeys(operation, ["op", "path", "sourceRefs"], "2.01 clearField operation");
+    requireSourceRefs(operation.sourceRefs, "clearField sourceRefs");
+  } else if (operation.op === "addItem") {
+    requireExactKeys(operation, ["op", "value", "sourceRefs"], "2.01 addItem operation");
+    requireObject(operation.value, "addItem value");
+    requireText(operation.value.id, "addItem value.id");
+    requireSourceRefs(operation.sourceRefs, "addItem sourceRefs");
+    if (!isDeepStrictEqual(operation.value.sourceRefs, operation.sourceRefs)) fail("addItem sourceRefs do not match value provenance");
+    requireNullish(eventItemId, "addItem event item_id");
+    if (resultItemId !== operation.value.id) fail("addItem result_item_id does not match value.id");
+  } else if (operation.op === "mergeItems") {
+    requireExactKeys(operation, ["op", "itemIds", "value"], "2.01 mergeItems operation");
+    if (!Array.isArray(operation.itemIds) || operation.itemIds.length < 2 || new Set(operation.itemIds).size !== operation.itemIds.length) fail("mergeItems itemIds are invalid");
+    requireObject(operation.value, "mergeItems value");
+    requireText(operation.value.id, "mergeItems value.id");
+    if (!isDeepStrictEqual(mergedFrom, operation.itemIds)) fail("mergeItems event sources do not match normalized operation");
+    if (resultItemId !== operation.value.id) fail("mergeItems result_item_id does not match value.id");
+  } else if (operation.op === "updateItem") {
+    requireExactKeys(operation, ["op", "itemId", "value", "sourceRefs"], "2.01 updateItem operation");
+    requireText(operation.itemId, "updateItem itemId");
+    requireObject(operation.value, "updateItem value");
+    requireSourceRefs(operation.sourceRefs, "updateItem sourceRefs");
+    if (operation.value.id !== operation.itemId) fail("updateItem value.id does not match itemId");
+    if (eventItemId !== operation.itemId) fail("updateItem event item_id does not match normalized operation");
+  } else {
+    requireExactKeys(operation, ["op", "itemId", "sourceRefs"], `2.01 ${operation.op} operation`);
+    requireText(operation.itemId, `${operation.op} itemId`);
+    requireSourceRefs(operation.sourceRefs, `${operation.op} sourceRefs`);
+    if (eventItemId !== operation.itemId) fail(`${operation.op} event item_id does not match normalized operation`);
+  }
+  if (!["addItem", "mergeItems"].includes(operation.op)) requireNullish(resultItemId, `${operation.op} event result_item_id`);
+  if (operation.op !== "mergeItems") requireNullish(mergedFrom, `${operation.op} event merged_from_item_ids`);
 }
 
 function validateAcceptedOperation(event, operation) {
@@ -170,7 +228,7 @@ function validateCleanupOperation(event, operation) {
   if (operation.cleanupKind === "suppressed_scene_field_cleared" && !["scene", "previousScene"].includes(operation.sceneSlot)) fail("suppressed_scene_field_cleared sceneSlot is invalid");
 }
 
-function validateEventForGroup(event, group, expectedIndex) {
+function validateEventForGroup(event, group, expectedIndex, v201 = false) {
   const groupId = rowValue(group, "event_group_id", "eventGroupId");
   if (rowValue(event, "event_group_id", "eventGroupId") !== groupId) fail("event_group_id does not match group");
   if (safeInteger(rowValue(event, "event_index", "eventIndex"), "event_index") !== expectedIndex) fail(`event indexes for group ${groupId} are not contiguous`);
@@ -186,7 +244,8 @@ function validateEventForGroup(event, group, expectedIndex) {
     if (!operation) fail("Replayable event is missing normalized operation");
     if (rowValue(event, "target_key", "targetKey") !== rowValue(group, "target_key", "targetKey")) fail("accepted event target does not match group");
     if (!TARGETS[rowValue(group, "target_key", "targetKey")]?.sections.includes(event.section)) fail("accepted event section does not belong to group target");
-    validateAcceptedOperation(event, operation);
+    if (v201) validateAcceptedOperationV201(event, operation);
+    else validateAcceptedOperation(event, operation);
   } else if (decision === "system_cleanup") {
     if (eventKind !== "system_cleanup") fail("system_cleanup decision must use system_cleanup event kind");
     if (!operation) fail("Replayable event is missing normalized operation");
@@ -199,7 +258,7 @@ function validateEventForGroup(event, group, expectedIndex) {
   }
 }
 
-function applySemanticEvent(state, event) {
+function applySemanticEvent(state, event, { v201 = state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION } = {}) {
   const operation = rowValue(event, "normalized_operation", "normalizedOperation");
   const decision = event.decision;
   if (!["accepted", "system_cleanup"].includes(decision)) return;
@@ -208,10 +267,19 @@ function applySemanticEvent(state, event) {
     if (!PATCH_OPS.includes(operation.op)) fail(`Unknown accepted operation: ${operation.op ?? "<missing>"}`);
     const section = event.section;
     if (operation.op === "setField") {
-      const ref = operation.evidenceRefs[0];
-      state.current.scene[operation.path] = { value: operation.value, evidenceRef: ref, updatedAtMessageId: ref.messageId };
+      if (v201) state.current.scene[operation.path] = {
+        value: operation.value,
+        sourceRefs: structuredClone(operation.sourceRefs),
+        updatedAtMessageId: Math.max(...operation.sourceRefs.map((ref) => ref.messageId)),
+      };
+      else {
+        const ref = operation.evidenceRefs[0];
+        state.current.scene[operation.path] = { value: operation.value, evidenceRef: ref, updatedAtMessageId: ref.messageId };
+      }
     } else if (operation.op === "clearField") {
-      state.current.scene[operation.path] = { value: null, evidenceRef: null, updatedAtMessageId: null };
+      state.current.scene[operation.path] = v201
+        ? { value: null, sourceRefs: [], updatedAtMessageId: null }
+        : { value: null, evidenceRef: null, updatedAtMessageId: null };
     } else {
       const items = sectionItems(state, section);
       if (["completeTodo", "cancelTodo", "expireTodo", "cancelAgreement", "forgetItem"].includes(operation.op)) {
@@ -239,7 +307,7 @@ function applySemanticEvent(state, event) {
   if (!definition) fail(`Unknown cleanup kind: ${operation.cleanupKind ?? "<missing>"}`);
   if (operation.cleanupKind === "scene_expired") {
     state.current.previousScene = { ...structuredClone(state.current.scene), expiredAt: operation.expiredAt };
-    state.current.scene = createEmptyScene();
+    state.current.scene = v201 ? createEmptySceneV201() : createEmptyScene();
   } else if (operation.cleanupKind === "expired_scene_evicted") {
     // scene_expired in the same group already replaced the previous value.
   } else if (operation.cleanupKind === "todo_became_overdue") {
@@ -269,7 +337,9 @@ function applySemanticEvent(state, event) {
 }
 
 function replayEventGroups(anchorState, groups, events, expectedScope = {}) {
-  assertMemoryState(anchorState);
+  const v201 = anchorState?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION;
+  if (v201) assertMemoryStateV201(anchorState);
+  else assertMemoryState(anchorState);
   if (!Array.isArray(groups) || !Array.isArray(events)) fail("groups and events must be arrays");
   const state = structuredClone(anchorState);
   const byGroup = new Map();
@@ -292,7 +362,10 @@ function replayEventGroups(anchorState, groups, events, expectedScope = {}) {
   for (const group of groups) {
     const groupId = rowValue(group, "event_group_id", "eventGroupId");
     if (!present(rowValue(group, "result_revision", "resultRevision"))) fail("Audit-only group cannot be replayed");
-    if (safeInteger(rowValue(group, "schema_version", "schemaVersion"), "group schema_version") !== SCHEMA_VERSION || anchorState.version !== SCHEMA_VERSION) fail("Replay schema version mismatch");
+    const groupSchemaVersion = rowValue(group, "schema_version", "schemaVersion");
+    if (v201) {
+      if (String(groupSchemaVersion) !== MEMORY_CONTROL_V201_SCHEMA_VERSION) fail("Replay schema version mismatch");
+    } else if (safeInteger(groupSchemaVersion, "group schema_version") !== SCHEMA_VERSION || anchorState.version !== SCHEMA_VERSION) fail("Replay schema version mismatch");
     if (safeInteger(rowValue(group, "source_generation", "sourceGeneration"), "group source_generation") !== state.meta.sourceGeneration) fail("Replay source generation mismatch");
     if (String(rowValue(group, "user_id", "userId")) !== String(scopeUserId) || String(rowValue(group, "preset_id", "presetId")) !== String(scopePresetId)) fail("Replay group scope mismatch");
     requireText(rowValue(group, "task_id", "taskId"), "group task_id");
@@ -317,7 +390,7 @@ function replayEventGroups(anchorState, groups, events, expectedScope = {}) {
 
     const rows = (byGroup.get(groupId) || []).sort((left, right) => Number(rowValue(left, "event_index", "eventIndex")) - Number(rowValue(right, "event_index", "eventIndex")));
     if (!rows.length && groupKind !== "proposal") fail(`${groupKind} group must contain semantic events`);
-    rows.forEach((event, index) => validateEventForGroup(event, group, index));
+    rows.forEach((event, index) => validateEventForGroup(event, group, index, v201));
     if (groupKind === "system_cleanup" && rows.some((event) => event.decision !== "system_cleanup")) fail("system_cleanup group contains a proposal decision");
     if (groupKind === "system_cleanup" && rows.some((event) => rowValue(event, "target_key", "targetKey") !== targetKey)) fail("system_cleanup event target does not match group");
     if (groupKind === "maintenance" && rows.some((event) => event.decision === "noop")) fail("maintenance group contains noop");
@@ -327,10 +400,11 @@ function replayEventGroups(anchorState, groups, events, expectedScope = {}) {
     if (cleanupKinds.includes("expired_scene_evicted") && !cleanupKinds.includes("scene_expired")) fail("expired_scene_evicted requires scene_expired in the same group");
     if (cleanupKinds.indexOf("expired_scene_evicted") >= 0 && cleanupKinds.indexOf("expired_scene_evicted") < cleanupKinds.indexOf("scene_expired")) fail("expired_scene_evicted must follow scene_expired");
 
-    rows.forEach((event) => applySemanticEvent(state, event));
+    rows.forEach((event) => applySemanticEvent(state, event, { v201 }));
     state.meta.revision = resultRevision;
     if (groupKind === "proposal") state.meta.targetCursors[targetKey] = safeInteger(cursorAfterRaw, "proposal cursor_after");
-    assertMemoryState(state);
+    if (v201) assertMemoryStateV201(state);
+    else assertMemoryState(state);
   }
   return state;
 }

@@ -271,17 +271,22 @@ function validateSemanticResult(result, taskOrArtifact) {
       if (!statuses.includes(entry.status)) add(errors, `${sectionPath}.status`, "is invalid");
       if (entry.status === "changes") {
         if (!Array.isArray(entry.changes) || entry.changes.length === 0) add(errors, `${sectionPath}.changes`, "must be a non-empty array");
-        else entry.changes.forEach((change, index) => {
-          const changePath = `${sectionPath}.changes[${index}]`;
-          validateSemanticChange(change, section, changePath, errors, { maintenance });
-          if (!artifact) return;
-          for (const id of change.evidenceMessageIds || []) {
-            if (!Object.prototype.hasOwnProperty.call(artifact.messageMeta, String(id))) add(errors, `${changePath}.evidenceMessageIds`, `message ${id} was not rendered`);
+        else {
+          if (task.proposer === "episodeProposer" && section === "recentEpisodes" && entry.changes.length > 3) {
+            add(errors, `${sectionPath}.changes`, "must contain at most three interaction arcs");
           }
-          for (const ref of change.supportRefs || []) {
-            if (!Object.prototype.hasOwnProperty.call(artifact.refMap.readOnly, ref)) add(errors, `${changePath}.supportRefs`, `ref ${ref} was not rendered as read-only Memory`);
-          }
-        });
+          entry.changes.forEach((change, index) => {
+            const changePath = `${sectionPath}.changes[${index}]`;
+            validateSemanticChange(change, section, changePath, errors, { maintenance });
+            if (!artifact) return;
+            for (const id of change.evidenceMessageIds || []) {
+              if (!Object.prototype.hasOwnProperty.call(artifact.messageMeta, String(id))) add(errors, `${changePath}.evidenceMessageIds`, `message ${id} was not rendered`);
+            }
+            for (const ref of change.supportRefs || []) {
+              if (!Object.prototype.hasOwnProperty.call(artifact.refMap.readOnly, ref)) add(errors, `${changePath}.supportRefs`, `ref ${ref} was not rendered as read-only Memory`);
+            }
+          });
+        }
       } else if (entry.changes !== undefined) add(errors, `${sectionPath}.changes`, "is only allowed when status is changes");
     }
   }

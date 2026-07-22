@@ -3,7 +3,7 @@ const { normalizeScope, executor, withTransaction } = require("./helpers");
 
 async function createTask(task, { client } = {}) {
   if (!TASK_TYPES.includes(task.task_type) || !TASK_STATUSES.includes(task.status) || !TARGET_KEYS.includes(task.target_key)) throw new Error("Invalid Memory v2 task enum");
-  const fields = ["task_id","dedupe_key","user_id","preset_id","target_key","source_generation","task_type","parent_task_id","predecessor_task_id","resume_epoch","status","stage","cursor_before","target_message_id","base_revision","task_payload","stage_payload","attempt","context_expansion_attempt","not_before","last_error_reason","result_revision"];
+  const fields = ["task_id","dedupe_key","user_id","preset_id","target_key","source_generation","schema_version","task_type","parent_task_id","predecessor_task_id","resume_epoch","status","stage","cursor_before","target_message_id","base_revision","task_payload","stage_payload","attempt","context_expansion_attempt","not_before","last_error_reason","result_revision"];
   const values = fields.map((field) => task[field] ?? null);
   const { rows } = await executor(client).query(`INSERT INTO chat_memory_tasks (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) ON CONFLICT (user_id,preset_id,dedupe_key) DO UPDATE SET dedupe_key=EXCLUDED.dedupe_key RETURNING *`, values);
   return rows[0];

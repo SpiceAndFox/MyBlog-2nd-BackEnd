@@ -1,5 +1,11 @@
 const crypto = require("node:crypto");
-const { SCHEMA_VERSION, TARGETS, READ_ONLY_CONTEXT_PATHS } = require("../contracts");
+const {
+  SCHEMA_VERSION,
+  MEMORY_CONTROL_V201_SCHEMA_VERSION,
+  TARGETS,
+  READ_ONLY_CONTEXT_PATHS,
+} = require("../contracts");
+const { buildProposerTaskArtifact } = require("./proposerTaskRenderer");
 
 const READ_ONLY = READ_ONLY_CONTEXT_PATHS;
 
@@ -73,6 +79,41 @@ function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, u
     writableState, readOnlyContext, observedMessages: messages,
   };
 }
+
+function buildSemanticNormalEnvelope({ userId, presetId, state, intent, messages, now, userTimeZone = "UTC", taskId = crypto.randomUUID(), tickId = Date.now() }) {
+  if (state?.version !== MEMORY_CONTROL_V201_SCHEMA_VERSION) throw new Error("Semantic Memory tasks require a 2.01 state");
+  const artifact = buildProposerTaskArtifact({
+    state,
+    intent,
+    messages,
+    now,
+    userTimeZone,
+    taskId,
+    tickId,
+  });
+  const publicTask = artifact.publicInput.task;
+  return {
+    task: {
+      ...publicTask,
+      userId: Number(userId),
+      presetId: String(presetId),
+      schemaVersion: MEMORY_CONTROL_V201_SCHEMA_VERSION,
+      sourceGeneration: state.meta.sourceGeneration,
+      baseRevision: state.meta.revision,
+      mode: "normal",
+      observedMessageIds: artifact.publicInput.messages.map((message) => message.id),
+      trigger: structuredClone(intent.trigger || { type: "lagThreshold" }),
+    },
+    artifact,
+    observedMessages: structuredClone(messages),
+  };
+}
+
+function isSemanticTaskEnvelope(envelope) {
+  return envelope?.task?.mode === "normal"
+    && envelope?.task?.schemaVersion === MEMORY_CONTROL_V201_SCHEMA_VERSION
+    && envelope?.artifact?.publicInput;
+}
 function normalDedupeKey(task) {
   return ["normal", task.sourceGeneration, task.targetKey, task.cursorBefore, task.targetMessageId].join(":");
 }
@@ -114,4 +155,15 @@ function maintenanceDedupeKey(task) {
   return ["maintenance", task.sourceGeneration, task.parentTaskId, task.targetSections[0], task.resumeEpoch].join(":");
 }
 
-module.exports = { READ_ONLY, buildStateViews, buildNormalEnvelope, buildMaintenanceEnvelope, normalDedupeKey, maintenanceDedupeKey, redactItem, redactScene };
+module.exports = {
+  READ_ONLY,
+  buildStateViews,
+  buildNormalEnvelope,
+  buildSemanticNormalEnvelope,
+  isSemanticTaskEnvelope,
+  buildMaintenanceEnvelope,
+  normalDedupeKey,
+  maintenanceDedupeKey,
+  redactItem,
+  redactScene,
+};

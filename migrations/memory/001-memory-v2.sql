@@ -21,14 +21,14 @@ CREATE INDEX IF NOT EXISTS idx_chat_preset_memory_user_updated_at ON chat_preset
 
 CREATE TABLE IF NOT EXISTS chat_memory_snapshots (
   id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL,
-  source_generation BIGINT NOT NULL, revision BIGINT NOT NULL, schema_version INTEGER NOT NULL,
+  source_generation BIGINT NOT NULL, revision BIGINT NOT NULL, schema_version TEXT NOT NULL,
   state JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (user_id, preset_id, revision)
 );
 
 CREATE TABLE IF NOT EXISTS chat_memory_event_groups (
   event_group_id UUID PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, task_id UUID NOT NULL,
-  target_key TEXT NOT NULL, source_generation BIGINT NOT NULL, schema_version INTEGER NOT NULL,
+  target_key TEXT NOT NULL, source_generation BIGINT NOT NULL, schema_version TEXT NOT NULL,
   base_revision BIGINT NOT NULL, result_revision BIGINT, cursor_before BIGINT, cursor_after BIGINT,
   group_kind TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (user_id, preset_id, result_revision)
@@ -50,7 +50,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_events_group_patch ON chat_memory_e
 
 CREATE TABLE IF NOT EXISTS chat_memory_tasks (
   task_id UUID PRIMARY KEY, dedupe_key TEXT NOT NULL, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL,
-  target_key TEXT NOT NULL, source_generation BIGINT NOT NULL, task_type TEXT NOT NULL,
+  target_key TEXT NOT NULL, source_generation BIGINT NOT NULL, schema_version TEXT NOT NULL, task_type TEXT NOT NULL,
   parent_task_id UUID, predecessor_task_id UUID, resume_epoch INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL, stage TEXT NOT NULL, cursor_before BIGINT, target_message_id BIGINT,
   base_revision BIGINT NOT NULL, task_payload JSONB NOT NULL, stage_payload JSONB,

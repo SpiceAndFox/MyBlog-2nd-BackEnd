@@ -9,7 +9,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   chat_memory_snapshots: ["id", "user_id", "preset_id", "source_generation", "revision", "schema_version", "state", "created_at"],
   chat_memory_event_groups: ["event_group_id", "user_id", "preset_id", "task_id", "target_key", "source_generation", "schema_version", "base_revision", "result_revision", "cursor_before", "cursor_after", "group_kind", "created_at"],
   chat_memory_events: ["id", "event_group_id", "event_index", "user_id", "preset_id", "task_id", "tick_id", "target_key", "section", "event_kind", "decision", "patch_id", "op", "item_id", "result_item_id", "merged_from_item_ids", "evidence_kind", "reject_reason", "maintenance_task_id", "patch_summary", "normalized_operation", "cleanup_type", "created_at"],
-  chat_memory_tasks: ["task_id", "dedupe_key", "user_id", "preset_id", "target_key", "source_generation", "task_type", "parent_task_id", "predecessor_task_id", "resume_epoch", "status", "stage", "cursor_before", "target_message_id", "base_revision", "task_payload", "stage_payload", "attempt", "context_expansion_attempt", "not_before", "last_error_reason", "result_revision", "created_at", "updated_at"],
+  chat_memory_tasks: ["task_id", "dedupe_key", "user_id", "preset_id", "target_key", "source_generation", "schema_version", "task_type", "parent_task_id", "predecessor_task_id", "resume_epoch", "status", "stage", "cursor_before", "target_message_id", "base_revision", "task_payload", "stage_payload", "attempt", "context_expansion_attempt", "not_before", "last_error_reason", "result_revision", "created_at", "updated_at"],
   chat_memory_target_status: ["user_id", "preset_id", "target_key", "source_generation", "rebuild_boundary_message_id", "status", "consecutive_errors", "last_error_reason", "last_task_id", "next_retry_at", "updated_at"],
   chat_memory_ops_log: ["id", "user_id", "preset_id", "source_generation", "task_id", "tick_id", "target_key", "section", "proposer", "outcome", "attempt", "detail", "created_at"],
   chat_context_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_generation", "processed_boundary_message_id", "processed_tombstone_id", "status", "last_error_reason", "updated_at"],
@@ -60,6 +60,10 @@ function evaluateInspection({
   const missingConstraints = REQUIRED_CONSTRAINTS.filter((constraint) => !constraintSet.has(constraint));
   const memoryState = columnMap.get("chat_preset_memory")?.get("memory_state");
   const keyDefinitionsValid = memoryState?.data_type === "jsonb"
+    && ["chat_memory_snapshots", "chat_memory_event_groups", "chat_memory_tasks"].every((table) => {
+      const column = columnMap.get(table)?.get("schema_version");
+      return column?.data_type === "text" && column?.is_nullable === "NO";
+    })
     && userTimeZoneColumn?.data_type === "text" && userTimeZoneColumn?.is_nullable === "NO"
     && columnMap.get("chat_memory_recovery_notifications")?.get("boundary_message_id")?.is_nullable === "NO"
     && String(columnMap.get("chat_memory_recovery_notifications")?.get("boundary_message_id")?.column_default ?? "").includes("0")

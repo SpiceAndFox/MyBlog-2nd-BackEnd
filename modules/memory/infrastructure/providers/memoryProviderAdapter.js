@@ -1,4 +1,10 @@
-const { validateProposerOutput, validateTaskEnvelope } = require("../../contracts");
+const {
+  validateProposerOutput,
+  validateTaskEnvelope,
+  validateRendererArtifact,
+  validateSemanticResult,
+} = require("../../contracts");
+const { isSemanticTaskEnvelope } = require("../../application/envelope");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
@@ -25,22 +31,40 @@ function normalizeProviderOutput(output, task) {
   return normalized;
 }
 
+function validateSemanticEnvelope(envelope) {
+  const validation = validateRendererArtifact(envelope?.artifact);
+  const errors = validation.errors.slice();
+  const task = envelope?.task;
+  const publicTask = envelope?.artifact?.publicInput?.task;
+  if (!task || !publicTask) errors.push({ path: "$.task", message: "semantic task metadata is required" });
+  else {
+    for (const key of ["taskId", "tickId", "proposer", "targetKey", "cursorBefore", "targetMessageId", "now", "userTimeZone"]) {
+      if (task[key] !== publicTask[key]) errors.push({ path: `$.task.${key}`, message: "must match Renderer artifact" });
+    }
+    if (JSON.stringify(task.targetSections) !== JSON.stringify(publicTask.targetSections)) {
+      errors.push({ path: "$.task.targetSections", message: "must match Renderer artifact" });
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   return Object.freeze({
     async propose(envelope, { repairFeedback = null } = {}) {
       let response;
+      const semantic = isSemanticTaskEnvelope(envelope);
       try {
-        const envelopeResult = validateTaskEnvelope(envelope);
+        const envelopeResult = semantic ? validateSemanticEnvelope(envelope) : validateTaskEnvelope(envelope);
         if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
         const { task } = envelope;
-        const schema = buildOutputSchema(task.proposer, task.targetSections);
+        const schema = buildOutputSchema(task.proposer, task.targetSections, { semantic });
         const basePrompt = await promptLoader(task.proposer);
         response = await invokeStructured({
           proposer: task.proposer,
           systemPrompt: schemaRepairPrompt(basePrompt, repairFeedback),
-          userPayload: envelope,
+          userPayload: semantic ? envelope.artifact.publicInput : envelope,
           responseSchema: schema,
         });
       } catch (error) {
@@ -55,7 +79,9 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null };
       }
       const output = normalizeProviderOutput(response?.output, task);
-      const validated = validateProposerOutput(output, task);
+      const validated = semantic
+        ? validateSemanticResult(output, envelope.artifact)
+        : validateProposerOutput(output, task);
       if (!validated.ok) {
         return {
           status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors },
@@ -81,4 +107,11 @@ function createMockMemoryProviderAdapter({ outputs, promptLoader = async () => "
   });
 }
 
-module.exports = { createMemoryProviderAdapter, createMockMemoryProviderAdapter, normalizeProviderOutput, schemaRepairPrompt, ERROR_REASONS };
+module.exports = {
+  createMemoryProviderAdapter,
+  createMockMemoryProviderAdapter,
+  normalizeProviderOutput,
+  validateSemanticEnvelope,
+  schemaRepairPrompt,
+  ERROR_REASONS,
+};

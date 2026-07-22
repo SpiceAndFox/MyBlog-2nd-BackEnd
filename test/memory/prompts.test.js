@@ -77,7 +77,10 @@ test("each normal Proposer treats payload text as data and states the quote info
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
     assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as untrusted data`);
-    assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
+    if (proposer === "episodeProposer") {
+      assert.match(prompt, /不要生成 quote/, "semantic episodeProposer must select message ids instead of generating quotes");
+      assert.doesNotMatch(prompt, /至少 3 个信息字符/, "semantic episodeProposer must not carry the legacy quote floor");
+    } else assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
   }
 });
 
@@ -106,7 +109,7 @@ test("episode prompt clusters coherent interaction arcs instead of producing a t
   const prompt = await loadProposerPrompt("episodeProposer");
   assert.match(prompt, /不是逐轮摘要器.*聊天日志.*动作时间线/s);
   assert.match(prompt, /一个完整互动弧最多形成一个 recentEpisodes item/);
-  assert.match(prompt, /同一互动弧有新进展.*updateItem \+ recent_episode/s);
+  assert.match(prompt, /同一互动弧有新进展.*update.*原 ref/s);
   assert.match(prompt, /recentEpisodes.*硬上限为 3 个/s);
   assert.match(prompt, /连续消息聚合为互动弧|按场景、主题、目标与因果连续性聚合/);
   assert.match(prompt, /不默认双写/);
@@ -159,7 +162,13 @@ test("each prompt has section × op × evidenceKind mapping", async () => {
     const prompt = await loadProposerPrompt(proposer);
     const isCurrentState = proposer === "currentStateProposer";
     const isCompaction = proposer === "compactionProposer";
+    const isSemanticEpisode = proposer === "episodeProposer";
     assert.match(prompt, /evidenceKind/, `${proposer} must mention evidenceKind`);
+    if (isSemanticEpisode) {
+      assert.match(prompt, /不要生成.*evidenceKind/s, "semantic episodeProposer must prohibit persistence metadata");
+      assert.doesNotMatch(prompt, /合法 evidenceKind/, "semantic episodeProposer must not carry the legacy evidence matrix");
+      continue;
+    }
     if (isCurrentState) {
       // currentStateProposer lists evidenceKind in a bullet section
       assert.match(prompt, /scene_change.*user_correction.*assistant_correction/s, `${proposer} must list all its legal evidenceKind values`);

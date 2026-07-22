@@ -1,13 +1,26 @@
-const { createInitialMemoryState, assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../../contracts");
+const {
+  createInitialMemoryState,
+  assertMemoryState,
+  assertMemoryStateV201,
+  MEMORY_CONTROL_V201_SCHEMA_VERSION,
+  SCHEMA_VERSION,
+  TARGET_KEYS,
+} = require("../../contracts");
 const { normalizeScope, executor, withTransaction } = require("./helpers");
 const { isDeepStrictEqual } = require("node:util");
+
+function assertSupportedMemoryState(state) {
+  return state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
+    ? assertMemoryStateV201(state)
+    : assertMemoryState(state);
+}
 
 async function getState(userId, presetId, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
   const sql = `SELECT memory_state FROM chat_preset_memory WHERE user_id=$1 AND preset_id=$2${forUpdate ? " FOR UPDATE" : ""}`;
   const { rows } = await executor(client).query(sql, [scope.userId, scope.presetId]);
   if (!rows[0] || rows[0].memory_state === null) return null;
-  return assertMemoryState(rows[0].memory_state);
+  return assertSupportedMemoryState(rows[0].memory_state);
 }
 async function getRawState(userId, presetId, { client, forUpdate = false } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -34,12 +47,12 @@ async function initializeRevisionZero(userId, presetId) {
         `UPDATE chat_preset_memory SET memory_state=$3,updated_at=NOW() WHERE user_id=$1 AND preset_id=$2`,
         [scope.userId, scope.presetId, state],
       );
-    } else assertMemoryState(state);
+    } else assertSupportedMemoryState(state);
     if (state.meta.revision !== 0 || state.meta.sourceGeneration !== 0)
       throw new Error("initializeRevisionZero cannot initialize an already advanced state");
     await client.query(
       `INSERT INTO chat_memory_snapshots (user_id,preset_id,source_generation,revision,schema_version,state) VALUES ($1,$2,0,0,$3,$4) ON CONFLICT (user_id,preset_id,revision) DO NOTHING`,
-      [scope.userId, scope.presetId, SCHEMA_VERSION, state],
+      [scope.userId, scope.presetId, state.version ?? SCHEMA_VERSION, state],
     );
     for (const targetKey of TARGET_KEYS) {
       await client.query(
@@ -59,7 +72,7 @@ async function initializeRevisionZero(userId, presetId) {
 
 async function writeState(userId, presetId, state, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  assertMemoryState(state);
+  assertSupportedMemoryState(state);
   const { rowCount } = await executor(client).query(
     `UPDATE chat_preset_memory SET memory_state=$3,updated_at=NOW() WHERE user_id=$1 AND preset_id=$2`,
     [scope.userId, scope.presetId, state],
@@ -75,4 +88,4 @@ async function listInitializedScopes({ client } = {}) {
   return rows.map((row) => ({ userId: Number(row.user_id), presetId: row.preset_id }));
 }
 
-module.exports = { getState, getRawState, initializeRevisionZero, writeState, listInitializedScopes };
+module.exports = { getState, getRawState, initializeRevisionZero, writeState, listInitializedScopes, assertSupportedMemoryState };

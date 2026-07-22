@@ -35,6 +35,80 @@ const OPS = Object.freeze({
   worldFactProposer: { worldFacts: ["addItem", "updateItem", "forgetItem"] },
 });
 
+const semanticSourceProperties = Object.freeze({
+  evidenceMessageIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "integer", minimum: 1 } },
+  supportRefs: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
+});
+
+function semanticEpisodeChangeSchema(action) {
+  const properties = {
+    action: { const: action },
+    ...semanticSourceProperties,
+  };
+  const required = ["action"];
+  if (action !== "add") {
+    properties.ref = { type: "string", minLength: 1 };
+    required.push("ref");
+  }
+  if (action !== "forget") {
+    properties.text = { type: "string", minLength: 1 };
+    required.push("text");
+  }
+  return {
+    type: "object",
+    additionalProperties: false,
+    required,
+    anyOf: [{ required: ["evidenceMessageIds"] }, { required: ["supportRefs"] }],
+    properties,
+  };
+}
+
+function semanticEpisodeResultSchema(section) {
+  return {
+    oneOf: [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "changes"],
+        properties: {
+          status: { const: "changes" },
+          changes: {
+            type: "array",
+            minItems: 1,
+            ...(section === "recentEpisodes" ? { maxItems: 3 } : {}),
+            items: { oneOf: ["add", "update", "correct", "forget"].map(semanticEpisodeChangeSchema) },
+          },
+        },
+      },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "noop" } } },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "unable_to_decide" } } },
+    ],
+  };
+}
+
+function buildEpisodeSemanticOutputSchema() {
+  const sections = ["recentEpisodes", "milestones"];
+  return {
+    name: "memory_episodeProposer_semantic",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["tickId", "proposer", "sectionResults"],
+      properties: {
+        tickId: { type: "integer" },
+        proposer: { const: "episodeProposer" },
+        sectionResults: {
+          type: "object",
+          additionalProperties: false,
+          required: sections,
+          properties: Object.fromEntries(sections.map((section) => [section, semanticEpisodeResultSchema(section)])),
+        },
+      },
+    },
+  };
+}
+
 function patchSchema(proposer, section, op) {
   const evidenceProperty = section === "scene"
     ? { evidenceRef: refSchema }
@@ -68,7 +142,7 @@ function compactionPatchSchema() {
   };
 }
 
-function buildOutputSchema(proposer, targetSections) {
+function buildOutputSchema(proposer, targetSections, { semantic = proposer === "episodeProposer" } = {}) {
   if (proposer === "compactionProposer") {
     if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");
     const [section] = targetSections;
@@ -91,6 +165,7 @@ function buildOutputSchema(proposer, targetSections) {
       },
     };
   }
+  if (proposer === "episodeProposer" && semantic) return buildEpisodeSemanticOutputSchema();
   const target = Object.values(TARGETS).find((entry) => entry.proposer === proposer);
   if (!target || !OPS[proposer]) throw new Error(`Unknown normal Memory proposer: ${proposer}`);
   const sectionProperties = {};
@@ -122,4 +197,4 @@ function buildOutputSchema(proposer, targetSections) {
   };
 }
 
-module.exports = { buildOutputSchema, OPS };
+module.exports = { buildOutputSchema, buildEpisodeSemanticOutputSchema, OPS };

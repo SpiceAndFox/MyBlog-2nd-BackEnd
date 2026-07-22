@@ -1,7 +1,13 @@
 const { validateMemoryState } = require("../contracts/state");
+const { MEMORY_CONTROL_V201_SCHEMA_VERSION, validateMemoryStateV201 } = require("../contracts/stateV201");
 const { replayEventGroups } = require("../domain/eventReplay");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
+function validateSupportedState(state) {
+  return state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
+    ? validateMemoryStateV201(state)
+    : validateMemoryState(state);
+}
 
 function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
   if (!repositories?.state || !repositories?.audit || !repositories.withTransaction || !sourceRebuild?.initializeRecoveryGeneration) {
@@ -12,7 +18,7 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
     return repositories.withTransaction(async (client) => {
       const raw = await repositories.state.getRawState(userId, presetId, { client, forUpdate: true });
       if (raw === null) return { status: "missing" };
-      if (validateMemoryState(raw).ok) return { status: "healthy", state: raw };
+      if (validateSupportedState(raw).ok) return { status: "healthy", state: raw };
       const head = await repositories.audit.getRecoveryHead(userId, presetId, { client });
       const snapshots = await repositories.audit.listSnapshotsForRecovery(userId, presetId, { client });
       for (const row of snapshots) {
@@ -20,7 +26,7 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
         const revision = Number(rowValue(row, "revision", "revision"));
         const generation = Number(rowValue(row, "source_generation", "sourceGeneration"));
         if (generation !== head.sourceGeneration || revision > head.revision || state?.meta?.revision !== revision || state?.meta?.sourceGeneration !== generation) continue;
-        if (!validateMemoryState(state).ok) continue;
+        if (!validateSupportedState(state).ok) continue;
         if (revision === head.revision) {
           await repositories.state.writeState(userId, presetId, state, { client });
           return { status: "snapshot_restored", revision, sourceGeneration: generation, state };

@@ -67,6 +67,19 @@ test("launch-gate migration repairs duplicate diagnostics before the unique inde
   assert.match(launchGateMigration, /ADD CONSTRAINT chk_context_projection_key CHECK \(projection_key='rag'\)/i);
 });
 
+test("2.01 contract migration stores string schema versions on snapshots, event groups, and durable tasks", () => {
+  const base = fs.readFileSync(path.join(__dirname, "../../migrations/memory/001-memory-v2.sql"), "utf8");
+  const migration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/010-memory-control-v201-contract.sql"), "utf8");
+  assert.match(base, /chat_memory_snapshots[\s\S]*schema_version TEXT NOT NULL/i);
+  assert.match(base, /chat_memory_event_groups[\s\S]*schema_version TEXT NOT NULL/i);
+  assert.match(base, /chat_memory_tasks[\s\S]*schema_version TEXT NOT NULL/i);
+  assert.match(migration, /chat_memory_snapshots[\s\S]*TYPE TEXT USING schema_version::TEXT/i);
+  assert.match(migration, /chat_memory_event_groups[\s\S]*TYPE TEXT USING schema_version::TEXT/i);
+  assert.match(migration, /chat_memory_tasks[\s\S]*ADD COLUMN IF NOT EXISTS schema_version TEXT/i);
+  assert.match(migration, /task_payload #>> '\{task,schemaVersion\}'/i);
+  assert.match(migration, /ALTER COLUMN schema_version SET NOT NULL/i);
+});
+
 test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {
   const retriever = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/retriever.js"), "utf8");
   const repository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");
