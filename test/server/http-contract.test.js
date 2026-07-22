@@ -29,7 +29,6 @@ replaceModule("../../controllers/tagController", controllerStub("tag"));
 replaceModule("../../controllers/articleController", controllerStub("article"));
 replaceModule("../../controllers/diaryController", controllerStub("diary"));
 replaceModule("../../controllers/authController", controllerStub("authController"));
-replaceModule("../../controllers/chatController", controllerStub("chat"));
 replaceModule("../../middleware/uploadArticleCover", {
   single: (field) => namedHandler(`articleCover_${field}`),
 });
@@ -40,6 +39,14 @@ replaceModule("../../middleware/uploadChatPresetAvatar", {
   single: (field) => namedHandler(`chatAvatar_${field}`),
 });
 
+const chatController = controllerStub("chat");
+const { createChatRouter } = require("../../routes/chat");
+const chatRouter = createChatRouter({
+  authMiddleware: auth,
+  chatController,
+  uploadPresetAvatar: require("../../middleware/uploadChatPresetAvatar"),
+});
+
 const routerDefinitions = [
   ["/api/tags", require("../../routes/tags"), false],
   ["/api/admin/tags", require("../../routes/admin/tags"), true],
@@ -47,7 +54,7 @@ const routerDefinitions = [
   ["/api/admin/articles", require("../../routes/admin/articles"), false],
   ["/api/diaries", require("../../routes/diaries"), false],
   ["/api/auth", require("../../routes/auth"), false],
-  ["/api/chat", require("../../routes/chat"), true],
+  ["/api/chat", chatRouter, true],
 ];
 
 function joinPath(prefix, routePath) {

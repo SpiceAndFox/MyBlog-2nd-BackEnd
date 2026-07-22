@@ -29,6 +29,7 @@ class TestResponse extends EventEmitter {
     this.writableEnded = false;
     this.destroyed = false;
     this.body = null;
+    this.chunks = [];
   }
 
   status(value) { this.statusCode = value; return this; }
@@ -37,7 +38,7 @@ class TestResponse extends EventEmitter {
   flushHeaders() { this.headersSent = true; }
   json(value) { this.body = value; this.headersSent = true; this.writableEnded = true; this.emit("finish"); return this; }
   send(value) { this.body = value; this.headersSent = true; this.writableEnded = true; this.emit("finish"); return this; }
-  write() { this.headersSent = true; return true; }
+  write(value) { this.headersSent = true; this.chunks.push(String(value)); return true; }
   end() { this.headersSent = true; this.writableEnded = true; this.emit("finish"); }
 }
 
@@ -58,6 +59,8 @@ const messages = [];
 const byIdempotencyKey = new Map();
 let nextMessageId = 1;
 let completeChat = async () => "assistant";
+let createStreamResponse = async () => { throw new Error("stream not expected"); };
+let readStreamDeltas = async function* empty() {};
 let compileContext = async ({ upToMessageId, signal }) => {
   if (signal?.aborted) throw signal.reason;
   events.push(`context:${upToMessageId}`);
@@ -71,6 +74,8 @@ function resetHarness() {
   byIdempotencyKey.clear();
   nextMessageId = 1;
   completeChat = async () => "assistant";
+  createStreamResponse = async () => { throw new Error("stream not expected"); };
+  readStreamDeltas = async function* empty() {};
   compileContext = async ({ upToMessageId, signal }) => {
     if (signal?.aborted) throw signal.reason;
     events.push(`context:${upToMessageId}`);
@@ -161,22 +166,22 @@ replaceModule("../../config", {
   llmConfig: { timeoutMs: 1000 },
   chatRagConfig: { enabled: true, debugIncludeContent: false },
 });
-replaceModule("../../services/chat/contextCompiler", {
-  compileChatContextMessages: (options) => compileContext(options),
-});
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
 replaceModule("../../services/chat/gistPipeline", { requestAssistantGistGeneration() {} });
 replaceModule("../../services/chat/rag/indexer", { requestChatTurnIndexing() {}, requestDeleteChunksFromMessageId() {} });
-replaceModule("../../logger", { logger: { debug() {}, warn() {}, error() {} }, withRequestContext: (_req, value) => value });
+const testLogger = { debug() {}, warn() {}, error() {} };
+replaceModule("../../logger", { logger: testLogger, withRequestContext: (_req, value) => value });
 replaceModule("../../services/chat/avatarStorage", { deleteAvatarByUrl: async () => {} });
-replaceModule("../../services/llm/providers", {
+const providerCatalog = {
   getProviderDefinition: () => ({ capabilities: { webSearch: false } }),
   isSupportedProvider: () => true,
   listConfiguredProviders: () => [],
   listSupportedProviders: () => [],
-});
-replaceModule("../../services/llm/models", { isSupportedModel: () => true, listModelsForProvider: () => [{ id: "deepseek-v4-flash" }] });
-replaceModule("../../services/llm/settingsSchema", {
+};
+replaceModule("../../services/llm/providers", providerCatalog);
+const modelCatalog = { isSupportedModel: () => true, listModelsForProvider: () => [{ id: "deepseek-v4-flash" }] };
+replaceModule("../../services/llm/models", modelCatalog);
+const settingsSchema = {
   getGlobalNumericRange: () => null,
   getProviderNumericRange: () => null,
   clampNumberWithRange: (value) => Number(value),
@@ -184,16 +189,19 @@ replaceModule("../../services/llm/settingsSchema", {
   getProviderModel: () => null,
   getControlOptions: () => [],
   validateSettingsWithSchema: () => null,
-});
-replaceModule("../../services/llm/chatCompletions", {
+};
+replaceModule("../../services/llm/settingsSchema", settingsSchema);
+const llmPort = {
   createChatCompletion: async (options) => ({ content: await completeChat(options) }),
-  createChatCompletionStreamResponse: async () => { throw new Error("stream not expected"); },
-  streamChatCompletionDeltas: async function* empty() {},
-});
+  createChatCompletionStreamResponse: (options) => createStreamResponse(options),
+  streamChatCompletionDeltas: (options) => readStreamDeltas(options),
+};
+replaceModule("../../services/llm/chatCompletions", llmPort);
 
 const scopeCoordinator = require("../../services/chat/scopeCoordinator");
 const memoryRuntime = {
   enabled: false,
+  async assembleContext() { throw new Error("Memory context is disabled"); },
   async processScope() {},
   async rebuildScope() {},
   async privacyHardDelete(userId, presetId, options) {
@@ -206,9 +214,40 @@ const memoryRuntime = {
 };
 replaceModule("../../services/chat/memoryRuntime", memoryRuntime);
 
-const controllerPath = require.resolve("../../controllers/chatController");
-delete require.cache[controllerPath];
-const chatController = require(controllerPath);
+const { createChatModule } = require("../../modules/chat");
+const chatModule = createChatModule({
+  config: {
+    chat: {
+      dayTimeZone: "Asia/Shanghai",
+      defaultProviderId: "deepseek",
+      defaultSettings: {},
+      defaultModelByProvider: { deepseek: "deepseek-v4-flash" },
+    },
+    llm: { timeoutMs: 1000 },
+    memory: { enabled: false },
+  },
+  adapters: {
+    chatRepository: chatModel,
+    presetRepository: { getPreset: async (_userId, presetId) => ({ id: presetId, systemPrompt: "You are a companion." }) },
+    providers: providerCatalog,
+    models: modelCatalog,
+    settingsSchema,
+    isModelAllowed: () => true,
+    memory: memoryRuntime,
+    rag: { retrieve: async () => null, requestTurnIndexing() {} },
+    gist: { scheduleBackfill() {}, requestGeneration() {} },
+    llm: {
+      complete: llmPort.createChatCompletion,
+      createStreamResponse: llmPort.createChatCompletionStreamResponse,
+      streamDeltas: llmPort.streamChatCompletionDeltas,
+    },
+    scopeCoordinator,
+    logger: testLogger,
+    compileContext: (options) => compileContext(options),
+  },
+});
+const { createChatController } = require("../../controllers/chatController");
+const chatController = createChatController({ chatModule });
 
 test.beforeEach(resetHarness);
 
@@ -323,4 +362,26 @@ test("degraded RAG context remains observable but does not block the main chat P
     reason: "retrieval_degraded",
     failure: "http_429",
   });
+});
+
+test("streaming sends HTTP events while committing only the normalized final Provider response", async () => {
+  sessions.get(11).settings.stream = true;
+  createStreamResponse = async () => ({ body: "upstream" });
+  readStreamDeltas = async function* stream() {
+    yield "partial ";
+    yield { type: "delta", delta: "draft" };
+    yield { type: "final", content: " canonical final " };
+  };
+  const response = new TestResponse();
+
+  await chatController.sendMessage(request(11, "hello", "stream-key"), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.getHeader("Content-Type"), "text/event-stream; charset=utf-8");
+  assert.equal(response.writableEnded, true);
+  assert.match(response.chunks[0], /"type":"start"/);
+  assert.match(response.chunks[1], /"type":"delta","delta":"partial "/);
+  assert.match(response.chunks[2], /"type":"delta","delta":"draft"/);
+  assert.match(response.chunks.at(-1), /"type":"done"/);
+  assert.equal(messages.at(-1).content, "canonical final");
 });

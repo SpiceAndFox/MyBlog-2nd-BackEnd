@@ -27,6 +27,7 @@ const {
 const { createBackgroundServices } = require("./backgroundServices");
 const { createHttpApplication } = require("./httpApplication");
 const { createArticleTempImageCleanup } = require("../../modules/blog");
+const { createChatComposition } = require("./chat");
 const { configureProviderEnvironment } = require("../../services/llm/providers");
 const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
 const { configureProductionModelPolicy } = require("../../services/chat/productionModelPolicy");
@@ -83,7 +84,14 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     logger,
     logSuccessRequests: config.logConfig.httpSuccessRequests,
   });
-  const app = adapters.app || createHttpApplication({ health, requestLogger });
+  const chat = adapters.chat || (adapters.app ? null : createChatComposition({
+    config,
+    memoryRuntime,
+    logger,
+    authMiddleware: auth.middleware,
+    adapters: adapters.chatAdapters,
+  }));
+  const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router });
   const articleTempImageCleanup = createArticleTempImageCleanup({
     logger,
     ttlMs: config.articleConfig.tempImageTtlMs,
@@ -127,6 +135,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   return Object.freeze({
     app,
     auth,
+    chat,
     config,
     database,
     health,

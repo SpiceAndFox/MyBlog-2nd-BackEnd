@@ -4,14 +4,9 @@ const crypto = require("node:crypto");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { chatConfig, llmConfig, chatRagConfig } = require("../config");
-const { compileChatContextMessages } = require("../services/chat/contextCompiler");
+const { chatConfig, chatRagConfig } = require("../config");
 const memoryRuntime = require("../services/chat/memoryRuntime");
-const { requestAssistantGistGeneration } = require("../services/chat/gistPipeline");
-const {
-  requestChatTurnIndexing,
-  requestDeleteChunksFromMessageId,
-} = require("../services/chat/rag/indexer");
+const { requestDeleteChunksFromMessageId } = require("../services/chat/rag/indexer");
 const { logger, withRequestContext } = require("../logger");
 const scopeCoordinator = require("../services/chat/scopeCoordinator");
 const { deleteAvatarByUrl } = require("../services/chat/avatarStorage");
@@ -24,34 +19,6 @@ const {
   listSupportedProviders,
 } = require("../services/llm/providers");
 const { isSupportedModel, listModelsForProvider } = require("../services/llm/models");
-const {
-  createChatCompletion,
-  createChatCompletionStreamResponse,
-  streamChatCompletionDeltas,
-} = require("../services/llm/chatCompletions");
-const {
-  getGlobalNumericRange,
-  getProviderNumericRange,
-  clampNumberWithRange,
-  getActiveSchemaControls,
-  getProviderModel,
-  getControlOptions,
-  validateSettingsWithSchema,
-} = require("../services/llm/settingsSchema");
-
-const CHAT_DAY_TIME_ZONE = String(chatConfig.dayTimeZone).trim();
-
-let chatDayFormatter = null;
-function getChatDayFormatter() {
-  if (chatDayFormatter) return chatDayFormatter;
-  chatDayFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: CHAT_DAY_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return chatDayFormatter;
-}
 
 function parseSessionId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);
@@ -88,309 +55,8 @@ function cancelScopeGeneration(userId, presetId, reason) {
   );
 }
 
-function isDateKey(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
-}
-
-function formatLocalDateKey(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  try {
-    const parts = getChatDayFormatter().formatToParts(date);
-    const year = parts.find((part) => part.type === "year")?.value;
-    const month = parts.find((part) => part.type === "month")?.value;
-    const day = parts.find((part) => part.type === "day")?.value;
-    if (year && month && day) return `${year}-${month}-${day}`;
-  } catch {
-    // ignore
-  }
-
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getSessionDateKey(session) {
-  const title = String(session?.title || "").trim();
-  if (isDateKey(title)) return title;
-
-  const fallbackRaw = session?.createdAt || session?.created_at || session?.updatedAt || session?.updated_at;
-  const fallback = formatLocalDateKey(fallbackRaw);
-  return fallback || title;
-}
-
-function isSessionEditableToday(session) {
-  const dateKey = getSessionDateKey(session);
-  if (!dateKey) return false;
-  return dateKey === formatLocalDateKey(new Date());
-}
-
-function normalizePresetId(rawValue) {
-  const normalized = String(rawValue ?? "").trim();
-  if (!normalized) return null;
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(normalized)) return null;
-  return normalized;
-}
-
-function getSessionPresetId(session) {
-  return (
-    normalizePresetId(session?.preset_id || session?.presetId) ||
-    normalizePresetId(session?.settings?.systemPromptPresetId) ||
-    null
-  );
-}
-
-function getDefaultPresetId() {
-  return normalizePresetId(chatConfig.defaultSettings?.systemPromptPresetId) || "default";
-}
-
-async function resolvePresetForSession({
-  userId,
-  session,
-  incomingSettings,
-  explicitPresetId,
-  enforceMatch = false,
-} = {}) {
-  const defaultPresetId = getDefaultPresetId();
-  const sessionPresetId = session ? getSessionPresetId(session) : null;
-  const hasIncomingPresetId =
-    incomingSettings && Object.prototype.hasOwnProperty.call(incomingSettings, "systemPromptPresetId");
-  const hasExplicitPresetId = explicitPresetId !== undefined;
-
-  let requestedPresetId = null;
-  if (hasExplicitPresetId) {
-    requestedPresetId = normalizePresetId(explicitPresetId);
-    if (!requestedPresetId) return { error: "Invalid preset id" };
-  } else if (hasIncomingPresetId) {
-    requestedPresetId = normalizePresetId(incomingSettings.systemPromptPresetId);
-    if (!requestedPresetId) return { error: "Invalid preset id" };
-  }
-
-  if (enforceMatch && sessionPresetId) {
-    if (requestedPresetId && requestedPresetId !== sessionPresetId) {
-      return { error: "Preset mismatch" };
-    }
-    requestedPresetId = sessionPresetId;
-  }
-
-  const desiredPresetId = requestedPresetId || sessionPresetId || defaultPresetId;
-
-  if (!desiredPresetId) return { error: "Invalid preset id" };
-
-  let preset = await chatPresetModel.getPreset(userId, desiredPresetId);
-  if (!preset) {
-    return { error: "Preset not found" };
-  }
-
-  return { presetId: preset.id, preset, fallback: false };
-}
-
-function sanitizeChatSettings(rawSettings) {
-  if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) return {};
-
-  const sanitized = {};
-
-  if (typeof rawSettings.providerId === "string") sanitized.providerId = rawSettings.providerId.trim();
-  if (typeof rawSettings.modelId === "string") sanitized.modelId = rawSettings.modelId.trim();
-  if (typeof rawSettings.systemPrompt === "string") sanitized.systemPrompt = rawSettings.systemPrompt;
-  if (typeof rawSettings.systemPromptPresetId === "string")
-    sanitized.systemPromptPresetId = rawSettings.systemPromptPresetId.trim();
-
-  const temperature = Number(rawSettings.temperature);
-  if (Number.isFinite(temperature)) sanitized.temperature = temperature;
-
-  const topP = Number(rawSettings.topP);
-  if (Number.isFinite(topP)) sanitized.topP = topP;
-
-  const maxOutputTokens = Number(rawSettings.maxOutputTokens);
-  if (Number.isFinite(maxOutputTokens)) sanitized.maxOutputTokens = maxOutputTokens;
-
-  const presencePenalty = Number(rawSettings.presencePenalty);
-  if (Number.isFinite(presencePenalty)) sanitized.presencePenalty = presencePenalty;
-
-  const frequencyPenalty = Number(rawSettings.frequencyPenalty);
-  if (Number.isFinite(frequencyPenalty)) sanitized.frequencyPenalty = frequencyPenalty;
-
-  if (typeof rawSettings.enableWebSearch === "boolean") sanitized.enableWebSearch = rawSettings.enableWebSearch;
-  if (typeof rawSettings.stream === "boolean") sanitized.stream = rawSettings.stream;
-
-  const providerId = String(sanitized.providerId || "").trim();
-  const modelId = String(sanitized.modelId || "").trim();
-  const schema = providerId ? getActiveSchemaControls(providerId, modelId) : [];
-
-  for (const control of schema) {
-    const key = typeof control?.key === "string" ? control.key.trim() : "";
-    if (!key) continue;
-    if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
-
-    const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
-    if (modelId && blocklist.includes(modelId)) continue;
-
-    const type = String(control?.type || "").trim();
-
-    if (type === "toggle") {
-      if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
-      continue;
-    }
-
-    if (type === "select") {
-      if (typeof rawSettings[key] !== "string") continue;
-      const value = rawSettings[key].trim();
-      if (!value) continue;
-
-      sanitized[key] = value;
-      continue;
-    }
-
-    if (type === "range" || type === "number") {
-      const number = Number(rawSettings[key]);
-      if (Number.isFinite(number)) sanitized[key] = number;
-    }
-  }
-
-  return sanitized;
-}
-
-function getControlDefaultValue(control, model) {
-  const key = String(control?.key || "").trim();
-  const modelDefaults = model?.defaults && typeof model.defaults === "object" && !Array.isArray(model.defaults)
-    ? model.defaults
-    : {};
-  if (key && Object.prototype.hasOwnProperty.call(modelDefaults, key)) return modelDefaults[key];
-  return control?.default;
-}
-
-function normalizeChatSettingsWithSchema(settings, { providerId, modelId } = {}) {
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
-
-  const normalized = { ...settings };
-  const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"];
-
-  for (const key of keys) {
-    if (normalized[key] === undefined) continue;
-
-    const range = providerId ? getProviderNumericRange(providerId, key) : null;
-    const fallbackRange = getGlobalNumericRange(key);
-    const nextValue = clampNumberWithRange(normalized[key], range || fallbackRange);
-
-    if (!Number.isFinite(nextValue)) {
-      delete normalized[key];
-      continue;
-    }
-
-    if (key === "maxOutputTokens" || key === "thinkingBudget") {
-      normalized[key] = Math.trunc(nextValue);
-    } else {
-      normalized[key] = nextValue;
-    }
-  }
-
-  const activeControls = providerId ? getActiveSchemaControls(providerId, modelId) : [];
-  const activeKeys = new Set(activeControls.map((control) => String(control?.key || "").trim()).filter(Boolean));
-  const providerSchema = providerId ? getProviderDefinition(providerId)?.settingsSchema : [];
-  const schemaKeys = new Set(
-    (Array.isArray(providerSchema) ? providerSchema : []).map((control) => String(control?.key || "").trim()).filter(Boolean)
-  );
-  for (const key of schemaKeys) {
-    if (!activeKeys.has(key)) delete normalized[key];
-  }
-
-  const model = getProviderModel(providerId, modelId);
-  for (const control of activeControls) {
-    const key = String(control?.key || "").trim();
-    if (!key) continue;
-    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
-      const defaultValue = getControlDefaultValue(control, model);
-      if (defaultValue === undefined) continue;
-      normalized[key] = defaultValue;
-    }
-
-    const type = String(control?.type || "").trim();
-    if (type === "toggle") {
-      if (typeof normalized[key] !== "boolean") delete normalized[key];
-      continue;
-    }
-
-    if (type === "select") {
-      const value = String(normalized[key] || "").trim();
-      const allowed = new Set(getControlOptions(control, { model }).map((option) => String(option?.value ?? "").trim()));
-      if (!value || !allowed.has(value)) {
-        delete normalized[key];
-        continue;
-      }
-      normalized[key] = value;
-    }
-  }
-
-  return normalized;
-}
-
-function resolveProviderModelForSettings(settings) {
-  const defaultProviderId = chatConfig.defaultProviderId;
-  const candidateProviderId = String(settings?.providerId || defaultProviderId || "").trim();
-  if (!isSupportedProvider(candidateProviderId)) {
-    return { status: 400, error: `Unsupported provider: ${candidateProviderId}` };
-  }
-
-  const providerId = candidateProviderId;
-  const providerDefinition = getProviderDefinition(providerId);
-  const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
-  const selectableModels = listModelsForProvider(providerId).filter((model) => isChatModelAllowed(providerId, model.id));
-  const fallbackModelId = selectableModels[0]?.id || "";
-  const defaultModelId =
-    (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
-      && isChatModelAllowed(providerId, configuredDefaultModelId)
-      ? configuredDefaultModelId.trim()
-      : fallbackModelId) || "";
-
-  if (!defaultModelId) {
-    return { status: 500, error: `Missing model definitions for provider: ${providerId}` };
-  }
-
-  const requestedModelId = String(settings?.modelId || "").trim();
-  if (requestedModelId && !isSupportedModel(providerId, requestedModelId)) {
-    return { status: 400, error: `Unsupported model for provider ${providerId}: ${requestedModelId}` };
-  }
-  if (requestedModelId && !isChatModelAllowed(providerId, requestedModelId)) {
-    return { status: 400, error: `Model is not approved for production context capacity: ${providerId}/${requestedModelId}` };
-  }
-
-  return {
-    providerId,
-    providerDefinition,
-    modelId: requestedModelId || defaultModelId,
-  };
-}
-
-function validateResolvedSettings(settings, { providerId, modelId } = {}) {
-  return validateSettingsWithSchema(settings, { providerId, modelId });
-}
-
-function mergeSettings(baseSettings, overrideSettings) {
-  const base = baseSettings && typeof baseSettings === "object" && !Array.isArray(baseSettings) ? baseSettings : {};
-  const override =
-    overrideSettings && typeof overrideSettings === "object" && !Array.isArray(overrideSettings)
-      ? overrideSettings
-      : {};
-  return { ...base, ...override };
-}
-
 function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function getAbortReasonMessage(signal) {
-  const reason = signal?.reason;
-  if (!reason) return "";
-  if (reason instanceof Error) return reason.message || "";
-  return String(reason);
-}
-
-function requestMemoryUpdate({ userId, presetId } = {}) {
-  if (!memoryRuntime.enabled) return false;
-  void memoryRuntime.processScope(userId, presetId);
-  return true;
 }
 
 async function requestMemoryRebuild({ userId, presetId, reason } = {}) {
@@ -448,30 +114,6 @@ function attachContextHealth(payload, context, res) {
   return next;
 }
 
-function kickRagTurnIndexing({ userId, presetId, sessionId, userMessage, assistantMessage, userContent, assistantContent } = {}) {
-  if (memoryRuntime.enabled) return;
-  try {
-    requestChatTurnIndexing({
-      userId,
-      presetId,
-      sessionId,
-      userMessage,
-      assistantMessage,
-      userContent,
-      assistantContent,
-    });
-  } catch (error) {
-    logger.error("chat_rag_turn_index_kick_failed", {
-      error,
-      userId,
-      presetId,
-      sessionId,
-      userMessageId: userMessage?.id,
-      assistantMessageId: assistantMessage?.id,
-    });
-  }
-}
-
 function kickRagDeleteFromMessage({ userId, presetId, fromMessageId } = {}) {
   if (memoryRuntime.enabled) return;
   try {
@@ -501,7 +143,20 @@ async function compressAvatarImage({ inputPath, baseName }) {
   return { filename: outputFilename, path: outputPath };
 }
 
-const chatController = {
+function createChatController({ chatModule } = {}) {
+  if (!chatModule?.sendMessage || !chatModule?.settings) throw new Error("Chat module is required");
+  const sendMessageUseCase = chatModule.sendMessage;
+  const normalizePresetId = chatModule.settings.normalizePresetId;
+  const getSessionPresetId = chatModule.settings.getSessionPresetId;
+  const isSessionEditableToday = chatModule.settings.isSessionEditableToday;
+  const resolvePresetForSession = chatModule.settings.resolvePresetForSession;
+  const sanitizeChatSettings = chatModule.settings.sanitize;
+  const normalizeChatSettingsWithSchema = chatModule.settings.normalize;
+  const resolveProviderModelForSettings = chatModule.settings.resolveProviderModel;
+  const validateResolvedSettings = chatModule.settings.validate;
+  const mergeSettings = chatModule.settings.merge;
+
+  const chatController = {
   async getPrivacyOperation(req, res) {
     try {
       const operation = await memoryRuntime.getPrivacyOperation(req.user?.id, req.params.operationId);
@@ -1154,304 +809,73 @@ const chatController = {
     }
   },
 
-  async _sendMessageInScope(_req, res, scopeSignal) {
-    const req = _req;
-    let errorSession = null;
-    let userMessage = null;
-
+  async sendMessage(req, res) {
+    const clientAbort = new AbortController();
+    const onResponseClose = () => {
+      if (!res.writableEnded) clientAbort.abort(new Error("Client disconnected"));
+    };
+    res.once("close", onResponseClose);
     try {
-      const userId = req.user?.id;
-      const sessionId = parseSessionId(req.params.sessionId);
-      if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
-
-      const content = String(req.body?.content || "").trim();
-      if (!content) return res.status(400).json({ error: "Content cannot be empty" });
-      const idempotencyKey = readIdempotencyKey(req);
-      if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key header is required" });
-
-      const session = await chatModel.getSession(userId, sessionId);
-      if (!session) return res.status(404).json({ error: "Session not found" });
-      errorSession = session;
-      if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
-
-      const incomingSettings = sanitizeChatSettings(req.body?.settings);
-      const presetResolution = await resolvePresetForSession({ userId, session, incomingSettings, enforceMatch: true });
-      if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
-
-      const { presetId, preset } = presetResolution;
-      const mergedSettings = mergeSettings(session.settings, incomingSettings);
-      mergedSettings.systemPromptPresetId = presetId;
-      mergedSettings.systemPrompt = preset?.systemPrompt || "";
-
-      const providerResolution = resolveProviderModelForSettings(mergedSettings);
-      if (providerResolution.error) return res.status(providerResolution.status).json({ error: providerResolution.error });
-
-      const { providerId, modelId, providerDefinition } = providerResolution;
-      const validationError = validateResolvedSettings(mergedSettings, { providerId, modelId });
-      if (validationError) return res.status(400).json({ error: validationError });
-
-      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId, modelId });
-      effectiveSettings.providerId = providerId;
-      effectiveSettings.modelId = modelId;
-      effectiveSettings.systemPromptPresetId = presetId;
-      effectiveSettings.systemPrompt = preset?.systemPrompt || "";
-      if (providerDefinition?.capabilities?.webSearch === false) {
-        effectiveSettings.enableWebSearch = false;
-      }
-
-      const shouldStream = Boolean(effectiveSettings.stream);
-
-      let updatedSession =
-        (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
-      errorSession = updatedSession;
-
-      const userInsert = await chatModel.createUserMessage(userId, sessionId, content, {
-        turnId: crypto.randomUUID(),
-        idempotencyKey,
-      });
-      userMessage = userInsert.message;
-      if (!userMessage) {
-        if (userInsert.blocked) return res.status(409).json({ error: "Privacy operation is still in progress" });
-        return res.status(404).json({ error: "Session not found" });
-      }
-      if (!userInsert.created) {
-        const existingAssistant = await chatModel.getAssistantForUserMessage(userId, userMessage.id);
-        if (existingAssistant) {
-          return res.status(200).json({
-            session: updatedSession,
-            user_message: userMessage,
-            assistant_message: existingAssistant,
-            idempotent_replay: true,
-          });
-        }
-      }
-
-      const context = await compileChatContextMessages({
-        userId,
-        presetId,
-        systemPrompt: effectiveSettings.systemPrompt,
-        upToMessageId: userMessage.id,
-        signal: scopeSignal,
-      });
-      const messages = context.messages;
-
-      logger.debug(
-        "chat_context_compiled",
-        withRequestContext(req, {
-          sessionId,
-          presetId,
-          segments: context.segments,
-          memory: context.memory,
-        })
-      );
-      if (!shouldStream) {
-        const { content: assistantContent } = await createChatCompletion({
-          providerId,
-          model: modelId,
-          messages,
-          settings: effectiveSettings,
-          signal: scopeSignal,
-        });
-
-        const { message: assistantMessage } = await chatModel.createAssistantMessageForTurn(
-          userId,
-          sessionId,
-          userMessage.id,
-          userMessage.turn_id,
-          assistantContent,
-        );
-        updatedSession = await chatModel.touchSession(userId, sessionId);
-        errorSession = updatedSession;
-        requestMemoryUpdate({ userId, presetId });
-        kickRagTurnIndexing({
-          userId,
-          presetId,
-          sessionId,
-          userMessage,
-          assistantMessage,
-          userContent: userMessage?.content,
-          assistantContent,
-        });
-        requestAssistantGistGeneration({
-          userId,
-          presetId,
-          messageId: assistantMessage?.id,
-          userContent: userMessage?.content,
-          content: assistantContent,
-        });
-
-        return res
-          .status(200)
-          .json(attachContextHealth({
-            session: updatedSession,
-            user_message: userMessage,
-            assistant_message: attachRagSources(assistantMessage, context),
-          }, context, res));
-      }
-
-      res.status(200);
-      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.flushHeaders?.();
-
-      writeSse(res, { type: "start", session_id: sessionId, user_message: userMessage });
-
-      const abortController = new AbortController();
-      const abortFromScope = () => abortController.abort(scopeSignal?.reason || new Error("Request cancelled"));
-      if (scopeSignal?.aborted) abortFromScope();
-      else scopeSignal?.addEventListener("abort", abortFromScope, { once: true });
-      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
-
-      let assistantContent = "";
-      let finalAssistantContent = "";
-      try {
-        const upstreamResponse = await createChatCompletionStreamResponse({
-          providerId,
-          model: modelId,
-          messages,
-          settings: effectiveSettings,
-          signal: abortController.signal,
-        });
-
-        for await (const event of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
-          if (typeof event === "string") {
-            const delta = event;
-            if (!delta) continue;
-            assistantContent += delta;
-            writeSse(res, { type: "delta", delta });
-            continue;
-          }
-
-          if (!event || typeof event !== "object") continue;
-
-          if (event.type === "final") {
-            if (typeof event.content === "string" && event.content.trim()) {
-              finalAssistantContent = event.content;
-            }
-            continue;
-          }
-
-          const delta = typeof event.delta === "string" ? event.delta : "";
-          if (!delta) continue;
-          assistantContent += delta;
+      const result = await sendMessageUseCase({
+        userId: req.user?.id,
+        sessionId: req.params.sessionId,
+        content: req.body?.content,
+        idempotencyKey: readIdempotencyKey(req),
+        rawSettings: req.body?.settings,
+        signal: clientAbort.signal,
+        onStreamStart({ sessionId, userMessage }) {
+          res.status(200);
+          res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+          res.setHeader("Cache-Control", "no-cache, no-transform");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("X-Accel-Buffering", "no");
+          res.flushHeaders?.();
+          writeSse(res, { type: "start", session_id: sessionId, user_message: userMessage });
+        },
+        onStreamDelta(delta) {
           writeSse(res, { type: "delta", delta });
-        }
-      } catch (streamError) {
-        if (abortController.signal.aborted) {
-          const message = getAbortReasonMessage(abortController.signal);
-          if (message && message !== "Client disconnected") {
-            writeSse(res, { type: "error", error: message });
-          }
-          res.end();
-          return;
-        }
-        throw streamError;
-      } finally {
-        clearTimeout(timeout);
-        scopeSignal?.removeEventListener("abort", abortFromScope);
-      }
+        },
+      });
 
-      const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
-      if (!normalizedAssistantContent) {
-        writeSse(res, { type: "error", error: "Empty model response" });
+      const payload = attachContextHealth({
+        session: result.session,
+        user_message: result.userMessage,
+        assistant_message: attachRagSources(result.assistantMessage, result.context),
+        ...(result.kind === "idempotent_replay" ? { idempotent_replay: true } : {}),
+      }, result.context, res);
+      if (result.stream) {
+        writeSse(res, { type: "done", ...payload });
         res.end();
         return;
       }
-
-      const { message: assistantMessage } = await chatModel.createAssistantMessageForTurn(
-        userId,
-        sessionId,
-        userMessage.id,
-        userMessage.turn_id,
-        normalizedAssistantContent
-      );
-      updatedSession = await chatModel.touchSession(userId, sessionId);
-      errorSession = updatedSession;
-      requestMemoryUpdate({ userId, presetId });
-      kickRagTurnIndexing({
-        userId,
-        presetId,
-        sessionId,
-        userMessage,
-        assistantMessage,
-        userContent: userMessage?.content,
-        assistantContent: normalizedAssistantContent,
-      });
-      requestAssistantGistGeneration({
-        userId,
-        presetId,
-        messageId: assistantMessage?.id,
-        userContent: userMessage?.content,
-        content: normalizedAssistantContent,
-      });
-
-      writeSse(res, attachContextHealth({
-        type: "done",
-        session: updatedSession,
-        user_message: userMessage,
-        assistant_message: attachRagSources(assistantMessage, context),
-      }, context, res));
-      res.end();
+      return res.status(200).json(payload);
     } catch (error) {
+      if (res.destroyed || res.writableEnded) return;
       const message = error?.message || "Internal Server Error";
       if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
         try {
-          writeSse(res, { type: "error", error: message });
+          if (message !== "Client disconnected") writeSse(res, { type: "error", error: message });
           res.end();
         } catch {
           // ignore
         }
         return;
       }
-
-      logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
+      logger.error("chat_message_send_failed", withRequestContext(req, {
+        error,
+        sessionId: req.params.sessionId,
+      }));
       const payload = { error: message };
-      if (errorSession) payload.session = errorSession;
-      if (userMessage) payload.user_message = userMessage;
-      const status = ["CHAT_IDEMPOTENCY_CONFLICT", "CHAT_TURN_STALE", "CHAT_SCOPE_MUTATED"].includes(error?.code)
-        ? 409
-        : 500;
-      res.status(status).json(payload);
+      if (error?.session) payload.session = error.session;
+      if (error?.userMessage) payload.user_message = error.userMessage;
+      return res.status(Number(error?.status) || 500).json(payload);
+    } finally {
+      res.removeListener("close", onResponseClose);
     }
   },
+  };
 
-  async sendMessage(req, res) {
-    const userId = req.user?.id;
-    const sessionId = parseSessionId(req.params.sessionId);
-    if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
-    if (!readIdempotencyKey(req)) {
-      return res.status(400).json({ error: "Idempotency-Key header is required" });
-    }
+  return Object.freeze(chatController);
+}
 
-    try {
-      const session = await chatModel.getSession(userId, sessionId);
-      if (!session) return res.status(404).json({ error: "Session not found" });
-      const presetId = getSessionPresetId(session);
-      if (!presetId) return res.status(409).json({ error: "Session has no valid preset" });
-
-      const clientAbort = new AbortController();
-      const onResponseClose = () => {
-        if (!res.writableEnded) clientAbort.abort(new Error("Client disconnected"));
-      };
-      res.once("close", onResponseClose);
-      try {
-        return await scopeCoordinator.enqueueByKey(
-          scopeCoordinator.buildKey(userId, presetId),
-          ({ signal }) => chatController._sendMessageInScope(req, res, signal),
-          { cancellable: true, signal: clientAbort.signal },
-        );
-      } finally {
-        res.removeListener("close", onResponseClose);
-      }
-    } catch (error) {
-      if (res.destroyed || res.writableEnded) return;
-      const status = error?.code === "CHAT_SCOPE_MUTATED" ? 409 : 500;
-      if (!res.headersSent) return res.status(status).json({ error: error?.message || "Internal Server Error" });
-      try { res.end(); } catch { /* ignore */ }
-    }
-  },
-};
-
-module.exports = chatController;
+module.exports = { createChatController };

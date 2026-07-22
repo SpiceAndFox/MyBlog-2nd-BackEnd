@@ -3,9 +3,10 @@ const cors = require("cors");
 const path = require("path");
 const { installHealthEndpoints } = require("../../services/serverLifecycle");
 
-function createHttpApplication({ health, requestLogger } = {}) {
+function createHttpApplication({ health, requestLogger, chatRouter } = {}) {
   if (!health) throw new Error("HTTP application health state is required");
   if (typeof requestLogger !== "function") throw new Error("HTTP request logger is required");
+  if (typeof chatRouter !== "function") throw new Error("Chat router is required");
 
   // Route modules are loaded only after composition has installed config,
   // database, logging, Auth, and module runtime adapters.
@@ -15,7 +16,6 @@ function createHttpApplication({ health, requestLogger } = {}) {
   const adminArticlesRouter = require("../../routes/admin/articles");
   const authRouter = require("../../routes/auth");
   const adminTagsRouter = require("../../routes/admin/tags");
-  const chatRouter = require("../../routes/chat");
   const errorHandler = require("../../middleware/errorHandler");
 
   const app = express();

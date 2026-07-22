@@ -73,6 +73,26 @@ test("composition creates process-level adapters explicitly without starting bac
   }
 });
 
+test("composition wires the Chat public module and injected router without starting requests", () => {
+  const database = { query() {}, getClient() {}, async end() {} };
+  const memoryRuntime = {
+    enabled: false,
+    async assembleContext() { throw new Error("not called during composition"); },
+    async processScope() {},
+    async markRecoveryNotificationsDelivered() {},
+    async shutdown() {},
+  };
+  const composition = createApplicationComposition({
+    environment: fixtureEnvironment(),
+    loadDotenv: false,
+    adapters: { database, logger: logger(), memoryRuntime },
+  });
+
+  assert.equal(typeof composition.chat.chatModule.sendMessage, "function");
+  assert.equal(typeof composition.chat.router, "function");
+  assert.equal(typeof composition.app, "function");
+});
+
 test("background services start in declaration order and drain in reverse order", async () => {
   const events = [];
   const services = createBackgroundServices([
