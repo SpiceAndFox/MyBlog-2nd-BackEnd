@@ -28,6 +28,10 @@ const TARGET_KEYS = Object.freeze(Object.keys(TARGETS));
 const SEMANTIC_NORMAL_PROPOSERS = Object.freeze([
   "episodeProposer",
   "profileRelationshipProposer",
+  "worldFactProposer",
+  "agreementProposer",
+  "todoProposer",
+  "currentStateProposer",
 ]);
 const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));

@@ -14,23 +14,11 @@ function normalCase(targetKey, definition, tickId) {
     tickId,
     mode: "normal",
   };
-  const output = targetKey === "scene"
-    ? {
-      tickId,
-      proposer: definition.proposer,
-      sectionResults: { scene: { status: "patches", patches: [{
-        op: "setField",
-        path: "location",
-        value: "屋顶",
-        evidenceKind: "scene_change",
-        evidenceRef: { messageId: 1, quote: "来到屋顶" },
-      }] } },
-    }
-    : {
-      tickId,
-      proposer: definition.proposer,
-      sectionResults: Object.fromEntries(definition.sections.map((section) => [section, { status: "noop" }])),
-    };
+  const output = {
+    tickId,
+    proposer: definition.proposer,
+    sectionResults: Object.fromEntries(definition.sections.map((section) => [section, { status: "noop" }])),
+  };
   return { name: targetKey, task, output, responseSchema: buildOutputSchema(definition.proposer, definition.sections) };
 }
 

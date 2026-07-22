@@ -59,7 +59,7 @@ function addSceneRefs({ scene, namespace, map, lines }) {
     const field = scene?.[path];
     if (!field) continue;
     if (namespace === "readOnly" && field.value === null) continue;
-    const ref = `${REF_PREFIX.scene}-${path}`;
+    const ref = `${REF_PREFIX.scene}-${path.toUpperCase()}`;
     const entry = { section: "scene", path };
     if (namespace === "readOnly") entry.sourceRefs = normalizeSourceRefs(field.sourceRefs);
     map[ref] = entry;

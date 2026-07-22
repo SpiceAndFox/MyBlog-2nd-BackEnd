@@ -125,6 +125,74 @@ function buildProfileRelationshipSemanticOutputSchema() {
   );
 }
 
+function semanticChangeSchema(action, { ref = action !== "add", text = !["forget", "clear", "complete", "cancel", "expire"].includes(action), properties = {}, required = [] } = {}) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["action", ...(ref ? ["ref"] : []), ...(text ? ["text"] : []), ...required],
+    anyOf: [{ required: ["evidenceMessageIds"] }, { required: ["supportRefs"] }],
+    properties: {
+      action: { const: action },
+      ...(ref ? { ref: { type: "string", minLength: 1 } } : {}),
+      ...(text ? { text: { type: "string", minLength: 1 } } : {}),
+      ...semanticSourceProperties,
+      ...properties,
+    },
+  };
+}
+
+function semanticSectionResultSchema(changes) {
+  return {
+    oneOf: [
+      { type: "object", additionalProperties: false, required: ["status", "changes"], properties: { status: { const: "changes" }, changes: { type: "array", minItems: 1, items: { oneOf: changes } } } },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "noop" } } },
+      { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "unable_to_decide" } } },
+    ],
+  };
+}
+
+function buildSingleSectionSemanticOutputSchema(proposer, section, changes) {
+  return {
+    name: `memory_${proposer}_semantic`,
+    strict: true,
+    schema: {
+      type: "object", additionalProperties: false, required: ["tickId", "proposer", "sectionResults"],
+      properties: {
+        tickId: { type: "integer" }, proposer: { const: proposer },
+        sectionResults: { type: "object", additionalProperties: false, required: [section], properties: { [section]: semanticSectionResultSchema(changes) } },
+      },
+    },
+  };
+}
+
+function buildWorldFactSemanticOutputSchema() {
+  return buildSingleSectionSemanticOutputSchema("worldFactProposer", "worldFacts", ["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema));
+}
+
+function buildAgreementSemanticOutputSchema() {
+  return buildSingleSectionSemanticOutputSchema("agreementProposer", "standingAgreements", [
+    ...["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema),
+    semanticChangeSchema("cancel"),
+  ]);
+}
+
+function buildTodoSemanticOutputSchema() {
+  const actorRequester = { actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] } };
+  const anchor = { anchorMessageId: { type: "integer", minimum: 1 } };
+  return buildSingleSectionSemanticOutputSchema("todoProposer", "todos", [
+    semanticChangeSchema("add", { ref: false, properties: { ...actorRequester, dueAt, ...anchor }, required: ["actor", "requester"] }),
+    ...["update", "correct"].map((action) => semanticChangeSchema(action, { text: false, properties: { text: { type: "string", minLength: 1 }, ...actorRequester, dueChange, ...anchor }, required: ["dueChange"] })),
+    ...["forget", "complete", "cancel", "expire"].map((action) => semanticChangeSchema(action)),
+  ]);
+}
+
+function buildCurrentStateSemanticOutputSchema() {
+  return buildSingleSectionSemanticOutputSchema("currentStateProposer", "scene", [
+    ...["set", "correct"].map((action) => semanticChangeSchema(action)),
+    ...["clear", "forget"].map((action) => semanticChangeSchema(action)),
+  ]);
+}
+
 function patchSchema(proposer, section, op) {
   const evidenceProperty = section === "scene"
     ? { evidenceRef: refSchema }
@@ -184,6 +252,10 @@ function buildOutputSchema(proposer, targetSections, { semantic = SEMANTIC_NORMA
   if (semantic) {
     if (proposer === "episodeProposer") return buildEpisodeSemanticOutputSchema();
     if (proposer === "profileRelationshipProposer") return buildProfileRelationshipSemanticOutputSchema();
+    if (proposer === "worldFactProposer") return buildWorldFactSemanticOutputSchema();
+    if (proposer === "agreementProposer") return buildAgreementSemanticOutputSchema();
+    if (proposer === "todoProposer") return buildTodoSemanticOutputSchema();
+    if (proposer === "currentStateProposer") return buildCurrentStateSemanticOutputSchema();
     throw new Error(`Semantic output schema is not implemented for Memory proposer: ${proposer}`);
   }
   const target = Object.values(TARGETS).find((entry) => entry.proposer === proposer);
@@ -221,5 +293,9 @@ module.exports = {
   buildOutputSchema,
   buildEpisodeSemanticOutputSchema,
   buildProfileRelationshipSemanticOutputSchema,
+  buildWorldFactSemanticOutputSchema,
+  buildAgreementSemanticOutputSchema,
+  buildTodoSemanticOutputSchema,
+  buildCurrentStateSemanticOutputSchema,
   OPS,
 };

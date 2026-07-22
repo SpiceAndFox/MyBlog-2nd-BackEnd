@@ -12,7 +12,7 @@ const NORMAL_PROPOSERS = [
 ];
 
 const MAINTENANCE_PROPOSERS = ["compactionProposer"];
-const SEMANTIC_PROPOSERS = ["episodeProposer", "profileRelationshipProposer"];
+const SEMANTIC_PROPOSERS = NORMAL_PROPOSERS;
 
 test("all 7 Proposer prompts exist and load", async () => {
   assert.equal(Object.keys(FILES).length, 7);
@@ -29,11 +29,10 @@ test("each prompt self-identifies its Proposer name", async () => {
   }
 });
 
-test("each normal Proposer prompt contains new-batch/overlap awareness", async () => {
+test("each normal Proposer prompt documents the new-batch source boundary", async () => {
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /new batch/, `${proposer} must mention "new batch"`);
-    assert.match(prompt, /cursorBefore/, `${proposer} must mention cursorBefore`);
+    assert.match(prompt, /new.?batch|new batch/i, `${proposer} must mention the new-batch boundary`);
   }
 });
 
@@ -79,7 +78,7 @@ test("each normal Proposer treats payload text as data and documents its source 
     const prompt = await loadProposerPrompt(proposer);
     assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as untrusted data`);
     if (SEMANTIC_PROPOSERS.includes(proposer)) {
-      assert.match(prompt, /不要生成.*quote/s, `${proposer} must select message ids instead of generating quotes`);
+      assert.match(prompt, /不要生成.*quote|不输出.*quote|不生成.*quote/s, `${proposer} must select message ids instead of generating quotes`);
       assert.doesNotMatch(prompt, /至少 3 个信息字符/, `${proposer} must not carry the legacy quote floor`);
     } else assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
   }
@@ -88,16 +87,16 @@ test("each normal Proposer treats payload text as data and documents its source 
 test("todo prompt covers overdue visibility and rescheduling", async () => {
   const prompt = await loadProposerPrompt("todoProposer");
   assert.match(prompt, /overdue items 只提供最近 N 条/, "todoProposer must disclose the partial overdue view");
-  assert.match(prompt, /overdue todo.*updateItem.*dueChange\.mode=set/s, "todoProposer must reschedule overdue todos through updateItem + set");
-  assert.match(prompt, /未出现在 writableState.*unable_to_decide/s, "todoProposer must not guess hidden overdue item ids");
-  assert.match(prompt, /status.*becameOverdueAt.*Reducer 管理.*不得输出或修改/s, "todoProposer must treat lifecycle fields as reducer-owned");
+  assert.match(prompt, /overdue.*update.*dueChange\.mode=set/s, "todoProposer must reschedule overdue todos through Semantic update + set");
+  assert.match(prompt, /目标未显示.*unable_to_decide/s, "todoProposer must not guess hidden overdue refs");
+  assert.match(prompt, /不生成.*status.*becameOverdueAt/s, "todoProposer must treat lifecycle fields as reducer-owned");
   assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
-  assert.match(prompt, /relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
-  assert.match(prompt, /overdue.*可完成或取消|overdue.*completeTodo.*cancelTodo/s, "todoProposer must allow overdue completion and cancellation");
-  assert.match(prompt, /overdue.*不能.*expireTodo|overdue.*不.*expire/s, "todoProposer must not expire an already-overdue todo");
-  assert.match(prompt, /鸡蛋炒好.*快尝尝.*好吃.*completeTodo/s, "todoProposer must recognize implicit completion through action and acceptance");
-  assert.match(prompt, /明天.*我给你做.*days.*1.*不得输出 days=0/s, "todoProposer must inherit relative dates from adjacent context");
-  assert.match(prompt, /同一句话.*行动承诺.*提醒请求.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
+  assert.match(prompt, /相对日期必须且只能有一个|relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
+  assert.match(prompt, /overdue 可完成、取消/s, "todoProposer must allow overdue completion and cancellation");
+  assert.match(prompt, /overdue.*不能再次 expire/s, "todoProposer must not expire an already-overdue todo");
+  assert.match(prompt, /产出、交付、使用或验收.*complete/s, "todoProposer must recognize implicit completion");
+  assert.match(prompt, /承接回答.*继承相邻消息.*日期/s, "todoProposer must inherit relative dates from adjacent context");
+  assert.match(prompt, /同一句话.*两个可独立行动.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
 });
 
 test("agreement prompt distinguishes explicit long-term commitments from emotional rhetoric", async () => {
@@ -154,30 +153,24 @@ test("single-section prompts express exclusions only as local noop decisions", a
   assert.doesNotMatch(agreement, /归 relationship|归 todos|归 userProfile|归 relationship\/milestones|由 todoProposer 处理/);
   assert.doesNotMatch(worldFact, /归 userProfile|归 assistantProfile|归 standingAgreements|scene\.note|scene\.mood|recentEpisode/);
   for (const prompt of [todo, agreement, worldFact]) {
-    assert.match(prompt, /输出 noop/, "out-of-scope examples must resolve to the current section's noop");
+    assert.match(prompt, /输出 noop|应当 noop/, "out-of-scope examples must resolve to the current section's noop");
   }
 });
 
-test("each prompt has section × op × evidenceKind mapping", async () => {
+test("normal prompts prohibit persistence metadata while maintenance keeps its storage protocol", async () => {
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
-    const isCurrentState = proposer === "currentStateProposer";
     const isCompaction = proposer === "compactionProposer";
     const isSemantic = SEMANTIC_PROPOSERS.includes(proposer);
     assert.match(prompt, /evidenceKind/, `${proposer} must mention evidenceKind`);
     if (isSemantic) {
-      assert.match(prompt, /不要生成.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
+      assert.match(prompt, /不要生成.*evidenceKind|不输出.*evidenceKind|不生成.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
       assert.doesNotMatch(prompt, /合法 evidenceKind/, `${proposer} must not carry the legacy evidence matrix`);
       continue;
     }
-    if (isCurrentState) {
-      // currentStateProposer lists evidenceKind in a bullet section
-      assert.match(prompt, /scene_change.*user_correction.*assistant_correction/s, `${proposer} must list all its legal evidenceKind values`);
-    } else if (isCompaction) {
+    if (isCompaction) {
       // compactionProposer lists "evidenceKind 必须是 memory_compaction" or has a labeled table
       assert.match(prompt, /memory_compaction/, `${proposer} must list its legal evidenceKind (memory_compaction)`);
-    } else {
-      assert.match(prompt, /合法 evidenceKind/, `${proposer} must have a labeled '合法 evidenceKind' section`);
     }
   }
 });
