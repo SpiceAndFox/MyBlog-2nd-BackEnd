@@ -7,7 +7,7 @@ const crypto = require("node:crypto");
 const {
   createAvatarStorage,
   operationAvatarUrls,
-} = require("../../services/chat/avatarStorage");
+} = require("../../modules/chat/infrastructure/avatarStorage");
 
 test("avatar cleanup only accepts managed basenames and is idempotent", async () => {
   const uploadsRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "blog-avatar-test-"));

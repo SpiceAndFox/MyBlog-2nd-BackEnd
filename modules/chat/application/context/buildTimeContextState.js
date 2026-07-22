@@ -28,4 +28,3 @@ function buildTimeContextState({ recentCandidates } = {}) {
 module.exports = {
   buildTimeContextState,
 };
-

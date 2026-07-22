@@ -1,4 +1,4 @@
-function createScopeCoordinator() {
+function createChatScopeCoordinator() {
   const lanes = new Map();
   const cancellable = new Map();
 
@@ -89,4 +89,4 @@ function createScopeCoordinator() {
   return Object.freeze({ enqueueByKey, cancelByKey, cancelAll, waitForIdle, buildKey });
 }
 
-module.exports = Object.freeze({ ...createScopeCoordinator(), createScopeCoordinator });
+module.exports = { createChatScopeCoordinator };

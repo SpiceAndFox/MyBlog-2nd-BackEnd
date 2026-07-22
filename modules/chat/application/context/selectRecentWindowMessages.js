@@ -1,4 +1,3 @@
-const { chatConfig } = require("../../../config");
 const {
   normalizeText,
   normalizeMessageId,
@@ -19,10 +18,10 @@ function selectRecentWindowMessages(
     assistantGistMap,
   } = {}
 ) {
-  const normalizedMaxMessages = normalizePositiveIntLimit(maxMessages, chatConfig.recentWindowMaxMessages, {
+  const normalizedMaxMessages = normalizePositiveIntLimit(maxMessages, null, {
     name: "maxMessages",
   });
-  const normalizedMaxChars = normalizePositiveIntLimit(maxChars, chatConfig.recentWindowMaxChars, { name: "maxChars" });
+  const normalizedMaxChars = normalizePositiveIntLimit(maxChars, null, { name: "maxChars" });
 
   const normalizedAssistantGistEnabled = Boolean(assistantGistEnabled);
   const normalizedAssistantRawLastN = normalizedAssistantGistEnabled

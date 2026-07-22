@@ -7,4 +7,3 @@ function buildSystemPromptSegment({ systemPrompt } = {}) {
 module.exports = {
   buildSystemPromptSegment,
 };
-

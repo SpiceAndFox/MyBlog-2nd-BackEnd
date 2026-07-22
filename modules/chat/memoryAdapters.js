@@ -1,13 +1,11 @@
 const { createChatMemorySourceReader } = require("./memorySourceReader");
 
-function createChatMemoryPrivacyStores() {
+function createChatMemoryPrivacyStores({ database } = {}) {
   const chatRagRepository = require("../../services/chat/rag/repo");
-  const chatMessageGistModel = require("../../models/chatMessageGistModel");
-  const {
-    deleteAvatarByUrl,
-    avatarExists,
-    operationAvatarUrls,
-  } = require("../../services/chat/avatarStorage");
+  const { createChatGistRepository } = require("./infrastructure/repositories/gistRepository");
+  const { createAvatarStorage, operationAvatarUrls } = require("./infrastructure/avatarStorage");
+  const chatMessageGistModel = createChatGistRepository({ database });
+  const { deleteAvatarByUrl, avatarExists } = createAvatarStorage();
   return Object.freeze([{
     name: "rag",
     purge: ({ userId, presetId, client }) => chatRagRepository.deleteAllChunks(userId, presetId, { client }),
@@ -30,13 +28,13 @@ function createChatMemoryPrivacyStores() {
   }]);
 }
 
-function createChatMemoryAdapters({ database } = {}) {
+function createChatMemoryAdapters({ database, scopeCoordinator } = {}) {
   const { createChatRagProjectionAdapter } = require("../../services/chat/rag/projectionAdapters");
-  const scopeCoordinator = require("../../services/chat/scopeCoordinator");
+  if (typeof scopeCoordinator?.enqueueByKey !== "function") throw new Error("Chat scope coordinator is required");
   return Object.freeze({
     sourceReader: createChatMemorySourceReader({ database }),
     ragProjectionAdapter: createChatRagProjectionAdapter(),
-    privacyStores: createChatMemoryPrivacyStores(),
+    privacyStores: createChatMemoryPrivacyStores({ database }),
     enqueueByKey: scopeCoordinator.enqueueByKey,
   });
 }

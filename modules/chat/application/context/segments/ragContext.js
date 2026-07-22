@@ -7,4 +7,3 @@ function buildRagContextSegment({ ragContext } = {}) {
 module.exports = {
   buildRagContextSegment,
 };
-

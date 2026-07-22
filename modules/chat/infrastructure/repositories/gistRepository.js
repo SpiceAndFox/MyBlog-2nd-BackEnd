@@ -1,9 +1,3 @@
-const db = require("../db");
-
-function executor(client) {
-  return client && typeof client.query === "function" ? client : db;
-}
-
 function normalizePresetId(rawPresetId) {
   const normalized = String(rawPresetId || "").trim();
   return normalized || null;
@@ -42,7 +36,12 @@ function mapRow(row) {
   };
 }
 
-const chatMessageGistModel = {
+function createChatGistRepository({ database } = {}) {
+  if (!database?.query) throw new Error("Chat gist repository requires a database adapter");
+  const db = database;
+  const executor = (client) => (client && typeof client.query === "function" ? client : database);
+
+  const chatMessageGistModel = {
   async getGist(userId, presetId, messageId) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
@@ -142,6 +141,9 @@ const chatMessageGistModel = {
       throw error;
     }
   },
-};
+  };
 
-module.exports = chatMessageGistModel;
+  return Object.freeze(chatMessageGistModel);
+}
+
+module.exports = { createChatGistRepository };

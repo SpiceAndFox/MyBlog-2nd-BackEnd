@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createScopeCoordinator } = require("../../services/chat/scopeCoordinator");
+const { createChatScopeCoordinator } = require("../../modules/chat");
 
 function deferred() {
   let resolve;
@@ -9,7 +9,7 @@ function deferred() {
 }
 
 test("chat scope coordinator serializes sends across sessions sharing one preset", async () => {
-  const coordinator = createScopeCoordinator();
+  const coordinator = createChatScopeCoordinator();
   const gate = deferred();
   const events = [];
   const first = coordinator.enqueueByKey("7:companion", async () => {
@@ -30,7 +30,7 @@ test("chat scope coordinator serializes sends across sessions sharing one preset
 });
 
 test("source mutation cancels both active and queued generations before taking the lane", async () => {
-  const coordinator = createScopeCoordinator();
+  const coordinator = createChatScopeCoordinator();
   const active = coordinator.enqueueByKey("7:companion", ({ signal }) => new Promise((resolve, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   }), { cancellable: true });
@@ -48,7 +48,7 @@ test("source mutation cancels both active and queued generations before taking t
 });
 
 test("shutdown cancellation aborts every active scope and waitForIdle observes their release", async () => {
-  const coordinator = createScopeCoordinator();
+  const coordinator = createChatScopeCoordinator();
   const first = coordinator.enqueueByKey("7:companion", ({ signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   }), { cancellable: true });

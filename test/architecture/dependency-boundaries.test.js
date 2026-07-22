@@ -53,3 +53,24 @@ test("the architecture gate detects cycles and dependency-direction violations",
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
+
+test("the migrated Chat HTTP adapter has no direct persistence, config, filesystem, or runtime authority", () => {
+  const rootDir = path.resolve(__dirname, "../..");
+  const source = fs.readFileSync(path.join(rootDir, "controllers/chatController.js"), "utf8");
+  for (const forbidden of [
+    /@models|models\/chat/,
+    /services\/chat\/(?:memoryRuntime|scopeCoordinator|gistPipeline|avatarStorage|trashCleanup)/,
+    /require\(["'](?:node:)?(?:fs|path|crypto)["']\)/,
+    /require\(["']sharp["']\)/,
+    /require\(["']\.\.\/config["']\)/,
+  ]) assert.doesNotMatch(source, forbidden);
+
+  for (const retiredPath of [
+    "models/chatModel.js",
+    "models/chatPresetModel.js",
+    "models/chatMessageGistModel.js",
+    "services/chat/gistPipeline.js",
+    "services/chat/avatarStorage.js",
+    "services/chat/trashCleanup.js",
+  ]) assert.equal(fs.existsSync(path.join(rootDir, retiredPath)), false, `${retiredPath} should stay retired`);
+});

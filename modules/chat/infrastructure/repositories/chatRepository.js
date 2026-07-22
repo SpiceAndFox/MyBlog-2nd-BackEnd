@@ -1,5 +1,3 @@
-const db = require("../db");
-
 const DEFAULT_SESSION_TITLE = "新对话";
 
 function normalizeTitle(rawTitle) {
@@ -17,11 +15,12 @@ function normalizePresetId(rawPresetId) {
   return normalized || null;
 }
 
-function executor(client) {
-  return client && typeof client.query === "function" ? client : db;
-}
+function createChatRepository({ database } = {}) {
+  if (!database?.query || !database?.getClient) throw new Error("Chat repository requires a database adapter");
+  const db = database;
+  const executor = (client) => (client && typeof client.query === "function" ? client : db);
 
-const chatModel = {
+  const chatModel = {
   async listSessions(userId) {
     const query = `
       SELECT id, preset_id, title, settings, created_at, updated_at
@@ -541,6 +540,9 @@ const chatModel = {
     const { rowCount } = await executor(client).query(query, [sessionId, userId, messageId]);
     return rowCount || 0;
   },
-};
+  };
 
-module.exports = chatModel;
+  return Object.freeze(chatModel);
+}
+
+module.exports = { createChatRepository };

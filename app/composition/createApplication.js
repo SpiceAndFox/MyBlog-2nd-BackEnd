@@ -17,9 +17,8 @@ const {
   installLegacyAuthBindings,
 } = require("../../modules/auth");
 const { createMemoryModule } = require("../../modules/memory");
-const { createChatMemoryAdapters } = require("../../modules/chat");
+const { createChatMemoryAdapters, createChatScopeCoordinator } = require("../../modules/chat");
 const { createRequestLogger } = require("../../middleware/requestLogger");
-const scopeCoordinator = require("../../services/chat/scopeCoordinator");
 const {
   createHealthState,
   createServerLifecycle,
@@ -47,8 +46,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   configureProductionModelPolicy(startupEnvironment);
 
   const memoryRuntimeEntry = require("../../services/chat/memoryRuntime");
-  const { startChatTrashCleanup } = require("../../services/chat/trashCleanup");
-
   const database = adapters.database || databaseEntry.createDatabase(config.databaseConfig);
   databaseEntry.configureDatabase(database);
 
@@ -63,7 +60,8 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   });
   installLegacyAuthBindings(auth);
 
-  const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({ database });
+  const scopeCoordinator = adapters.chatScopeCoordinator || createChatScopeCoordinator();
+  const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({ database, scopeCoordinator });
   const memoryModule = adapters.memoryModule || createMemoryModule({
     sourceReader: chatMemoryAdapters.sourceReader,
     userTimeZoneReader: auth.userTimeZoneReader || createUserTimeZoneReader({ database }),
@@ -86,9 +84,12 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   });
   const chat = adapters.chat || (adapters.app ? null : createChatComposition({
     config,
+    database,
     memoryRuntime,
     logger,
     authMiddleware: auth.middleware,
+    withRequestContext,
+    scopeCoordinator,
     adapters: adapters.chatAdapters,
   }));
   const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router });
@@ -100,11 +101,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   const backgroundServices = createBackgroundServices([
     {
       name: "chat-trash-cleanup",
-      start: () => startChatTrashCleanup({
-        retentionDays: config.chatConfig.trashRetentionDays,
-        intervalMs: config.chatConfig.trashCleanupIntervalMs,
-        batchSize: config.chatConfig.trashPurgeBatchSize,
-      }),
+      start: chat?.chatModule?.trashCleanup?.start || (() => () => {}),
     },
     {
       name: "article-temp-image-cleanup",

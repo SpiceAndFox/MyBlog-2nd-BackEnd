@@ -1,9 +1,31 @@
 #!/usr/bin/env node
 require("module-alias/register");
 const { createCommandContext } = require("./app/composition/commandContext");
-const { database: db, config: { chatConfig, chatContextConfig } } = createCommandContext();
-const { buildRecentWindowContext } = require("./services/chat/context/buildRecentWindowContext");
-const { requestAssistantGistGeneration } = require("./services/chat/gistPipeline");
+const {
+  database: db,
+  logger,
+  config: { chatConfig, chatContextConfig, chatGistConfig },
+} = createCommandContext();
+const { createChatPersistence } = require("./modules/chat");
+const { createChatGistService, createRecentWindowContextBuilder } = require("./modules/chat/admin");
+const { createChatCompletion } = require("./services/llm/chatCompletions");
+const { chatRepository, gistRepository } = createChatPersistence({ database: db });
+const buildRecentWindowContext = createRecentWindowContextBuilder({
+  config: chatConfig,
+  contextConfig: chatContextConfig,
+  gistConfig: chatGistConfig,
+  chatRepository,
+  gistRepository,
+  logger,
+});
+const { requestGeneration: requestAssistantGistGeneration } = createChatGistService({
+  config: chatGistConfig,
+  contextConfig: chatContextConfig,
+  chatRepository,
+  gistRepository,
+  llm: { complete: createChatCompletion },
+  logger,
+});
 
 function parseArgs(argv) {
   const parsed = {};

@@ -15,7 +15,8 @@ const db = {
   async query() { throw new Error("Unexpected pool query"); },
 };
 replaceModule("../../db", db);
-const chatModel = require("../../models/chatModel");
+const { createChatRepository } = require("../../modules/chat/infrastructure/repositories/chatRepository");
+const chatModel = createChatRepository({ database: db });
 
 function createClient(dispatch) {
   const statements = [];

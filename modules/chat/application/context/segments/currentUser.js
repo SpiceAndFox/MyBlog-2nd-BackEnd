@@ -12,4 +12,3 @@ function buildCurrentUserSegment({ recent } = {}) {
 module.exports = {
   buildCurrentUserSegment,
 };
-

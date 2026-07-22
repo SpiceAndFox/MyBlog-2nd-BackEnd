@@ -79,6 +79,10 @@ test("composition wires the Chat public module and injected router without start
     enabled: false,
     async assembleContext() { throw new Error("not called during composition"); },
     async processScope() {},
+    async rebuildScope() {},
+    async mutateSourceAndRebuild() {},
+    async privacyHardDelete() {},
+    async getPrivacyOperation() {},
     async markRecoveryNotificationsDelivered() {},
     async shutdown() {},
   };
@@ -89,6 +93,10 @@ test("composition wires the Chat public module and injected router without start
   });
 
   assert.equal(typeof composition.chat.chatModule.sendMessage, "function");
+  assert.equal(typeof composition.chat.chatModule.editMessage, "function");
+  assert.equal(typeof composition.chat.chatModule.presets.create, "function");
+  assert.equal(typeof composition.chat.chatModule.sessions.create, "function");
+  assert.equal(typeof composition.chat.chatModule.trashCleanup.start, "function");
   assert.equal(typeof composition.chat.router, "function");
   assert.equal(typeof composition.app, "function");
 });

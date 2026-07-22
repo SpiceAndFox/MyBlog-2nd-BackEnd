@@ -1,5 +1,9 @@
 const { createUserTimeZoneReader } = require("../../modules/auth");
-const { createChatMemoryAdapters, createChatMemorySourceReader } = require("../../modules/chat");
+const {
+  createChatMemoryAdapters,
+  createChatMemorySourceReader,
+  createChatScopeCoordinator,
+} = require("../../modules/chat");
 const { createMemoryModule } = require("../../modules/memory");
 const memoryRuntimeEntry = require("../../services/chat/memoryRuntime");
 
@@ -15,8 +19,9 @@ function createMemoryAdministrationComposition({ database } = {}) {
   return createMemoryAdministration(createMemoryPorts(database));
 }
 
-function createMemoryRuntimeComposition({ database, config, chatConfig, logger } = {}) {
-  const chatAdapters = createChatMemoryAdapters({ database });
+function createMemoryRuntimeComposition({ database, config, chatConfig, logger, scopeCoordinator } = {}) {
+  const coordinator = scopeCoordinator || createChatScopeCoordinator();
+  const chatAdapters = createChatMemoryAdapters({ database, scopeCoordinator: coordinator });
   const memoryModule = createMemoryModule({
     sourceReader: chatAdapters.sourceReader,
     userTimeZoneReader: createUserTimeZoneReader({ database }),

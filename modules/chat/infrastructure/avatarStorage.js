@@ -1,11 +1,21 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const sharp = require("sharp");
 
-const defaultUploadsRoot = path.resolve(__dirname, "..", "..", "uploads");
+const defaultUploadsRoot = path.resolve(__dirname, "..", "..", "..", "uploads");
 const avatarUrlPrefix = "/uploads/assistant_avatars/";
 
-function createAvatarStorage({ uploadsRoot = defaultUploadsRoot } = {}) {
+function createAvatarStorage({ uploadsRoot = defaultUploadsRoot, imageProcessor = sharp } = {}) {
   const avatarDir = path.resolve(uploadsRoot, "assistant_avatars");
+
+  async function deleteFile(filePath) {
+    if (!filePath) return;
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
 
   function resolveAvatarPath(avatarUrl) {
     const normalized = String(avatarUrl || "").trim();
@@ -41,7 +51,27 @@ function createAvatarStorage({ uploadsRoot = defaultUploadsRoot } = {}) {
     }
   }
 
-  return { avatarDir, avatarUrlPrefix, resolveAvatarPath, deleteAvatarByUrl, avatarExists };
+  async function processUploadedAvatar(file = {}) {
+    const inputPath = String(file.path || "").trim();
+    const filename = String(file.filename || "").trim();
+    if (!inputPath || !filename) throw new Error("Uploaded avatar path and filename are required");
+    const baseName = path.parse(filename).name;
+    const outputFilename = `${baseName}-compressed.webp`;
+    const outputPath = path.join(path.dirname(inputPath), outputFilename);
+    await imageProcessor(inputPath).rotate().resize(256, 256, { fit: "cover" }).webp({ quality: 82 }).toFile(outputPath);
+    await deleteFile(inputPath);
+    return { filename: outputFilename, path: outputPath, avatarUrl: `${avatarUrlPrefix}${outputFilename}` };
+  }
+
+  return {
+    avatarDir,
+    avatarUrlPrefix,
+    resolveAvatarPath,
+    deleteAvatarByUrl,
+    avatarExists,
+    deleteFile,
+    processUploadedAvatar,
+  };
 }
 
 function operationAvatarUrls(operation) {
@@ -50,8 +80,4 @@ function operationAvatarUrls(operation) {
   return [...new Set(urls.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
-module.exports = {
-  ...createAvatarStorage(),
-  createAvatarStorage,
-  operationAvatarUrls,
-};
+module.exports = { createAvatarStorage, operationAvatarUrls };

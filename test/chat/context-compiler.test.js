@@ -29,7 +29,7 @@ function baseAdapters(overrides = {}) {
   };
 }
 
-test("legacy context compilation uses injected recent-window and RAG ports with the pre-window boundary", async () => {
+test("non-Memory context compilation uses injected recent-window and RAG ports with the pre-window boundary", async () => {
   const calls = [];
   const compile = createChatContextCompiler(baseAdapters({
     rag: {

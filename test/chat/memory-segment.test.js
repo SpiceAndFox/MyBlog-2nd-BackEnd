@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildMemorySegment } = require("../../services/chat/context/segments/memory");
+const { buildMemorySegment } = require("../../modules/chat/application/context/segments/memory");
 
 test("v2 memory is emitted as one context segment", () => {
   const segment = buildMemorySegment({ memoryV2: { renderedText: "[长期核心记忆]\n(无)" } });

@@ -156,22 +156,15 @@ const chatModel = {
   },
 };
 
-replaceModule("../../models/chatModel", chatModel);
-replaceModule("../../models/chatPresetModel", {
-  getPreset: async (_userId, presetId) => ({ id: presetId, systemPrompt: "You are a companion." }),
-  isBuiltinPresetId: () => false,
-});
 replaceModule("../../config", {
   chatConfig: { dayTimeZone: "Asia/Shanghai", defaultProviderId: "deepseek", defaultSettings: {}, defaultModelByProvider: { deepseek: "deepseek-v4-flash" } },
   llmConfig: { timeoutMs: 1000 },
   chatRagConfig: { enabled: true, debugIncludeContent: false },
 });
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
-replaceModule("../../services/chat/gistPipeline", { requestAssistantGistGeneration() {} });
 replaceModule("../../services/chat/rag/indexer", { requestChatTurnIndexing() {}, requestDeleteChunksFromMessageId() {} });
 const testLogger = { debug() {}, warn() {}, error() {} };
 replaceModule("../../logger", { logger: testLogger, withRequestContext: (_req, value) => value });
-replaceModule("../../services/chat/avatarStorage", { deleteAvatarByUrl: async () => {} });
 const providerCatalog = {
   getProviderDefinition: () => ({ capabilities: { webSearch: false } }),
   isSupportedProvider: () => true,
@@ -198,9 +191,11 @@ const llmPort = {
 };
 replaceModule("../../services/llm/chatCompletions", llmPort);
 
-const scopeCoordinator = require("../../services/chat/scopeCoordinator");
+const { createChatScopeCoordinator } = require("../../modules/chat");
+const scopeCoordinator = createChatScopeCoordinator();
 const memoryRuntime = {
   enabled: false,
+  async getPrivacyOperation() { return null; },
   async assembleContext() { throw new Error("Memory context is disabled"); },
   async processScope() {},
   async rebuildScope() {},
@@ -223,6 +218,9 @@ const chatModule = createChatModule({
       defaultSettings: {},
       defaultModelByProvider: { deepseek: "deepseek-v4-flash" },
     },
+    context: { recentWindowAssistantGistEnabled: false },
+    gist: { enabled: false },
+    timeContext: { enabled: false, timeZone: "Asia/Shanghai", template: "" },
     llm: { timeoutMs: 1000 },
     memory: { enabled: false },
   },
@@ -234,8 +232,11 @@ const chatModule = createChatModule({
     settingsSchema,
     isModelAllowed: () => true,
     memory: memoryRuntime,
-    rag: { retrieve: async () => null, requestTurnIndexing() {} },
+    rag: { retrieve: async () => null, requestTurnIndexing() {}, requestDeleteFromMessage() {} },
     gist: { scheduleBackfill() {}, requestGeneration() {} },
+    presets: {},
+    sessions: {},
+    trashCleanup: {},
     llm: {
       complete: llmPort.createChatCompletion,
       createStreamResponse: llmPort.createChatCompletionStreamResponse,
@@ -247,7 +248,13 @@ const chatModule = createChatModule({
   },
 });
 const { createChatController } = require("../../controllers/chatController");
-const chatController = createChatController({ chatModule });
+const chatController = createChatController({
+  chatModule,
+  memory: { markRecoveryNotificationsDelivered: async () => {} },
+  config: { rag: { enabled: true, debugIncludeContent: false } },
+  logger: testLogger,
+  withRequestContext: (_req, value) => value,
+});
 
 test.beforeEach(resetHarness);
 

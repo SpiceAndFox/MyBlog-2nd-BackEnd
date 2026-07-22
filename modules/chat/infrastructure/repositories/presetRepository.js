@@ -1,5 +1,3 @@
-const db = require("../db");
-
 const BUILT_IN_PRESETS = [
   {
     id: "default",
@@ -49,30 +47,28 @@ function withBuiltinMetadata(preset) {
   };
 }
 
-async function ensureBuiltinPresets(userId, presetIds = null) {
-  if (!userId) return;
-  const ids = Array.isArray(presetIds) ? presetIds.map((id) => String(id || "").trim()) : null;
-  const targets = ids ? BUILT_IN_PRESETS.filter((preset) => ids.includes(preset.id)) : BUILT_IN_PRESETS;
-  if (!targets.length) return;
+function createChatPresetRepository({ database } = {}) {
+  if (!database?.query || !database?.getClient) throw new Error("Chat preset repository requires a database adapter");
+  const db = database;
 
-  const query = `
-    INSERT INTO chat_prompt_presets (user_id, preset_id, name, system_prompt, avatar_url)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (user_id, preset_id) DO NOTHING
-  `;
+  async function ensureBuiltinPresets(userId, presetIds = null) {
+    if (!userId) return;
+    const ids = Array.isArray(presetIds) ? presetIds.map((id) => String(id || "").trim()) : null;
+    const targets = ids ? BUILT_IN_PRESETS.filter((preset) => ids.includes(preset.id)) : BUILT_IN_PRESETS;
+    if (!targets.length) return;
 
-  for (const preset of targets) {
-    await db.query(query, [
-      userId,
-      preset.id,
-      preset.name,
-      preset.systemPrompt || "",
-      preset.avatarUrl || null,
-    ]);
+    const query = `
+      INSERT INTO chat_prompt_presets (user_id, preset_id, name, system_prompt, avatar_url)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (user_id, preset_id) DO NOTHING
+    `;
+
+    for (const preset of targets) {
+      await db.query(query, [userId, preset.id, preset.name, preset.systemPrompt || "", preset.avatarUrl || null]);
+    }
   }
-}
 
-const chatPresetModel = {
+  const chatPresetModel = {
   BUILT_IN_PRESETS: BUILT_IN_PRESETS.map(withBuiltinMetadata).filter(Boolean),
   isBuiltinPresetId,
   ensureBuiltinPresets,
@@ -282,6 +278,9 @@ const chatPresetModel = {
     if (!rows[0]) return null;
     return { deleted: true, avatarUrl: rows[0].avatar_url || null };
   },
-};
+  };
 
-module.exports = chatPresetModel;
+  return Object.freeze(chatPresetModel);
+}
+
+module.exports = { createChatPresetRepository };

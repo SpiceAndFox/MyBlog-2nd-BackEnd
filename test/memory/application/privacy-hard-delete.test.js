@@ -8,7 +8,7 @@ const { createPrivacyHardDelete } = require("../../../modules/memory/application
 const {
   createAvatarStorage,
   operationAvatarUrls,
-} = require("../../../services/chat/avatarStorage");
+} = require("../../../modules/chat/infrastructure/avatarStorage");
 
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {
   const calls = [];

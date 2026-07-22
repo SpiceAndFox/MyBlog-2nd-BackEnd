@@ -1,27 +1,24 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-function replaceModule(request, exports) {
-  const filename = require.resolve(request);
-  require.cache[filename] = { id: filename, filename, loaded: true, exports };
-}
-
 const events = [];
 const chatModel = {};
 const memoryRuntime = {};
-replaceModule("../../logger", {
-  logger: {
-    info(event, detail) { events.push(["info", event, detail]); },
-    warn(event, detail) { events.push(["warn", event, detail]); },
-    error(event, detail) { events.push(["error", event, detail]); },
-  },
-});
-replaceModule("../../models/chatModel", chatModel);
-replaceModule("../../services/chat/memoryRuntime", memoryRuntime);
-const {
-  purgeExpiredTrashedSessions,
-  startChatTrashCleanup,
-} = require("../../services/chat/trashCleanup");
+const logger = {
+  info(event, detail) { events.push(["info", event, detail]); },
+  warn(event, detail) { events.push(["warn", event, detail]); },
+  error(event, detail) { events.push(["error", event, detail]); },
+};
+const { createChatTrashCleanup } = require("../../modules/chat/application/trashCleanup");
+
+function createCleanup(overrides = {}) {
+  return createChatTrashCleanup({
+    config: { trashRetentionDays: 30, trashCleanupIntervalMs: 5, trashPurgeBatchSize: 10, ...overrides },
+    chatRepository: chatModel,
+    memory: memoryRuntime,
+    logger,
+  });
+}
 
 async function waitFor(predicate, timeoutMs = 250) {
   const deadline = Date.now() + timeoutMs;
@@ -47,10 +44,8 @@ test("trash cleanup groups raw deletes by Memory scope and uses the injected tra
     return { mutationResult: await deleteRawSource(client) };
   };
 
-  const result = await purgeExpiredTrashedSessions({
+  const result = await createCleanup().purge({
     now: new Date("2026-07-22T00:00:00.000Z"),
-    retentionDays: 30,
-    batchSize: 10,
   });
   assert.equal(result.purged, 3);
   assert.equal(result.cutoff.toISOString(), "2026-06-22T00:00:00.000Z");
@@ -72,7 +67,7 @@ test("trash cleanup starts immediately, never overlaps ticks, and drains its act
     return { mutationResult: await deleteRawSource({ transaction: true }) };
   };
 
-  const stop = startChatTrashCleanup({ retentionDays: 30, intervalMs: 5, batchSize: 10 });
+  const stop = createCleanup().start();
   await waitFor(() => calls === 1);
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(calls, 1, "an interval tick overlapped the active cleanup");
