@@ -10,17 +10,17 @@
 
 | 文档 | 权威范围 |
 | --- | --- |
-| [Semantic 编译与 Source 校验](evidence-validation.md) | ref resolution、support provenance 展开、source validation、date anchor、action→op、compile failure |
+| [Semantic 编译与 Source 校验](semantic-compilation-and-source-validation.md) | ref resolution、support provenance 展开、source validation、date anchor、action→op、compile failure |
 | [Reducer Apply](reducer-application.md) | compiled patch 校验、模拟、apply、event 与 revision 提交 |
 | [Task 执行、Cursor 与幂等](task-execution-and-idempotency.md) | task stage、cursor、retry、successor、phase identity 与 crash recovery |
 | [Compaction 与 Proposal Replay](compaction-and-replay.md) | capacity-blocked、semantic merge、compile、compiled proposal replay |
 | [领域生命周期](domain-lifecycle.md) | Scene TTL、Todo、Episode 滑动窗口和 effective view |
 | [Source Rebuild 与 Projection](source-rebuild-and-projection.md) | sourceGeneration、force drain、RAG generation/boundary checkpoint |
-| [Active Forget、Privacy 与 Retention](suppression-and-retention.md) | active-state forget、privacy hard delete、snapshot/event/task retention |
+| [Active Forget、Privacy 与 Retention](active-forget-privacy-and-retention.md) | active-state forget、privacy hard delete、snapshot/event/task retention |
 | [Context Coverage](context-coverage.md) | recent window、needsMemory、GapBridge、RAG/Recall cutoff 与健康 |
 | [异常诊断投影](diagnostic-projection.md) | 从 committed events 派生 scene capacity 等诊断 |
 
-`evidence-validation.md` 与 `suppression-and-retention.md` 保留旧文件名以避免链接失效，但 2.01 已不包含 evidenceKind/quote matcher 或 context-suppression tombstone。
+2.01 已不包含 evidenceKind、quote matcher 或 context-suppression tombstone；算法文件名均以当前职责命名，不保留会暗示旧协议仍有效的兼容名称。
 
 ## 通用结构
 

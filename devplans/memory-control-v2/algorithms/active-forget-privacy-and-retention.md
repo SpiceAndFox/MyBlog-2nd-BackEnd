@@ -1,6 +1,6 @@
 # Active Forget、Privacy Hard Delete 与 Retention 算法
 
-文件名为兼容旧链接保留。Memory Control 2.01 不实现 context-suppression tombstone；本文只定义 active-state forget/correction、privacy hard delete 和 retention。
+Memory Control 2.01 不实现 context-suppression tombstone；本文只定义 active-state forget/correction、privacy hard delete 和 retention。
 
 ## 1. Update/Correct
 

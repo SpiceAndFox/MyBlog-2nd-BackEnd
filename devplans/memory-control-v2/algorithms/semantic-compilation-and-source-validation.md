@@ -1,6 +1,6 @@
 # Semantic 编译与 Source 校验算法
 
-本文是 2.01 short ref resolution、support provenance 展开、raw source validation、Todo date anchor 与 action→op 编译的单一算法权威。文件名为兼容旧文档链接保留；2.01 不再使用 evidenceKind、LLM quote 或 quote matcher。
+本文是 2.01 short ref resolution、support provenance 展开、raw source validation、Todo date anchor 与 action→op 编译的单一算法权威。2.01 不再使用 evidenceKind、LLM quote 或 quote matcher。
 
 ## 1. 输入
 
