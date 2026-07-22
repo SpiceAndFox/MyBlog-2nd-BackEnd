@@ -25,6 +25,10 @@ const TARGETS = Object.freeze({
 });
 
 const TARGET_KEYS = Object.freeze(Object.keys(TARGETS));
+const SEMANTIC_NORMAL_PROPOSERS = Object.freeze([
+  "episodeProposer",
+  "profileRelationshipProposer",
+]);
 const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));
 const TYPED_PROFILE_SECTIONS = Object.freeze(["userProfile", "assistantProfile", "relationship"]);
@@ -128,6 +132,7 @@ module.exports = {
   SECTIONS,
   TARGETS,
   TARGET_KEYS,
+  SEMANTIC_NORMAL_PROPOSERS,
   SCENE_FIELDS,
   ITEM_SECTIONS,
   TYPED_PROFILE_SECTIONS,

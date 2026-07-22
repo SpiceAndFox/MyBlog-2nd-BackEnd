@@ -1,5 +1,5 @@
 const {
-  TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS,
+  TARGETS, PROPOSER_EVIDENCE_KINDS, SCENE_FIELDS, SEMANTIC_NORMAL_PROPOSERS,
   TYPED_PROFILE_SECTIONS, PROFILE_FACT_BASES, PROFILE_FACETS, PROFILE_CANONICAL_KEYS,
 } = require("../../contracts");
 const { buildDueAtSchema } = require("../../contracts/dueAt");
@@ -40,7 +40,7 @@ const semanticSourceProperties = Object.freeze({
   supportRefs: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
 });
 
-function semanticEpisodeChangeSchema(action) {
+function semanticTextItemChangeSchema(action) {
   const properties = {
     action: { const: action },
     ...semanticSourceProperties,
@@ -63,7 +63,7 @@ function semanticEpisodeChangeSchema(action) {
   };
 }
 
-function semanticEpisodeResultSchema(section) {
+function semanticTextItemResultSchema({ maxItems } = {}) {
   return {
     oneOf: [
       {
@@ -75,8 +75,8 @@ function semanticEpisodeResultSchema(section) {
           changes: {
             type: "array",
             minItems: 1,
-            ...(section === "recentEpisodes" ? { maxItems: 3 } : {}),
-            items: { oneOf: ["add", "update", "correct", "forget"].map(semanticEpisodeChangeSchema) },
+            ...(maxItems ? { maxItems } : {}),
+            items: { oneOf: ["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema) },
           },
         },
       },
@@ -86,10 +86,9 @@ function semanticEpisodeResultSchema(section) {
   };
 }
 
-function buildEpisodeSemanticOutputSchema() {
-  const sections = ["recentEpisodes", "milestones"];
+function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySection = {} } = {}) {
   return {
-    name: "memory_episodeProposer_semantic",
+    name: `memory_${proposer}_semantic`,
     strict: true,
     schema: {
       type: "object",
@@ -97,16 +96,33 @@ function buildEpisodeSemanticOutputSchema() {
       required: ["tickId", "proposer", "sectionResults"],
       properties: {
         tickId: { type: "integer" },
-        proposer: { const: "episodeProposer" },
+        proposer: { const: proposer },
         sectionResults: {
           type: "object",
           additionalProperties: false,
           required: sections,
-          properties: Object.fromEntries(sections.map((section) => [section, semanticEpisodeResultSchema(section)])),
+          properties: Object.fromEntries(sections.map((section) => [section, semanticTextItemResultSchema({
+            maxItems: maxItemsBySection[section],
+          })])),
         },
       },
     },
   };
+}
+
+function buildEpisodeSemanticOutputSchema() {
+  return buildTextItemSemanticOutputSchema(
+    "episodeProposer",
+    ["recentEpisodes", "milestones"],
+    { maxItemsBySection: { recentEpisodes: 3 } },
+  );
+}
+
+function buildProfileRelationshipSemanticOutputSchema() {
+  return buildTextItemSemanticOutputSchema(
+    "profileRelationshipProposer",
+    ["userProfile", "assistantProfile", "relationship"],
+  );
 }
 
 function patchSchema(proposer, section, op) {
@@ -142,7 +158,7 @@ function compactionPatchSchema() {
   };
 }
 
-function buildOutputSchema(proposer, targetSections, { semantic = proposer === "episodeProposer" } = {}) {
+function buildOutputSchema(proposer, targetSections, { semantic = SEMANTIC_NORMAL_PROPOSERS.includes(proposer) } = {}) {
   if (proposer === "compactionProposer") {
     if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");
     const [section] = targetSections;
@@ -165,7 +181,11 @@ function buildOutputSchema(proposer, targetSections, { semantic = proposer === "
       },
     };
   }
-  if (proposer === "episodeProposer" && semantic) return buildEpisodeSemanticOutputSchema();
+  if (semantic) {
+    if (proposer === "episodeProposer") return buildEpisodeSemanticOutputSchema();
+    if (proposer === "profileRelationshipProposer") return buildProfileRelationshipSemanticOutputSchema();
+    throw new Error(`Semantic output schema is not implemented for Memory proposer: ${proposer}`);
+  }
   const target = Object.values(TARGETS).find((entry) => entry.proposer === proposer);
   if (!target || !OPS[proposer]) throw new Error(`Unknown normal Memory proposer: ${proposer}`);
   const sectionProperties = {};
@@ -197,4 +217,9 @@ function buildOutputSchema(proposer, targetSections, { semantic = proposer === "
   };
 }
 
-module.exports = { buildOutputSchema, buildEpisodeSemanticOutputSchema, OPS };
+module.exports = {
+  buildOutputSchema,
+  buildEpisodeSemanticOutputSchema,
+  buildProfileRelationshipSemanticOutputSchema,
+  OPS,
+};

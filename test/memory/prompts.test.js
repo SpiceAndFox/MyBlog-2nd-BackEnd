@@ -12,6 +12,7 @@ const NORMAL_PROPOSERS = [
 ];
 
 const MAINTENANCE_PROPOSERS = ["compactionProposer"];
+const SEMANTIC_PROPOSERS = ["episodeProposer", "profileRelationshipProposer"];
 
 test("all 7 Proposer prompts exist and load", async () => {
   assert.equal(Object.keys(FILES).length, 7);
@@ -73,13 +74,13 @@ test("each normal Proposer prompt distinguishes noop from unable_to_decide", asy
   }
 });
 
-test("each normal Proposer treats payload text as data and states the quote information floor", async () => {
+test("each normal Proposer treats payload text as data and documents its source selector contract", async () => {
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
     assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as untrusted data`);
-    if (proposer === "episodeProposer") {
-      assert.match(prompt, /不要生成 quote/, "semantic episodeProposer must select message ids instead of generating quotes");
-      assert.doesNotMatch(prompt, /至少 3 个信息字符/, "semantic episodeProposer must not carry the legacy quote floor");
+    if (SEMANTIC_PROPOSERS.includes(proposer)) {
+      assert.match(prompt, /不要生成.*quote/s, `${proposer} must select message ids instead of generating quotes`);
+      assert.doesNotMatch(prompt, /至少 3 个信息字符/, `${proposer} must not carry the legacy quote floor`);
     } else assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
   }
 });
@@ -116,15 +117,15 @@ test("episode prompt clusters coherent interaction arcs instead of producing a t
   assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
 });
 
-test("profile prompt requires durable facts and cross-episode pattern evidence", async () => {
+test("profile prompt keeps durable admission while allowing support-only long-term derivation", async () => {
   const prompt = await loadProposerPrompt("profileRelationshipProposer");
-  assert.match(prompt, /至少三条不同消息.*至少两个独立互动片段/s);
-  assert.match(prompt, /explicit.*当下动作.*不是 explicit 长期事实/s);
-  assert.match(prompt, /一次行为不能推出技能、人格、动机或关系模式/);
-  assert.match(prompt, /相邻.*提议→回应.*一个互动片段/s);
-  assert.match(prompt, /证据不足.*输出.*noop.*不要输出.*unable_to_decide/s);
+  assert.match(prompt, /不要求固定消息数量、独立互动片段数量或 new-batch evidence/);
+  assert.match(prompt, /单次 Episode 或一个 support ref.*长程归纳/s);
+  assert.match(prompt, /可仅用该 Episode 的 `supportRefs`/);
+  assert.match(prompt, /一次行为或单次 Episode.*不能仅凭一次动作猜测技能、人格、心理动机/s);
   assert.match(prompt, /User 与 Assistant.*三个 section.*不按消息 role/s);
   assert.match(prompt, /模型错误.*坏习惯.*不能固化.*assistant 人格/s);
+  assert.match(prompt, /不要生成.*facet.*canonicalKey.*factBasis/s);
 });
 
 test("world fact prompt keeps role-neutral canon authority", async () => {
@@ -162,11 +163,11 @@ test("each prompt has section × op × evidenceKind mapping", async () => {
     const prompt = await loadProposerPrompt(proposer);
     const isCurrentState = proposer === "currentStateProposer";
     const isCompaction = proposer === "compactionProposer";
-    const isSemanticEpisode = proposer === "episodeProposer";
+    const isSemantic = SEMANTIC_PROPOSERS.includes(proposer);
     assert.match(prompt, /evidenceKind/, `${proposer} must mention evidenceKind`);
-    if (isSemanticEpisode) {
-      assert.match(prompt, /不要生成.*evidenceKind/s, "semantic episodeProposer must prohibit persistence metadata");
-      assert.doesNotMatch(prompt, /合法 evidenceKind/, "semantic episodeProposer must not carry the legacy evidence matrix");
+    if (isSemantic) {
+      assert.match(prompt, /不要生成.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
+      assert.doesNotMatch(prompt, /合法 evidenceKind/, `${proposer} must not carry the legacy evidence matrix`);
       continue;
     }
     if (isCurrentState) {

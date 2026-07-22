@@ -51,12 +51,18 @@ test("compaction output schema is maintenance-only and section-specific", () => 
   assert.equal(resultVariants[1].properties.status.const, "unable_to_compact");
 });
 
-test("profile output schema requires typed profile classification", () => {
+test("profile output schema exposes only text Semantic changes and source selectors", () => {
   const schema = buildOutputSchema("profileRelationshipProposer").schema;
-  const patches = schema.properties.sectionResults.properties.userProfile.oneOf[0].properties.patches.items.oneOf;
-  const add = patches.find((variant) => variant.properties.op.const === "addItem");
-  assert.deepEqual(add.properties.value.required, ["text", "facet", "canonicalKey", "factBasis"]);
-  assert.deepEqual(add.properties.value.properties.facet.enum, [
-    "identity", "background", "preference", "communicationBoundary", "communicationStyle", "interactionPattern", "interest",
-  ]);
+  assert.deepEqual(schema.properties.sectionResults.required, ["userProfile", "assistantProfile", "relationship"]);
+  const changes = schema.properties.sectionResults.properties.userProfile.oneOf[0].properties.changes.items.oneOf;
+  const add = changes.find((variant) => variant.properties.action.const === "add");
+  const correct = changes.find((variant) => variant.properties.action.const === "correct");
+  const forget = changes.find((variant) => variant.properties.action.const === "forget");
+  assert.deepEqual(add.required, ["action", "text"]);
+  assert.deepEqual(correct.required, ["action", "ref", "text"]);
+  assert.deepEqual(forget.required, ["action", "ref"]);
+  assert.deepEqual(add.anyOf, [{ required: ["evidenceMessageIds"] }, { required: ["supportRefs"] }]);
+  for (const forbidden of ["op", "itemId", "evidenceKind", "quote", "facet", "canonicalKey", "factBasis"]) {
+    assert.equal(JSON.stringify(schema).includes(`\"${forbidden}\"`), false, forbidden);
+  }
 });

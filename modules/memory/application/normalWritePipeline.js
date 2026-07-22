@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const {
   MEMORY_CONTROL_V201_SCHEMA_VERSION,
+  SEMANTIC_NORMAL_PROPOSERS,
   COMPILE_ERROR_REASONS,
   validateProposerOutput,
   validateSemanticResult,
@@ -114,7 +115,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         contextWindow: targetConfig.contextWindow,
       }, { client });
       const buildEnvelope = state.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
-        && intent.proposer === "episodeProposer"
+        && SEMANTIC_NORMAL_PROPOSERS.includes(intent.proposer)
         ? buildSemanticNormalEnvelope
         : buildNormalEnvelope;
       const envelope = buildEnvelope({

@@ -1,5 +1,5 @@
 const { isDeepStrictEqual } = require("node:util");
-const { TARGETS } = require("../../contracts");
+const { TARGETS, SEMANTIC_NORMAL_PROPOSERS } = require("../../contracts");
 const { validateProposerOutput } = require("../../contracts/proposal");
 const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
@@ -62,7 +62,7 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
     if (isTruncationSignal(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
     if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
     const normalized = normalizeProviderOutput(response?.output, probe.task);
-    const validation = probe.task.proposer === "episodeProposer"
+    const validation = SEMANTIC_NORMAL_PROPOSERS.includes(probe.task.proposer)
       ? validateSemanticResult(normalized, probe.task)
       : validateProposerOutput(normalized, probe.task);
     if (!validation.ok) {
