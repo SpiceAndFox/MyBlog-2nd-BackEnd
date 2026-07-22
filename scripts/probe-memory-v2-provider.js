@@ -1,6 +1,6 @@
 const dotenv = require("dotenv");
 dotenv.config();
-const { loadMemoryProviderConfig, createStructuredTransport, runStructuredOutputPreflight, loadProposerPrompt } = require("../modules/memory");
+const { loadMemoryProviderConfig, createStructuredTransport, runStructuredOutputPreflight, loadProposerPrompt } = require("../modules/memory/admin");
 
 async function main() {
   const config = loadMemoryProviderConfig(process.env);

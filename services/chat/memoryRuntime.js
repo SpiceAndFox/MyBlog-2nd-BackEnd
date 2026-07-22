@@ -1,44 +1,40 @@
-const { createDefaultMemoryRuntime, createDefaultProjectionDrain } = require("../../modules/memory");
-const { createChatRagProjectionAdapter } = require("./rag/projectionAdapters");
-const chatRagRepo = require("./rag/repo");
-const chatMessageGistModel = require("../../models/chatMessageGistModel");
-const scopeCoordinator = require("./scopeCoordinator");
-const { deleteAvatarByUrl, avatarExists, operationAvatarUrls } = require("./avatarStorage");
-
-function createChatMemoryRuntime({ config, logger } = {}) {
+function createChatMemoryRuntime({
+  config,
+  recentWindowMaxChars,
+  logger,
+  memoryModule,
+  ragProjectionAdapter,
+  privacyStores = [],
+  enqueueByKey,
+} = {}) {
   if (!config || typeof config !== "object") throw new Error("Memory runtime config is required");
   if (!logger?.error) throw new Error("Memory runtime logger is required");
+  if (!memoryModule?.createRuntime || !memoryModule?.createContextAssembly || !memoryModule?.createProjectionDrain) {
+    throw new Error("An explicitly created Memory module is required");
+  }
 
   const projectionDrains = config.enabled
-    ? { rag: createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()) }
+    ? { rag: memoryModule.createProjectionDrain("rag", ragProjectionAdapter) }
     : {};
-
-  return createDefaultMemoryRuntime({
+  const runtime = memoryModule.createRuntime({
     config,
     projectionDrains,
-    privacyStores: [{
-      name: "rag",
-      purge: ({ userId, presetId, client }) => chatRagRepo.deleteAllChunks(userId, presetId, { client }),
-      verifyPurged: async ({ userId, presetId }) => (await chatRagRepo.countStaleChunks(userId, presetId)) === 0,
-    }, {
-      name: "assistant_gists",
-      purge: ({ userId, presetId, client }) => chatMessageGistModel.deleteByScope(userId, presetId, { client }),
-      verifyPurged: async ({ userId, presetId }) => (await chatMessageGistModel.countByScope(userId, presetId)) === 0,
-    }, {
-      name: "avatar_files",
-      purge: async ({ operation }) => {
-        for (const avatarUrl of operationAvatarUrls(operation)) await deleteAvatarByUrl(avatarUrl);
-      },
-      verifyPurged: async ({ operation }) => {
-        for (const avatarUrl of operationAvatarUrls(operation)) {
-          if (await avatarExists(avatarUrl)) return false;
-        }
-        return true;
-      },
-    }],
-    enqueueByKey: scopeCoordinator.enqueueByKey,
+    privacyStores,
+    enqueueByKey,
     onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
   });
+  const assembleContext = config.enabled
+    ? memoryModule.createContextAssembly({
+      runtime,
+      config,
+      recentWindowMaxChars,
+      onBackgroundError: (error) => logger.error("memory_v2_housekeeping_failed", { error }),
+    })
+    : async () => {
+      throw new Error("Memory context assembly is unavailable while Memory v2 is disabled");
+    };
+
+  return Object.freeze({ ...runtime, assembleContext });
 }
 
 let configuredRuntime = null;
@@ -74,6 +70,8 @@ for (const method of [
   "privacyHardDelete",
   "mutateSourceAndRebuild",
   "resumeTarget",
+  "assembleContext",
+  "markRecoveryNotificationsDelivered",
 ]) {
   memoryRuntime[method] = (...args) => {
     const runtime = getChatMemoryRuntime();

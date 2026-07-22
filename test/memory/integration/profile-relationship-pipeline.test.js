@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
-const { contracts } = require("../../../modules/memory");
+const contracts = require("../../../modules/memory/contracts");
 
 function hash(content) {
   return `sha256:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`;
@@ -62,7 +62,7 @@ function storeFixture({ state, observedMessages, databaseMessages }) {
         .filter((entry) => ids.includes(entry.id))
         .map((entry) => ({ ...structuredClone(entry), userId: 1, presetId: "default" })),
     },
-    users: { getTimeZone: async () => "Asia/Shanghai" },
+    userTimeZones: { getTimeZone: async () => "Asia/Shanghai" },
     runtime: {
       createTask: async (row) => { tasks.set(row.task_id, structuredClone(row)); return tasks.get(row.task_id); },
       getTask: async (id) => tasks.get(id) || null,

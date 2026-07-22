@@ -12,37 +12,7 @@ const SKIPPED_DIRECTORIES = new Set([
   "uploads",
 ]);
 
-// These imports predate the modular-monolith migration. Keeping the list exact
-// makes the debt visible without allowing new callers or new internal targets.
-// Phase C must delete each entry as it replaces the corresponding import with a
-// public runtime/admin entry point.
-const FROZEN_INTERNAL_IMPORT_DEBT = Object.freeze([
-  {
-    importer: "scripts/smoke-memory-v2-provider.js",
-    target: "modules/memory/application/envelope.js",
-    removalPhase: "C",
-  },
-  {
-    importer: "services/chat/contextCompiler.js",
-    target: "modules/memory/contracts/index.js",
-    removalPhase: "C",
-  },
-  {
-    importer: "tools/memory-task-gui/server.js",
-    target: "modules/memory/infrastructure/providers/memoryProviderAdapter.js",
-    removalPhase: "C",
-  },
-  {
-    importer: "tools/memory-task-gui/server.js",
-    target: "modules/memory/infrastructure/providers/outputSchema.js",
-    removalPhase: "C",
-  },
-  {
-    importer: "tools/memory-task-gui/server.js",
-    target: "modules/memory/prompts/index.js",
-    removalPhase: "C",
-  },
-]);
+const FROZEN_INTERNAL_IMPORT_DEBT = Object.freeze([]);
 
 const ROOT_ENVIRONMENT_BOUNDARIES = new Set([
   "regenerateChatRag.js",
@@ -140,7 +110,9 @@ function moduleOwner(relativePath) {
 
 function isModulePublicEntry(relativePath) {
   const parts = relativePath.split("/");
-  return parts.length === 3 && parts[0] === "modules" && parts[2] === "index.js";
+  return parts.length === 3
+    && parts[0] === "modules"
+    && ["index.js", "admin.js"].includes(parts[2]);
 }
 
 function debtKey(importer, target) {

@@ -4,7 +4,7 @@ const {
   assertMemoryState,
 } = require("../contracts");
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
-const { createSemanticCompiler } = require("../domain/semanticCompiler");
+const { createSemanticCompiler } = require("./semanticCompiler");
 const { isSemanticTaskEnvelope } = require("./envelope");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
@@ -248,7 +248,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         report.status = "completed";
         return report;
       }
-      const compiled = await createSemanticCompiler({ sourceRepository: repositories.source }).compile({
+      const compiled = await createSemanticCompiler({ sourceReader: repositories.source }).compile({
         artifact: envelope.artifact,
         semanticResult: providerResult.output,
         baseState: state,

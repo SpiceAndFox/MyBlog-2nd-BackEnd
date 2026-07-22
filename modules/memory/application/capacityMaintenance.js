@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const { validateSemanticResult } = require("../contracts");
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
-const { compileSemanticResult, revalidateCompiledProposal } = require("../domain/semanticCompiler");
+const { compileSemanticResult, revalidateCompiledProposal } = require("./semanticCompiler");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
@@ -414,7 +414,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
           proposal: parentProposal,
           task: parentEnvelope.task,
           baseState: state,
-          sourceRepository: repositories.source,
+          sourceReader: repositories.source,
           userId: parentEnvelope.task.userId,
           presetId: parentEnvelope.task.presetId,
           client,
@@ -501,7 +501,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       }
       if (currentStage !== "compiling") await markMaintenanceCompiling(envelope);
       try {
-        compiled = await compileSemanticResult({ artifact: envelope.artifact, semanticResult: output, baseState: await repositories.state.getState(envelope.task.userId, envelope.task.presetId), sourceRepository: repositories.source, userId: envelope.task.userId, presetId: envelope.task.presetId });
+        compiled = await compileSemanticResult({ artifact: envelope.artifact, semanticResult: output, baseState: await repositories.state.getState(envelope.task.userId, envelope.task.presetId), sourceReader: repositories.source, userId: envelope.task.userId, presetId: envelope.task.presetId });
       } catch (error) {
         return recordAdapterError(envelope, { status: "error", reason: error.code || "compile_invariant_failed", detail: error.detail });
       }

@@ -6,9 +6,8 @@ const { initializeRevisionZero } = require("../../../modules/memory/infrastructu
 const { insertEvents } = require("../../../modules/memory/infrastructure/repositories/auditRepository");
 const { upsertTargetStatus } = require("../../../modules/memory/infrastructure/repositories/runtimeRepository");
 const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../../modules/memory/infrastructure/repositories/sidecarRepository");
-const migrationRepository = require("../../../modules/memory/infrastructure/repositories/migrationRepository");
 const privacyRepository = require("../../../modules/memory/infrastructure/repositories/privacyRepository");
-const { getHistoryFingerprint } = require("../../../modules/memory/infrastructure/repositories/sourceRepository");
+const { createChatMemorySourceReader } = require("../../../modules/chat");
 
 test("revision zero initialization atomically creates snapshot and six target statuses", async () => {
   const originalGetClient = db.getClient;
@@ -139,10 +138,11 @@ test("active context diagnostics reject stale boundary regressions and resolve o
   assert.equal(statements.some((sql) => /recent_window_start,1\)-1\)<=\$3/.test(sql)), true);
 });
 
-test("migration source inventory reads raw messages without mutating them", async () => {
+test("Chat source inventory reads raw messages without mutating them", async () => {
   const statements = [];
   const client = { async query(sql) { statements.push(sql.replace(/\s+/g, " ").trim()); return { rows: [] }; } };
-  await migrationRepository.listSourceScopes({ client });
+  const sourceReader = createChatMemorySourceReader({ database: client });
+  await sourceReader.listScopes({ client });
   assert.equal(statements.some((sql) => sql.includes("FROM chat_messages")), true);
   assert.equal(statements.some((sql) => /(?:DELETE FROM|UPDATE) chat_messages\b/i.test(sql)), false);
 });
@@ -158,7 +158,8 @@ test("migration source fingerprint detects same-length content and turn-identity
         }] };
       },
     };
-    return getHistoryFingerprint(1, "default", { client });
+    const sourceReader = createChatMemorySourceReader({ database: client });
+    return sourceReader.getHistoryFingerprint(1, "default", { client });
   }
   const original = await fingerprint();
   assert.match(original, /^sha256:[a-f0-9]{64}$/);

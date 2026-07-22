@@ -6,15 +6,7 @@ const { normalizeText, normalizeMessageId } = require("./context/helpers");
 const { scheduleAssistantGistBackfill } = require("./gistPipeline");
 const { retrieveChatRagContext } = require("./rag/retriever");
 const { chatConfig, memoryV2Config } = require("../../config");
-const { createDefaultMemoryContextAssembly } = require("../../modules/memory");
-const { SCHEMA_VERSION: MEMORY_SCHEMA_VERSION } = require("../../modules/memory/contracts");
-const { logger } = require("../../logger");
-
-let memoryV2Assembler = null;
-function getMemoryV2Assembler() {
-  if (!memoryV2Assembler) memoryV2Assembler = createDefaultMemoryContextAssembly({ config: memoryV2Config, recentWindowMaxChars: chatConfig.recentWindowMaxChars, onBackgroundError: (error) => logger.error("memory_v2_housekeeping_failed", { error }) });
-  return memoryV2Assembler;
-}
+const memoryRuntime = require("./memoryRuntime");
 
 function readCurrentUserContent({ recent } = {}) {
   const messages = Array.isArray(recent?.messages) ? recent.messages : [];
@@ -31,7 +23,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   if (!normalizedPresetId) throw new Error("Missing presetId");
 
   if (memoryV2Config.enabled) {
-    const contextV2 = await getMemoryV2Assembler()({
+    const contextV2 = await memoryRuntime.assembleContext({
       userId: normalizedUserId,
       presetId: normalizedPresetId,
       upToMessageId,
@@ -72,7 +64,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
         gapBridge: contextV2.gapBridge.stats,
         recentWindow: { ...recent.stats, needsMemory: contextV2.needsMemory },
       },
-      memory: { version: MEMORY_SCHEMA_VERSION, sourceGeneration: contextV2.sourceGeneration, debug: contextV2.debug },
+      memory: { version: contextV2.schemaVersion, sourceGeneration: contextV2.sourceGeneration, debug: contextV2.debug },
       memoryHealth: contextV2.health,
       memoryRecoveryNotifications: contextV2.notifications,
       rag: ragContext ? { enabled: Boolean(ragContext.enabled), sources: Array.isArray(ragContext.sources) ? ragContext.sources : [], stats: ragContext.stats || null } : null,

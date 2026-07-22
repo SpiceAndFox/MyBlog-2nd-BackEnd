@@ -11,7 +11,13 @@ const {
   configureLogger,
   withRequestContext,
 } = require("../../logger");
-const { createAuthModule, installLegacyAuthBindings } = require("../../modules/auth");
+const {
+  createAuthModule,
+  createUserTimeZoneReader,
+  installLegacyAuthBindings,
+} = require("../../modules/auth");
+const { createMemoryModule } = require("../../modules/memory");
+const { createChatMemoryAdapters } = require("../../modules/chat");
 const { createRequestLogger } = require("../../middleware/requestLogger");
 const scopeCoordinator = require("../../services/chat/scopeCoordinator");
 const {
@@ -50,14 +56,25 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
 
   const auth = adapters.auth || createAuthModule({
     config: config.authConfig,
+    database,
     logger,
     withRequestContext,
   });
   installLegacyAuthBindings(auth);
 
+  const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({ database });
+  const memoryModule = adapters.memoryModule || createMemoryModule({
+    sourceReader: chatMemoryAdapters.sourceReader,
+    userTimeZoneReader: auth.userTimeZoneReader || createUserTimeZoneReader({ database }),
+  });
   const memoryRuntime = adapters.memoryRuntime || memoryRuntimeEntry.createChatMemoryRuntime({
     config: config.memoryV2Config,
+    recentWindowMaxChars: config.chatConfig.recentWindowMaxChars,
     logger,
+    memoryModule,
+    ragProjectionAdapter: chatMemoryAdapters.ragProjectionAdapter,
+    privacyStores: chatMemoryAdapters.privacyStores,
+    enqueueByKey: chatMemoryAdapters.enqueueByKey,
   });
   memoryRuntimeEntry.configureChatMemoryRuntime(memoryRuntime);
 
@@ -115,6 +132,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     health,
     lifecycle,
     logger,
+    memoryModule,
     memoryRuntime,
   });
 }

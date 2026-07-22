@@ -40,15 +40,17 @@ function printUsage(stream = process.stdout) {
   ].join("\n"));
 }
 
-function createScopedMigration() {
-  const memory = require("../modules/memory");
+function createScopedMigration({ database } = {}) {
+  const memory = require("../modules/memory/admin");
+  const { createMemoryAdministrationComposition } = require("../app/composition/memory");
+  const administration = createMemoryAdministrationComposition({ database });
   const config = memory.loadMemoryV2Config(process.env);
   if (!config.enabled) throw new Error("Memory v2 is disabled");
   const { createChatRagProjectionAdapter } = require("../services/chat/rag/projectionAdapters");
-  return memory.createDefaultMemoryMigration({
+  return administration.createMigration({
     config,
     projectionDrains: {
-      rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
+      rag: administration.createProjectionDrain("rag", createChatRagProjectionAdapter()),
     },
   });
 }
@@ -75,7 +77,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     return { status: "help" };
   }
   const db = dependencies.db || require("../app/composition/commandContext").createCommandContext().database;
-  const migration = dependencies.migration || createScopedMigration();
+  const migration = dependencies.migration || createScopedMigration({ database: db });
   const result = await rebuildScope({ db, migration, ...options });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;

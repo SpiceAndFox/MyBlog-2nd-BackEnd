@@ -162,7 +162,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     return;
   }
   const db = dependencies.db || require("../app/composition/commandDatabase").createCommandDatabase();
-  const memory = dependencies.memory || require("../modules/memory");
+  const memory = dependencies.memory || require("../modules/memory/admin");
   const output = await inspectMemory({ db, memory, ...options });
   process.stdout.write(`${output}\n`);
 }

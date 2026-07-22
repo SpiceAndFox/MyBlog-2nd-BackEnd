@@ -3,8 +3,9 @@ const {
   configureAuthController,
 } = require("../../controllers/authController");
 const authMiddlewareEntry = require("../../middleware/authMiddleware");
+const { createUserTimeZoneReader } = require("./userTimeZoneReader");
 
-function createAuthModule({ config, logger, userModel, bcrypt, jwt, withRequestContext } = {}) {
+function createAuthModule({ config, logger, userModel, bcrypt, jwt, withRequestContext, database } = {}) {
   if (!config || typeof config !== "object") throw new Error("Auth config is required");
   const middleware = authMiddlewareEntry.createAuthMiddleware({
     jwtSecret: config.jwtSecret,
@@ -20,7 +21,8 @@ function createAuthModule({ config, logger, userModel, bcrypt, jwt, withRequestC
     withRequestContext,
   });
 
-  return Object.freeze({ middleware, controller });
+  const userTimeZoneReader = database ? createUserTimeZoneReader({ database }) : null;
+  return Object.freeze({ middleware, controller, userTimeZoneReader });
 }
 
 function installLegacyAuthBindings(auth) {
@@ -32,5 +34,6 @@ function installLegacyAuthBindings(auth) {
 
 module.exports = {
   createAuthModule,
+  createUserTimeZoneReader,
   installLegacyAuthBindings,
 };

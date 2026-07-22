@@ -83,13 +83,16 @@ function assertReportPathAvailable(reportPath) {
 }
 
 function createMigration(config, providerTelemetry, dependencies = {}) {
-  const memory = dependencies.memory || require("../modules/memory");
+  const administration = dependencies.memoryAdministration;
+  if (!administration?.createMigration || !administration?.createProjectionDrain) {
+    throw new Error("Memory administration composition is required");
+  }
   const createChatRagProjectionAdapter = dependencies.createChatRagProjectionAdapter
     || require("../services/chat/rag/projectionAdapters").createChatRagProjectionAdapter;
   const projectionDrains = {
-    rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
+    rag: administration.createProjectionDrain("rag", createChatRagProjectionAdapter()),
   };
-  return memory.createDefaultMemoryMigration({ config, projectionDrains, providerTelemetry });
+  return administration.createMigration({ config, projectionDrains, providerTelemetry });
 }
 
 function attachEvidence(report, evidence) {
@@ -126,7 +129,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     return { status: "help" };
   }
   const options = resolveOptions(args);
-  const memory = dependencies.memory || require("../modules/memory");
+  const memory = dependencies.memory || require("../modules/memory/admin");
   const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
   const providerTelemetry = memory.createMigrationProviderTelemetry({
     expectedModel: config.provider.model,
@@ -176,8 +179,10 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 
 if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
+  const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const { database: db } = createCommandContext();
-  main()
+  const memoryAdministration = createMemoryAdministrationComposition({ database: db });
+  main(process.argv.slice(2), { database: db, memoryAdministration })
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);
       process.exitCode = 1;

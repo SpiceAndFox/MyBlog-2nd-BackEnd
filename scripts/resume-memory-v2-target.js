@@ -1,8 +1,11 @@
 const { createCommandContext } = require("../app/composition/commandContext");
 const { database: db, config, logger } = createCommandContext();
 const memoryRuntime = require("../services/chat/memoryRuntime");
-memoryRuntime.configureChatMemoryRuntime(memoryRuntime.createChatMemoryRuntime({
+const { createMemoryRuntimeComposition } = require("../app/composition/memory");
+memoryRuntime.configureChatMemoryRuntime(createMemoryRuntimeComposition({
+  database: db,
   config: config.memoryV2Config,
+  chatConfig: config.chatConfig,
   logger,
 }));
 

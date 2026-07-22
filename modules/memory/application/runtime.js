@@ -91,6 +91,7 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     privacyHardDelete,
     getPrivacyOperation: (userId, operationId) => repositories?.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null),
     hasIncompletePrivacyOperation: (userId, presetId) => repositories?.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false),
+    markRecoveryNotificationsDelivered: (ids) => repositories?.sidecars?.markRecoveryNotificationsDelivered?.(ids) ?? Promise.resolve([]),
     runRetentionScope: disabled,
     reconcileRebuilds: async () => ({}),
     reconcilePrivacyDeletes: () => privacyDelete?.reconcilePending() ?? Promise.resolve({}),
@@ -448,6 +449,10 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return repositories.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false);
   }
 
+  function markRecoveryNotificationsDelivered(ids) {
+    return repositories.sidecars.markRecoveryNotificationsDelivered(ids);
+  }
+
   function reconcilePrivacyDeletes() {
     return privacyDelete ? runInBackground(() => privacyDelete.reconcilePending()) : Promise.resolve({});
   }
@@ -467,6 +472,7 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     privacyHardDelete,
     getPrivacyOperation,
     hasIncompletePrivacyOperation,
+    markRecoveryNotificationsDelivered,
     runRetentionScope,
     reconcileRebuilds,
     reconcilePrivacyDeletes,

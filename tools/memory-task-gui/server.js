@@ -2,9 +2,11 @@
 const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { loadProposerPrompt } = require("../../modules/memory/prompts");
-const { buildOutputSchema } = require("../../modules/memory/infrastructure/providers/outputSchema");
-const { schemaRepairPrompt } = require("../../modules/memory/infrastructure/providers/memoryProviderAdapter");
+const {
+  loadProposerPrompt,
+  buildOutputSchema,
+  schemaRepairPrompt,
+} = require("../../modules/memory/admin");
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;

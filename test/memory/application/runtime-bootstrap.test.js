@@ -52,7 +52,7 @@ test("disabled runtime privacy delete purges authority and derived state", async
   assert.equal(operation.status, "completed");
 });
 
-test("default runtime performs one complete Provider preflight before becoming ready", async () => {
+test("enabled runtime performs one complete Provider preflight before becoming ready", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {

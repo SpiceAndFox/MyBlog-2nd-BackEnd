@@ -6,7 +6,7 @@ const {
   validateCompiledProposal,
 } = require("../contracts");
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
-const { createSemanticCompiler, SemanticCompileError } = require("../domain/semanticCompiler");
+const { createSemanticCompiler, SemanticCompileError } = require("./semanticCompiler");
 const {
   buildNormalEnvelope,
   isSemanticTaskEnvelope,
@@ -100,7 +100,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   let compiler = semanticCompiler || null;
 
   function semanticCompilerForTask() {
-    if (!compiler) compiler = createSemanticCompiler({ sourceRepository: repositories.source });
+    if (!compiler) compiler = createSemanticCompiler({ sourceReader: repositories.source });
     return compiler;
   }
 
@@ -125,8 +125,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (!state) throw new Error("Memory state must be initialized before creating normal tasks");
       const cursorBefore = state.meta.targetCursors[intent.targetKey] ?? 0;
       const targetConfig = config.targets[intent.targetKey];
-      const userTimeZone = repositories.users?.getTimeZone
-        ? await repositories.users.getTimeZone(userId, { client })
+      const userTimeZone = repositories.userTimeZones?.getTimeZone
+        ? await repositories.userTimeZones.getTimeZone(userId, { client })
         : "UTC";
       const messages = options.messages ?? await repositories.source.getObservedWindow(userId, presetId, cursorBefore, {
         newBatchSize: targetConfig.lagThreshold,

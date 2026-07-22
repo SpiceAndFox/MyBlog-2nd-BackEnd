@@ -68,7 +68,7 @@ function createMemoryMigration({
 } = {}) {
   if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
     || !repositories?.privacy?.purgeDerivedHistory || !repositories?.privacy?.purgeAuthorityState
-    || !repositories?.migration?.listSourceScopes || !repositories?.migration?.hasIncompatibleDerivedData) {
+    || !repositories?.source?.listScopes || !repositories?.migration?.hasIncompatibleDerivedData) {
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
@@ -77,7 +77,7 @@ function createMemoryMigration({
   async function inventory(scopes) {
     const selected = scopes
       ? scopes.map(normalizeScope)
-      : (await repositories.migration.listSourceScopes()).map(normalizeScope);
+      : (await repositories.source.listScopes()).map(normalizeScope);
     const rows = [];
     for (const scope of selected) {
       const history = await repositories.source.getHistoryMetrics(scope.userId, scope.presetId);

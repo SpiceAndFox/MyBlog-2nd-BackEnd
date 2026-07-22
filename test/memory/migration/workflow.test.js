@@ -29,6 +29,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async initializeRevisionZero() { state = createInitialMemoryState(); return structuredClone(state); },
     },
     source: {
+      async listScopes() { return [migrationScenario.scope]; },
       async getHistoryMetrics() {
         return {
           ...migrationScenario.history,
@@ -53,7 +54,6 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async purgeAuthorityState() { authorityPurges += 1; state = null; },
     },
     migration: {
-      async listSourceScopes() { return [migrationScenario.scope]; },
       async hasIncompatibleDerivedData() { return incompatible; },
     },
   };

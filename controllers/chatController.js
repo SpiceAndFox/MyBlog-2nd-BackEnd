@@ -6,7 +6,6 @@ const path = require("path");
 const sharp = require("sharp");
 const { chatConfig, llmConfig, chatRagConfig } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
-const { markRecoveryNotificationsDelivered } = require("../modules/memory");
 const memoryRuntime = require("../services/chat/memoryRuntime");
 const { requestAssistantGistGeneration } = require("../services/chat/gistPipeline");
 const {
@@ -443,7 +442,7 @@ function attachContextHealth(payload, context, res) {
   const ids = notifications.map((entry) => Number(entry.id)).filter(Number.isSafeInteger);
   if (ids.length) {
     res.once("finish", () => {
-      void markRecoveryNotificationsDelivered(ids).catch((error) => logger.warn("memory_recovery_notification_delivery_mark_failed", { error, ids }));
+      void memoryRuntime.markRecoveryNotificationsDelivered(ids).catch((error) => logger.warn("memory_recovery_notification_delivery_mark_failed", { error, ids }));
     });
   }
   return next;

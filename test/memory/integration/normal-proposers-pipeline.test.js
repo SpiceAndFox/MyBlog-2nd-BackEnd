@@ -2,9 +2,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const {
-  contracts, buildProposerTaskArtifact, createSemanticCompiler,
-} = require("../../../modules/memory");
+const contracts = require("../../../modules/memory/contracts");
+const { buildProposerTaskArtifact } = require("../../../modules/memory/application/proposerTaskRenderer");
+const { createSemanticCompiler } = require("../../../modules/memory/application/semanticCompiler");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
 
 function hash(content) { return `sha256:${crypto.createHash("sha256").update(content).digest("hex")}`; }
@@ -27,7 +27,7 @@ test("normal Semantic IR compiles world fact, agreement, todo and scene domain a
   const old = message(1, "旧的记忆来源");
   const current = message(2, "其实规则改了；约定取消；明天还书；已经到屋顶了");
   const rows = [old, current];
-  const compiler = createSemanticCompiler({ sourceRepository: { async getByIds(_u, _p, ids) { return rows.filter((row) => ids.includes(row.id)); } } });
+  const compiler = createSemanticCompiler({ sourceReader: { async getByIds(_u, _p, ids) { return rows.filter((row) => ids.includes(row.id)); } } });
   const cases = [
     {
       targetKey: "worldFacts", proposer: "worldFactProposer", section: "worldFacts",

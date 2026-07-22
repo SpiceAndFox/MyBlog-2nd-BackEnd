@@ -287,6 +287,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       return !createdAt || requestTimestamp - new Date(createdAt).getTime() >= recoveryStableMs;
     });
     return {
+      schemaVersion: SCHEMA_VERSION,
       needsMemory: recent.needsMemory,
       recent: {
         messages: recent.messages.map(({ role, content }) => ({ role, content })),

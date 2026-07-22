@@ -1,8 +1,6 @@
 const { isDeepStrictEqual } = require("node:util");
 const {
-  ITEM_SECTIONS,
   normalizeSourceRefs,
-  sourceRefKey,
   validateRendererArtifact,
   validateSemanticResult,
   validateCompiledProposal,
@@ -50,6 +48,17 @@ function resolveSupportRef(artifact, state, ref) {
   return entry;
 }
 
+function validateCompilationInput({ artifact, semanticResult, baseState }) {
+  const artifactValidation = validateRendererArtifact(artifact);
+  if (!artifactValidation.ok) fail("compile_invariant_failed", { reason: "artifact_invalid", errors: artifactValidation.errors.slice(0, 8) });
+  const semanticValidation = validateSemanticResult(semanticResult, artifact);
+  if (!semanticValidation.ok) fail("semantic_schema_invalid", { errors: semanticValidation.errors.slice(0, 8) });
+  if (!baseState) fail("compile_invariant_failed", { reason: "base_state_missing" });
+  if (Object.values(semanticResult.sectionResults).some((result) => ["unable_to_decide", "unable_to_compact"].includes(result.status))) {
+    fail("compile_invariant_failed", { reason: "unable_result_is_not_compilable" });
+  }
+}
+
 function collectSourceSelectors(artifact, state, semanticResult) {
   const directIds = new Set();
   const supportRefs = new Map();
@@ -68,7 +77,15 @@ function collectSourceSelectors(artifact, state, semanticResult) {
   return { directIds, supportRefs };
 }
 
-function normalizeDatabaseMessage(row) {
+function semanticSourceRequest({ artifact, semanticResult, baseState } = {}) {
+  validateCompilationInput({ artifact, semanticResult, baseState });
+  const selectors = collectSourceSelectors(artifact, baseState, semanticResult);
+  const supportSourceRefs = [...selectors.supportRefs.values()].flatMap((entry) => entry.sourceRefs);
+  const ids = [...new Set([...selectors.directIds, ...supportSourceRefs.map((ref) => ref.messageId)])].sort((a, b) => a - b);
+  return { ...selectors, supportSourceRefs, ids };
+}
+
+function normalizeSourceMessage(row) {
   return {
     id: Number(row?.id ?? row?.messageId ?? row?.message_id),
     role: row?.role,
@@ -79,26 +96,19 @@ function normalizeDatabaseMessage(row) {
   };
 }
 
-async function loadAndValidateSources({ artifact, sourceRepository, userId, presetId, directIds, supportRefs, client }) {
-  const supportSourceRefs = [...supportRefs.values()].flatMap((entry) => entry.sourceRefs);
-  const allIds = [...new Set([...directIds, ...supportSourceRefs.map((ref) => ref.messageId)])].sort((a, b) => a - b);
-  if (!allIds.length) return new Map();
-  if (!sourceRepository?.getByIds) fail("compile_invariant_failed", { reason: "source_repository_missing" });
-  let rows;
-  try { rows = await sourceRepository.getByIds(userId, presetId, allIds, { client }); }
-  catch (error) { fail("source_validation_failed", { reason: "source_query_failed", code: error?.code || null }); }
-  const byId = new Map((rows || []).map((row) => {
-    const message = normalizeDatabaseMessage(row);
+function validateSemanticSourceMessages({ artifact, userId, presetId, request, sourceMessages = [] }) {
+  const byId = new Map(sourceMessages.map((row) => {
+    const message = normalizeSourceMessage(row);
     return [message.id, message];
   }));
-  if (byId.size !== allIds.length || allIds.some((id) => !byId.has(id))) fail("source_validation_failed", { reason: "message_missing" });
-  for (const id of allIds) {
+  if (byId.size !== request.ids.length || request.ids.some((id) => !byId.has(id))) fail("source_validation_failed", { reason: "message_missing" });
+  for (const id of request.ids) {
     const message = byId.get(id);
     if (!["user", "assistant"].includes(message.role)) fail("source_validation_failed", { reason: "role_invalid", messageId: id });
     if (!message.createdAt || Number.isNaN(new Date(message.createdAt).getTime())) fail("source_validation_failed", { reason: "created_at_invalid", messageId: id });
     if (message.userId !== undefined && Number(message.userId) !== Number(userId)) fail("source_validation_failed", { reason: "scope_mismatch", messageId: id });
     if (message.presetId !== undefined && String(message.presetId) !== String(presetId)) fail("source_validation_failed", { reason: "scope_mismatch", messageId: id });
-    if (directIds.has(id)) {
+    if (request.directIds.has(id)) {
       const meta = artifact.messageMeta[String(id)];
       if (!meta || meta.role !== message.role || meta.contentHash !== message.contentHash
         || new Date(meta.createdAt).toISOString() !== new Date(message.createdAt).toISOString()) {
@@ -106,7 +116,7 @@ async function loadAndValidateSources({ artifact, sourceRepository, userId, pres
       }
     }
   }
-  for (const ref of supportSourceRefs) {
+  for (const ref of request.supportSourceRefs) {
     if (byId.get(ref.messageId)?.contentHash !== ref.contentHash) fail("source_validation_failed", { reason: "support_hash_mismatch", messageId: ref.messageId });
   }
   return byId;
@@ -182,18 +192,10 @@ function compileChange({ change, section, artifact, state, messageById, task }) 
   return { op, itemId: target.itemId, sourceRefs };
 }
 
-async function compileSemanticResult({ artifact, semanticResult, baseState, sourceRepository, userId, presetId, client } = {}) {
-  const artifactValidation = validateRendererArtifact(artifact);
-  if (!artifactValidation.ok) fail("compile_invariant_failed", { reason: "artifact_invalid", errors: artifactValidation.errors.slice(0, 8) });
-  const semanticValidation = validateSemanticResult(semanticResult, artifact);
-  if (!semanticValidation.ok) fail("semantic_schema_invalid", { errors: semanticValidation.errors.slice(0, 8) });
-  if (!baseState) fail("compile_invariant_failed", { reason: "base_state_missing" });
+function compileSemanticResult({ artifact, semanticResult, baseState, sourceMessages = [], userId, presetId } = {}) {
+  const request = semanticSourceRequest({ artifact, semanticResult, baseState });
+  const messageById = validateSemanticSourceMessages({ artifact, userId, presetId, request, sourceMessages });
   const task = artifact.publicInput.task;
-  if (Object.values(semanticResult.sectionResults).some((result) => ["unable_to_decide", "unable_to_compact"].includes(result.status))) {
-    fail("compile_invariant_failed", { reason: "unable_result_is_not_compilable" });
-  }
-  const selectors = collectSourceSelectors(artifact, baseState, semanticResult);
-  const messageById = await loadAndValidateSources({ artifact, sourceRepository, userId, presetId, ...selectors, client });
   const sectionResults = {};
   for (const [section, result] of Object.entries(semanticResult.sectionResults)) {
     if (result.status === "noop") { sectionResults[section] = { status: "noop" }; continue; }
@@ -208,7 +210,7 @@ async function compileSemanticResult({ artifact, semanticResult, baseState, sour
   return compiled;
 }
 
-async function revalidateCompiledProposal({ proposal, task, baseState, sourceRepository, userId, presetId, client } = {}) {
+function compiledProposalSourceRequest({ proposal, task, baseState } = {}) {
   if (!baseState) fail("compile_invariant_failed", { reason: "base_state_missing" });
   const validation = validateCompiledProposal(proposal, task);
   if (!validation.ok) fail("compile_invariant_failed", { reason: "compiled_schema_invalid", errors: validation.errors.slice(0, 8) });
@@ -232,18 +234,18 @@ async function revalidateCompiledProposal({ proposal, task, baseState, sourceRep
     }
   }
   const expectedRefs = normalizeSourceRefs(refs);
-  if (!expectedRefs.length) return true;
-  if (!sourceRepository?.getByIds) fail("compile_invariant_failed", { reason: "source_repository_missing" });
-  const ids = expectedRefs.map((ref) => ref.messageId);
-  let rows;
-  try { rows = await sourceRepository.getByIds(userId, presetId, ids, { client }); }
-  catch (error) { fail("source_validation_failed", { reason: "source_query_failed", code: error?.code || null }); }
-  const byId = new Map((rows || []).map((row) => {
-    const message = normalizeDatabaseMessage(row);
+  return { expectedRefs, ids: expectedRefs.map((ref) => ref.messageId) };
+}
+
+function revalidateCompiledProposal({ proposal, task, baseState, sourceMessages = [], userId, presetId } = {}) {
+  const request = compiledProposalSourceRequest({ proposal, task, baseState });
+  if (!request.ids.length) return true;
+  const byId = new Map(sourceMessages.map((row) => {
+    const message = normalizeSourceMessage(row);
     return [message.id, message];
   }));
-  if (byId.size !== ids.length || ids.some((id) => !byId.has(id))) fail("source_validation_failed", { reason: "message_missing" });
-  for (const ref of expectedRefs) {
+  if (byId.size !== request.ids.length || request.ids.some((id) => !byId.has(id))) fail("source_validation_failed", { reason: "message_missing" });
+  for (const ref of request.expectedRefs) {
     const message = byId.get(ref.messageId);
     if (!message || message.contentHash !== ref.contentHash) fail("source_validation_failed", { reason: "source_hash_mismatch", messageId: ref.messageId });
     if (message.userId !== undefined && Number(message.userId) !== Number(userId)) fail("source_validation_failed", { reason: "scope_mismatch", messageId: ref.messageId });
@@ -252,18 +254,14 @@ async function revalidateCompiledProposal({ proposal, task, baseState, sourceRep
   return true;
 }
 
-function createSemanticCompiler({ sourceRepository } = {}) {
-  if (!sourceRepository?.getByIds) throw new Error("Semantic Compiler requires a source repository");
-  return Object.freeze({
-    compile(input) { return compileSemanticResult({ ...input, sourceRepository }); },
-  });
-}
-
 module.exports = {
   SemanticCompileError,
-  sectionItems,
-  resolveStateEntry,
+  collectSourceSelectors,
   compileSemanticResult,
+  compiledProposalSourceRequest,
+  normalizeSourceMessage,
   revalidateCompiledProposal,
-  createSemanticCompiler,
+  resolveStateEntry,
+  sectionItems,
+  semanticSourceRequest,
 };

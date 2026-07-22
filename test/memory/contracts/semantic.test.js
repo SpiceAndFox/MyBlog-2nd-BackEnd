@@ -2,13 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
+const contracts = require("../../../modules/memory/contracts");
+const domain = require("../../../modules/memory/domain");
 const {
-  contracts,
-  domain,
   buildProposerTaskArtifact,
   expandProposerTaskArtifact,
-  createSemanticCompiler,
-} = require("../../../modules/memory");
+} = require("../../../modules/memory/application/proposerTaskRenderer");
+const { createSemanticCompiler } = require("../../../modules/memory/application/semanticCompiler");
 
 function hash(content) {
   return `sha256:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`;
@@ -108,7 +108,7 @@ test("Compiler expands historical support sources, merges direct sources and map
   const { state, artifact, oldMessage, newMessage } = fixture();
   const rows = [oldMessage, newMessage].map((entry) => ({ ...entry, userId: 9, presetId: "default" }));
   const compiler = createSemanticCompiler({
-    sourceRepository: {
+    sourceReader: {
       async getByIds(_userId, _presetId, ids) { return rows.filter((entry) => ids.includes(entry.id)); },
     },
   });
@@ -143,7 +143,7 @@ test("Compiler expands historical support sources, merges direct sources and map
 test("2.01 Reducer applies compiled patches with flat provenance and no tombstone side effects", async () => {
   const { state, artifact, oldMessage, newMessage } = fixture();
   const compiler = createSemanticCompiler({
-    sourceRepository: {
+    sourceReader: {
       async getByIds(_userId, _presetId, ids) {
         return [oldMessage, newMessage].filter((entry) => ids.includes(entry.id)).map((entry) => ({ ...entry, userId: 9, presetId: "default" }));
       },
@@ -179,7 +179,7 @@ test("2.01 Reducer applies compiled patches with flat provenance and no tombston
 test("Compiler fails closed for stale support provenance and never guesses a target", async () => {
   const { state, artifact, oldMessage } = fixture();
   state.longTerm.relationship[0].sourceRefs = [source(4, "changed")];
-  const compiler = createSemanticCompiler({ sourceRepository: { async getByIds() { return [oldMessage]; } } });
+  const compiler = createSemanticCompiler({ sourceReader: { async getByIds() { return [oldMessage]; } } });
   const semanticResult = {
     tickId: 101,
     proposer: "episodeProposer",
@@ -208,7 +208,7 @@ test("Compiler resolves relative Todo dates from the explicit direct-message anc
     userTimeZone: "Asia/Shanghai",
   });
   const compiler = createSemanticCompiler({
-    sourceRepository: { async getByIds() { return [{ ...anchor, userId: 9, presetId: "default" }]; } },
+    sourceReader: { async getByIds() { return [{ ...anchor, userId: 9, presetId: "default" }]; } },
   });
   const semanticResult = {
     tickId: 202,

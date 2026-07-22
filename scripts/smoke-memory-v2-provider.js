@@ -3,9 +3,8 @@ dotenv.config();
 const crypto = require("node:crypto");
 const {
   loadMemoryProviderConfig, createStructuredTransport, createMemoryProviderAdapter,
-  loadProposerPrompt, contracts, domain,
-} = require("../modules/memory");
-const { buildNormalEnvelope } = require("../modules/memory/application/envelope");
+  loadProposerPrompt, contracts, domain, buildNormalEnvelope, createSemanticCompiler,
+} = require("../modules/memory/admin");
 
 function hash(content) {
   return `sha256:${crypto.createHash("sha256").update(content, "utf8").digest("hex")}`;
@@ -47,11 +46,12 @@ async function main() {
   });
   const result = await adapter.propose(envelope);
   if (result.status !== "ok") throw new Error(`Semantic smoke Provider failure: ${result.reason}`);
-  const compiledProposal = await domain.compileSemanticResult({
+  const compiledProposal = await createSemanticCompiler({
+    sourceReader: { async getByIds() { return [{ ...message, userId: 1, presetId: "semantic-smoke" }]; } },
+  }).compile({
     artifact: envelope.artifact,
     semanticResult: result.output,
     baseState: state,
-    sourceRepository: { async getByIds() { return [{ ...message, userId: 1, presetId: "semantic-smoke" }]; } },
     userId: 1,
     presetId: "semantic-smoke",
   });

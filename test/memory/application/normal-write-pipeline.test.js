@@ -93,7 +93,7 @@ test("proposal-triggered cleanup persists the target item id", async () => {
 
 test("task envelope freezes the User time zone and Reducer resolves calendar dates with it", async () => {
   const store = fakes();
-  store.repositories.users = { getTimeZone: async () => "Asia/Shanghai" };
+  store.repositories.userTimeZones = { getTimeZone: async () => "Asia/Shanghai" };
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0 };
   const metrics = createMemoryMetrics();
   const pipeline = createNormalWritePipeline({

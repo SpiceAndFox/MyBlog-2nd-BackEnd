@@ -47,14 +47,16 @@ function printUsage(stream = process.stdout) {
   ].join("\n"));
 }
 
-function createReplay(modelOverride = null) {
-  const memory = require("../modules/memory");
+function createReplay(modelOverride = null, { database } = {}) {
+  const memory = require("../modules/memory/admin");
+  const { createMemoryAdministrationComposition } = require("../app/composition/memory");
+  const administration = createMemoryAdministrationComposition({ database });
   const loaded = memory.loadMemoryV2Config(process.env);
   if (!loaded.enabled) throw new Error("Memory v2 is disabled");
   const config = modelOverride
     ? { ...loaded, provider: { ...loaded.provider, model: modelOverride } }
     : loaded;
-  return memory.createDefaultMemoryTaskShadowReplay({ config });
+  return administration.createTaskShadowReplay({ config });
 }
 
 async function main(argv = process.argv.slice(2), dependencies = {}) {
@@ -63,7 +65,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return { status: "help" };
   }
-  const replay = dependencies.replay || createReplay(options.model);
+  const replay = dependencies.replay || createReplay(options.model, { database: dependencies.database });
   const report = await replay.replay(options.taskId);
   const json = `${JSON.stringify(report, null, 2)}\n`;
   if (options.report) await fs.writeFile(options.report, json, { encoding: "utf8", flag: "wx" });
@@ -74,7 +76,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 if (require.main === module) {
   const { createCommandDatabase } = require("../app/composition/commandDatabase");
   const db = createCommandDatabase();
-  main().catch((error) => {
+  main(process.argv.slice(2), { database: db }).catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);
     process.exitCode = 1;
   }).finally(async () => {
