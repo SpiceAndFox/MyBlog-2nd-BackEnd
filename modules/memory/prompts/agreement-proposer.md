@@ -12,6 +12,12 @@
 {"tickId":0,"proposer":"agreementProposer","sectionResults":{"standingAgreements":{"status":"noop"}}}
 ```
 
+典型变化示例（消息 ID 仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"agreementProposer","sectionResults":{"standingAgreements":{"status":"changes","changes":[{"action":"add","text":"发生分歧时，双方先暂停五分钟再继续沟通。","evidenceMessageIds":[101,102]}]}}}
+```
+
 action：`add` 提供 text；`update/correct` 提供 ref 与完整新 text；`forget` 提供 ref 且不带 text；`cancel` 表示约定从现在起取消，提供 ref 且不带 text。correct 表示旧描述被明确纠正；forget 表示明确要求移除记忆，两者不要混同 cancel。
 
 只写明确建立、修订或取消的持续规则，或有明确承诺语义的长期承诺。一次性请求/安排、个人偏好陈述、关系状态和普通情感表达输出 noop。单纯抒情或情绪化宣誓没有清晰规则或承诺语义时 noop。同义基线不重复 add。text 简短保留主体、条件、频率、否定和例外。

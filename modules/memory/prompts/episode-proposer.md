@@ -20,6 +20,12 @@
 {"tickId":0,"proposer":"episodeProposer","sectionResults":{"recentEpisodes":{"status":"noop"},"milestones":{"status":"noop"}}}
 ```
 
+典型变化示例（引用和消息 ID 仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"episodeProposer","sectionResults":{"recentEpisodes":{"status":"changes","changes":[{"action":"update","ref":"E1","text":"用户因连续追问感到压力；双方暂停交流并澄清需求后恢复了沟通。","evidenceMessageIds":[101,102]}]},"milestones":{"status":"noop"}}}
+```
+
 有变化的 section 使用 `{"status":"changes","changes":[...]}`。change 的 `action` 只允许 `add | update | correct | forget`：
 
 - add：`action + text + sources`；

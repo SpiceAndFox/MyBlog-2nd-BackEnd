@@ -12,6 +12,12 @@
 {"tickId":0,"proposer":"currentStateProposer","sectionResults":{"scene":{"status":"noop"}}}
 ```
 
+典型变化示例（编号仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"currentStateProposer","sectionResults":{"scene":{"status":"changes","changes":[{"action":"set","ref":"S-LOCATION","text":"屋顶","evidenceMessageIds":[101]}]}}}
+```
+
 action：`set` 或 `correct` 提供 ref + text；`clear` 或 `forget` 提供 ref、不带 text。set 表示状态变化，correct 表示明确纠正误记；clear/forget 都清空当前字段。
 
 字段语义由 ref 指示：location 是明确当前主要地点；time 是正文明确的剧情时间；mood 是相对持续的整体氛围；note 是继续影响下一轮的当前条件或进行中活动。消息 createdAt 不是剧情时间。计划、提议、推测、瞬时反应、一次性动作、已结束事件和其他记忆类型都不写入 scene。

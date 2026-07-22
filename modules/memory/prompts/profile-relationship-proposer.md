@@ -20,6 +20,12 @@
 {"tickId":0,"proposer":"profileRelationshipProposer","sectionResults":{"userProfile":{"status":"noop"},"assistantProfile":{"status":"noop"},"relationship":{"status":"noop"}}}
 ```
 
+典型变化示例（辅助引用仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"profileRelationshipProposer","sectionResults":{"userProfile":{"status":"changes","changes":[{"action":"add","text":"用户在感到交流压力时需要先暂停，且暂停不代表拒绝关系。","supportRefs":["E1"]}]},"assistantProfile":{"status":"noop"},"relationship":{"status":"noop"}}}
+```
+
 每个 section 独立选择：
 
 - `changes`：存在明确的长期记忆变化，并提供非空 `changes`；

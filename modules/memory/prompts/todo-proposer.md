@@ -14,6 +14,12 @@
 {"tickId":0,"proposer":"todoProposer","sectionResults":{"todos":{"status":"noop"}}}
 ```
 
+典型变化示例（编号仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"todoProposer","sectionResults":{"todos":{"status":"changes","changes":[{"action":"add","text":"归还图书","actor":"user","requester":"user","dueAt":{"mode":"relative","days":1},"anchorMessageId":101,"evidenceMessageIds":[101]}]}}}
+```
+
 ## action
 
 - `add`：text、actor、requester，可选 dueAt；

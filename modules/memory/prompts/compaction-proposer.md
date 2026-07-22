@@ -19,6 +19,12 @@
 {"tickId":0,"proposer":"compactionProposer","sectionResults":{"<TARGET_SECTION>":{"status":"unable_to_compact"}}}
 ```
 
+典型合并示例（section 和引用仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"compactionProposer","sectionResults":{"userProfile":{"status":"changes","changes":[{"action":"merge","refs":["UP1","UP2"],"text":"用户不喜欢被连续追问。"}]}}}
+```
+
 ## mergeItems 契约
 
 唯一合法语义动作是 `merge`：

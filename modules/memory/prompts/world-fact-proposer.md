@@ -14,6 +14,12 @@
 {"tickId":0,"proposer":"worldFactProposer","sectionResults":{"worldFacts":{"status":"noop"}}}
 ```
 
+典型变化示例（引用和消息 ID 仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"worldFactProposer","sectionResults":{"worldFacts":{"status":"changes","changes":[{"action":"correct","ref":"W1","text":"魔法只在月光直接照射时生效。","evidenceMessageIds":[101]}]}}}
+```
+
 有变化时使用 `status=changes`。action 允许：`add`（text，无 ref）、`update/correct`（ref + 完整新 text）、`forget`（ref，无 text）。update 是自然发展，correct 是明确纠正；两者都只更新当前可见记忆。
 
 ## 准入
