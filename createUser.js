@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+require("dotenv").config({ quiet: true });
 const db = require("./db.js");
 
 const rl = readline.createInterface({

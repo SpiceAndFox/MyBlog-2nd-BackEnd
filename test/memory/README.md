@@ -1,29 +1,31 @@
 # Memory Control v2 tests
 
-`npm run test:memory-v2` is the single offline regression entry point. Test files are organized by stable architectural responsibility rather than implementation stage numbers.
+`npm run test:memory-v2` is the offline Memory regression entry point. Tests mirror the stable architecture instead of implementation stages:
 
-## Boundaries
+- `contracts/`: configuration, state/Semantic contracts, due dates, and proposer prompt protocol.
+- `domain/`: deterministic lifecycle, rendering, context coverage, health, and event replay.
+- `application/`: durable workflows, recovery, capacity, projections, privacy, and runtime coordination.
+- `providers/`: structured-output schemas, adapters, preflight, and transport behavior.
+- `persistence/`: repository contracts exercised with explicit fake clients.
+- `integration/`: multi-layer vertical slices across renderer, Provider adapter, Compiler, Reducer, and persistence.
+- `tools/`: read-only inspection, rebuild, and shadow-replay tooling.
+- `migration/`: time-bounded schema, cutover, telemetry, and migration workflow coverage. Its retirement gate is documented in `migration/README.md`.
+- `harness/`: fixture catalog and deterministic fixture-runner coverage.
+- `support/`: small contract-focused builders shared across nearby suites.
 
-- `domain-*`, `context-coverage`, `memory-health`, `event-replay`, and `rag-suppression` exercise deterministic domain behavior.
-- `normal-write-pipeline`, `provider-retry`, `task-idempotency`, `transaction-recovery`, `capacity-maintenance`, and `housekeeping` exercise application workflows and durable state transitions.
-- `source-rebuild`, `projection-drain`, `privacy-hard-delete`, `retention`, `migration`, and `state-recovery` exercise recovery and lifecycle operations.
-- `provider-*`, `deepseek-*`, and `structured-transport` exercise provider schemas and protocol adapters.
-- `repository-behavior`, `schema-checker`, and `migration-schema` exercise persistence contracts without requiring a live database.
-
-Reusable builders belong in `support/`. Keep helpers small and contract-focused; do not introduce a universal repository mock that hides transaction or persistence differences.
+Chat, RAG, server, security, LLM, and developer-tool tests live in their corresponding top-level `test/` directories rather than under Memory.
 
 ## Fixtures
 
-Structured fixtures live under `modules/memory/harness/` and must declare one supported `fixtureKind`:
+Structured fixtures live under `modules/memory/harness/` and declare one implemented `fixtureKind`:
 
-- `reducer`: executed by the deterministic reducer runner.
-- `pipeline`: executed through the normal write pipeline fixture test.
-- `context`: support data for context coverage and assembly scenarios.
-- `recovery`: support data for durable recovery workflows.
+- `compiledReducer`: validated and executed by the deterministic reducer runner.
+- `context`: validated catalog data consumed by context tests.
+- `recovery`: validated catalog data consumed by explicit durable workflow harnesses.
 
-Do not execute the same scenario both through the fixture runner and through a second hand-written test. Put generated-state, event, cursor, snapshot, and render expectations in the fixture when the runner can express them.
+Do not execute the same behavior through both a fixture runner and a hand-written test. Put generated state, events, cursors, snapshots, and render expectations in a fixture when its runner can express them.
 
-Real Provider checks are explicit networked commands and are not part of the offline suite:
+Real Provider checks remain explicit networked commands and are not part of the offline suite:
 
 - `npm run probe:memory-v2-provider`
 - `npm run smoke:memory-v2-provider`

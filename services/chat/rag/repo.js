@@ -377,7 +377,7 @@ async function listMessagesAroundChunk({
 
   return [...beforeRows, ...currentResult.rows, ...afterRows]
     .map(mapMessageRow)
-    .filter((row) => row.id > 0 && row.role && row.content);
+    .filter((row) => row.id > 0 && row.id <= normalizedMaxMessageId && row.role && row.content);
 }
 
 module.exports = {

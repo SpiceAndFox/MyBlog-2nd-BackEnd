@@ -1,7 +1,4 @@
 const pg = require("pg");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 // 创建数据库连接池
 const { Pool } = pg;

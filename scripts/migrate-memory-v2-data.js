@@ -1,15 +1,6 @@
 #!/usr/bin/env node
 const path = require("node:path");
 const fs = require("node:fs");
-const dotenv = require("dotenv");
-
-dotenv.config({ path: path.join(__dirname, "../.env"), quiet: true });
-
-const db = require("../db");
-const memory = require("../modules/memory");
-const {
-  createChatRagProjectionAdapter,
-} = require("../services/chat/rag/projectionAdapters");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -91,7 +82,10 @@ function assertReportPathAvailable(reportPath) {
   if (fs.existsSync(reportPath)) throw new Error(`Report path already exists: ${reportPath}`);
 }
 
-function createMigration(config, providerTelemetry) {
+function createMigration(config, providerTelemetry, dependencies = {}) {
+  const memory = dependencies.memory || require("../modules/memory");
+  const createChatRagProjectionAdapter = dependencies.createChatRagProjectionAdapter
+    || require("../services/chat/rag/projectionAdapters").createChatRagProjectionAdapter;
   const projectionDrains = {
     rag: memory.createDefaultProjectionDrain("rag", createChatRagProjectionAdapter()),
   };
@@ -125,13 +119,14 @@ function enforceEvidenceGate(report, evidence) {
   };
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), dependencies = {}) {
   const args = parseArgs(argv);
   if (args.help === true || args.h === true) {
     printUsage();
     return { status: "help" };
   }
   const options = resolveOptions(args);
+  const memory = dependencies.memory || require("../modules/memory");
   const config = memory.loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
   const providerTelemetry = memory.createMigrationProviderTelemetry({
     expectedModel: config.provider.model,
@@ -139,9 +134,9 @@ async function main(argv = process.argv.slice(2)) {
   const evidence = memory.buildMigrationEvidence({
     rootDir: path.join(__dirname, ".."),
     memoryConfig: config,
-    ragConfig: require("../config").chatRagConfig,
+    ragConfig: dependencies.chatRagConfig || require("../config").chatRagConfig,
   });
-  const migration = createMigration(config, providerTelemetry);
+  const migration = createMigration(config, providerTelemetry, { ...dependencies, memory });
   const inventory = withCallEstimates(await migration.inventory(options.scopes), config);
 
   if (options.mode === "inventory") {
@@ -180,6 +175,8 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
+  require("dotenv").config({ path: path.join(__dirname, "../.env"), quiet: true });
+  const db = require("../db");
   main()
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);
@@ -188,4 +185,4 @@ if (require.main === module) {
     .finally(() => db.end());
 }
 
-module.exports = { parseArgs, resolveOptions, withCallEstimates, enforceEvidenceGate, emitReport, assertReportPathAvailable, attachEvidence, main };
+module.exports = { parseArgs, resolveOptions, withCallEstimates, enforceEvidenceGate, emitReport, assertReportPathAvailable, attachEvidence, createMigration, main };

@@ -63,8 +63,13 @@ function loadFixtureCatalog(rootDir) {
   });
 }
 
-function loadFixtures(rootDir) {
-  return loadFixtureCatalog(rootDir).filter((entry) => entry.fixtureKind === "compiledReducer");
+function loadFixturesByKind(rootDir, fixtureKind) {
+  if (!FIXTURE_KINDS.has(fixtureKind)) throw new Error(`Unsupported fixtureKind ${String(fixtureKind)}`);
+  return loadFixtureCatalog(rootDir).filter((entry) => entry.fixtureKind === fixtureKind);
+}
+
+function loadCompiledFixtures(rootDir) {
+  return loadFixturesByKind(rootDir, "compiledReducer");
 }
 
 function assertTickExpected(actual, tick, prefix = "tick") {
@@ -97,7 +102,8 @@ module.exports = {
   listFixtureFiles,
   validateFixture,
   loadFixtureCatalog,
-  loadFixtures,
+  loadFixturesByKind,
+  loadCompiledFixtures,
   runCompiledFixture,
   assertTickExpected,
   deepMerge,

@@ -1,7 +1,6 @@
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { Pool } = require("pg");
-require("dotenv").config({ quiet: true });
 
 const REQUIRED_COLUMNS = Object.freeze({
   chat_messages: ["id", "session_id", "user_id", "preset_id", "role", "content", "turn_id", "parent_user_message_id", "idempotency_key", "source_generation", "created_at"],
@@ -316,13 +315,16 @@ async function main() {
   throw error;
 }
 
-if (require.main === module) main().catch((error) => {
-  process.stderr.write(`${error.message}\n`);
-  for (const failure of error.failures || []) {
-    process.stderr.write(`- ${failure.target}: ${failure.code || "ERROR"} ${failure.message}\n`);
-  }
-  process.stderr.write("Set WINDOWS_DATABASE_HOST to the Windows host IP, and ensure PostgreSQL listen_addresses/pg_hba.conf and Windows Firewall allow the WSL subnet.\n");
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  require("dotenv").config({ quiet: true });
+  main().catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    for (const failure of error.failures || []) {
+      process.stderr.write(`- ${failure.target}: ${failure.code || "ERROR"} ${failure.message}\n`);
+    }
+    process.stderr.write("Set WINDOWS_DATABASE_HOST to the Windows host IP, and ensure PostgreSQL listen_addresses/pg_hba.conf and Windows Firewall allow the WSL subnet.\n");
+    process.exitCode = 1;
+  });
+}
 
 module.exports = { REQUIRED_TABLES, REQUIRED_COLUMNS, REQUIRED_INDEXES, REQUIRED_CONSTRAINTS, evaluateInspection, inspectionReport };

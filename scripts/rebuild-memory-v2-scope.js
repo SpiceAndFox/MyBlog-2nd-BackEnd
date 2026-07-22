@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-process.env.DOTENV_CONFIG_QUIET ||= "true";
-require("dotenv").config({ quiet: true });
-
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -85,6 +82,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
+  require("dotenv").config({ quiet: true });
   let db;
   main(process.argv.slice(2), {
     get db() {

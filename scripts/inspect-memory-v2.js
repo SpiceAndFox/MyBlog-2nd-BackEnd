@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-process.env.DOTENV_CONFIG_QUIET ||= "true";
-require("dotenv").config({ quiet: true });
-
 const MEMORY_SECTIONS = Object.freeze([
   "worldFacts",
   "userProfile",
@@ -171,6 +168,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
+  require("dotenv").config({ quiet: true });
   let db;
   main(process.argv.slice(2), {
     get db() {

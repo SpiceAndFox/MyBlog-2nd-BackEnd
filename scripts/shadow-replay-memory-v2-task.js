@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-process.env.DOTENV_CONFIG_QUIET ||= "true";
-require("dotenv").config({ quiet: true });
-
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
@@ -75,6 +72,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
+  require("dotenv").config({ quiet: true });
   const db = require("../db");
   main().catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);
