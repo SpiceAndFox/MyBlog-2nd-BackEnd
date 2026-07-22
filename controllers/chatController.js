@@ -361,6 +361,7 @@ function createChatController({ chatModule, memory, config, logger, withRequestC
         }
         logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
         const payload = { error: message };
+        if (error?.code) payload.code = error.code;
         if (error?.session) payload.session = error.session;
         if (error?.userMessage) payload.user_message = error.userMessage;
         return res.status(Number(error?.status) || 500).json(payload);

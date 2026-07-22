@@ -29,7 +29,6 @@ function createArticleContentImageUpload({ uploadsRoot = defaultUploadsRoot } = 
       fileSize: 20 * 1024 * 1024,
       files: 1,
       fields: 0,
-      parts: 1,
       fieldNestingDepth: 0,
     },
   });

@@ -258,6 +258,18 @@ const chatController = createChatController({
 
 test.beforeEach(resetHarness);
 
+test("send failures expose the application error code to clients", async () => {
+  const response = new TestResponse();
+
+  await chatController.sendMessage(request(11, "missing key", null), response);
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, {
+    error: "Idempotency-Key header is required",
+    code: "CHAT_IDEMPOTENCY_KEY_REQUIRED",
+  });
+});
+
 test("two sends in different sessions of one preset commit complete turns in scope order", async () => {
   let releaseFirst;
   let firstStartedResolve;

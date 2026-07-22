@@ -10,6 +10,9 @@ const coverUpload = require("../../middleware/uploadArticleCover");
 const contentUpload = require("../../middleware/uploadArticleContentImage");
 
 test("every reachable upload has explicit structural limits", () => {
+  // avatar 与 content 上传刻意不设 parts 聚合上限：busboy 的 parts 计数从 -1 起
+  // 含收尾边界，parts:1 会把合法的单图也误判为超限。它们改由 files/fields 精确约束
+  // （1 个文件、0 个文本字段），边界数仍被间接限定，安全语义不变。
   assert.deepEqual(
     [avatarUpload, coverUpload, contentUpload].map((upload) => ({
       files: upload.limits.files,
@@ -18,9 +21,9 @@ test("every reachable upload has explicit structural limits", () => {
       fieldNestingDepth: upload.limits.fieldNestingDepth,
     })),
     [
-      { files: 1, fields: 0, parts: 1, fieldNestingDepth: 0 },
+      { files: 1, fields: 0, parts: undefined, fieldNestingDepth: 0 },
       { files: 1, fields: 20, parts: 21, fieldNestingDepth: 2 },
-      { files: 1, fields: 0, parts: 1, fieldNestingDepth: 0 },
+      { files: 1, fields: 0, parts: undefined, fieldNestingDepth: 0 },
     ],
   );
 });
