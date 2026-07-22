@@ -1,5 +1,5 @@
 const { createApplicationComposition } = require("./app/composition/createApplication");
-const { installProcessHandlers } = require("./services/serverLifecycle");
+const { installProcessHandlers } = require("./app/composition/serverLifecycle");
 
 async function main() {
   const composition = createApplicationComposition();

@@ -9,7 +9,7 @@ const {
   parseShutdownTimeout,
   createServerLifecycle,
   installProcessHandlers,
-} = require("../../services/serverLifecycle");
+} = require("../../app/composition/serverLifecycle");
 const {
   loadProductionModelPolicy,
   isChatModelAllowed,

@@ -14,7 +14,6 @@ const {
 const {
   createAuthModule,
   createUserTimeZoneReader,
-  installLegacyAuthBindings,
 } = require("../../modules/auth");
 const { createMemoryModule } = require("../../modules/memory");
 const { createChatMemoryAdapters, createChatScopeCoordinator, configureProductionModelPolicy } = require("../../modules/chat");
@@ -22,7 +21,7 @@ const { createRequestLogger } = require("../../middleware/requestLogger");
 const {
   createHealthState,
   createServerLifecycle,
-} = require("../../services/serverLifecycle");
+} = require("./serverLifecycle");
 const { createBackgroundServices } = require("./backgroundServices");
 const { createHttpApplication } = require("./httpApplication");
 const { createArticleTempImageCleanup } = require("../../modules/blog");
@@ -56,7 +55,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     logger,
     withRequestContext,
   });
-  installLegacyAuthBindings(auth);
 
   const scopeCoordinator = adapters.chatScopeCoordinator || createChatScopeCoordinator();
   const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({ database, scopeCoordinator });
@@ -90,7 +88,7 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     scopeCoordinator,
     adapters: adapters.chatAdapters,
   }));
-  const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router });
+  const app = adapters.app || createHttpApplication({ health, requestLogger, chatRouter: chat.router, auth });
   const articleTempImageCleanup = createArticleTempImageCleanup({
     logger,
     ttlMs: config.articleConfig.tempImageTtlMs,

@@ -23,21 +23,4 @@ function createAuthMiddleware({ jwtSecret, jwtAdapter = jwt } = {}) {
   };
 }
 
-let configuredMiddleware = null;
-
-function configureAuthMiddleware(middleware) {
-  if (typeof middleware !== "function") throw new Error("Auth middleware is required");
-  configuredMiddleware = middleware;
-  return configuredMiddleware;
-}
-
-function authMiddleware(req, res, next) {
-  if (!configuredMiddleware) {
-    throw new Error("Auth middleware is not configured; create Auth in app/composition before use");
-  }
-  return configuredMiddleware(req, res, next);
-}
-
-module.exports = authMiddleware;
-module.exports.createAuthMiddleware = createAuthMiddleware;
-module.exports.configureAuthMiddleware = configureAuthMiddleware;
+module.exports = { createAuthMiddleware };

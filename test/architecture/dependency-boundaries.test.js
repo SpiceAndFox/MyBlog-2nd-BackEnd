@@ -74,3 +74,17 @@ test("the migrated Chat HTTP adapter has no direct persistence, config, filesyst
     "services/chat/trashCleanup.js",
   ]) assert.equal(fs.existsSync(path.join(rootDir, retiredPath)), false, `${retiredPath} should stay retired`);
 });
+
+test("the migrated Auth module owns its controller, middleware, and repository without legacy singletons", () => {
+  const rootDir = path.resolve(__dirname, "../..");
+  for (const retiredPath of [
+    "controllers/authController.js",
+    "middleware/authMiddleware.js",
+    "models/userModel.js",
+  ]) assert.equal(fs.existsSync(path.join(rootDir, retiredPath)), false, `${retiredPath} should stay retired`);
+
+  const authEntry = fs.readFileSync(path.join(rootDir, "modules/auth/index.js"), "utf8");
+  assert.doesNotMatch(authEntry, /installLegacyAuthBindings/);
+  assert.doesNotMatch(authEntry, /controllers\/authController/);
+  assert.doesNotMatch(authEntry, /middleware\/authMiddleware/);
+});

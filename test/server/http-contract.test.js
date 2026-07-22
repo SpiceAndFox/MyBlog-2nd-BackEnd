@@ -24,11 +24,9 @@ function replaceModule(request, exports) {
 }
 
 const auth = namedHandler("auth");
-replaceModule("../../middleware/authMiddleware", auth);
 replaceModule("../../controllers/tagController", controllerStub("tag"));
 replaceModule("../../controllers/articleController", controllerStub("article"));
 replaceModule("../../controllers/diaryController", controllerStub("diary"));
-replaceModule("../../controllers/authController", controllerStub("authController"));
 replaceModule("../../middleware/uploadArticleCover", {
   single: (field) => namedHandler(`articleCover_${field}`),
 });
@@ -47,13 +45,25 @@ const chatRouter = createChatRouter({
   uploadPresetAvatar: require("../../middleware/uploadChatPresetAvatar"),
 });
 
+const { createAuthRouter } = require("../../routes/auth");
+const authRouter = createAuthRouter({ authMiddleware: auth, authController: controllerStub("authController") });
+
+const { createDiariesRouter } = require("../../routes/diaries");
+const diariesRouter = createDiariesRouter({ authMiddleware: auth });
+
+const { createAdminTagsRouter } = require("../../routes/admin/tags");
+const adminTagsRouter = createAdminTagsRouter({ authMiddleware: auth });
+
+const { createAdminArticlesRouter } = require("../../routes/admin/articles");
+const adminArticlesRouter = createAdminArticlesRouter({ authMiddleware: auth });
+
 const routerDefinitions = [
   ["/api/tags", require("../../routes/tags"), false],
-  ["/api/admin/tags", require("../../routes/admin/tags"), true],
+  ["/api/admin/tags", adminTagsRouter, true],
   ["/api/articles", require("../../routes/articles"), false],
-  ["/api/admin/articles", require("../../routes/admin/articles"), false],
-  ["/api/diaries", require("../../routes/diaries"), false],
-  ["/api/auth", require("../../routes/auth"), false],
+  ["/api/admin/articles", adminArticlesRouter, false],
+  ["/api/diaries", diariesRouter, false],
+  ["/api/auth", authRouter, false],
   ["/api/chat", chatRouter, true],
 ];
 

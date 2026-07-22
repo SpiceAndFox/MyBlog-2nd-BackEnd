@@ -1,14 +1,16 @@
-// routes/auth.js
 const express = require("express");
-const router = express.Router();
-const authController = require("@controllers/authController");
-const authMiddleware = require("@middleware/authMiddleware");
 
-// POST /api/auth/login
-router.post("/login", authController.login);
+function createAuthRouter({ authMiddleware, authController } = {}) {
+  if (typeof authMiddleware !== "function") throw new Error("Auth middleware is required");
+  if (!authController || typeof authController !== "object") throw new Error("Auth controller is required");
 
-// GET /api/auth/me
-router.get("/me", authMiddleware, authController.me);
-router.patch("/me/time-zone", authMiddleware, authController.updateTimeZone);
+  const router = express.Router();
 
-module.exports = router;
+  router.post("/login", authController.login);
+  router.get("/me", authMiddleware, authController.me);
+  router.patch("/me/time-zone", authMiddleware, authController.updateTimeZone);
+
+  return router;
+}
+
+module.exports = { createAuthRouter };

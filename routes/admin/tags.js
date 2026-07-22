@@ -1,15 +1,17 @@
-// routes/admin/tags.js
 const express = require("express");
-const router = express.Router();
 const tagController = require("@controllers/tagController");
-const authMiddleware = require("@middleware/authMiddleware");
 
-// 所有标签管理路由都需要认证
-router.use(authMiddleware);
+function createAdminTagsRouter({ authMiddleware } = {}) {
+  if (typeof authMiddleware !== "function") throw new Error("Auth middleware is required");
 
-// POST /api/admin/tags - 创建一个新标签
-router.post("/", tagController.createTag);
-router.put("/:id", tagController.updateTag);
-router.delete("/:id", tagController.deleteTag);
+  const router = express.Router();
+  router.use(authMiddleware);
 
-module.exports = router;
+  router.post("/", tagController.createTag);
+  router.put("/:id", tagController.updateTag);
+  router.delete("/:id", tagController.deleteTag);
+
+  return router;
+}
+
+module.exports = { createAdminTagsRouter };

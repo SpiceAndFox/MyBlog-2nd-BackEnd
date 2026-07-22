@@ -1,19 +1,19 @@
-const defaultUserModel = require("../models/userModel");
 const defaultBcrypt = require("bcryptjs");
 const defaultJwt = require("jsonwebtoken");
-const { logger: defaultLogger, withRequestContext: defaultWithRequestContext } = require("../logger");
-const { normalizeIanaTimeZone } = require("../utils/timeZone");
+const { logger: defaultLogger, withRequestContext: defaultWithRequestContext } = require("../../logger");
+const { normalizeIanaTimeZone } = require("../../utils/timeZone");
 
 function createAuthController({
   jwtSecret,
   tokenExpiresIn = "7d",
-  userModel = defaultUserModel,
+  userModel,
   bcrypt = defaultBcrypt,
   jwt = defaultJwt,
   logger = defaultLogger,
   withRequestContext = defaultWithRequestContext,
 } = {}) {
   if (typeof jwtSecret !== "string" || !jwtSecret.trim()) throw new Error("Auth jwtSecret is required");
+  if (!userModel) throw new Error("Auth user model is required");
 
   return Object.freeze({
     async me(req, res) {
@@ -86,31 +86,4 @@ function createAuthController({
   });
 }
 
-let configuredController = null;
-
-function configureAuthController(controller) {
-  if (!controller?.login || !controller?.me || !controller?.updateTimeZone) {
-    throw new Error("Auth controller is required");
-  }
-  configuredController = controller;
-  return configuredController;
-}
-
-const authController = {
-  login(req, res) {
-    if (!configuredController) throw new Error("Auth controller is not configured");
-    return configuredController.login(req, res);
-  },
-  me(req, res) {
-    if (!configuredController) throw new Error("Auth controller is not configured");
-    return configuredController.me(req, res);
-  },
-  updateTimeZone(req, res) {
-    if (!configuredController) throw new Error("Auth controller is not configured");
-    return configuredController.updateTimeZone(req, res);
-  },
-};
-
-module.exports = authController;
-module.exports.createAuthController = createAuthController;
-module.exports.configureAuthController = configureAuthController;
+module.exports = { createAuthController };

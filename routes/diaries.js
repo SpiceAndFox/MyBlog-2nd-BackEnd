@@ -1,10 +1,15 @@
 const express = require("express");
-const router = express.Router();
-const authMiddleware = require("@middleware/authMiddleware");
 const diaryController = require("@controllers/diaryController");
 
-router.get("/", authMiddleware, diaryController.getCurrentUserDiaries);
-router.post("/", authMiddleware, diaryController.createDiary);
-router.get("/:id", authMiddleware, diaryController.getCurrentUserDiaryById);
+function createDiariesRouter({ authMiddleware } = {}) {
+  if (typeof authMiddleware !== "function") throw new Error("Auth middleware is required");
 
-module.exports = router;
+  const router = express.Router();
+  router.get("/", authMiddleware, diaryController.getCurrentUserDiaries);
+  router.post("/", authMiddleware, diaryController.createDiary);
+  router.get("/:id", authMiddleware, diaryController.getCurrentUserDiaryById);
+
+  return router;
+}
+
+module.exports = { createDiariesRouter };
