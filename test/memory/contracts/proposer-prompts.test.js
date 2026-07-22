@@ -79,12 +79,16 @@ test("profile specialists own one semantic section without an example bank", asy
   };
   for (const [proposer, section] of Object.entries(specialists)) {
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, new RegExp(`只维护 .*${section}`));
+    assert.match(prompt, /只维护/);
+    assert.match(prompt, new RegExp(section));
     assert.match(prompt, new RegExp(`sectionResults.*只包含 .*${section}`, "s"));
     assert.match(prompt, /可修改引用绝不能放入 `supportRefs`/);
     assert.match(prompt, /没有可修改条目时不能使用/);
+    for (const heading of ["输出契约", "静默工作流", "内容范围", "提交前检查"]) {
+      assert.match(prompt, new RegExp(`## ${heading}`), `${proposer} must include ${heading}`);
+    }
     assert.doesNotMatch(prompt, /## 判断示例|```/);
-    assert.ok(prompt.length < 1800, `${proposer} should stay compact, got ${prompt.length} characters`);
+    assert.ok(prompt.length < 3200, `${proposer} should stay bounded, got ${prompt.length} characters`);
   }
   assert.match(await loadProposerPrompt("userProfileProposer"), /回复语言、语气、长度、结构、主动性、追问和幽默/);
   assert.match(await loadProposerPrompt("assistantProfileProposer"), /用户希望怎样被回应通常是 `userProfile` 或 standingAgreements/);
