@@ -1,88 +1,23 @@
 const crypto = require("node:crypto");
+const { SCHEMA_VERSION, validateRendererArtifact } = require("../contracts");
 const {
-  SCHEMA_VERSION,
-  MEMORY_CONTROL_V201_SCHEMA_VERSION,
-  TARGETS,
-  READ_ONLY_CONTEXT_PATHS,
-} = require("../contracts");
-const { buildProposerTaskArtifact, renderMemoryAndRefs } = require("./proposerTaskRenderer");
-const { validateRendererArtifact } = require("../contracts");
+  buildProposerTaskArtifact,
+  renderMemoryAndRefs,
+} = require("./proposerTaskRenderer");
 
-const READ_ONLY = READ_ONLY_CONTEXT_PATHS;
-
-function redactScene(scene) {
-  return Object.fromEntries(Object.entries(scene).map(([key, field]) => [key, { value: field.value, updatedAtMessageId: field.updatedAtMessageId }]));
-}
-function redactItem(item, writable) {
-  const result = { text: item.text, createdAtMessageId: item.createdAtMessageId, updatedAtMessageId: item.updatedAtMessageId };
-  if (writable) result.id = item.id;
-  for (const key of ["actor", "requester", "status", "becameOverdueAt", "dueAt"]) {
-    if (Object.prototype.hasOwnProperty.call(item, key)) result[key] = item[key];
-  }
-  for (const key of ["facet", "canonicalKey", "factBasis"]) {
-    if (Object.prototype.hasOwnProperty.call(item, key)) result[key] = item[key];
-  }
-  return result;
-}
-function readPath(state, path, writable, overdueLimit) {
-  const [container, section] = path.split(".");
-  if (section === "scene") return redactScene(state.current.scene);
-  let items = state[container][section];
-  if (section === "todos") {
-    if (!writable) items = items.filter((item) => item.status === "active");
-    else {
-      const active = items.filter((item) => item.status === "active");
-      const overdue = items.filter((item) => item.status === "overdue")
-        .sort((a, b) => String(b.becameOverdueAt).localeCompare(String(a.becameOverdueAt)) || a.id.localeCompare(b.id))
-        .slice(0, overdueLimit);
-      items = [...active, ...overdue];
-    }
-  }
-  return items.map((item) => redactItem(item, writable));
-}
-function putPath(output, path, value) {
-  const [container, section] = path.split(".");
-  output[container] ||= {};
-  output[container][section] = value;
-}
-function sectionPath(section) {
-  if (section === "scene") return "current.scene";
-  if (["todos", "standingAgreements", "recentEpisodes"].includes(section)) return `working.${section}`;
-  return `longTerm.${section}`;
-}
-function buildStateViews(state, proposer, targetSections, config) {
-  const writableState = {};
-  for (const section of targetSections) {
-    const path = sectionPath(section);
-    putPath(writableState, path, readPath(state, path, true, config.overdueTodos.maxRenderedItems));
-  }
-  const readOnlyContext = {};
-  for (const path of READ_ONLY[proposer]) {
-    if (targetSections.includes(path.split(".")[1])) continue;
-    putPath(readOnlyContext, path, readPath(state, path, false, config.overdueTodos.maxRenderedItems));
-  }
-  return { writableState, readOnlyContext };
-}
-function buildNormalEnvelope({ userId, presetId, state, intent, messages, now, userTimeZone = "UTC", taskId = crypto.randomUUID(), tickId = Date.now(), config }) {
-  if (!messages.length) throw new Error("A normal Memory task requires a non-empty new batch");
-  const observedMessageIds = messages.map((message) => message.id);
-  const targetMessageId = Math.max(...messages.filter((message) => message.id > intent.cursorBefore).map((message) => message.id));
-  if (!Number.isSafeInteger(targetMessageId)) throw new Error("Observed window does not contain a new batch");
-  const { writableState, readOnlyContext } = buildStateViews(state, intent.proposer, intent.targetSections, config);
-  return {
-    task: {
-      taskId, tickId, userId: Number(userId), presetId: String(presetId), schemaVersion: SCHEMA_VERSION,
-      sourceGeneration: state.meta.sourceGeneration, baseRevision: state.meta.revision,
-      targetKey: intent.targetKey, cursorBefore: intent.cursorBefore, targetMessageId,
-      proposer: intent.proposer, mode: "normal", targetSections: intent.targetSections.slice(),
-      observedMessageIds, trigger: structuredClone(intent.trigger || { type: "lagThreshold" }), now: new Date(now).toISOString(), userTimeZone,
-    },
-    writableState, readOnlyContext, observedMessages: messages,
-  };
-}
-
-function buildSemanticNormalEnvelope({ userId, presetId, state, intent, messages, now, userTimeZone = "UTC", taskId = crypto.randomUUID(), tickId = Date.now() }) {
-  if (state?.version !== MEMORY_CONTROL_V201_SCHEMA_VERSION) throw new Error("Semantic Memory tasks require a 2.01 state");
+function buildNormalEnvelope({
+  userId,
+  presetId,
+  state,
+  intent,
+  messages,
+  now,
+  userTimeZone = "UTC",
+  taskId = crypto.randomUUID(),
+  tickId = Date.now(),
+  config,
+}) {
+  if (state?.version !== SCHEMA_VERSION) throw new Error("Memory tasks require a 2.01 state");
   const artifact = buildProposerTaskArtifact({
     state,
     intent,
@@ -91,6 +26,7 @@ function buildSemanticNormalEnvelope({ userId, presetId, state, intent, messages
     userTimeZone,
     taskId,
     tickId,
+    overdueTodoLimit: config?.overdueTodos?.maxRenderedItems,
   });
   const publicTask = artifact.publicInput.task;
   return {
@@ -98,7 +34,7 @@ function buildSemanticNormalEnvelope({ userId, presetId, state, intent, messages
       ...publicTask,
       userId: Number(userId),
       presetId: String(presetId),
-      schemaVersion: MEMORY_CONTROL_V201_SCHEMA_VERSION,
+      schemaVersion: SCHEMA_VERSION,
       sourceGeneration: state.meta.sourceGeneration,
       baseRevision: state.meta.revision,
       mode: "normal",
@@ -106,60 +42,60 @@ function buildSemanticNormalEnvelope({ userId, presetId, state, intent, messages
       trigger: structuredClone(intent.trigger || { type: "lagThreshold" }),
     },
     artifact,
-    observedMessages: structuredClone(messages),
   };
 }
 
 function isSemanticTaskEnvelope(envelope) {
-  return envelope?.task?.mode === "normal"
-    && envelope?.task?.schemaVersion === MEMORY_CONTROL_V201_SCHEMA_VERSION
-    && envelope?.artifact?.publicInput;
+  return envelope?.task?.schemaVersion === SCHEMA_VERSION
+    && Boolean(envelope?.artifact?.publicInput);
 }
+
 function normalDedupeKey(task) {
   return ["normal", task.sourceGeneration, task.targetKey, task.cursorBefore, task.targetMessageId].join(":");
 }
 
-function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, trigger, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
-  if (state?.version !== MEMORY_CONTROL_V201_SCHEMA_VERSION) {
-    const path = sectionPath(section);
-    const writableState = {};
-    const value = readPath(state, path, true, config.overdueTodos.maxRenderedItems);
-    putPath(writableState, path, section === "todos" ? value.filter((item) => item.status === "active") : value);
-    return {
-      task: {
-        taskId, tickId, userId: parentEnvelope.task.userId, presetId: parentEnvelope.task.presetId,
-        schemaVersion: SCHEMA_VERSION, sourceGeneration: parentEnvelope.task.sourceGeneration, baseRevision: state.meta.revision,
-        targetKey: parentEnvelope.task.targetKey, targetMessageId: parentEnvelope.task.targetMessageId,
-        proposer: "compactionProposer", mode: "maintenance", targetSections: [section], observedMessageIds: [],
-        trigger: structuredClone(trigger || { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit }),
-        now: new Date(parentEnvelope.task.now).toISOString(), userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
-        parentTaskId: parentEnvelope.task.taskId, resumeEpoch,
-      },
-      writableState, readOnlyContext: {}, observedMessages: [],
-    };
-  }
+function buildMaintenanceEnvelope({
+  parentEnvelope,
+  state,
+  section,
+  violation,
+  trigger,
+  taskId = crypto.randomUUID(),
+  tickId = Date.now(),
+  resumeEpoch = 0,
+  config,
+}) {
+  if (state?.version !== SCHEMA_VERSION) throw new Error("Memory maintenance requires a 2.01 state");
   const targetMessageId = parentEnvelope.task.targetMessageId;
   const publicTask = {
-      taskId,
-      tickId,
-      targetKey: parentEnvelope.task.targetKey,
-      proposer: "compactionProposer",
-      targetSections: [section],
-      cursorBefore: Math.max(0, targetMessageId - 1),
-      targetMessageId,
-      now: new Date(parentEnvelope.task.now).toISOString(),
-      userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
+    taskId,
+    tickId,
+    targetKey: parentEnvelope.task.targetKey,
+    proposer: "compactionProposer",
+    targetSections: [section],
+    cursorBefore: Math.max(0, targetMessageId - 1),
+    targetMessageId,
+    now: new Date(parentEnvelope.task.now).toISOString(),
+    userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
   };
-  const rendered = renderMemoryAndRefs(state, "compactionProposer", [section]);
-  const artifact = { publicInput: { task: publicTask, memoryText: rendered.memoryText, messages: [] }, refMap: rendered.refMap, messageMeta: {} };
+  const rendered = renderMemoryAndRefs(state, "compactionProposer", [section], {
+    overdueTodoLimit: config?.overdueTodos?.maxRenderedItems,
+  });
+  const artifact = {
+    publicInput: { task: publicTask, memoryText: rendered.memoryText, messages: [] },
+    refMap: rendered.refMap,
+    messageMeta: {},
+  };
   const validation = validateRendererArtifact(artifact);
-  if (!validation.ok) throw new Error(`Invalid compaction Renderer artifact: ${validation.errors.map((entry) => `${entry.path} ${entry.message}`).join("; ")}`);
+  if (!validation.ok) {
+    throw new Error(`Invalid compaction Renderer artifact: ${validation.errors.map((entry) => `${entry.path} ${entry.message}`).join("; ")}`);
+  }
   return {
     task: {
       ...publicTask,
       userId: parentEnvelope.task.userId,
       presetId: parentEnvelope.task.presetId,
-      schemaVersion: MEMORY_CONTROL_V201_SCHEMA_VERSION,
+      schemaVersion: SCHEMA_VERSION,
       sourceGeneration: parentEnvelope.task.sourceGeneration,
       baseRevision: state.meta.revision,
       mode: "maintenance",
@@ -169,7 +105,6 @@ function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, t
       resumeEpoch,
     },
     artifact,
-    observedMessages: [],
   };
 }
 
@@ -179,14 +114,10 @@ function maintenanceDedupeKey(task) {
 }
 
 module.exports = {
-  READ_ONLY,
-  buildStateViews,
   buildNormalEnvelope,
-  buildSemanticNormalEnvelope,
+  buildSemanticNormalEnvelope: buildNormalEnvelope,
   isSemanticTaskEnvelope,
   buildMaintenanceEnvelope,
   normalDedupeKey,
   maintenanceDedupeKey,
-  redactItem,
-  redactScene,
 };

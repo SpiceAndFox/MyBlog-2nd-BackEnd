@@ -208,6 +208,50 @@ async function compileSemanticResult({ artifact, semanticResult, baseState, sour
   return compiled;
 }
 
+async function revalidateCompiledProposal({ proposal, task, baseState, sourceRepository, userId, presetId, client } = {}) {
+  if (!baseState) fail("compile_invariant_failed", { reason: "base_state_missing" });
+  const validation = validateCompiledProposal(proposal, task);
+  if (!validation.ok) fail("compile_invariant_failed", { reason: "compiled_schema_invalid", errors: validation.errors.slice(0, 8) });
+  const refs = [];
+  for (const [section, result] of Object.entries(proposal.sectionResults)) {
+    if (result.status !== "patches") continue;
+    for (const patch of result.patches) {
+      refs.push(...(patch.sourceRefs || []));
+      if (section === "scene") {
+        const entry = baseState.current?.scene?.[patch.path];
+        if (!entry) fail("ref_resolution_failed", { section, path: patch.path, reason: "target_missing" });
+        refs.push(...(entry.sourceRefs || []));
+        continue;
+      }
+      const items = sectionItems(baseState, section) || [];
+      for (const itemId of [patch.itemId, ...(patch.itemIds || [])].filter(Boolean)) {
+        const item = items.find((candidate) => candidate.id === itemId);
+        if (!item) fail("ref_resolution_failed", { section, itemId, reason: "target_missing" });
+        refs.push(...(item.sourceRefs || []));
+      }
+    }
+  }
+  const expectedRefs = normalizeSourceRefs(refs);
+  if (!expectedRefs.length) return true;
+  if (!sourceRepository?.getByIds) fail("compile_invariant_failed", { reason: "source_repository_missing" });
+  const ids = expectedRefs.map((ref) => ref.messageId);
+  let rows;
+  try { rows = await sourceRepository.getByIds(userId, presetId, ids, { client }); }
+  catch (error) { fail("source_validation_failed", { reason: "source_query_failed", code: error?.code || null }); }
+  const byId = new Map((rows || []).map((row) => {
+    const message = normalizeDatabaseMessage(row);
+    return [message.id, message];
+  }));
+  if (byId.size !== ids.length || ids.some((id) => !byId.has(id))) fail("source_validation_failed", { reason: "message_missing" });
+  for (const ref of expectedRefs) {
+    const message = byId.get(ref.messageId);
+    if (!message || message.contentHash !== ref.contentHash) fail("source_validation_failed", { reason: "source_hash_mismatch", messageId: ref.messageId });
+    if (message.userId !== undefined && Number(message.userId) !== Number(userId)) fail("source_validation_failed", { reason: "scope_mismatch", messageId: ref.messageId });
+    if (message.presetId !== undefined && String(message.presetId) !== String(presetId)) fail("source_validation_failed", { reason: "scope_mismatch", messageId: ref.messageId });
+  }
+  return true;
+}
+
 function createSemanticCompiler({ sourceRepository } = {}) {
   if (!sourceRepository?.getByIds) throw new Error("Semantic Compiler requires a source repository");
   return Object.freeze({
@@ -220,5 +264,6 @@ module.exports = {
   sectionItems,
   resolveStateEntry,
   compileSemanticResult,
+  revalidateCompiledProposal,
   createSemanticCompiler,
 };

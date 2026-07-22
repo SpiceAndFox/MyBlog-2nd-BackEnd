@@ -5,10 +5,8 @@ const { createMemorySourceRebuild } = require("../../modules/memory/application/
 const fs = require("node:fs");
 const path = require("node:path");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/source-rebuild-suppression.json"), "utf8"));
-const ref = (source, quote = "证据") => ({ ...source, quote });
-const group = (evidenceKind, source) => ({ evidenceKind, refs: [ref(source)] });
-const item = (id, groups) => ({ id, text: id, evidenceGroups: groups, createdAtMessageId: groups[0].refs[0].messageId, updatedAtMessageId: Math.max(...groups.flatMap((entry) => entry.refs.map((entryRef) => entryRef.messageId))) });
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/source-rebuild.json"), "utf8"));
+const item = (id, sourceRefs) => ({ id, text: id, sourceRefs, createdAtMessageId: sourceRefs[0].messageId, updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)) });
 
 function makeRebuildHarness() {
   const state = createInitialMemoryState();
@@ -32,12 +30,9 @@ function makeRebuildHarness() {
     },
     audit: {
       async insertSnapshot(_u, _p, snapshot) { data.snapshots.push(structuredClone(snapshot)); },
-      async getSnapshot(_u, _p, revision) { const found = data.snapshots.find((entry) => entry.revision === revision); return found ? { source_generation: found.sourceGeneration, state: found.state } : null; },
+      async getSnapshot(_u, _p, revision) { const found = data.snapshots.find((entry) => entry.revision === revision); return found ? { source_generation: found.sourceGeneration, schema_version: found.schemaVersion, state: found.state } : null; },
     },
-    sidecars: {
-      async markProjectionsRebuilding() { data.checkpointsMarked = true; },
-      async listTombstones() { return []; },
-    },
+    sidecars: { async markProjectionsRebuilding() { data.checkpointsMarked = true; } },
   };
   const normalWritePipeline = { async createTask() { throw new Error("not used"); }, async processEnvelope() { throw new Error("not used"); } };
   return { data, repositories, normalWritePipeline };
@@ -68,7 +63,7 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
     status: key === "scene" ? "halted" : "rebuilding",
     rebuild_boundary_message_id: key === "scene" ? null : 20,
   }]));
-  const snapshots = new Map([[6, { source_generation: 1, state: structuredClone(state) }]]);
+  const snapshots = new Map([[6, { source_generation: 1, schema_version: "2.01", state: structuredClone(state) }]]);
   const processed = [];
   const repositories = {
     async withTransaction(work) { return work({}); },
@@ -93,7 +88,7 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
       async listSnapshots() { return [...snapshots].map(([revision, value]) => ({ revision, ...value })); },
       async listRevisionGroups() { return [...snapshots.keys()].filter((revision) => revision > 6).map((revision) => ({ base_revision: revision - 1, result_revision: revision })); },
     },
-    sidecars: { async listTombstones() { return []; } },
+    sidecars: {},
   };
   const attempts = new Map();
   const pipeline = {
@@ -110,7 +105,7 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
       if (envelope.task.targetKey === "scene" && attempt === 1) return { status: "context_expansion_required" };
       state.meta.targetCursors[envelope.task.targetKey] = 20;
       state.meta.revision += 1;
-      snapshots.set(state.meta.revision, { source_generation: 1, state: structuredClone(state) });
+      snapshots.set(state.meta.revision, { source_generation: 1, schema_version: "2.01", state: structuredClone(state) });
       return { status: "committed" };
     },
   };
@@ -122,13 +117,13 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
-test("target validation ignores retired tombstones and preserves rebuilt active state", async () => {
+test("target validation preserves valid rebuilt 2.01 state without suppression storage", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
   state.meta.revision = 5;
   state.meta.targetCursors.worldFacts = 10;
-  state.longTerm.worldFacts.push(item("old-fact", [group("long_term_fact", fixture.oldSource)]));
-  const snapshots = new Map([[5, { revision: 5, source_generation: 1, state: structuredClone(state) }]]);
+  state.longTerm.worldFacts.push(item("old-fact", [fixture.oldSource]));
+  const snapshots = new Map([[5, { revision: 5, source_generation: 1, schema_version: "2.01", state: structuredClone(state) }]]);
   const groups = [];
   const events = [];
   const repositories = {
@@ -148,9 +143,9 @@ test("target validation ignores retired tombstones and preserves rebuilt active 
       async listRevisionGroups(_u, _p, _g, after) { return groups.filter((row) => row.result_revision > after); },
       async insertEventGroup(row) { groups.push(structuredClone(row)); },
       async insertEvents(rows) { events.push(...structuredClone(rows)); },
-      async insertSnapshot(_u, _p, row) { snapshots.set(row.revision, { ...structuredClone(row), source_generation: row.sourceGeneration }); },
+      async insertSnapshot(_u, _p, row) { snapshots.set(row.revision, { ...structuredClone(row), source_generation: row.sourceGeneration, schema_version: row.schemaVersion }); },
     },
-    sidecars: { async listTombstones() { throw new Error("tombstones must not be read"); } },
+    sidecars: {},
   };
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: { createTask() {}, processEnvelope() {} }, config: { targets: {} } });
   const result = await rebuild.validateTarget(7, "companion", "worldFacts", 1, 10);

@@ -108,7 +108,7 @@ function episodeIntent() {
 test("Episode vertical slice sends only readable public input and commits compiled Semantic changes", async () => {
   const old = message(1, "user", "争执后我们先暂停一下。");
   const latest = message(2, "assistant", "冷静下来后，我们重新说开了。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:old", "双方争执后暂停了交流。", old));
   state.meta.targetCursors.episodes = 1;
   const store = storeFixture({ state, messages: [old, latest] });
@@ -166,7 +166,7 @@ test("Episode vertical slice sends only readable public input and commits compil
 
 test("Episode recovery compiles a durable Semantic result without calling Provider again", async () => {
   const latest = message(1, "user", "我们认真道歉后和好了。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   const store = storeFixture({ state, messages: [latest] });
   let providerCalls = 0;
   const pipeline = createNormalWritePipeline({
@@ -186,7 +186,7 @@ test("Episode recovery compiles a durable Semantic result without calling Provid
       milestones: { status: "noop" },
     },
   };
-  await pipeline.persistProposal(envelope, semanticResult);
+  await pipeline.persistSemanticResult(envelope, semanticResult);
 
   const result = await pipeline.processEnvelope(envelope);
 
@@ -200,7 +200,7 @@ test("Episode unable retry expands messages while preserving the original refs a
   const source = message(1, "user", "互动尚未结束。");
   const overlap = message(2, "assistant", "我需要再想一下。");
   const latest = message(3, "user", "现在仍无法确认结果。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:open", "双方仍在处理一项未决分歧。", source));
   state.meta.targetCursors.episodes = 2;
   const store = storeFixture({ state, messages: [latest] });
@@ -242,7 +242,7 @@ test("Episode unable retry expands messages while preserving the original refs a
 test("recentEpisodes capacity evicts the oldest arc while the joint target advances one shared cursor", async () => {
   const old = message(1, "user", "旧互动已经结束。");
   const latest = message(2, "user", "新分歧得到了解决。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:old", "旧互动已经结束。", old));
   state.meta.targetCursors.episodes = 1;
   const store = storeFixture({ state, messages: [old, latest] });
@@ -275,7 +275,7 @@ test("recentEpisodes capacity evicts the oldest arc while the joint target advan
 
 test("deterministic Episode compile failure halts only the target without advancing state", async () => {
   const latest = message(1, "user", "新的互动。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   const store = storeFixture({ state, messages: [latest] });
   store.repositories.source.getByIds = async () => [];
   const pipeline = createNormalWritePipeline({

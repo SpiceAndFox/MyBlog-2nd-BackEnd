@@ -38,13 +38,13 @@ function evaluateAliceTaskReplay(report) {
     completionApplicable ? "expected an accepted completeTodo" : "completion messages are outside this task");
 
   const tomorrowApplicable = task.targetKey === "todos" && includesNewEvidence([1078, 1079, 1080]);
-  const tomorrowAdds = report?.replay?.proposal?.sectionResults?.todos?.patches?.filter((patch) => (
-    patch.op === "addItem" && patch.value?.dueAt?.mode === "relative" && patch.value.dueAt.days === 1
+  const tomorrowAdds = report?.replay?.semanticResult?.sectionResults?.todos?.changes?.filter((change) => (
+    change.action === "add" && change.dueAt?.mode === "relative" && change.dueAt.days === 1
   )) || [];
   const acceptedTodoAdds = acceptedOperations(report, "todos").filter((event) => event.op === "addItem").length;
   add("alice_two_tomorrow_todos_1078_1080", tomorrowApplicable,
     tomorrowAdds.length >= 2 && acceptedTodoAdds >= 2,
-    tomorrowApplicable ? "expected two accepted addItem patches with relative days=1" : "required messages are outside this task");
+    tomorrowApplicable ? "expected two accepted todo adds with relative days=1" : "required messages are outside this task");
 
   const episodeApplicable = task.targetKey === "episodes"
     && task.sourceBoundary?.targetMessageId >= 1077

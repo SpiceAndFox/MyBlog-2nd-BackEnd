@@ -1,4 +1,5 @@
 const { TARGETS } = require("../contracts");
+const { isSemanticTaskEnvelope } = require("./envelope");
 
 const CAPACITY_REASONS = new Set(["capacity_still_exceeded", "unable_to_compact", "compaction_failed", "replay_failed"]);
 
@@ -47,11 +48,16 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, o
     if (status === "retry_wait") {
       const retryTask = tasks.find((task) => rowValue(task, "status", "status") === "retry_wait");
       if (!retryTask) throw new Error("retry_wait target has no recoverable task");
+      const envelope = rowValue(retryTask, "task_payload", "taskPayload");
+      if (!isSemanticTaskEnvelope(envelope)) {
+        const error = new Error("Memory 2.01 cannot resume a legacy retry task");
+        error.code = "MEMORY_V201_CUTOVER_REQUIRED";
+        throw error;
+      }
       await repositories.withTransaction(async (client) => {
         await repositories.runtime.updateTask(rowValue(retryTask, "task_id", "taskId"), { status: "queued", stage: "resumed", not_before: null, last_error_reason: reason }, { client });
         await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: Number(rowValue(target, "source_generation", "sourceGeneration")), status: "retry_wait", consecutiveErrors: Number(rowValue(target, "consecutive_errors", "consecutiveErrors") ?? 0), lastErrorReason: reason, lastTaskId: rowValue(retryTask, "task_id", "taskId"), nextRetryAt: null }, { client });
       });
-      const envelope = rowValue(retryTask, "task_payload", "taskPayload");
       return run ? dispatch(envelope) : { status: "queued", taskId: envelope.task.taskId, resumed: true };
     }
 
@@ -67,7 +73,12 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, o
       const parent = tasks.find((task) => rowValue(task, "task_id", "taskId") === parentId);
       const parentEnvelope = rowValue(parent, "task_payload", "taskPayload");
       const payload = structuredClone(rowValue(parent, "stage_payload", "stagePayload"));
-      if (!parentEnvelope?.task || !payload?.blockingViolation) throw new Error("Capacity-blocked parent task is not resumable");
+      if (!isSemanticTaskEnvelope(parentEnvelope)) {
+        const error = new Error("Memory 2.01 cannot resume a legacy capacity task");
+        error.code = "MEMORY_V201_CUTOVER_REQUIRED";
+        throw error;
+      }
+      if (!payload?.blockingViolation) throw new Error("Capacity-blocked parent task is not resumable");
       const resumeEpoch = Number(rowValue(maintenance, "resume_epoch", "resumeEpoch") ?? 0) + 1;
       const child = await repositories.withTransaction(async (client) => {
         const created = await pipeline.capacity.createResumeChild(parentEnvelope, payload.blockingViolation, resumeEpoch, client);

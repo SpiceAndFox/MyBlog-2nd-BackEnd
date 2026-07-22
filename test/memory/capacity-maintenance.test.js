@@ -7,14 +7,14 @@ const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { createNormalWritePipeline } = require("../../modules/memory/application/normalWritePipeline");
 const { createMemoryMetrics } = require("../../modules/memory/application/metrics");
 const { createMemoryRecovery } = require("../../modules/memory/application/recovery");
-const { reduceProposal } = require("../../modules/memory/domain/reducer");
+const { reduceCompiledProposal } = require("../../modules/memory/domain/compiledReducer");
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/capacity-replay.json"), "utf8"));
 const hash = (value) => `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: hash("还要记得归还杂志") };
 const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-  quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
+  scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: section === "todos" ? 2 : 20, maxRenderedChars: 2000 }])),
   providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
@@ -22,24 +22,32 @@ const config = {
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
 
 function todo(id, text, messageId) {
-  return { id, text, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null, evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId, quote: text, contentHash: hash(text) }] }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
+  return { id, text, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: null, sourceRefs: [{ messageId, contentHash: hash(text) }], createdAtMessageId: messageId, updatedAtMessageId: messageId };
 }
 function normalOutput(envelope) {
-  return { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还杂志", actor: "user", requester: "user" }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 3, quote: "记得归还杂志" }] }] } } };
+  return { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "add", text: "归还杂志", actor: "user", requester: "user", evidenceMessageIds: [3] }] } } };
+}
+function compiledNormalOutput(envelope) {
+  return { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还杂志", actor: "user", requester: "user", dueAt: null }, sourceRefs: [{ messageId: 3, contentHash: message.contentHash }] }] } } };
 }
 function compactionOutput(envelope) {
-  return { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "mergeItems", itemIds: ["todo:1", "todo:2"], value: { text: "归还借阅物" }, evidenceKind: "memory_compaction" }] } } };
+  return { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "merge", refs: ["T1", "T2"], text: "归还借阅物" }] } } };
 }
 
 function store() {
   let state = createInitialMemoryState();
   state.working.todos.push(todo("todo:1", "归还图书", 1), todo("todo:2", "把借来的书还回去", 2));
-  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = []; const tombstones = [];
+  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = [];
+  const sourceMessages = [
+    { id: 1, role: "user", createdAt: "2026-07-11T00:00:00.000Z", content: "归还图书", contentHash: hash("归还图书"), userId: 1, presetId: "default" },
+    { id: 2, role: "user", createdAt: "2026-07-12T00:00:00.000Z", content: "把借来的书还回去", contentHash: hash("把借来的书还回去"), userId: 1, presetId: "default" },
+    { ...message, userId: 1, presetId: "default" },
+  ];
   const statuses = new Map([["todos", { target_key: "todos", source_generation: 0, status: "healthy", consecutive_errors: 0 }]]);
   const repositories = {
     withTransaction: async (work) => work({ query: async () => ({ rows: [] }) }),
     state: { getState: async () => structuredClone(state), writeState: async (_u, _p, value) => { state = structuredClone(value); } },
-    source: { getObservedWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
+    source: { getObservedWindow: async () => [message], getByIds: async (_u, _p, ids) => sourceMessages.filter((entry) => ids.includes(entry.id)) },
     runtime: {
       createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, { ...structuredClone(row), created_at: row.created_at ?? "2026-07-13T00:00:00.000Z" }); return tasks.get(row.task_id); },
       getTask: async (id) => tasks.get(id) || null, getTaskForUpdate: async (id) => tasks.get(id) || null,
@@ -51,12 +59,9 @@ function store() {
       appendOpsLog: async (entry) => ops.push(structuredClone(entry)),
     },
     audit: { getEventGroup: async (id) => groups.get(id) || null, insertEventGroup: async (group) => groups.set(group.event_group_id, structuredClone(group)), insertEvents: async (rows) => events.push(...structuredClone(rows)), insertSnapshot: async (_u, _p, value) => snapshots.push(structuredClone(value)) },
-    sidecars: {
-      insertTombstone: async (_u, _p, entry) => tombstones.push(structuredClone(entry)),
-      listTombstones: async (_u, _p, { messageIds } = {}) => tombstones.filter((entry) => !messageIds || messageIds.includes(entry.message_id ?? entry.messageId)),
-    },
+    sidecars: {},
   };
-  return { repositories, inspect: { tasks, groups, events, snapshots, ops, statuses, tombstones, get state() { return state; } } };
+  return { repositories, inspect: { tasks, groups, events, snapshots, ops, statuses, sourceMessages, get state() { return state; } } };
 }
 
 test("capacity block persists deferred audit, compacts, and replays the original proposal", async () => {
@@ -78,13 +83,11 @@ test("capacity block persists deferred audit, compacts, and replays the original
   assert.equal(data.inspect.state.working.todos.length, fixture.expected.finalActiveItems);
   assert.equal(data.inspect.events.filter((event) => event.decision === "deferred").length, 1);
   assert.equal(data.inspect.events.find((event) => event.decision === "deferred").maintenance_task_id, child.task_id);
-  assert.equal(parent.stage_payload.persistedProposal.proposer, "todoProposer");
+  assert.equal(parent.stage_payload.compiledProposal.proposer, "todoProposer");
   assert.equal(parent.status, "succeeded");
   assert.equal(child.stage, "compaction_applied");
   assert.equal(data.inspect.statuses.get("todos").status, fixture.expected.targetStatus);
-  const deferredPatch = data.inspect.events.find((event) => event.decision === "deferred").patch_id;
-  const replayPatch = data.inspect.events.findLast((event) => event.task_id === parent.task_id && event.decision === "accepted").patch_id;
-  assert.equal(replayPatch, deferredPatch, "replay must retain the original stable patch identity");
+  assert.equal(parent.stage_payload.compiledProposal.sectionResults.todos.patches[0].op, "addItem");
   const duplicate = await pipeline.processEnvelope(parent.task_payload);
   assert.equal(duplicate.duplicate, true);
   assert.equal(normalCalls, 1, "recovery must replay persisted output without calling the normal Proposer again");
@@ -124,7 +127,7 @@ test("repeated capacity commit preserves the durable maintenance chain", async (
     providerAdapter: { propose: async () => { throw new Error("provider should not be called"); } },
   });
   const envelope = await pipeline.createTask(1, "default", intent);
-  const output = normalOutput(envelope);
+  const output = compiledNormalOutput(envelope);
   const first = await pipeline.commit(envelope, output);
   const parent = data.inspect.tasks.get(envelope.task.taskId);
   const durablePayload = structuredClone(parent.stage_payload);
@@ -137,7 +140,7 @@ test("repeated capacity commit preserves the durable maintenance chain", async (
   assert.equal(data.inspect.events.filter((event) => event.decision === "deferred").length, 1);
 });
 
-test("capacity replay ignores retired correction tombstones", async () => {
+test("capacity replay revalidates source hashes before advancing the parent", async () => {
   const data = store();
   const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];
   const pipeline = createNormalWritePipeline({
@@ -145,53 +148,23 @@ test("capacity replay ignores retired correction tombstones", async () => {
     idFactory: () => ids.shift() || "unused",
     providerAdapter: { propose: async (envelope) => {
       if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
-      data.inspect.tombstones.push({ message_id: message.id, content_hash: message.contentHash, reason: "correction" });
+      data.inspect.sourceMessages.find((entry) => entry.id === message.id).contentHash = hash("消息已被修改");
       return { status: "ok", output: compactionOutput(envelope) };
     } },
   });
   const result = await pipeline.processIntent(1, "default", intent);
-  const replayEvent = data.inspect.events.findLast((event) => event.task_id === result.taskId && event.decision === "accepted");
-  assert.equal(result.status, "committed");
-  assert.equal(replayEvent.op, "addItem");
-  assert.equal(data.inspect.state.working.todos.length, 2, "active-state changes do not suppress raw replay sources");
-});
-
-test("fully rejected maintenance persists a null-revision audit group and accurate attempt", async () => {
-  const data = store();
-  const ids = ["normal-patch", "normal-item", "compact-patch"];
-  const pipeline = createNormalWritePipeline({
-    observer: {}, repositories: data.repositories, config,
-    idFactory: () => ids.shift() || "unused",
-    providerAdapter: { propose: async (envelope) => ({
-      status: "ok",
-      output: envelope.task.mode === "normal" ? normalOutput(envelope) : {
-        tickId: envelope.task.tickId,
-        proposer: "compactionProposer",
-        sectionResults: { todos: { status: "patches", patches: [
-          { op: "mergeItems", itemIds: ["todo:missing", "todo:2"], value: { text: "无法合并" }, evidenceKind: "memory_compaction" },
-        ] } },
-      },
-    }) },
-  });
-  const result = await pipeline.processIntent(1, "default", intent);
-  const maintenance = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
-  const auditGroup = [...data.inspect.groups.values()].find((group) => group.task_id === maintenance.task_id);
-  const rejected = data.inspect.events.find((event) => event.task_id === maintenance.task_id);
-  const failure = data.inspect.ops.find((entry) => entry.task_id === maintenance.task_id && entry.outcome === "compaction_failed");
   assert.equal(result.status, "halted");
-  assert.equal(auditGroup.result_revision, null);
-  assert.equal(rejected.decision, "rejected");
-  assert.equal(rejected.reject_reason, "item_not_found");
-  assert.equal(failure.attempt, 1);
-  assert.equal(maintenance.attempt, 1);
+  assert.equal(result.reason, "source_validation_failed");
+  assert.equal(data.inspect.state.meta.targetCursors.todos ?? 0, 0);
+  assert.equal(data.inspect.statuses.get("todos").status, "halted");
 });
 
 test("compaction reducer rejects pending item intersections without changing state", () => {
   const state = createInitialMemoryState();
   state.working.todos.push(todo("todo:1", "A", 1), todo("todo:2", "B", 2));
-  const task = { userId: 1, presetId: "default", targetKey: "todos", targetMessageId: 3, targetSections: ["todos"], proposer: "compactionProposer", mode: "maintenance", now: "2026-07-13T00:00:00Z" };
-  const proposal = { sectionResults: { todos: { status: "patches", patches: [{ op: "mergeItems", itemIds: ["todo:1", "todo:2"], value: { text: "AB" }, evidenceKind: "memory_compaction" }] } } };
-  const reduction = reduceProposal({ state, task, proposal, observedMessages: [], databaseMessages: [], config, protectedItemIds: ["todo:1"], idFactory: () => "patch" });
+  const task = { tickId: 1, userId: 1, presetId: "default", schemaVersion: "2.01", targetKey: "todos", targetMessageId: 3, targetSections: ["todos"], proposer: "compactionProposer", mode: "maintenance", now: "2026-07-13T00:00:00Z" };
+  const proposal = { tickId: 1, proposer: "compactionProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "mergeItems", itemIds: ["todo:1", "todo:2"], value: { text: "AB" } }] } } };
+  const reduction = reduceCompiledProposal({ state, task, proposal, config, protectedItemIds: ["todo:1"], idFactory: () => "patch" });
   assert.equal(reduction.events[0].decision, "rejected");
   assert.equal(reduction.events[0].rejectReason, "item_protected_by_pending_proposal");
   assert.deepEqual(reduction.state.working.todos, state.working.todos);

@@ -117,7 +117,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
           resolvedOperationPayload = typeof operationPayload === "function"
             ? await operationPayload(mutationResult, client)
             : operationPayload;
-          await privacy.purgeDerivedHistory(userId, presetId, { client, preserveTombstones: resetAuthority });
+          await privacy.purgeDerivedHistory(userId, presetId, { client });
           if (resetAuthority) await privacy.purgeAuthorityState(userId, presetId, { client });
           await privacy.upsertOperation(userId, presetId, {
             operationId, operationMode, sourceGeneration: null, boundaryMessageId: null,
@@ -139,7 +139,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
           if (typeof afterGenerationInitialized === "function") {
             await afterGenerationInitialized(client, metadata);
           }
-          await privacy.purgeDerivedHistory(userId, presetId, { client, preserveTombstones: true });
+          await privacy.purgeDerivedHistory(userId, presetId, { client });
           await privacy.upsertOperation(userId, presetId, {
             operationId, operationMode: "rebuild", sourceGeneration: metadata.sourceGeneration,
             boundaryMessageId: metadata.boundaryMessageId, operationPayload,

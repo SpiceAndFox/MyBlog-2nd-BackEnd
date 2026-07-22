@@ -1,12 +1,9 @@
-const { validateMemoryState } = require("../contracts/state");
-const { MEMORY_CONTROL_V201_SCHEMA_VERSION, validateMemoryStateV201 } = require("../contracts/stateV201");
+const { validateMemoryState, SCHEMA_VERSION } = require("../contracts");
 const { replayEventGroups } = require("../domain/eventReplay");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function validateSupportedState(state) {
-  return state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
-    ? validateMemoryStateV201(state)
-    : validateMemoryState(state);
+  return validateMemoryState(state);
 }
 
 function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
@@ -18,6 +15,11 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
     return repositories.withTransaction(async (client) => {
       const raw = await repositories.state.getRawState(userId, presetId, { client, forUpdate: true });
       if (raw === null) return { status: "missing" };
+      if (raw.version !== SCHEMA_VERSION) {
+        const error = new Error(`Memory state schema ${String(raw.version)} cannot be recovered by the 2.01-only runtime`);
+        error.code = "MEMORY_V201_CUTOVER_REQUIRED";
+        throw error;
+      }
       if (validateSupportedState(raw).ok) return { status: "healthy", state: raw };
       const head = await repositories.audit.getRecoveryHead(userId, presetId, { client });
       const snapshots = await repositories.audit.listSnapshotsForRecovery(userId, presetId, { client });
@@ -42,7 +44,7 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
           await repositories.state.writeState(userId, presetId, replayed, { client });
           return { status: "events_replayed", revision: replayed.meta.revision, sourceGeneration: generation, state: replayed };
         } catch (error) {
-          if (error?.code !== "MEMORY_V2_EVENT_REPLAY_INVALID") throw error;
+          if (error?.code !== "MEMORY_V201_EVENT_REPLAY_INVALID") throw error;
         }
       }
       return { status: "rebuild_required" };

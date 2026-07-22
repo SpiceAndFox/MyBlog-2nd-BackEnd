@@ -191,19 +191,6 @@ async function countStaleChunks(userId, presetId, { client } = {}) {
   return Number(rows[0]?.count || 0);
 }
 
-async function deleteSuppressedChunks(userId, presetId, tombstones, { client } = {}) {
-  let deleted = 0;
-  for (const row of tombstones || []) {
-    const sourceRef = { messageId: Number(row.message_id ?? row.messageId), contentHash: String(row.content_hash ?? row.contentHash) };
-    const result = await (client || db).query(
-      "DELETE FROM chat_rag_chunks WHERE user_id=$1 AND preset_id=$2 AND metadata @> $3::jsonb",
-      [normalizePositiveInteger(userId, { name: "userId" }), normalizePresetId(presetId), { sourceRefs: [sourceRef] }],
-    );
-    deleted += result.rowCount || 0;
-  }
-  return deleted;
-}
-
 async function deleteChunksFromMessageId(userId, presetId, fromMessageId) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
@@ -398,7 +385,6 @@ module.exports = {
   deleteAllChunks,
   countChunks,
   countStaleChunks,
-  deleteSuppressedChunks,
   deleteChunksFromMessageId,
   listExistingTurnKeys,
   searchSimilarChunks,

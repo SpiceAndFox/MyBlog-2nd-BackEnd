@@ -5,7 +5,7 @@ const { createMemoryRetention } = require("../../modules/memory/application/rete
 const fs = require("node:fs");
 const path = require("node:path");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/source-rebuild-suppression.json"), "utf8"));
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/source-rebuild.json"), "utf8"));
 
 test("retention promotes only a validated continuous anchor and preserves referenced runtime rows", async () => {
   const state = createInitialMemoryState();
@@ -26,8 +26,8 @@ test("retention promotes only a validated continuous anchor and preserves refere
     { revision: 7, created_at: recent, state: structuredClone(state) },
   ];
   const groups = [
-    { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
-    { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: recent },
+    { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: "2.01", base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
+    { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: "2.01", base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: recent },
   ];
   let promoted = null;
   let runtimeAnchor = null;
@@ -83,8 +83,8 @@ test("retention rejects an anchor whose state cannot be reproduced from semantic
         { revision: 7, created_at: "2026-07-12T00:00:00.000Z", state: structuredClone(state) },
       ]; },
       async listRevisionGroups() { return [
-        { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
-        { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: 2, base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: "2026-07-12T00:00:00.000Z" },
+        { event_group_id: "g6", user_id: 7, preset_id: "companion", task_id: "task-6", target_key: "todos", source_generation: 2, schema_version: "2.01", base_revision: 5, result_revision: 6, cursor_before: 0, cursor_after: 1, group_kind: "proposal", created_at: old },
+        { event_group_id: "g7", user_id: 7, preset_id: "companion", task_id: "task-7", target_key: "todos", source_generation: 2, schema_version: "2.01", base_revision: 6, result_revision: 7, cursor_before: 1, cursor_after: 2, group_kind: "proposal", created_at: "2026-07-12T00:00:00.000Z" },
       ]; },
       async listEventsForGroups() { return []; },
       async promoteAnchor() { throw new Error("must not promote"); },

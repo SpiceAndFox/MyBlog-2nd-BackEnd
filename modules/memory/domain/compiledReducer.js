@@ -3,7 +3,7 @@ const {
   TARGETS,
   normalizeSourceRefs,
   validateCompiledProposal,
-  assertMemoryStateV201,
+  assertMemoryState,
 } = require("../contracts");
 const { normalizeItemText } = require("./itemDeduplication");
 const { normalizeLifecycle } = require("./lifecycle");
@@ -166,7 +166,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
   return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
 }
 
-function reduceCompiledProposalV201({
+function reduceCompiledProposal({
   state,
   task,
   proposal,
@@ -174,8 +174,9 @@ function reduceCompiledProposalV201({
   config,
   lifecycleAnchors = {},
   idFactory = () => crypto.randomUUID(),
+  protectedItemIds = [],
 } = {}) {
-  assertMemoryStateV201(state);
+  assertMemoryState(state);
   const proposalValidation = validateCompiledProposal(proposal, task);
   if (!proposalValidation.ok) {
     const error = new Error(`Invalid compiled Memory proposal: ${proposalValidation.errors.map((entry) => `${entry.path} ${entry.message}`).join("; ")}`);
@@ -188,6 +189,7 @@ function reduceCompiledProposalV201({
   const events = [];
   const cleanupEvents = [];
   const seen = new Set();
+  const protectedIds = new Set(protectedItemIds);
   const nowMs = new Date(now).getTime();
   if (!Number.isFinite(nowMs)) throw new Error("now must be an ISO timestamp");
 
@@ -200,6 +202,10 @@ function reduceCompiledProposalV201({
     for (const patch of result.patches) {
       const patchId = idFactory();
       const base = eventBase(section, patch, "accepted", patchId);
+      if (patch.op === "mergeItems" && patch.itemIds.some((itemId) => protectedIds.has(itemId))) {
+        events.push({ ...base, decision: "rejected", rejectReason: "item_protected_by_pending_proposal" });
+        continue;
+      }
       const keys = conflictKeys(section, patch);
       if (keys.some((key) => seen.has(key))) {
         events.push({ ...base, decision: "rejected", rejectReason: "invalid_state_transition" });
@@ -243,7 +249,7 @@ function reduceCompiledProposalV201({
   const finalState = lifecycle.state;
   finalState.meta.revision = state.meta.revision + 1;
   if (task.mode !== "maintenance") finalState.meta.targetCursors[task.targetKey] = task.targetMessageId;
-  assertMemoryStateV201(finalState);
+  assertMemoryState(finalState);
   const allCleanupEvents = [...cleanupEvents, ...lifecycle.events];
   return {
     outcome: "committable",
@@ -255,4 +261,4 @@ function reduceCompiledProposalV201({
   };
 }
 
-module.exports = { reduceCompiledProposalV201 };
+module.exports = { reduceCompiledProposal };

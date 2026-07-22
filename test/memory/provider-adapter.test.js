@@ -60,11 +60,11 @@ test("Provider Adapter appends bounded schema repair feedback without replaying 
     },
   });
   const result = await adapter.propose(envelope(), {
-    repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.patches[0].value.dueAt", message: "days must be non-negative" }] },
+    repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.changes[0].dueAt", message: "days must be non-negative" }] },
   });
   assert.equal(result.status, "ok");
   assert.match(request.systemPrompt, /\[SCHEMA_REPAIR\]/);
   assert.match(request.systemPrompt, /dueAt.*days must be non-negative/s);
   assert.doesNotMatch(request.systemPrompt, /rawInvalidOutput/);
-  assert.deepEqual(request.userPayload, envelope());
+  assert.deepEqual(request.userPayload, envelope().artifact.publicInput);
 });

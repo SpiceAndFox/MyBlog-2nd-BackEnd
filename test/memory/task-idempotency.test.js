@@ -4,6 +4,19 @@ const { createNormalWritePipeline } = require("../../modules/memory/application/
 const { createMemoryRecovery } = require("../../modules/memory/application/recovery");
 const { fixedNow, config, intent, store } = require("./support/recovery-harness");
 
+test("2.01 pipeline rejects legacy task payloads before repository or Provider work", async () => {
+  const data = store();
+  let providerCalls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, now: () => fixedNow,
+    providerAdapter: { async propose() { providerCalls += 1; return { status: "ok", output: {} }; } },
+  });
+  const legacyEnvelope = { task: { taskId: "legacy-task", schemaVersion: 2, mode: "normal" } };
+  await assert.rejects(() => pipeline.processEnvelope(legacyEnvelope), (error) => error.code === "MEMORY_V201_CUTOVER_REQUIRED");
+  assert.equal(providerCalls, 0);
+  assert.equal(data.inspect.state.meta.revision, 0);
+});
+
 test("revision mismatch cancels the old task and reproposes through a successor", async () => {
   const data = store();
   let calls = 0;
@@ -83,11 +96,11 @@ test("unknown COMMIT outcome reconciles the stable phase before any retry write"
   const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => fixedNow, providerAdapter });
   const envelope = await pipeline.createTask(1, "default", intent);
   const ordinaryTransaction = data.repositories.withTransaction;
-  let transactionCount = 0;
+  let injected = false;
   data.repositories.withTransaction = async (work) => {
     const result = await work({ query: async () => ({ rows: [] }) });
-    transactionCount += 1;
-    if (transactionCount === 2) {
+    if (!injected && data.inspect.groups.size === 1) {
+      injected = true;
       const error = new Error("connection lost after COMMIT was sent");
       error.commitOutcomeUnknown = true;
       throw error;
@@ -102,4 +115,3 @@ test("unknown COMMIT outcome reconciles the stable phase before any retry write"
   assert.equal(data.inspect.groups.size, 1);
   assert.equal(data.inspect.snapshots.length, 1);
 });
-

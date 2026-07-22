@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createInitialMemoryState } = require("../../modules/memory/contracts");
 const { createObserver, canScheduleNormal } = require("../../modules/memory/application/observer");
-const { buildNormalEnvelope, buildStateViews, normalDedupeKey } = require("../../modules/memory/application/envelope");
+const { buildNormalEnvelope, normalDedupeKey } = require("../../modules/memory/application/envelope");
 
 const config = {
   targets: Object.fromEntries(["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"].map((key) => [key, { lagThreshold: key === "scene" ? 2 : 3, contextWindow: 6 }])),
@@ -39,14 +39,11 @@ test("retry_wait is schedulable only after nextRetryAt", () => {
   assert.equal(canScheduleNormal(null, now), false);
 });
 
-test("envelope redacts evidence and ids outside writable sections", () => {
+test("2.01 envelope exposes readable refs while keeping ids, hashes and provenance private", () => {
   const state = createInitialMemoryState();
-  state.working.todos.push({ id: "todo:1", text: "还书", actor: "user", requester: "assistant", status: "active", becameOverdueAt: null, dueAt: null, evidenceGroups: [{ evidenceKind: "assistant_request", refs: [] }], createdAtMessageId: 1, updatedAtMessageId: 1 });
-  state.longTerm.userProfile.push({ id: "userProfile:1", text: "偏好: 安静", evidenceGroups: [], createdAtMessageId: 1, updatedAtMessageId: 1 });
-  const views = buildStateViews(state, "todoProposer", ["todos"], config);
-  assert.equal(views.writableState.working.todos[0].id, "todo:1");
-  assert.equal("evidenceGroups" in views.writableState.working.todos[0], false);
-  assert.equal("id" in views.readOnlyContext.longTerm.userProfile[0], false);
+  const sourceRefs = [{ messageId: 1, contentHash: `sha256:${"c".repeat(64)}` }];
+  state.working.todos.push({ id: "todo:1", text: "还书", actor: "user", requester: "assistant", status: "active", becameOverdueAt: null, dueAt: null, sourceRefs, createdAtMessageId: 1, updatedAtMessageId: 1 });
+  state.longTerm.userProfile.push({ id: "userProfile:1", text: "偏好安静", sourceRefs, createdAtMessageId: 1, updatedAtMessageId: 1 });
 
   const messages = [
     { id: 3, role: "assistant", createdAt: "2026-07-12T00:00:00.000Z", contentKind: "raw", content: "记得还书", contentHash: `sha256:${"a".repeat(64)}` },
@@ -55,5 +52,10 @@ test("envelope redacts evidence and ids outside writable sections", () => {
   const envelope = buildNormalEnvelope({ userId: 1, presetId: "default", state, intent: { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 3 }, messages, now: "2026-07-12T00:02:00Z", taskId: "task-1", tickId: 9, config });
   assert.equal(envelope.task.targetMessageId, 4);
   assert.deepEqual(envelope.task.observedMessageIds, [3, 4]);
+  assert.match(envelope.artifact.publicInput.memoryText, /T1 \| 还书/);
+  assert.equal(JSON.stringify(envelope.artifact.publicInput).includes("todo:1"), false);
+  assert.equal(JSON.stringify(envelope.artifact.publicInput).includes("contentHash"), false);
+  assert.equal(envelope.artifact.refMap.writable.T1.itemId, "todo:1");
+  assert.equal(envelope.artifact.messageMeta["4"].contentHash, messages[1].contentHash);
   assert.equal(normalDedupeKey(envelope.task), "normal:0:todos:3:4");
 });

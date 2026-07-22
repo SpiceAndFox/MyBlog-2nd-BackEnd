@@ -15,7 +15,11 @@ function taskRow(overrides = {}) {
       proposer: "episodeProposer",
       targetSections: ["recentEpisodes", "milestones"],
     },
-    observedMessages: [{ id: 1, role: "user", content: "hello" }],
+    artifact: {
+      publicInput: { task: {}, memoryText: "", messages: [{ id: 1, role: "user", content: "hello", createdAt: "2026-07-19T00:00:00.000Z" }] },
+      refMap: { writable: {}, readOnly: {} },
+      messageMeta: { "1": { role: "user", createdAt: "2026-07-19T00:00:00.000Z", contentHash: `sha256:${"a".repeat(64)}` } },
+    },
   };
   return {
     task_id: envelope.task.taskId,
@@ -35,7 +39,10 @@ function taskRow(overrides = {}) {
     not_before: null,
     last_error_reason: null,
     task_payload: envelope,
-    stage_payload: { persistedProposal: { tickId: 1, proposer: "episodeProposer", sectionResults: {} } },
+    stage_payload: {
+      semanticResult: { tickId: 1, proposer: "episodeProposer", sectionResults: {} },
+      compiledProposal: { tickId: 1, proposer: "episodeProposer", sectionResults: {} },
+    },
     created_at: "2026-07-19T00:00:00.000Z",
     updated_at: "2026-07-19T00:00:01.000Z",
     ops: [],
@@ -70,7 +77,8 @@ test("Memory task GUI reconstructs current provider request and persisted output
   assert.deepEqual(task.input.responseSchema.sections, ["recentEpisodes", "milestones"]);
   assert.equal(task.input.effectiveEnvelope.task.proposer, "episodeProposer");
   assert.equal(task.output.availability, "persisted");
-  assert.equal(task.output.persistedProposal.proposer, "episodeProposer");
+  assert.equal(task.output.semanticResult.proposer, "episodeProposer");
+  assert.equal(task.output.compiledProposal.proposer, "episodeProposer");
 });
 
 test("Memory task GUI HTTP API performs SELECT-only reads", async (context) => {

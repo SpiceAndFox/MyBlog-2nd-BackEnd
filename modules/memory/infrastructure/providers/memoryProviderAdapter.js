@@ -1,10 +1,7 @@
 const {
-  validateProposerOutput,
-  validateTaskEnvelope,
   validateRendererArtifact,
   validateSemanticResult,
 } = require("../../contracts");
-const { isSemanticTaskEnvelope } = require("../../application/envelope");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
@@ -17,18 +14,6 @@ function schemaRepairPrompt(systemPrompt, feedback) {
     `${index + 1}. ${String(error.path || "$").slice(0, 240).replace(/[^A-Za-z0-9_$.[\]-]/g, "?")}: ${String(error.message || "does not satisfy the contract").replace(/[\r\n]+/g, " ").slice(0, 240)}`
   ));
   return `${systemPrompt}\n\n[SCHEMA_REPAIR]\n上一份 tool arguments 未通过本地契约校验。请根据以下错误重新生成一份完整的替代结果，不要只返回局部字段，也不要解释。\n${lines.join("\n")}\n只修复格式或契约错误；事实判断仍必须完全依据原始 Memory task。`;
-}
-
-function normalizeProviderOutput(output, task) {
-  if (task?.proposer !== "currentStateProposer" || !output?.sectionResults?.scene?.patches) return output;
-  const normalized = structuredClone(output);
-  normalized.sectionResults.scene.patches = normalized.sectionResults.scene.patches.map((patch) => {
-    if (!patch || !Object.prototype.hasOwnProperty.call(patch, "evidenceRef")
-      || Object.prototype.hasOwnProperty.call(patch, "evidenceRefs")) return patch;
-    const { evidenceRef, ...rest } = patch;
-    return { ...rest, evidenceRefs: [evidenceRef] };
-  });
-  return normalized;
 }
 
 function validateSemanticEnvelope(envelope) {
@@ -54,17 +39,16 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   return Object.freeze({
     async propose(envelope, { repairFeedback = null } = {}) {
       let response;
-      const semantic = isSemanticTaskEnvelope(envelope);
       try {
-        const envelopeResult = semantic ? validateSemanticEnvelope(envelope) : validateTaskEnvelope(envelope);
+        const envelopeResult = validateSemanticEnvelope(envelope);
         if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
         const { task } = envelope;
-        const schema = buildOutputSchema(task.proposer, task.targetSections, { semantic });
+        const schema = buildOutputSchema(task.proposer, task.targetSections);
         const basePrompt = await promptLoader(task.proposer);
         response = await invokeStructured({
           proposer: task.proposer,
           systemPrompt: schemaRepairPrompt(basePrompt, repairFeedback),
-          userPayload: semantic ? envelope.artifact.publicInput : envelope,
+          userPayload: envelope.artifact.publicInput,
           responseSchema: schema,
         });
       } catch (error) {
@@ -78,10 +62,8 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       if (isTruncationSignal(response?.finishReason)) {
         return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null };
       }
-      const output = normalizeProviderOutput(response?.output, task);
-      const validated = semantic
-        ? validateSemanticResult(output, envelope.artifact)
-        : validateProposerOutput(output, task);
+      const output = response?.output;
+      const validated = validateSemanticResult(output, envelope.artifact);
       if (!validated.ok) {
         return {
           status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors },
@@ -110,7 +92,6 @@ function createMockMemoryProviderAdapter({ outputs, promptLoader = async () => "
 module.exports = {
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
-  normalizeProviderOutput,
   validateSemanticEnvelope,
   schemaRepairPrompt,
   ERROR_REASONS,

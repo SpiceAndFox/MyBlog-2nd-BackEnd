@@ -25,13 +25,13 @@ test("disabled runtime still commits source mutations through the repository tra
   assert.deepEqual(result, { status: "memory_disabled", mutationResult: { changed: true } });
 });
 
-test("disabled runtime privacy delete purges legacy v2 authority and derived state", async () => {
+test("disabled runtime privacy delete purges authority and derived state", async () => {
   const calls = [];
   let operation = null;
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
     privacy: {
-      async purgeDerivedHistory(_u, _p, options) { calls.push(["derived", options.preserveTombstones]); },
+      async purgeDerivedHistory() { calls.push(["derived"]); },
       async purgeAuthorityState() { calls.push(["authority"]); },
       async upsertOperation(_u, _p, value) { operation = { ...value }; return operation; },
       async updateOperation(_u, _p, changes) { Object.assign(operation, changes); return operation; },
@@ -46,9 +46,9 @@ test("disabled runtime privacy delete purges legacy v2 authority and derived sta
   const result = await runtime.privacyHardDelete(1, "default", { async deleteRawSource() { calls.push(["raw"]); return 1; } });
   assert.equal(result.status, "purging");
   assert.equal(result.rawMutationCommitted, true);
-  assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"]]);
+  assert.deepEqual(calls, [["raw"], ["derived"], ["authority"]]);
   await runtime.shutdown();
-  assert.deepEqual(calls, [["raw"], ["derived", true], ["authority"], ["rag"]]);
+  assert.deepEqual(calls, [["raw"], ["derived"], ["authority"], ["rag"]]);
   assert.equal(operation.status, "completed");
 });
 

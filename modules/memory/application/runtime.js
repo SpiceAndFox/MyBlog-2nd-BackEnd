@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { SCHEMA_VERSION } = require("../contracts");
 const { createObserver } = require("./observer");
 const { createNormalWritePipeline } = require("./normalWritePipeline");
 const { createMemoryRecovery } = require("./recovery");
@@ -165,9 +166,16 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     try {
       return (await repositories.state.getState(userId, presetId))
         || repositories.state.initializeRevisionZero(userId, presetId);
-    } catch (error) {
-      if (error?.code !== "MEMORY_V2_STATE_INVALID" || !repositories.state.getRawState || !repositories.audit.getRecoveryHead || !repositories.audit.listSnapshotsForRecovery) throw error;
-      const recovered = await stateRecovery.recoverScope(userId, presetId);
+      } catch (error) {
+        if (error?.code !== "MEMORY_V201_STATE_INVALID" || !repositories.state.getRawState || !repositories.audit.getRecoveryHead || !repositories.audit.listSnapshotsForRecovery) throw error;
+        const rawState = await repositories.state.getRawState(userId, presetId);
+        if (rawState && rawState.version !== SCHEMA_VERSION) {
+          const cutoverError = new Error(`Memory state schema ${String(rawState.version)} cannot be opened by the 2.01-only runtime; run the Memory 2.01 data migration`);
+          cutoverError.code = "MEMORY_V201_CUTOVER_REQUIRED";
+          cutoverError.actualVersion = rawState.version;
+          throw cutoverError;
+        }
+        const recovered = await stateRecovery.recoverScope(userId, presetId);
       if (!["healthy", "snapshot_restored", "events_replayed", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
       return recovered.state ?? repositories.state.getState(userId, presetId);
     }

@@ -40,19 +40,15 @@ function fixture() {
     proposer: "todoProposer",
     sectionResults: {
       todos: {
-        status: "patches",
-        patches: [
+        status: "changes",
+        changes: [
           {
-            op: "addItem",
-            value: { text: "做三明治", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 } },
-            evidenceKind: "user_commitment",
-            evidenceRefs: [{ messageId: 1078, quote: "明天做三明治" }],
+            action: "add", text: "做三明治", actor: "user", requester: "user",
+            dueAt: { mode: "relative", days: 1 }, anchorMessageId: 1078, evidenceMessageIds: [1078],
           },
           {
-            op: "addItem",
-            value: { text: "做草莓大福", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 } },
-            evidenceKind: "user_commitment",
-            evidenceRefs: [{ messageId: 1080, quote: "明天还要做草莓大福" }],
+            action: "add", text: "做草莓大福", actor: "user", requester: "user",
+            dueAt: { mode: "relative", days: 1 }, anchorMessageId: 1080, evidenceMessageIds: [1080],
           },
         ],
       },
@@ -74,7 +70,7 @@ test("task shadow replay is read-only and reports schema, Reducer, and provenanc
           status: "succeeded",
           stage: "committed",
           task_payload: envelope,
-          stage_payload: { normalContextWindow: 64, persistedProposal: proposal },
+          stage_payload: { normalContextWindow: 64, semanticResult: proposal },
         };
       },
       updateTask: async () => { throw new Error("must not write task"); },
@@ -90,10 +86,9 @@ test("task shadow replay is read-only and reports schema, Reducer, and provenanc
     source: {
       getByIds: async (userId, presetId, ids) => {
         calls.push(["getByIds", userId, presetId, ids]);
-        return messages.map((message) => ({ ...message, userId, presetId }));
+        return messages.filter((message) => ids.includes(message.id)).map((message) => ({ ...message, userId, presetId }));
       },
     },
-    sidecars: { listTombstones: async () => [] },
     state: { writeState: async () => { throw new Error("must not write state"); } },
   };
   const replay = createMemoryTaskShadowReplay({
@@ -111,7 +106,7 @@ test("task shadow replay is read-only and reports schema, Reducer, and provenanc
   assert.deepEqual(report.task.sourceBoundary, { cursorBefore: 1077, targetMessageId: 1080 });
   assert.match(report.provenance.promptHash, /^sha256:/);
   assert.match(report.provenance.outputSchemaHash, /^sha256:/);
-  assert.equal(report.replay.summary.patchCount, 2);
+  assert.equal(report.replay.summary.changeCount, 2);
   assert.equal(report.replay.schemaValidation.passed, true);
   assert.equal(report.replay.reducerPreflight.status, "passed");
   assert.deepEqual(report.replay.reducerPreflight.decisions, { accepted: 2, rejected: 0, noop: 0, deferred: 0 });
@@ -156,7 +151,7 @@ test("task shadow replay mirrors the bounded schema repair before preflight", as
     repositories: {
       runtime: { getTask: async () => ({ task_payload: envelope, stage_payload: null }) },
       audit: { getSnapshot: async () => ({ source_generation: 4, state }) },
-      source: { getByIds: async () => messages.map((message) => ({ ...message, userId: 1, presetId: "Alice" })) },
+      source: { getByIds: async (_u, _p, ids) => messages.filter((message) => ids.includes(message.id)).map((message) => ({ ...message, userId: 1, presetId: "Alice" })) },
     },
     config,
     providerAdapter: {

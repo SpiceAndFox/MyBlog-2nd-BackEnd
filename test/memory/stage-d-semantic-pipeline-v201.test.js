@@ -56,7 +56,7 @@ test("stage D Semantic IR compiles world fact, agreement, todo and scene domain 
   ];
 
   for (const entry of cases) {
-    const state = contracts.createInitialMemoryStateV201();
+    const state = contracts.createInitialMemoryState();
     entry.seed(state);
     const artifact = buildProposerTaskArtifact({
       state, intent: { targetKey: entry.targetKey, proposer: entry.proposer, cursorBefore: 1 }, messages: [old, current],

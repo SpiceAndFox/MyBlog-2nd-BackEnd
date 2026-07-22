@@ -16,13 +16,13 @@ test("Alice evaluation interprets a generic shadow replay report outside the Mem
       observedMessageIds: [1078, 1079, 1080],
     },
     replay: {
-      proposal: {
+      semanticResult: {
         sectionResults: {
           todos: {
-            status: "patches",
-            patches: [
-              { op: "addItem", value: { dueAt: { mode: "relative", days: 1 } } },
-              { op: "addItem", value: { dueAt: { mode: "relative", days: 1 } } },
+            status: "changes",
+            changes: [
+              { action: "add", dueAt: { mode: "relative", days: 1 } },
+              { action: "add", dueAt: { mode: "relative", days: 1 } },
             ],
           },
         },
@@ -49,7 +49,7 @@ test("Alice evaluation ignores cases that appear only in overlap context", () =>
       sourceBoundary: { cursorBefore: 710, targetMessageId: 718 },
       observedMessageIds: [684, 687, 696, 711, 718],
     },
-    replay: { proposal: null, reducerPreflight: { events: [] } },
+    replay: { semanticResult: null, reducerPreflight: { events: [] } },
   });
   assert.equal(evaluation.applicableCount, 0);
   assert.equal(evaluation.passed, null);

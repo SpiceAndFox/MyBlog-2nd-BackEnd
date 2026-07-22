@@ -66,21 +66,21 @@ test("Memory v2 inspector renders non-profile sections with target health marker
   ].join("\n\n"));
 });
 
-test("Memory v2 inspector ignores retired tombstones and renders without writing", async () => {
+test("Memory v2 inspector renders 2.01 flat provenance without writing", async () => {
   const queries = [];
   const state = memoryContracts.createInitialMemoryState();
-  const ref = { messageId: 3, contentHash: `sha256:${"a".repeat(64)}`, quote: "旧偏好" };
+  const ref = { messageId: 3, contentHash: `sha256:${"a".repeat(64)}` };
   state.longTerm.userProfile.push({
     id: "userProfile:1",
     text: "偏好: 旧偏好",
-    evidenceGroups: [{ evidenceKind: "long_term_fact", refs: [ref] }],
+    sourceRefs: [ref],
     createdAtMessageId: 3,
     updatedAtMessageId: 3,
   });
   state.longTerm.assistantProfile.push({
     id: "assistantProfile:1",
     text: "风格: 温和",
-    evidenceGroups: [{ evidenceKind: "long_term_fact", refs: [{ ...ref, messageId: 4, contentHash: `sha256:${"b".repeat(64)}`, quote: "温和" }] }],
+    sourceRefs: [{ ...ref, messageId: 4, contentHash: `sha256:${"b".repeat(64)}` }],
     createdAtMessageId: 4,
     updatedAtMessageId: 4,
   });
@@ -92,7 +92,6 @@ test("Memory v2 inspector ignores retired tombstones and renders without writing
           memory_state: state,
           target_statuses: [{ target_key: "profileRelationship", status: "halted" }],
           diagnostics: [],
-          tombstones: [{ message_id: ref.messageId, content_hash: ref.contentHash, reason: "forget" }],
         }],
       };
     },

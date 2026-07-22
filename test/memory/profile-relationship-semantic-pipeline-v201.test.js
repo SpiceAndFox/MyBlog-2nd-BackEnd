@@ -105,7 +105,7 @@ function profileIntent() {
 test("Profile/Relationship uses readable Semantic input and can derive long-term memory from one historical support ref", async () => {
   const historical = message(1, "user", "当对话压力太大时，我需要先暂停交流，之后再继续。");
   const trigger = message(2, "assistant", "我记得了。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:pause", "用户在交流压力过大时需要先暂停，冷静后再继续沟通。", historical));
   state.meta.targetCursors.profileRelationship = 1;
   const store = storeFixture({ state, observedMessages: [trigger], databaseMessages: [historical, trigger] });
@@ -167,7 +167,7 @@ test("Profile/Relationship support-only correct, update and forget compile witho
   const assistantSource = message(3, "assistant", "我曾把爱开玩笑写成固定人格。");
   const relationshipSource = message(4, "user", "我们以前用旧称呼。");
   const trigger = message(5, "user", "请按刚才复盘的结论处理。");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:review", "复盘确认：用户偏好简短回应，旧 Assistant 人格记录应删除，双方改用新称呼。", support));
   state.longTerm.userProfile.push(item("userProfile:reply", "用户偏好长篇回复。", userSource));
   state.longTerm.assistantProfile.push(item("assistantProfile:joke", "Assistant 总是喜欢开玩笑。", assistantSource));

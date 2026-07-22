@@ -1,5 +1,5 @@
 const { validateMemoryState } = require("../contracts/state");
-const { MEMORY_CONTROL_V201_SCHEMA_VERSION, validateMemoryStateV201 } = require("../contracts/stateV201");
+const { SCHEMA_VERSION } = require("../contracts/constants");
 const { TARGET_KEYS } = require("../contracts/constants");
 const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage } = require("../domain/contextCoverage");
 const { aggregateMemoryHealth } = require("../domain/health");
@@ -26,9 +26,7 @@ function camelDiagnostic(row) {
 }
 
 function validateSupportedState(state) {
-  return state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
-    ? validateMemoryStateV201(state)
-    : validateMemoryState(state);
+  return validateMemoryState(state);
 }
 
 function statusCursor(state, targetKey) { return Number(state?.meta?.targetCursors?.[targetKey] ?? 0); }
@@ -146,9 +144,9 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     else {
       const validation = validateSupportedState(rawState);
       if (!validation.ok) {
-        debug.memorySkipReason = ![2, MEMORY_CONTROL_V201_SCHEMA_VERSION].includes(rawState.version) ? "version_unsupported" : "state_schema_invalid";
+        debug.memorySkipReason = rawState.version !== SCHEMA_VERSION ? "version_unsupported" : "state_schema_invalid";
         debug.memoryStateErrors = validation.errors;
-        if (typeof scheduleStateRecovery === "function") {
+        if (rawState.version === SCHEMA_VERSION && typeof scheduleStateRecovery === "function") {
           try { Promise.resolve(scheduleStateRecovery({ userId, presetId })).catch((error) => onBackgroundError?.(error)); }
           catch (error) { onBackgroundError?.(error); }
         }

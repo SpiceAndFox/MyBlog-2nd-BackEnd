@@ -7,6 +7,7 @@ const { scheduleAssistantGistBackfill } = require("./gistPipeline");
 const { retrieveChatRagContext } = require("./rag/retriever");
 const { chatConfig, memoryV2Config } = require("../../config");
 const { createDefaultMemoryContextAssembly } = require("../../modules/memory");
+const { SCHEMA_VERSION: MEMORY_SCHEMA_VERSION } = require("../../modules/memory/contracts");
 const { logger } = require("../../logger");
 
 let memoryV2Assembler = null;
@@ -71,7 +72,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
         gapBridge: contextV2.gapBridge.stats,
         recentWindow: { ...recent.stats, needsMemory: contextV2.needsMemory },
       },
-      memory: { version: 2, sourceGeneration: contextV2.sourceGeneration, debug: contextV2.debug },
+      memory: { version: MEMORY_SCHEMA_VERSION, sourceGeneration: contextV2.sourceGeneration, debug: contextV2.debug },
       memoryHealth: contextV2.health,
       memoryRecoveryNotifications: contextV2.notifications,
       rag: ragContext ? { enabled: Boolean(ragContext.enabled), sources: Array.isArray(ragContext.sources) ? ragContext.sources : [], stats: ragContext.stats || null } : null,

@@ -1,14 +1,23 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/task-recovery.json"), "utf8"));
 const fixedNow = new Date("2026-07-13T00:00:00.000Z");
-const message = { id: 1, role: "user", createdAt: fixedNow.toISOString(), contentKind: "raw", content: "今天先不记录", contentHash: "sha256:test" };
+const messageContent = "今天先不记录";
+const message = {
+  id: 1,
+  role: "user",
+  createdAt: fixedNow.toISOString(),
+  contentKind: "raw",
+  content: messageContent,
+  contentHash: `sha256:${crypto.createHash("sha256").update(messageContent, "utf8").digest("hex")}`,
+};
 const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
   overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-  quote: { threshold: 0.75, maxCodePoints: 200 }, scene: { ttlMs: 1000, maxRenderedChars: 1000 },
+  scene: { ttlMs: 1000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((key) => [key, { maxItems: 20, maxRenderedChars: 2000 }])),
   providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
 };
@@ -36,7 +45,7 @@ function store() {
       }
     },
     state: { getState: async () => structuredClone(state), writeState: async (_u, _p, next) => { maybeFail("state"); state = structuredClone(next); } },
-    source: { getObservedWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
+    source: { getObservedWindow: async () => [message], getForceDrainWindow: async () => [message], getByIds: async () => [{ ...message, userId: 1, presetId: "default" }] },
     runtime: {
       createTask: async (row) => { const old = [...tasks.values()].find((item) => item.dedupe_key === row.dedupe_key); if (old) return old; tasks.set(row.task_id, structuredClone(row)); return tasks.get(row.task_id); },
       getTask: async (id) => tasks.get(id) ?? null,
@@ -50,10 +59,9 @@ function store() {
       listTasksForTarget: async () => [...tasks.values()].reverse(),
     },
     audit: { getEventGroup: async (id) => groups.get(id) ?? null, insertEventGroup: async (group) => { maybeFail("eventGroup"); groups.set(group.event_group_id, structuredClone(group)); }, insertEvents: async (rows) => { maybeFail("events"); events.push(...structuredClone(rows)); }, insertSnapshot: async (_u, _p, value) => { maybeFail("snapshot"); snapshots.push(structuredClone(value)); } },
-    sidecars: { insertTombstone: async () => {} },
+    sidecars: {},
   };
   return { repositories, inspect: { tasks, groups, snapshots, events, ops, statuses, get state() { return state; } }, bumpRevision() { state.meta.revision += 1; }, failAt(point) { failurePoint = point; } };
 }
 
 module.exports = { fixture, fixedNow, config, intent, store };
-

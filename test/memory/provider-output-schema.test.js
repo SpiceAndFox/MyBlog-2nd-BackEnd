@@ -11,7 +11,7 @@ test("output schema is target-specific and requires every joint section", () => 
   assert.equal(schema.properties.sectionResults.additionalProperties, false);
 });
 
-test("scene Provider schema uses one evidenceRef object and adapter normalizes it to canonical evidenceRefs", async () => {
+test("scene Provider schema exposes Semantic refs and no persistence provenance", async () => {
   let request;
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "prompt",
@@ -20,27 +20,25 @@ test("scene Provider schema uses one evidenceRef object and adapter normalizes i
       return { output: {
         tickId: 8,
         proposer: "currentStateProposer",
-        sectionResults: { scene: { status: "patches", patches: [{
-          op: "setField",
-          path: "location",
-          value: "屋顶",
-          evidenceKind: "scene_change",
-          evidenceRef: { messageId: 1, quote: "来到屋顶" },
+        sectionResults: { scene: { status: "changes", changes: [{
+          action: "set",
+          ref: "S-LOCATION",
+          text: "屋顶",
+          evidenceMessageIds: [1],
         }] } },
       } };
     },
   });
   const result = await adapter.propose(sceneEnvelope());
   assert.equal(result.status, "ok");
-  assert.deepEqual(result.output.sectionResults.scene.patches[0].evidenceRefs, [{ messageId: 1, quote: "来到屋顶" }]);
-  assert.equal(Object.prototype.hasOwnProperty.call(result.output.sectionResults.scene.patches[0], "evidenceRef"), false);
-  const patchVariants = request.responseSchema.schema.properties.sectionResults.properties.scene.oneOf[0].properties.patches.items.oneOf;
-  assert.equal(patchVariants.every((variant) => variant.required.includes("evidenceRef")), true);
-  assert.equal(patchVariants.every((variant) => !variant.required.includes("evidenceRefs")), true);
+  assert.deepEqual(result.output.sectionResults.scene.changes[0].evidenceMessageIds, [1]);
+  const changeVariants = request.responseSchema.schema.properties.sectionResults.properties.scene.oneOf[0].properties.changes.items.oneOf;
+  assert.equal(changeVariants.some((variant) => variant.properties.action.const === "set"), true);
+  assert.equal(changeVariants.every((variant) => !variant.required.includes("sourceRefs")), true);
   const compiled = compileDeepSeekSchema(request.responseSchema.schema);
   const serialized = JSON.stringify(compiled);
-  assert.equal(serialized.includes('"evidenceRef"'), true);
-  assert.equal(serialized.includes('"evidenceRefs"'), false);
+  assert.equal(serialized.includes('"evidenceRef"'), false);
+  assert.equal(serialized.includes('"sourceRefs"'), false);
 });
 
 test("compaction output schema is maintenance-only and section-specific", () => {

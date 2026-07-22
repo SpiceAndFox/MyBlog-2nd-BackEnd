@@ -20,9 +20,8 @@ function fakes() {
   const events = [];
   const snapshots = [];
   const statuses = [];
-  const tombstones = [];
   return {
-    inspect: { get state() { return state; }, tasks, groups, events, snapshots, statuses, tombstones },
+    inspect: { get state() { return state; }, tasks, groups, events, snapshots, statuses },
     repositories: {
       withTransaction: async (work) => work({ query: async () => ({ rows: [] }) }),
       state: {
@@ -45,10 +44,7 @@ function fakes() {
         insertEvents: async (rows) => events.push(...structuredClone(rows)),
         insertSnapshot: async (_u, _p, snapshot) => snapshots.push(structuredClone(snapshot)),
       },
-      sidecars: {
-        insertTombstone: async (_u, _p, value) => tombstones.push(structuredClone(value)),
-        listTombstones: async () => structuredClone(tombstones),
-      },
+      sidecars: {},
     },
   };
 }
@@ -56,7 +52,7 @@ function fakes() {
 test("normal task atomically persists state, event group, snapshot, task and target status", async () => {
   const store = fakes();
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0, trigger: { type: "lagThreshold" } };
-  const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } });
+  const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "add", text: "归还书", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 }, anchorMessageId: 1, evidenceMessageIds: [1] }] } } });
   const pipeline = createNormalWritePipeline({
     observer: { observe: async () => ({ eligibleTasks: [intent] }) }, config, repositories: store.repositories,
     providerAdapter: { propose: async (envelope) => ({ status: "ok", output: outputFor(envelope) }) },
@@ -78,7 +74,7 @@ test("normal task atomically persists state, event group, snapshot, task and tar
 test("proposal-triggered cleanup persists the target item id", async () => {
   const store = fakes();
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0, trigger: { type: "lagThreshold" } };
-  const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } });
+  const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "add", text: "归还书", actor: "user", requester: "user", dueAt: { mode: "relative", days: 1 }, anchorMessageId: 1, evidenceMessageIds: [1] }] } } });
   const pipeline = createNormalWritePipeline({
     observer: { observe: async () => ({ eligibleTasks: [intent] }) }, config, repositories: store.repositories,
     providerAdapter: { propose: async (envelope) => ({ status: "ok", output: outputFor(envelope) }) },
@@ -99,7 +95,7 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   const metrics = createMemoryMetrics();
   const pipeline = createNormalWritePipeline({
     observer: {}, config, repositories: store.repositories, metrics,
-    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" } }, evidenceKind: "user_commitment", evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }] }] } } } }) },
+    providerAdapter: { propose: async (envelope) => ({ status: "ok", model: "test", usage: { input_tokens: 10, output_tokens: 5 }, output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "changes", changes: [{ action: "add", text: "归还书", actor: "user", requester: "user", dueAt: { mode: "absolute", date: "2026-07-13" }, evidenceMessageIds: [1] }] } } } }) },
     now: () => new Date("2026-07-12T00:01:00Z"), idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
   });
   const result = await pipeline.processIntent(1, "default", intent);
@@ -108,7 +104,6 @@ test("task envelope freezes the User time zone and Reducer resolves calendar dat
   assert.equal(envelope.task.userTimeZone, "Asia/Shanghai");
   assert.equal(store.inspect.state.working.todos[0].dueAt, "2026-07-13T16:00:00.000Z");
   const metricSnapshot = metrics.snapshot();
-  assert.equal(metricSnapshot.counters["memory_quote_validation_total{result=accepted,targetKey=todos}"], 1);
   assert.equal(metricSnapshot.counters["memory_provider_results_total{proposer=todoProposer,result=ok,targetKey=todos}"], 1);
   assert.equal(metricSnapshot.counters["memory_provider_observed_messages_total{proposer=todoProposer,targetKey=todos}"], 1);
   assert.equal(metricSnapshot.observations["memory_provider_calls_per_message{proposer=todoProposer,targetKey=todos}"].average, 1);
@@ -139,7 +134,7 @@ test("a persisted proposal is reused after recovery without another provider cal
   });
   const envelope = await pipeline.createTask(1, "default", intent);
   const output = { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "noop" } } };
-  await pipeline.persistProposal(envelope, output);
+  await pipeline.persistSemanticResult(envelope, output);
   const result = await pipeline.processEnvelope(envelope);
   assert.equal(result.status, "committed");
   assert.equal(providerCalls, 0);
@@ -166,16 +161,14 @@ test("adapter metrics retain each bounded result reason without raw provider det
   }
 });
 
-test("force-drain replay can validate historical suppressed evidence for a later correction chain", async () => {
+test("force-drain compiles authoritative historical source messages without a suppression gate", async () => {
   const store = fakes();
-  store.inspect.tombstones.push({ message_id: message.id, content_hash: message.contentHash, reason: "correction" });
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0, trigger: { type: "forceDrain" } };
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: store.repositories, config,
     providerAdapter: { propose: async (envelope) => ({ status: "ok", output: {
-      tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{
-        op: "addItem", value: { text: "归还书", actor: "user", requester: "user" }, evidenceKind: "user_commitment",
-        evidenceRefs: [{ messageId: 1, quote: "答应明天还书" }],
+      tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "changes", changes: [{
+        action: "add", text: "归还书", actor: "user", requester: "user", evidenceMessageIds: [1],
       }] } },
     } }) },
     idFactory: (() => { const ids = ["patch", "item"]; return () => ids.shift(); })(),
@@ -190,7 +183,7 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const store = fakes();
   const localConfig = structuredClone(config);
   store.inspect.state.meta.targetCursors.todos = 1;
-  const older = { ...message, id: 1, content: "之前提到过一本书", contentHash: "sha256:older" };
+  const older = { ...message, id: 1, content: "之前提到过一本书", contentHash: sha256("之前提到过一本书") };
   const newer = { ...message, id: 2 };
   let expansionOptions = null;
   store.repositories.source.getObservedWindow = async () => [newer];
@@ -207,7 +200,7 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: store.repositories, config: localConfig,
     providerAdapter: { propose: async (envelope) => {
-      observedCounts.push(envelope.observedMessages.length);
+      observedCounts.push(envelope.artifact.publicInput.messages.length);
       if (observedCounts.length === 1) localConfig.targets.todos.contextWindow = 99;
       return { status: "ok", output: {
         tickId: envelope.task.tickId,
@@ -222,12 +215,12 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const task = [...store.inspect.tasks.values()][0];
   const envelope = task.task_payload;
   assert.equal(task.stage_payload.normalContextWindow, 2);
-  assert.deepEqual(task.stage_payload.expandedEnvelope.observedMessages.map((entry) => entry.id), [1, 2]);
+  assert.deepEqual(task.stage_payload.expandedEnvelope.artifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
   store.repositories.source.getForceDrainWindow = async () => { throw new Error("durable expanded input must be reused"); };
   const second = await pipeline.processEnvelope(envelope);
   assert.equal(second.status, "committed");
   assert.deepEqual(observedCounts, [1, 2]);
   assert.deepEqual(expansionOptions, { newBatchSize: 1, contextWindow: 4 });
-  assert.deepEqual(task.stage_payload.expandedEnvelope.observedMessages.map((entry) => entry.id), [1, 2]);
+  assert.deepEqual(task.stage_payload.expandedEnvelope.artifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });

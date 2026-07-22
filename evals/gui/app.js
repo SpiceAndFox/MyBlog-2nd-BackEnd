@@ -342,10 +342,11 @@ function renderDetail() {
   outputTitle.textContent = "PROVIDER OUTPUT / DURABLE RESULT";
   const missingOutput = task.output.availability === "invalid_output_not_persisted"
     ? "Schema 无效的模型原文按隐私设计不会落库；请查看下方校验路径。"
-    : "该任务没有持久化 proposal。";
+    : "该任务没有持久化 Semantic result。";
   outputColumn.append(
     outputTitle,
-    codePanel({ kicker: "OUTPUT", title: "Persisted proposal", note: "来自 stage_payload.persistedProposal。", value: task.output.persistedProposal, emptyMessage: missingOutput }),
+    codePanel({ kicker: "SEMANTIC IR", title: "Persisted Semantic result", note: "来自 stage_payload.semanticResult。", value: task.output.semanticResult, emptyMessage: missingOutput }),
+    codePanel({ kicker: "COMPILED", title: "Compiled proposal", note: "来自 stage_payload.compiledProposal；尚未编译时为空。", value: task.output.compiledProposal }),
     codePanel({ kicker: "STAGE", title: "Raw stage payload", note: "用于查看 retry、context expansion 与持久化阶段。", value: task.stagePayload }),
     diagnosticSection(task),
   );

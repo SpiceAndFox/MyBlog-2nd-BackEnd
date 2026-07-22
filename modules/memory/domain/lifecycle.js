@@ -1,5 +1,4 @@
 const { createEmptyScene } = require("../contracts/state");
-const { createEmptySceneV201, MEMORY_CONTROL_V201_SCHEMA_VERSION } = require("../contracts/stateV201");
 const { measureSection } = require("./capacity");
 
 function clone(value) { return structuredClone(value); }
@@ -26,7 +25,7 @@ function normalizeLifecycle(memoryState, anchors, now, config, { targetKeys = ["
     if (timestamp >= expiresAtMs) {
       if (state.current.previousScene !== null) events.push(cleanup("scene", "scene", "expired_scene_evicted"));
       state.current.previousScene = { ...clone(state.current.scene), expiredAt: new Date(expiresAtMs).toISOString() };
-      state.current.scene = state.version === MEMORY_CONTROL_V201_SCHEMA_VERSION ? createEmptySceneV201() : createEmptyScene();
+      state.current.scene = createEmptyScene();
       events.unshift(cleanup("scene", "scene", "scene_expired", { expiredAt: new Date(expiresAtMs).toISOString() }));
     }
   }

@@ -17,13 +17,6 @@ function requiredInt(env, name, { min = 0 } = {}) {
   if (!Number.isSafeInteger(value) || value < min) throw new Error(`Env ${name} must be a safe integer >= ${min}`);
   return value;
 }
-function requiredFloat(env, name, { min, max } = {}) {
-  const raw = env[name];
-  if (raw === undefined || String(raw).trim() === "") throw new Error(`Missing required env: ${name}`);
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < min || value > max) throw new Error(`Env ${name} must be between ${min} and ${max}`);
-  return value;
-}
 function envName(value) { return value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase(); }
 
 function loadMemoryV2Config(env = process.env) {
@@ -55,11 +48,10 @@ function loadMemoryV2Config(env = process.env) {
   const hygieneHighWatermarkPercent = requiredInt(env, "CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT", { min: 1 });
   if (hygieneHighWatermarkPercent > 100) throw new Error("CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT must be <= 100");
   return Object.freeze({
-    enabled: true, schemaVersion: 2, sectionBudgets: Object.freeze(sectionBudgets), targets: Object.freeze(targets),
+    enabled: true, schemaVersion: "2.01", sectionBudgets: Object.freeze(sectionBudgets), targets: Object.freeze(targets),
     scene: Object.freeze({ maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS", { min: 1 }), ttlMs: requiredInt(env, "CHAT_MEMORY_V2_SCENE_TTL_MS", { min: 1 }) }),
     overdueTodos: Object.freeze({ maxRenderedItems: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS", { min: 1 }), maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS", { min: 1 }) }),
     gapBridge: Object.freeze({ maxRawChars: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS", { min: 1 }), retainedMessages: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES", { min: 1 }) }),
-    quote: Object.freeze({ algorithm: "work_bounded_equal_window_levenshtein", threshold: requiredFloat(env, "CHAT_MEMORY_V2_QUOTE_MATCH_THRESHOLD", { min: 0, max: 1 }), maxCodePoints: 200, fuzzyMaxContentCodePoints: 20_000, fuzzyMaxCandidateWindows: 256 }),
     providerRecovery: Object.freeze({ retryMax, schemaInvalidRetryMax, backoffBaseMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS", { min: 1 }), backoffMaxMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS", { min: 1 }), haltAfterConsecutiveErrors }),
     compaction: Object.freeze({ retryMax: requiredInt(env, "CHAT_MEMORY_V2_COMPACTION_RETRY_MAX") }),
     hygiene: Object.freeze({

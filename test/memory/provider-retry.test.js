@@ -71,7 +71,7 @@ test("a second output schema invalid halts without a third provider call", async
   const result = await pipeline.processIntent(1, "default", intent);
   assert.equal(result.halted, true);
   assert.equal(calls, 2);
-  assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), ["output_schema_invalid_retry", "output_schema_invalid"]);
+  assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), ["output_schema_invalid_retry", "semantic_schema_invalid"]);
   assert.equal(data.inspect.statuses.get("todos").status, "halted");
 });
 
@@ -119,11 +119,14 @@ test("schema retry allowance remains consumed after an interrupted process", asy
 test("unable_to_decide expands once, then commits one cursor-only revision idempotently", async () => {
   const data = store();
   const outputFor = (envelope) => ({ tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "unable_to_decide" } } });
-  const pipeline = createNormalWritePipeline({ observer: {}, providerAdapter: {}, repositories: data.repositories, config, now: () => fixedNow });
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, now: () => fixedNow,
+    providerAdapter: { async propose(envelope) { return { status: "ok", output: outputFor(envelope) }; } },
+  });
   const envelope = await pipeline.createTask(1, "default", intent);
-  const first = await pipeline.commit(envelope, outputFor(envelope));
-  const second = await pipeline.commit(envelope, outputFor(envelope));
-  const duplicate = await pipeline.commit(envelope, outputFor(envelope));
+  const first = await pipeline.processEnvelope(envelope);
+  const second = await pipeline.processEnvelope(envelope);
+  const duplicate = await pipeline.processEnvelope(envelope);
   assert.equal(first.status, fixture.unableToDecide.firstStatus);
   assert.equal(second.status, fixture.unableToDecide.secondStatus);
   assert.equal(duplicate.duplicate, true);

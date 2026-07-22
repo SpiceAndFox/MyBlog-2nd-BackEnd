@@ -1,0 +1,38 @@
+{
+  "name": "todo-add-with-authoritative-source-ref",
+  "fixtureKind": "compiledReducer",
+  "ticks": [{
+    "task": {
+      "taskId": "018f2f5e-7f2a-7b11-9c31-111111111112",
+      "tickId": 2,
+      "userId": 1,
+      "presetId": "default",
+      "schemaVersion": "2.01",
+      "sourceGeneration": 0,
+      "baseRevision": 0,
+      "targetKey": "todos",
+      "cursorBefore": 0,
+      "targetMessageId": 1,
+      "proposer": "todoProposer",
+      "mode": "normal",
+      "targetSections": ["todos"],
+      "now": "2026-07-06T22:30:00.000Z",
+      "userTimeZone": "UTC"
+    },
+    "compiledProposal": {
+      "tickId": 2,
+      "proposer": "todoProposer",
+      "sectionResults": {
+        "todos": {
+          "status": "patches",
+          "patches": [{
+            "op": "addItem",
+            "value": { "text": "明天归还借来的书", "actor": "user", "requester": "user", "dueAt": "2026-07-07T22:30:00.000Z" },
+            "sourceRefs": [{ "messageId": 1, "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]
+          }]
+        }
+      }
+    },
+    "expected": { "outcome": "committable", "revision": 1, "cursorAfter": 1, "decision": "accepted", "stateText": "明天归还借来的书" }
+  }]
+}

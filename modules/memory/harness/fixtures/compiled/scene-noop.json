@@ -1,0 +1,29 @@
+{
+  "name": "scene-noop-from-revision-zero",
+  "fixtureKind": "compiledReducer",
+  "ticks": [{
+    "task": {
+      "taskId": "018f2f5e-7f2a-7b11-9c31-111111111111",
+      "tickId": 1,
+      "userId": 1,
+      "presetId": "default",
+      "schemaVersion": "2.01",
+      "sourceGeneration": 0,
+      "baseRevision": 0,
+      "targetKey": "scene",
+      "cursorBefore": 0,
+      "targetMessageId": 4,
+      "proposer": "currentStateProposer",
+      "mode": "normal",
+      "targetSections": ["scene"],
+      "now": "2026-07-12T00:00:00.000Z",
+      "userTimeZone": "UTC"
+    },
+    "compiledProposal": {
+      "tickId": 1,
+      "proposer": "currentStateProposer",
+      "sectionResults": { "scene": { "status": "noop" } }
+    },
+    "expected": { "outcome": "committable", "revision": 1, "cursorAfter": 4, "decision": "noop" }
+  }]
+}

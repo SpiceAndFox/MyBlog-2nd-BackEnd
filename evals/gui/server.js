@@ -117,10 +117,11 @@ async function hydrateTask(row, dependencies = {}) {
     }
   }
 
-  const persistedProposal = stagePayload?.persistedProposal || null;
-  const outputAvailability = persistedProposal
+  const semanticResult = stagePayload?.semanticResult || null;
+  const compiledProposal = stagePayload?.compiledProposal || null;
+  const outputAvailability = semanticResult
     ? "persisted"
-    : row.last_error_reason === "output_schema_invalid"
+    : ["output_schema_invalid", "semantic_schema_invalid"].includes(row.last_error_reason)
       ? "invalid_output_not_persisted"
       : "not_persisted";
 
@@ -157,7 +158,8 @@ async function hydrateTask(row, dependencies = {}) {
     },
     output: {
       availability: outputAvailability,
-      persistedProposal,
+      semanticResult,
+      compiledProposal,
     },
     stagePayload,
     ops: Array.isArray(row.ops) ? row.ops : [],

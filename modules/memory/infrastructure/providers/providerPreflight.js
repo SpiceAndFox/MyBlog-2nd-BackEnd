@@ -1,9 +1,7 @@
 const { isDeepStrictEqual } = require("node:util");
-const { TARGETS, SEMANTIC_NORMAL_PROPOSERS } = require("../../contracts");
-const { validateProposerOutput } = require("../../contracts/proposal");
+const { TARGETS } = require("../../contracts");
 const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
-const { normalizeProviderOutput } = require("./memoryProviderAdapter");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
 function normalCase(targetKey, definition, tickId) {
@@ -49,10 +47,7 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
     if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
     if (isTruncationSignal(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
     if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
-    const normalized = normalizeProviderOutput(response?.output, probe.task);
-    const validation = SEMANTIC_NORMAL_PROPOSERS.includes(probe.task.proposer)
-      ? validateSemanticResult(normalized, probe.task)
-      : validateProposerOutput(normalized, probe.task);
+    const validation = validateSemanticResult(response?.output, probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);
       error.detail = {

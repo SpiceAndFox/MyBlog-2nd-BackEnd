@@ -5,7 +5,7 @@ const { createMemoryHousekeeping } = require("../../modules/memory/application/h
 
 test("background housekeeping commits overdue transition once with a full snapshot", async () => {
   let state = createInitialMemoryState();
-  state.working.todos.push({ id: "todo:1", text: "过期事项", evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId: 1, contentHash: "sha256:x", quote: "过期事项" }] }], createdAtMessageId: 1, updatedAtMessageId: 1, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: "2026-07-12T00:00:00.000Z" });
+  state.working.todos.push({ id: "todo:1", text: "过期事项", sourceRefs: [{ messageId: 1, contentHash: `sha256:${"a".repeat(64)}` }], createdAtMessageId: 1, updatedAtMessageId: 1, actor: "user", requester: "user", status: "active", becameOverdueAt: null, dueAt: "2026-07-12T00:00:00.000Z" });
   const tasks = [];
   const groups = [];
   const events = [];

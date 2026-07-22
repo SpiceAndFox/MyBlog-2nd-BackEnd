@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS chat_memory_events (
   event_index INTEGER NOT NULL, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, task_id UUID NOT NULL,
   tick_id BIGINT, target_key TEXT NOT NULL, section TEXT NOT NULL, event_kind TEXT NOT NULL,
   decision TEXT NOT NULL, patch_id TEXT, op TEXT, item_id TEXT, result_item_id TEXT,
-  merged_from_item_ids JSONB, evidence_kind TEXT, reject_reason TEXT, maintenance_task_id UUID,
+  merged_from_item_ids JSONB, reject_reason TEXT, maintenance_task_id UUID,
   patch_summary JSONB, normalized_operation JSONB, cleanup_type TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -81,19 +81,11 @@ CREATE INDEX IF NOT EXISTS idx_memory_ops_log_outcome ON chat_memory_ops_log(use
 CREATE TABLE IF NOT EXISTS chat_context_projection_checkpoints (
   user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, projection_key TEXT NOT NULL,
   processed_generation BIGINT NOT NULL, processed_boundary_message_id BIGINT,
-  processed_tombstone_id BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL,
+  status TEXT NOT NULL,
   last_error_reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT chk_context_projection_key CHECK (projection_key='rag'),
   PRIMARY KEY (user_id, preset_id, projection_key)
 );
-
-CREATE TABLE IF NOT EXISTS chat_context_suppression_tombstones (
-  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, message_id BIGINT NOT NULL,
-  content_hash TEXT NOT NULL, reason TEXT NOT NULL, source_item_id TEXT, source_section TEXT,
-  created_revision BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (user_id, preset_id, message_id, content_hash)
-);
-CREATE INDEX IF NOT EXISTS idx_suppression_tombstones_lookup ON chat_context_suppression_tombstones(user_id, preset_id, message_id);
 
 CREATE TABLE IF NOT EXISTS chat_context_quality_diagnostics (
   id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, preset_id TEXT NOT NULL, subject_kind TEXT NOT NULL,

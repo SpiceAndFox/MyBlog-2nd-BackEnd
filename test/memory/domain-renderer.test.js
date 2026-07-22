@@ -10,7 +10,7 @@ const config = {
   overdueTodos: { maxRenderedItems: 2, maxRenderedChars: 1000 },
   sectionBudgets: { recentEpisodes: { maxItems: 20, maxRenderedChars: 2000 } },
 };
-const ref = { messageId: 1, contentHash: "sha256:1", quote: "在屋顶" };
+const ref = { messageId: 1, contentHash: `sha256:${"a".repeat(64)}` };
 
 test("empty renderer output is locked by a complete golden file", () => {
   const rendered = renderMemory({ state: createInitialMemoryState(), requestNow: "2026-01-01T00:00:00.000Z", config }).renderedText;
@@ -20,9 +20,9 @@ test("empty renderer output is locked by a complete golden file", () => {
 
 test("renderer consumes effective view and labels stale/rebuilding targets without mutating state", () => {
   const state = createInitialMemoryState();
-  state.current.scene.location = { value: "屋顶", evidenceRef: ref, updatedAtMessageId: 1 };
-  state.longTerm.milestones.push({ id: "milestone:1", text: "第一次互相信任", evidenceGroups: [{ evidenceKind: "relationship_milestone", refs: [ref] }], createdAtMessageId: 1, updatedAtMessageId: 1 });
-  state.working.recentEpisodes.push({ id: "episode:1", text: "雨夜和解", evidenceGroups: [{ evidenceKind: "recent_episode", refs: [ref] }], createdAtMessageId: 1, updatedAtMessageId: 1 });
+  state.current.scene.location = { value: "屋顶", sourceRefs: [ref], updatedAtMessageId: 1 };
+  state.longTerm.milestones.push({ id: "milestone:1", text: "第一次互相信任", sourceRefs: [ref], createdAtMessageId: 1, updatedAtMessageId: 1 });
+  state.working.recentEpisodes.push({ id: "episode:1", text: "雨夜和解", sourceRefs: [ref], createdAtMessageId: 1, updatedAtMessageId: 1 });
   const result = renderMemory({ state, lifecycleAnchors: { sceneAnchorCreatedAt: "2026-01-01T00:00:00.000Z" }, requestNow: "2026-01-01T00:01:00.000Z", config, targetStatuses: { episodes: "halted", scene: "rebuilding" } });
   const golden = fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/golden/renderer-health-populated.txt"), "utf8").replace(/\r?\n$/, "");
   assert.equal(result.renderedText, golden);

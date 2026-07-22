@@ -20,7 +20,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_diagnostics_one_active
   ON chat_context_quality_diagnostics(user_id,preset_id,subject_kind,subject_key,diagnostic_type)
   WHERE resolved=FALSE;
 
-ALTER TABLE chat_context_projection_checkpoints
-  ADD COLUMN IF NOT EXISTS processed_tombstone_id BIGINT NOT NULL DEFAULT 0;
-
 COMMIT;

@@ -68,6 +68,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
       if ((state.meta.targetCursors[targetKey] ?? 0) < boundaryMessageId) throw new Error(`Target ${targetKey} has not reached its rebuild boundary`);
       const snapshot = await repositories.audit.getSnapshot(userId, presetId, state.meta.revision, { client });
       if (!snapshot || Number(snapshot.source_generation ?? snapshot.sourceGeneration) !== sourceGeneration) throw new Error("Current rebuild revision has no valid generation snapshot");
+      if (String(snapshot.schema_version ?? snapshot.schemaVersion) !== SCHEMA_VERSION) throw new Error("Current rebuild revision snapshot schema mismatch");
       assertMemoryState(snapshot.state);
       if (!isDeepStrictEqual(snapshot.state, state)) throw new Error("Current rebuild snapshot does not equal authority state");
       const snapshots = await repositories.audit.listSnapshots(userId, presetId, sourceGeneration, { client });

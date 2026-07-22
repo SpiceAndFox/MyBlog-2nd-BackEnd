@@ -1,11 +1,6 @@
-const { TYPED_PROFILE_SECTIONS, MULTI_VALUE_PROFILE_KEYS } = require("../contracts/constants");
-const { hasTypedProfileMetadata } = require("./profileMetadata");
+const { ITEM_SECTIONS } = require("../contracts/constants");
 
-const EXACT_TEXT_DEDUPE_SECTIONS = new Set([
-  "standingAgreements",
-  "worldFacts",
-  ...TYPED_PROFILE_SECTIONS,
-]);
+const EXACT_TEXT_DEDUPE_SECTIONS = new Set(ITEM_SECTIONS);
 
 function normalizeItemText(value) {
   return String(value || "")
@@ -21,9 +16,6 @@ function findDeterministicDuplicate(items, section, value, { excludeItemId = nul
     const text = normalizeItemText(value.text);
     if (text && candidates.some((item) => normalizeItemText(item.text) === text)) return "duplicate_item";
   }
-  if (TYPED_PROFILE_SECTIONS.includes(section) && hasTypedProfileMetadata(value)
-      && !MULTI_VALUE_PROFILE_KEYS[section].includes(value.canonicalKey)
-      && candidates.some((item) => item.canonicalKey === value.canonicalKey)) return "duplicate_profile_key";
   return null;
 }
 
@@ -62,12 +54,7 @@ function buildDeterministicExactMergeOutput(state, task, artifact) {
     values.push(item);
     groups.set(key, values);
   }
-  if (!artifact) {
-    const patches = [...groups.values()].filter((items) => items.length >= 2).map((items) => ({
-      op: "mergeItems", itemIds: items.map((item) => item.id), value: { text: items[0].text }, evidenceKind: "memory_compaction",
-    }));
-    return patches.length ? { tickId: task.tickId, proposer: "compactionProposer", sectionResults: { [section]: { status: "patches", patches } } } : null;
-  }
+  if (!artifact) throw new Error("Compaction requires a 2.01 Renderer artifact");
   const refByItemId = new Map(Object.entries(artifact?.refMap?.writable || {}).map(([ref, entry]) => [entry.itemId, ref]));
   const changes = [...groups.values()]
     .filter((items) => items.length >= 2 && items.every((item) => refByItemId.has(item.id)))

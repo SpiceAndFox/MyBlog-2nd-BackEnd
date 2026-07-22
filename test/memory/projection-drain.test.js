@@ -14,12 +14,11 @@ test("projection drain rebuilds on generation mismatch and rejects a stale compl
     source: { async getBoundary() { return boundary; } },
     sidecars: {
       async getProjectionCheckpoint() { return { processed_generation: 1, processed_boundary_message_id: 10 }; },
-      async listTombstones() { return [{ message_id: 10, content_hash: "sha256:old" }]; },
       async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
     },
     async withTransaction(work) { return work({}); },
   };
-  const adapter = { async rebuild(args) { calls.push(["rebuild", args]); return { rows: [] }; }, async append() { calls.push(["append"]); return { rows: [] }; }, async suppress(args) { calls.push(["suppress", args]); }, async commit(args) { calls.push(["commit", args]); } };
+  const adapter = { async rebuild(args) { calls.push(["rebuild", args]); return { rows: [] }; }, async append() { calls.push(["append"]); return { rows: [] }; }, async commit(args) { calls.push(["commit", args]); } };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
   const healthy = await drain.drain(7, "companion");
   assert.equal(healthy.status, "healthy");
@@ -42,7 +41,6 @@ test("projection drain persists a retryable coverage state when staging fails", 
     source: { async getBoundary() { return 20; } },
     sidecars: {
       async getProjectionCheckpoint() { return { processed_generation: 2, processed_boundary_message_id: 10 }; },
-      async listTombstones() { return []; },
       async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
     },
     async withTransaction(work) { return work({}); },
@@ -51,7 +49,6 @@ test("projection drain persists a retryable coverage state when staging fails", 
   const adapter = {
     async rebuild() { throw new Error("unexpected rebuild"); },
     async append() { throw failure; },
-    async suppress() {},
     async commit() {},
   };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
@@ -65,7 +62,7 @@ test("projection drain persists a retryable coverage state when staging fails", 
   });
 });
 
-test("projection drain has no tombstone cursor when generation and source boundary are unchanged", async () => {
+test("projection drain uses only generation and source boundary when already current", async () => {
   const state = createInitialMemoryState();
   let checkpointWrite;
   const calls = [];
@@ -73,18 +70,17 @@ test("projection drain has no tombstone cursor when generation and source bounda
     state: { async getState() { return structuredClone(state); } },
     source: { async getBoundary() { return 20; } },
     sidecars: {
-      async getProjectionCheckpoint() { return { processed_generation: 0, processed_boundary_message_id: 20, processed_tombstone_id: 0 }; },
-      async listTombstones() { throw new Error("tombstones must not be read"); },
+      async getProjectionCheckpoint() { return { processed_generation: 0, processed_boundary_message_id: 20 }; },
       async upsertProjectionCheckpoint(_u, _p, value) { checkpointWrite = value; },
     },
     async withTransaction(work) { return work({}); },
   };
   const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter: {
     async rebuild() { throw new Error("unexpected rebuild"); }, async append() { throw new Error("unexpected append"); },
-    async suppress(args) { calls.push(args); }, async commit() { throw new Error("unexpected commit"); },
+    async commit() { throw new Error("unexpected commit"); },
   } });
   const result = await drain.drain(7, "companion");
   assert.equal(result.status, "healthy");
   assert.deepEqual(calls, []);
-  assert.equal(Object.hasOwn(checkpointWrite, "processedTombstoneId"), false);
+  assert.deepEqual(checkpointWrite, { projectionKey: "rag", processedGeneration: 0, processedBoundaryMessageId: 20, status: "healthy", lastErrorReason: null });
 });

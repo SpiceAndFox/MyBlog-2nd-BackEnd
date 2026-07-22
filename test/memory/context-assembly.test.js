@@ -23,7 +23,7 @@ function config() {
 function makeData() {
   const state = createInitialMemoryState();
   state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 0]));
-  const data = { state, diagnostics: [], notifications: [], tombstones: [], sourceMessages: fixture.sourceMessages.map((message) => ({
+  const data = { state, diagnostics: [], notifications: [], sourceMessages: fixture.sourceMessages.map((message) => ({
     ...message,
     contentHash: `sha256:${crypto.createHash("sha256").update(message.content).digest("hex")}`,
   })), checkpoints: [
@@ -47,7 +47,6 @@ function makeData() {
     },
     async listPendingRecoveryNotifications() { return data.notifications.filter((row) => !row.delivered); },
     async listProjectionCheckpoints() { return data.checkpoints; },
-    async listTombstones() { return data.tombstones; },
   };
   data.repositories = {
     source: {
@@ -85,15 +84,13 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   assert.equal(data.diagnostics.every((row) => row.resolved), true);
 });
 
-test("context assembly never reads retired tombstones", async () => {
+test("context assembly keeps valid raw source messages available to GapBridge", async () => {
   const data = makeData();
-  const suppressed = data.sourceMessages.find((message) => message.id === 4);
-  data.tombstones.push({ message_id: suppressed.id, content_hash: suppressed.contentHash, reason: "forget" });
-  data.repositories.sidecars.listTombstones = async () => { throw new Error("tombstones must not be read"); };
+  const source = data.sourceMessages.find((message) => message.id === 4);
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars });
-  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "suppressed-context" });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "raw-context" });
   assert.equal(result.needsMemory, true);
-  assert.equal(data.sourceMessages.some((message) => message.id === suppressed.id), true);
+  assert.equal(data.sourceMessages.some((message) => message.id === source.id), true);
 });
 
 test("historical context queries cannot falsely resolve a gap diagnostic outside their source slice", async () => {
@@ -170,7 +167,7 @@ test("effective-view cleanup requests one idempotent housekeeping wake-up", asyn
   data.state.working.todos.push({
     id: "todo:due", text: "已到期事项", actor: "user", requester: "user", status: "active", dueAt: "2026-07-12T00:00:00.000Z", becameOverdueAt: null,
     createdAtMessageId: 1, updatedAtMessageId: 1,
-    evidenceGroups: [{ evidenceKind: "user_commitment", refs: [{ messageId: 1, contentHash: `sha256:${"a".repeat(64)}`, quote: "第一条" }] }],
+    sourceRefs: [{ messageId: 1, contentHash: `sha256:${"a".repeat(64)}` }],
   });
   let wakes = 0;
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars, scheduleHousekeeping() { wakes += 1; } });
@@ -217,13 +214,13 @@ test("production context initialization can create revision zero before state di
   assert.equal(data.diagnostics.some((row) => row.subjectKey === "memory_state" && !row.resolved), false);
 });
 
-test("invalid authority schedules background state recovery without blocking context", async () => {
+test("unsupported v2.0 authority is not passed to 2.01 state recovery", async () => {
   const data = makeData();
   data.state = { version: 2, broken: true };
   let recoveries = 0;
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: fixture.recentWindowMaxChars, scheduleStateRecovery() { recoveries += 1; } });
   const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
   assert.equal(result.memorySegment, "");
-  assert.equal(result.debug.memorySkipReason, "state_schema_invalid");
-  assert.equal(recoveries, 1);
+  assert.equal(result.debug.memorySkipReason, "version_unsupported");
+  assert.equal(recoveries, 0);
 });

@@ -7,17 +7,21 @@ const { createMemoryMigration } = require("../../modules/memory/application/migr
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../modules/memory/harness/recovery-fixtures/migration.json"), "utf8"));
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, inventoryChanges = false, providerTelemetry = null } = {}) {
-  let state = null;
+function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false } = {}) {
+  let state = initialAuthority ? createInitialMemoryState() : null;
   let snapshots = [];
   let statuses = [];
   let checkpoints = [];
   let clock = 0;
   let initializeCount = 0;
   let forceDrainCount = 0;
+  let derivedPurges = 0;
+  let authorityPurges = 0;
+  let incompatible = incompatibleDerivedData;
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
     state: {
+      async getRawState() { return state ? structuredClone(state) : null; },
       async getState() { return state ? structuredClone(state) : null; },
       async initializeRevisionZero() { state = createInitialMemoryState(); return structuredClone(state); },
     },
@@ -41,8 +45,13 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       },
     },
     sidecars: { async listProjectionCheckpoints() { return structuredClone(checkpoints); } },
+    privacy: {
+      async purgeDerivedHistory() { derivedPurges += 1; incompatible = false; snapshots = []; statuses = []; checkpoints = []; },
+      async purgeAuthorityState() { authorityPurges += 1; state = null; },
+    },
     migration: {
       async listSourceScopes() { return [fixture.scope]; },
+      async hasIncompatibleDerivedData() { return incompatible; },
     },
   };
   const sourceRebuild = {
@@ -76,7 +85,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, fixture.history.boundaryMessageId]));
       state.current.scene.location = {
         value: "上海😊",
-        evidenceRef: { messageId: fixture.history.boundaryMessageId, contentHash: `sha256:${"a".repeat(64)}`, quote: "上海😊" },
+        sourceRefs: [{ messageId: fixture.history.boundaryMessageId, contentHash: `sha256:${"a".repeat(64)}` }],
         updatedAtMessageId: fixture.history.boundaryMessageId,
       };
       snapshots[0].state = structuredClone(state);
@@ -99,13 +108,14 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
     },
   }]));
   const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
-  return { migration, getInitializeCount: () => initializeCount };
+  return { migration, getInitializeCount: () => initializeCount, getPurgeCounts: () => ({ derivedPurges, authorityPurges }) };
 }
 
 test("migration rehearsal rebuilds every raw-history scope", async () => {
   const harness = makeHarness();
   const report = await harness.migration.run({ mode: "rehearsal" });
   assert.equal(report.status, "completed");
+  assert.deepEqual(harness.getPurgeCounts(), { derivedPurges: 1, authorityPurges: 1 });
   assert.equal(report.canStartService, false);
   assert.equal(report.scopeCount, 1);
   assert.equal(report.results[0].messageCount, fixture.history.messageCount);
@@ -125,6 +135,13 @@ test("migration rehearsal rebuilds every raw-history scope", async () => {
   assert.equal(report.sourceInventory.before.contentFingerprintCoverageComplete, true);
   assert.equal(report.sourceInventory.before.sha256, report.sourceInventory.after.sha256);
   assert.equal(report.results[0].durationMs > 0, true);
+});
+
+test("migration purges mixed-version derived rows even when authority is already 2.01", async () => {
+  const harness = makeHarness({ initialAuthority: true, incompatibleDerivedData: true });
+  const report = await harness.migration.run({ mode: "rehearsal" });
+  assert.equal(report.status, "completed");
+  assert.deepEqual(harness.getPurgeCounts(), { derivedPurges: 1, authorityPurges: 1 });
 });
 
 test("migration closes the service gate when the global raw-source inventory changes", async () => {

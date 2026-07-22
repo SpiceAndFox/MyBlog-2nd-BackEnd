@@ -1,8 +1,6 @@
 const {
   createInitialMemoryState,
   assertMemoryState,
-  assertMemoryStateV201,
-  MEMORY_CONTROL_V201_SCHEMA_VERSION,
   SCHEMA_VERSION,
   TARGET_KEYS,
 } = require("../../contracts");
@@ -10,9 +8,7 @@ const { normalizeScope, executor, withTransaction } = require("./helpers");
 const { isDeepStrictEqual } = require("node:util");
 
 function assertSupportedMemoryState(state) {
-  return state?.version === MEMORY_CONTROL_V201_SCHEMA_VERSION
-    ? assertMemoryStateV201(state)
-    : assertMemoryState(state);
+  return assertMemoryState(state);
 }
 
 async function getState(userId, presetId, { client, forUpdate = false } = {}) {

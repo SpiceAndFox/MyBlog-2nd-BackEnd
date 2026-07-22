@@ -33,7 +33,7 @@ function fixture() {
   const oldMessage = message(1, "user", "我们遇到分歧后通常会复盘。", "2026-07-20T10:00:00.000Z");
   const overlapMessage = message(2, "assistant", "你需要安静一下，我会等你。", "2026-07-21T10:00:00.000Z");
   const newMessage = message(3, "user", "我不是讨厌你，只是想先安静一会儿。", "2026-07-22T10:00:00.000Z");
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.working.recentEpisodes.push(item("episode:1", "用户因连续追问感到压力，双方暂停了交流。", [source(2, overlapMessage.content)]));
   state.longTerm.relationship.push(item("relationship:1", "双方遇到分歧后通常愿意复盘。", [source(1, oldMessage.content)]));
   state.meta.revision = 7;
@@ -51,16 +51,16 @@ function fixture() {
 }
 
 test("2.01 state stores flat sourceRefs and rejects legacy evidence metadata", () => {
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   assert.equal(state.version, "2.01");
   assert.deepEqual(state.current.scene.location, { value: null, sourceRefs: [], updatedAtMessageId: null });
-  assert.equal(contracts.validateMemoryStateV201(state).ok, true);
+  assert.equal(contracts.validateMemoryState(state).ok, true);
 
   state.longTerm.userProfile.push({
     ...item("profile:1", "用户偏好简短回答。", [source(1, "请简短回答")]),
     facet: "preference",
   });
-  const invalid = contracts.validateMemoryStateV201(state);
+  const invalid = contracts.validateMemoryState(state);
   assert.equal(invalid.ok, false);
   assert.ok(invalid.errors.some((error) => error.path.endsWith(".facet") && error.message === "is not allowed"));
 });
@@ -158,7 +158,7 @@ test("2.01 Reducer applies compiled patches with flat provenance and no tombston
     },
   };
   const proposal = await compiler.compile({ artifact, semanticResult, baseState: state, userId: 9, presetId: "default" });
-  const reduced = domain.reduceCompiledProposalV201({
+  const reduced = domain.reduceCompiledProposal({
     state,
     task: { ...artifact.publicInput.task, mode: "normal" },
     proposal,
@@ -195,7 +195,7 @@ test("Compiler fails closed for stale support provenance and never guesses a tar
 });
 
 test("Compiler resolves relative Todo dates from the explicit direct-message anchor", async () => {
-  const state = contracts.createInitialMemoryStateV201();
+  const state = contracts.createInitialMemoryState();
   state.meta.targetCursors.todos = 9;
   const anchor = message(10, "user", "明天提醒我交报告。", "2026-07-22T16:30:00.000Z");
   const artifact = buildProposerTaskArtifact({

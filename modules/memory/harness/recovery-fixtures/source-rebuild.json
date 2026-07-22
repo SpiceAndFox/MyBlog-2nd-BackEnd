@@ -1,5 +1,5 @@
 {
-  "name": "source-rebuild-suppression",
+  "name": "source-rebuild",
   "fixtureKind": "recovery",
   "scope": { "userId": 7, "presetId": "companion" },
   "oldSource": { "messageId": 10, "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },

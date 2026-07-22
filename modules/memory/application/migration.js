@@ -67,7 +67,8 @@ function createMemoryMigration({
   monotonicNow = () => Date.now(),
 } = {}) {
   if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
-    || !repositories?.migration?.listSourceScopes) {
+    || !repositories?.privacy?.purgeDerivedHistory || !repositories?.privacy?.purgeAuthorityState
+    || !repositories?.migration?.listSourceScopes || !repositories?.migration?.hasIncompatibleDerivedData) {
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
@@ -107,7 +108,7 @@ function createMemoryMigration({
 
     const snapshot = await repositories.audit.getSnapshot(userId, presetId, state.meta.revision);
     if (!snapshot || Number(rowValue(snapshot, "source_generation", "sourceGeneration")) !== generation) throw new Error("Current revision snapshot is missing or stale");
-    if (Number(rowValue(snapshot, "schema_version", "schemaVersion")) !== SCHEMA_VERSION) throw new Error("Current revision snapshot schema mismatch");
+    if (String(rowValue(snapshot, "schema_version", "schemaVersion")) !== SCHEMA_VERSION) throw new Error("Current revision snapshot schema mismatch");
     assertMemoryState(snapshot.state);
     if (!isDeepStrictEqual(snapshot.state, state)) throw new Error("Current revision snapshot differs from authority state");
 
@@ -194,6 +195,18 @@ function createMemoryMigration({
   async function rebuildScope(scope, history, { forceNewGeneration = false } = {}) {
     const started = monotonicNow();
     const providerMark = providerTelemetry?.mark?.() ?? 0;
+    const rawState = await repositories.state.getRawState(scope.userId, scope.presetId);
+    const hasIncompatibleDerivedData = await repositories.migration.hasIncompatibleDerivedData(
+      scope.userId,
+      scope.presetId,
+      SCHEMA_VERSION,
+    );
+    if (rawState === null || rawState.version !== SCHEMA_VERSION || hasIncompatibleDerivedData) {
+      await repositories.withTransaction(async (client) => {
+        await repositories.privacy.purgeDerivedHistory(scope.userId, scope.presetId, { client });
+        await repositories.privacy.purgeAuthorityState(scope.userId, scope.presetId, { client });
+      });
+    }
     let state = await repositories.state.getState(scope.userId, scope.presetId);
     if (!state) state = await repositories.state.initializeRevisionZero(scope.userId, scope.presetId);
     const initialized = (forceNewGeneration ? null : await findResumableGeneration(scope, history))

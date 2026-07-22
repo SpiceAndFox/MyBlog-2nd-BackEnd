@@ -67,10 +67,20 @@ function addSceneRefs({ scene, namespace, map, lines }) {
   }
 }
 
-function addItemRefs({ items, section, namespace, map, lines }) {
+function visibleItems(items, section, namespace, overdueTodoLimit) {
+  if (section !== "todos") return items || [];
+  if (namespace === "readOnly") return (items || []).filter((item) => item.status === "active");
+  const active = (items || []).filter((item) => item.status === "active");
+  const overdue = (items || []).filter((item) => item.status === "overdue")
+    .sort((left, right) => String(right.becameOverdueAt).localeCompare(String(left.becameOverdueAt)) || left.id.localeCompare(right.id));
+  return Number.isSafeInteger(overdueTodoLimit) && overdueTodoLimit >= 0
+    ? [...active, ...overdue.slice(0, overdueTodoLimit)]
+    : [...active, ...overdue];
+}
+
+function addItemRefs({ items, section, namespace, map, lines, overdueTodoLimit }) {
   let index = 0;
-  for (const item of items || []) {
-    if (section === "todos" && namespace === "readOnly" && item.status !== "active") continue;
+  for (const item of visibleItems(items, section, namespace, overdueTodoLimit)) {
     index += 1;
     const ref = `${REF_PREFIX[section]}${index}`;
     const entry = { section, itemId: item.id };
@@ -80,7 +90,7 @@ function addItemRefs({ items, section, namespace, map, lines }) {
   }
 }
 
-function renderMemoryAndRefs(state, proposer, targetSections) {
+function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit } = {}) {
   const refMap = { writable: {}, readOnly: {} };
   const blocks = [];
   const scopes = [
@@ -92,7 +102,7 @@ function renderMemoryAndRefs(state, proposer, targetSections) {
       const lines = [];
       const value = getSection(state, section);
       if (section === "scene") addSceneRefs({ scene: value, namespace: scope.namespace, map: refMap[scope.namespace], lines });
-      else addItemRefs({ items: value, section, namespace: scope.namespace, map: refMap[scope.namespace], lines });
+      else addItemRefs({ items: value, section, namespace: scope.namespace, map: refMap[scope.namespace], lines, overdueTodoLimit });
       blocks.push(`[${scope.heading}${SECTION_LABELS[section]}]\n${lines.length ? lines.join("\n") : "(无)"}`);
     }
   }
@@ -107,6 +117,7 @@ function buildProposerTaskArtifact({
   userTimeZone = "UTC",
   taskId = crypto.randomUUID(),
   tickId = Date.now(),
+  overdueTodoLimit,
 } = {}) {
   if (!state || !intent || !Array.isArray(messages) || messages.length === 0) throw new Error("State, intent and observed messages are required");
   const target = TARGETS[intent.targetKey];
@@ -114,7 +125,7 @@ function buildProposerTaskArtifact({
   const cursorBefore = Number(intent.cursorBefore ?? 0);
   const targetMessageId = Math.max(...messages.filter((message) => message.id > cursorBefore).map((message) => message.id));
   if (!Number.isSafeInteger(targetMessageId)) throw new Error("Observed messages do not contain a new batch");
-  const { memoryText, refMap } = renderMemoryAndRefs(state, intent.proposer, target.sections);
+  const { memoryText, refMap } = renderMemoryAndRefs(state, intent.proposer, target.sections, { overdueTodoLimit });
   const publicMessages = messages.map((message) => ({
     id: message.id,
     role: message.role,

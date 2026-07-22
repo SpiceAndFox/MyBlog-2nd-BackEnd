@@ -28,7 +28,6 @@ async function main() {
   };
   const config = {
     overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-    quote: { threshold: 0.75, maxCodePoints: 200 },
     scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
     sectionBudgets: Object.fromEntries(
       ["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"]
@@ -48,12 +47,18 @@ async function main() {
   });
   const result = await adapter.propose(envelope);
   if (result.status !== "ok") throw new Error(`Semantic smoke Provider failure: ${result.reason}`);
-  const reduction = domain.reduceProposal({
+  const compiledProposal = await domain.compileSemanticResult({
+    artifact: envelope.artifact,
+    semanticResult: result.output,
+    baseState: state,
+    sourceRepository: { async getByIds() { return [{ ...message, userId: 1, presetId: "semantic-smoke" }]; } },
+    userId: 1,
+    presetId: "semantic-smoke",
+  });
+  const reduction = domain.reduceCompiledProposal({
     state,
     task: envelope.task,
-    proposal: result.output,
-    observedMessages: envelope.observedMessages,
-    databaseMessages: [{ ...message, userId: 1, presetId: "semantic-smoke" }],
+    proposal: compiledProposal,
     config,
     idFactory: () => crypto.randomUUID(),
   });
