@@ -4,13 +4,7 @@ async function upsertProjectionCheckpoint(userId, presetId, checkpoint, { client
   const scope = normalizeScope(userId, presetId);
   if (checkpoint.projectionKey !== "rag") throw new Error("Invalid projectionKey");
   if (!["healthy", "degraded", "rebuilding"].includes(checkpoint.status)) throw new Error("Invalid projection status");
-  const { rows } = await executor(client).query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,processed_tombstone_id,status,last_error_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET processed_generation=EXCLUDED.processed_generation,processed_boundary_message_id=EXCLUDED.processed_boundary_message_id,processed_tombstone_id=EXCLUDED.processed_tombstone_id,status=EXCLUDED.status,last_error_reason=EXCLUDED.last_error_reason,updated_at=NOW() RETURNING *`, [scope.userId,scope.presetId,checkpoint.projectionKey,checkpoint.processedGeneration,checkpoint.processedBoundaryMessageId??null,checkpoint.processedTombstoneId??0,checkpoint.status,checkpoint.lastErrorReason??null]);
-  return rows[0];
-}
-async function insertTombstone(userId, presetId, tombstone, { client } = {}) {
-  const scope = normalizeScope(userId, presetId);
-  if (!["forget", "correction"].includes(tombstone.reason)) throw new Error("Invalid tombstone reason");
-  const { rows } = await executor(client).query(`INSERT INTO chat_context_suppression_tombstones (user_id,preset_id,message_id,content_hash,reason,source_item_id,source_section,created_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id,preset_id,message_id,content_hash) DO UPDATE SET content_hash=EXCLUDED.content_hash RETURNING *`, [scope.userId,scope.presetId,tombstone.messageId,tombstone.contentHash,tombstone.reason,tombstone.sourceItemId??null,tombstone.sourceSection??null,tombstone.createdRevision]);
+  const { rows } = await executor(client).query(`INSERT INTO chat_context_projection_checkpoints (user_id,preset_id,projection_key,processed_generation,processed_boundary_message_id,status,last_error_reason) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (user_id,preset_id,projection_key) DO UPDATE SET processed_generation=EXCLUDED.processed_generation,processed_boundary_message_id=EXCLUDED.processed_boundary_message_id,status=EXCLUDED.status,last_error_reason=EXCLUDED.last_error_reason,updated_at=NOW() RETURNING *`, [scope.userId,scope.presetId,checkpoint.projectionKey,checkpoint.processedGeneration,checkpoint.processedBoundaryMessageId??null,checkpoint.status,checkpoint.lastErrorReason??null]);
   return rows[0];
 }
 async function createDiagnostic(userId, presetId, diagnostic, { client } = {}) {
@@ -88,13 +82,6 @@ async function getProjectionCheckpoint(userId, presetId, projectionKey, { client
   const { rows } = await executor(client).query(`SELECT * FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2 AND projection_key=$3${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId, projectionKey]);
   return rows[0] || null;
 }
-async function listTombstones(userId, presetId, { messageIds, client } = {}) {
-  const scope = normalizeScope(userId, presetId);
-  const filtered = Array.isArray(messageIds);
-  if (filtered && messageIds.some((id) => !Number.isSafeInteger(Number(id)))) throw new Error("messageIds must be integers");
-  const { rows } = await executor(client).query(`SELECT * FROM chat_context_suppression_tombstones WHERE user_id=$1 AND preset_id=$2${filtered ? " AND message_id=ANY($3::BIGINT[])" : ""} ORDER BY message_id,id`, filtered ? [scope.userId, scope.presetId, messageIds] : [scope.userId, scope.presetId]);
-  return rows;
-}
 async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const db = executor(client);
@@ -105,4 +92,4 @@ async function markProjectionsRebuilding(userId, presetId, sourceGeneration, { c
   }
   return rows;
 }
-module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, insertTombstone, listTombstones, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };
+module.exports = { upsertProjectionCheckpoint, getProjectionCheckpoint, listProjectionCheckpoints, markProjectionsRebuilding, createDiagnostic, upsertActiveDiagnostic, listActiveDiagnostics, resolveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, resolveDiagnosticsOutsideGeneration, createRecoveryNotification, listPendingRecoveryNotifications, markRecoveryNotificationsDelivered };

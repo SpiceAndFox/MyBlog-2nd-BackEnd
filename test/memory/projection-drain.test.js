@@ -60,13 +60,12 @@ test("projection drain persists a retryable coverage state when staging fails", 
     projectionKey: "rag",
     processedGeneration: 2,
     processedBoundaryMessageId: 10,
-    processedTombstoneId: 0,
     status: "degraded",
     lastErrorReason: "EMBEDDING_UNAVAILABLE",
   });
 });
 
-test("projection drain ignores retired tombstones when generation and source boundary are unchanged", async () => {
+test("projection drain has no tombstone cursor when generation and source boundary are unchanged", async () => {
   const state = createInitialMemoryState();
   let checkpointWrite;
   const calls = [];
@@ -87,5 +86,5 @@ test("projection drain ignores retired tombstones when generation and source bou
   const result = await drain.drain(7, "companion");
   assert.equal(result.status, "healthy");
   assert.deepEqual(calls, []);
-  assert.equal(checkpointWrite.processedTombstoneId, 0);
+  assert.equal(Object.hasOwn(checkpointWrite, "processedTombstoneId"), false);
 });

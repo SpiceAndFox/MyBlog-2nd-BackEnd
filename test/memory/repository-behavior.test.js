@@ -67,17 +67,14 @@ test("merge event arrays are encoded as JSONB rather than PostgreSQL arrays", as
 
   assert.equal(typeof insertedParams[14], "string");
   assert.deepEqual(JSON.parse(prepareValue(insertedParams[14])), mergedFromItemIds);
+  assert.deepEqual(JSON.parse(prepareValue(insertedParams[17])).itemIds, mergedFromItemIds);
   assert.deepEqual(JSON.parse(prepareValue(insertedParams[18])).itemIds, mergedFromItemIds);
-  assert.deepEqual(JSON.parse(prepareValue(insertedParams[19])).itemIds, mergedFromItemIds);
 });
-test("partial privacy purge deletes only tombstones whose raw message no longer exists", async () => {
+test("2.01 privacy purge has no suppression tombstone store dependency", async () => {
   const statements = [];
   const client = { async query(sql) { statements.push(sql); return { rows: [], rowCount: 0 }; } };
-  await privacyRepository.purgeDerivedHistory(1, "default", { client, preserveTombstones: true });
-  const tombstoneDelete = statements.find((sql) => sql.startsWith("DELETE FROM chat_context_suppression_tombstones"));
-  assert.match(tombstoneDelete, /NOT EXISTS \(SELECT 1 FROM chat_messages/);
-  assert.match(tombstoneDelete, /m\.id=t\.message_id/);
-  assert.match(tombstoneDelete, /t\.content_hash='sha256:'/);
+  await privacyRepository.purgeDerivedHistory(1, "default", { client });
+  assert.equal(statements.some((sql) => sql.includes("chat_context_suppression_tombstones")), false);
 });
 
 test("target recovery status and notification commit in one transaction", async () => {

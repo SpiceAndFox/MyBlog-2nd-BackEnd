@@ -80,6 +80,13 @@ test("2.01 contract migration stores string schema versions on snapshots, event 
   assert.match(migration, /ALTER COLUMN schema_version SET NOT NULL/i);
 });
 
+test("2.01 cleanup migration removes evidence classification and suppression storage", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../../migrations/memory/011-memory-control-v201-cleanup.sql"), "utf8");
+  assert.match(migration, /chat_memory_events DROP COLUMN IF EXISTS evidence_kind/i);
+  assert.match(migration, /chat_context_projection_checkpoints DROP COLUMN IF EXISTS processed_tombstone_id/i);
+  assert.match(migration, /DROP TABLE IF EXISTS chat_context_suppression_tombstones/i);
+});
+
 test("RAG dialogue enrichment remains bounded by the effective retrieval cutoff", () => {
   const retriever = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/retriever.js"), "utf8");
   const repository = fs.readFileSync(path.join(__dirname, "../../services/chat/rag/repo.js"), "utf8");

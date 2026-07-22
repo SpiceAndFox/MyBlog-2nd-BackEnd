@@ -212,16 +212,15 @@ function patchSchema(proposer, section, op) {
   }
   return { type: "object", additionalProperties: false, required, properties };
 }
-function compactionPatchSchema() {
+function compactionChangeSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["op", "itemIds", "value", "evidenceKind"],
+    required: ["action", "refs", "text"],
     properties: {
-      op: { const: "mergeItems" },
-      itemIds: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string", minLength: 1 } },
-      value: textValue,
-      evidenceKind: { const: "memory_compaction" },
+      action: { const: "merge" },
+      refs: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string", minLength: 1 } },
+      text: { type: "string", minLength: 1 },
     },
   };
 }
@@ -240,7 +239,7 @@ function buildOutputSchema(proposer, targetSections, { semantic = SEMANTIC_NORMA
           sectionResults: {
             type: "object", additionalProperties: false, required: [section], properties: {
               [section]: { oneOf: [
-                { type: "object", additionalProperties: false, required: ["status", "patches"], properties: { status: { const: "patches" }, patches: { type: "array", minItems: 1, items: compactionPatchSchema() } } },
+                { type: "object", additionalProperties: false, required: ["status", "changes"], properties: { status: { const: "changes" }, changes: { type: "array", minItems: 1, items: compactionChangeSchema() } } },
                 { type: "object", additionalProperties: false, required: ["status"], properties: { status: { const: "unable_to_compact" } } },
               ] },
             },

@@ -24,6 +24,7 @@
 2）在不同llm model间选择（如agent、memory）也需要设计一组测试用例
 3）可以在debug阶段memory的记忆同时让三个型号的model记录，不过这个可能跟测试用例有点重叠。
 4）openrouter的"session_id": "my-session-123" 貌似挺实用的，抽空看看
+5）以后应该需要给测试脚本分目录，现在太乱了
 
 [成本]
 1）感觉可以把一些工具api用反代的或者一些免费的模型

@@ -5,7 +5,8 @@ const {
   TARGETS,
   READ_ONLY_CONTEXT_PATHS,
 } = require("../contracts");
-const { buildProposerTaskArtifact } = require("./proposerTaskRenderer");
+const { buildProposerTaskArtifact, renderMemoryAndRefs } = require("./proposerTaskRenderer");
+const { validateRendererArtifact } = require("../contracts");
 
 const READ_ONLY = READ_ONLY_CONTEXT_PATHS;
 
@@ -119,33 +120,55 @@ function normalDedupeKey(task) {
 }
 
 function buildMaintenanceEnvelope({ parentEnvelope, state, section, violation, trigger, taskId = crypto.randomUUID(), tickId = Date.now(), resumeEpoch = 0, config }) {
-  const path = sectionPath(section);
-  const writableState = {};
-  const value = readPath(state, path, true, config.overdueTodos.maxRenderedItems);
-  putPath(writableState, path, section === "todos" ? value.filter((item) => item.status === "active") : value);
-  return {
-    task: {
+  if (state?.version !== MEMORY_CONTROL_V201_SCHEMA_VERSION) {
+    const path = sectionPath(section);
+    const writableState = {};
+    const value = readPath(state, path, true, config.overdueTodos.maxRenderedItems);
+    putPath(writableState, path, section === "todos" ? value.filter((item) => item.status === "active") : value);
+    return {
+      task: {
+        taskId, tickId, userId: parentEnvelope.task.userId, presetId: parentEnvelope.task.presetId,
+        schemaVersion: SCHEMA_VERSION, sourceGeneration: parentEnvelope.task.sourceGeneration, baseRevision: state.meta.revision,
+        targetKey: parentEnvelope.task.targetKey, targetMessageId: parentEnvelope.task.targetMessageId,
+        proposer: "compactionProposer", mode: "maintenance", targetSections: [section], observedMessageIds: [],
+        trigger: structuredClone(trigger || { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit }),
+        now: new Date(parentEnvelope.task.now).toISOString(), userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
+        parentTaskId: parentEnvelope.task.taskId, resumeEpoch,
+      },
+      writableState, readOnlyContext: {}, observedMessages: [],
+    };
+  }
+  const targetMessageId = parentEnvelope.task.targetMessageId;
+  const publicTask = {
       taskId,
       tickId,
-      userId: parentEnvelope.task.userId,
-      presetId: parentEnvelope.task.presetId,
-      schemaVersion: SCHEMA_VERSION,
-      sourceGeneration: parentEnvelope.task.sourceGeneration,
-      baseRevision: state.meta.revision,
       targetKey: parentEnvelope.task.targetKey,
-      targetMessageId: parentEnvelope.task.targetMessageId,
       proposer: "compactionProposer",
-      mode: "maintenance",
       targetSections: [section],
-      observedMessageIds: [],
-      trigger: structuredClone(trigger || { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit }),
+      cursorBefore: Math.max(0, targetMessageId - 1),
+      targetMessageId,
       now: new Date(parentEnvelope.task.now).toISOString(),
       userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
+  };
+  const rendered = renderMemoryAndRefs(state, "compactionProposer", [section]);
+  const artifact = { publicInput: { task: publicTask, memoryText: rendered.memoryText, messages: [] }, refMap: rendered.refMap, messageMeta: {} };
+  const validation = validateRendererArtifact(artifact);
+  if (!validation.ok) throw new Error(`Invalid compaction Renderer artifact: ${validation.errors.map((entry) => `${entry.path} ${entry.message}`).join("; ")}`);
+  return {
+    task: {
+      ...publicTask,
+      userId: parentEnvelope.task.userId,
+      presetId: parentEnvelope.task.presetId,
+      schemaVersion: MEMORY_CONTROL_V201_SCHEMA_VERSION,
+      sourceGeneration: parentEnvelope.task.sourceGeneration,
+      baseRevision: state.meta.revision,
+      mode: "maintenance",
+      observedMessageIds: [],
+      trigger: structuredClone(trigger || { type: "lengthBudget", dimension: violation.dimension, limit: violation.limit }),
       parentTaskId: parentEnvelope.task.taskId,
       resumeEpoch,
     },
-    writableState,
-    readOnlyContext: {},
+    artifact,
     observedMessages: [],
   };
 }

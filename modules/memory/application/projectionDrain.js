@@ -35,7 +35,6 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
         if (mode !== "noop") await adapter.commit({ mode, staged, userId, presetId, sourceGeneration: capturedGeneration, boundaryMessageId: capturedBoundary, client });
         await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
           projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary,
-          processedTombstoneId: 0,
           status: "healthy", lastErrorReason: null,
         }, { client });
         return { status: "healthy", projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary };
@@ -49,7 +48,6 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             projectionKey,
             processedGeneration: mode === "rebuild" ? processedGeneration : capturedGeneration,
             processedBoundaryMessageId: processedBoundary,
-            processedTombstoneId: 0,
             status: mode === "rebuild" ? "rebuilding" : "degraded",
             lastErrorReason: errorReason(error),
           }, { client });

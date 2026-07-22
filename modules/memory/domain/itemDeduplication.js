@@ -1,11 +1,5 @@
-const {
-  TYPED_PROFILE_SECTIONS,
-  MULTI_VALUE_PROFILE_KEYS,
-} = require("../contracts/constants");
-const {
-  hasTypedProfileMetadata,
-  mergedProfileMetadata,
-} = require("./profileMetadata");
+const { TYPED_PROFILE_SECTIONS, MULTI_VALUE_PROFILE_KEYS } = require("../contracts/constants");
+const { hasTypedProfileMetadata } = require("./profileMetadata");
 
 const EXACT_TEXT_DEDUPE_SECTIONS = new Set([
   "standingAgreements",
@@ -29,15 +23,13 @@ function findDeterministicDuplicate(items, section, value, { excludeItemId = nul
   }
   if (TYPED_PROFILE_SECTIONS.includes(section) && hasTypedProfileMetadata(value)
       && !MULTI_VALUE_PROFILE_KEYS[section].includes(value.canonicalKey)
-      && candidates.some((item) => item.canonicalKey === value.canonicalKey)) {
-    return "duplicate_profile_key";
-  }
+      && candidates.some((item) => item.canonicalKey === value.canonicalKey)) return "duplicate_profile_key";
   return null;
 }
 
-function evidenceFingerprint(item) {
-  return (item.evidenceGroups || [])
-    .flatMap((group) => (group.refs || []).map((ref) => `${ref.messageId}:${ref.contentHash}`))
+function sourceFingerprint(item) {
+  return (item.sourceRefs || [])
+    .map((ref) => `${ref.messageId}:${ref.contentHash}`)
     .sort()
     .join("|");
 }
@@ -49,8 +41,8 @@ function exactMergeGroupKey(section, item) {
   if (section === "todos") return item.status === "active"
     ? `todo:${text}:${item.actor}:${item.requester}:${item.dueAt ?? ""}`
     : null;
-  const evidence = evidenceFingerprint(item);
-  return evidence ? `source:${text}:${evidence}` : null;
+  const provenance = sourceFingerprint(item);
+  return provenance ? `source:${text}:${provenance}` : null;
 }
 
 function sectionItems(state, section) {
@@ -59,7 +51,7 @@ function sectionItems(state, section) {
     : state.longTerm[section];
 }
 
-function buildDeterministicExactMergeOutput(state, task) {
+function buildDeterministicExactMergeOutput(state, task, artifact) {
   const section = task.targetSections[0];
   if (section === "recentEpisodes") return null;
   const groups = new Map();
@@ -70,19 +62,25 @@ function buildDeterministicExactMergeOutput(state, task) {
     values.push(item);
     groups.set(key, values);
   }
-  const patches = [...groups.values()]
-    .filter((items) => items.length >= 2 && mergedProfileMetadata(section, items).ok)
-    .map((items) => ({
-      op: "mergeItems",
-      itemIds: items.map((item) => item.id),
-      value: { text: items[0].text },
-      evidenceKind: "memory_compaction",
+  if (!artifact) {
+    const patches = [...groups.values()].filter((items) => items.length >= 2).map((items) => ({
+      op: "mergeItems", itemIds: items.map((item) => item.id), value: { text: items[0].text }, evidenceKind: "memory_compaction",
     }));
-  if (!patches.length) return null;
+    return patches.length ? { tickId: task.tickId, proposer: "compactionProposer", sectionResults: { [section]: { status: "patches", patches } } } : null;
+  }
+  const refByItemId = new Map(Object.entries(artifact?.refMap?.writable || {}).map(([ref, entry]) => [entry.itemId, ref]));
+  const changes = [...groups.values()]
+    .filter((items) => items.length >= 2 && items.every((item) => refByItemId.has(item.id)))
+    .map((items) => ({
+      action: "merge",
+      refs: items.map((item) => refByItemId.get(item.id)),
+      text: items[0].text,
+    }));
+  if (!changes.length) return null;
   return {
     tickId: task.tickId,
     proposer: "compactionProposer",
-    sectionResults: { [section]: { status: "patches", patches } },
+    sectionResults: { [section]: { status: "changes", changes } },
   };
 }
 

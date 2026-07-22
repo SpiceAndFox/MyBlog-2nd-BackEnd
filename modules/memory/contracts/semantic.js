@@ -120,15 +120,18 @@ function validateRendererArtifact(artifact) {
       if (!positiveText(task.taskId)) add(errors, "$.publicInput.task.taskId", "must be a non-empty string");
       if (!nonNegativeInteger(task.tickId)) add(errors, "$.publicInput.task.tickId", "must be a non-negative safe integer");
       if (!TARGET_KEYS.includes(task.targetKey)) add(errors, "$.publicInput.task.targetKey", "is invalid");
-      if (TARGETS[task.targetKey]?.proposer !== task.proposer) add(errors, "$.publicInput.task.proposer", "does not match targetKey");
-      if (!Array.isArray(task.targetSections) || task.targetSections.join("\u0000") !== (TARGETS[task.targetKey]?.sections || []).join("\u0000")) add(errors, "$.publicInput.task.targetSections", "must exactly match target sections");
+      const maintenance = task.proposer === "compactionProposer";
+      if (!maintenance && TARGETS[task.targetKey]?.proposer !== task.proposer) add(errors, "$.publicInput.task.proposer", "does not match targetKey");
+      if (maintenance) {
+        if (!Array.isArray(task.targetSections) || task.targetSections.length !== 1 || !ITEM_SECTIONS.includes(task.targetSections[0])) add(errors, "$.publicInput.task.targetSections", "must contain exactly one item section for compaction");
+      } else if (!Array.isArray(task.targetSections) || task.targetSections.join("\u0000") !== (TARGETS[task.targetKey]?.sections || []).join("\u0000")) add(errors, "$.publicInput.task.targetSections", "must exactly match target sections");
       if (!nonNegativeInteger(task.cursorBefore)) add(errors, "$.publicInput.task.cursorBefore", "must be a non-negative safe integer");
       if (!positiveInteger(task.targetMessageId) || task.targetMessageId <= task.cursorBefore) add(errors, "$.publicInput.task.targetMessageId", "must be greater than cursorBefore");
       if (!isIsoTimestamp(task.now)) add(errors, "$.publicInput.task.now", "must be an ISO timestamp");
       if (!positiveText(task.userTimeZone)) add(errors, "$.publicInput.task.userTimeZone", "must be a non-empty string");
     }
     if (typeof artifact.publicInput.memoryText !== "string") add(errors, "$.publicInput.memoryText", "must be a string");
-    if (!Array.isArray(artifact.publicInput.messages) || artifact.publicInput.messages.length === 0) add(errors, "$.publicInput.messages", "must be a non-empty array");
+    if (!Array.isArray(artifact.publicInput.messages) || (artifact.publicInput.messages.length === 0 && artifact.publicInput.task?.proposer !== "compactionProposer")) add(errors, "$.publicInput.messages", "must be a non-empty array for normal tasks");
     else artifact.publicInput.messages.forEach((message, index) => {
       const path = `$.publicInput.messages[${index}]`;
       if (!checkObject(message, ["id", "role", "createdAt", "content"], [], path, errors)) return;
@@ -142,7 +145,7 @@ function validateRendererArtifact(artifact) {
       if (new Set(ids).size !== ids.length) add(errors, "$.publicInput.messages", "must not contain duplicate message ids");
       if (ids.some((id, index) => index > 0 && id <= ids[index - 1])) add(errors, "$.publicInput.messages", "must be strictly ordered by id");
       const boundary = artifact.publicInput.task?.targetMessageId;
-      if (Number.isSafeInteger(boundary) && (!ids.includes(boundary) || ids.some((id) => id > boundary))) add(errors, "$.publicInput.messages", "must end at the captured targetMessageId boundary");
+      if (ids.length && Number.isSafeInteger(boundary) && (!ids.includes(boundary) || ids.some((id) => id > boundary))) add(errors, "$.publicInput.messages", "must end at the captured targetMessageId boundary");
     }
   }
   if (checkObject(artifact.refMap, ["writable", "readOnly"], [], "$.refMap", errors)) {

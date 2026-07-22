@@ -168,10 +168,7 @@ test("normal prompts prohibit persistence metadata while maintenance keeps its s
       assert.doesNotMatch(prompt, /合法 evidenceKind/, `${proposer} must not carry the legacy evidence matrix`);
       continue;
     }
-    if (isCompaction) {
-      // compactionProposer lists "evidenceKind 必须是 memory_compaction" or has a labeled table
-      assert.match(prompt, /memory_compaction/, `${proposer} must list its legal evidenceKind (memory_compaction)`);
-    }
+    if (isCompaction) assert.match(prompt, /不输出.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
   }
 });
 
@@ -186,8 +183,8 @@ test("each prompt names the schema-owned output container", async () => {
 test("compactionProposer has maintenance-specific rules", async () => {
   const prompt = await loadProposerPrompt("compactionProposer");
   assert.match(prompt, /unable_to_compact/, "compactionProposer must mention unable_to_compact status");
-  assert.match(prompt, /mergeItems/, "compactionProposer must mention mergeItems op");
+  assert.match(prompt, /语义动作.*merge/s, "compactionProposer must emit the merge Semantic action");
   assert.match(prompt, /recentEpisodes.*unable_to_compact|recentEpisodes.*不/, "compactionProposer must exclude recentEpisodes from compaction");
-  assert.match(prompt, /itemIds.*不相交/s, "compactionProposer must emit disjoint merge groups");
+  assert.match(prompt, /refs.*不相交/s, "compactionProposer must emit disjoint merge groups");
   assert.match(prompt, /短于 source texts.*字符总和/s, "compactionProposer must actually reduce text capacity");
 });

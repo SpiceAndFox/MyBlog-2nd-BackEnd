@@ -31,7 +31,7 @@ async function getEventGroup(eventGroupId, { client } = {}) {
 async function insertEvents(events, { client } = {}) {
   const result = [];
   for (const event of events) {
-    const fields = ["event_group_id","event_index","user_id","preset_id","task_id","tick_id","target_key","section","event_kind","decision","patch_id","op","item_id","result_item_id","merged_from_item_ids","evidence_kind","reject_reason","maintenance_task_id","patch_summary","normalized_operation","cleanup_type"];
+    const fields = ["event_group_id","event_index","user_id","preset_id","task_id","tick_id","target_key","section","event_kind","decision","patch_id","op","item_id","result_item_id","merged_from_item_ids","reject_reason","maintenance_task_id","patch_summary","normalized_operation","cleanup_type"];
     const values = fields.map((field) => eventFieldValue(event, field));
     const { rows } = await executor(client).query(`INSERT INTO chat_memory_events (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) RETURNING *`, values);
     result.push(rows[0]);

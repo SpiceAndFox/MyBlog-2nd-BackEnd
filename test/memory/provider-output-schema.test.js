@@ -47,7 +47,11 @@ test("compaction output schema is maintenance-only and section-specific", () => 
   const schema = buildOutputSchema("compactionProposer", ["todos"]).schema;
   assert.deepEqual(schema.properties.sectionResults.required, ["todos"]);
   const resultVariants = schema.properties.sectionResults.properties.todos.oneOf;
-  assert.equal(resultVariants[0].properties.patches.items.properties.op.const, "mergeItems");
+  const change = resultVariants[0].properties.changes.items;
+  assert.equal(change.properties.action.const, "merge");
+  assert.deepEqual(change.required, ["action", "refs", "text"]);
+  assert.equal(JSON.stringify(change).includes("itemId"), false);
+  assert.equal(JSON.stringify(change).includes("evidenceKind"), false);
   assert.equal(resultVariants[1].properties.status.const, "unable_to_compact");
 });
 

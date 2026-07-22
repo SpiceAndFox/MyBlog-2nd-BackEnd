@@ -1,6 +1,6 @@
 const { normalizeScope, executor } = require("./helpers");
 
-async function purgeDerivedHistory(userId, presetId, { client, preserveTombstones = true } = {}) {
+async function purgeDerivedHistory(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const db = executor(client);
   const params = [scope.userId, scope.presetId];
@@ -11,9 +11,6 @@ async function purgeDerivedHistory(userId, presetId, { client, preserveTombstone
     ["snapshots", `DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2`],
     ["tasks", `DELETE FROM chat_memory_tasks WHERE user_id=$1 AND preset_id=$2`],
     ["ops", `DELETE FROM chat_memory_ops_log WHERE user_id=$1 AND preset_id=$2`],
-    ["tombstones", preserveTombstones
-      ? `DELETE FROM chat_context_suppression_tombstones t WHERE t.user_id=$1 AND t.preset_id=$2 AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.id=t.message_id AND m.user_id=t.user_id AND m.preset_id=t.preset_id AND t.content_hash='sha256:'||encode(sha256(convert_to(m.content,'UTF8')),'hex'))`
-      : `DELETE FROM chat_context_suppression_tombstones WHERE user_id=$1 AND preset_id=$2`],
     ["diagnostics", `DELETE FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2`],
     ["diagnosticProjectionCheckpoints", `DELETE FROM chat_memory_diagnostic_projection_checkpoints WHERE user_id=$1 AND preset_id=$2`],
     ["notifications", `DELETE FROM chat_memory_recovery_notifications WHERE user_id=$1 AND preset_id=$2`],
