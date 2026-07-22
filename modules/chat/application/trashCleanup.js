@@ -21,13 +21,24 @@ function createChatTrashCleanup({ config, chatRepository, memory, logger } = {})
     const groups = new Map();
     for (const candidate of candidates) {
       const key = `${candidate.userId}:${candidate.presetId}`;
-      const group = groups.get(key) || { userId: candidate.userId, presetId: candidate.presetId, sessionIds: [] };
+      const group = groups.get(key) || {
+        userId: candidate.userId,
+        presetId: candidate.presetId,
+        sessionIds: [],
+        affectedFromMessageId: null,
+      };
       group.sessionIds.push(candidate.id);
+      if (Number.isSafeInteger(candidate.firstMessageId) && candidate.firstMessageId > 0) {
+        group.affectedFromMessageId = group.affectedFromMessageId === null
+          ? candidate.firstMessageId
+          : Math.min(group.affectedFromMessageId, candidate.firstMessageId);
+      }
       groups.set(key, group);
     }
     let purged = 0;
     for (const group of groups.values()) {
       const mutation = await memory.privacyHardDelete(group.userId, group.presetId, {
+        affectedFromMessageId: group.affectedFromMessageId,
         deleteRawSource: (client) => chatRepository.purgeTrashedSessionIds(
           group.userId,
           group.presetId,

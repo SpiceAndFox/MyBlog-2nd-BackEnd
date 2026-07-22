@@ -19,21 +19,23 @@ test("permanent Session deletion keeps raw deletion inside the Memory-owned tran
     async getTrashedSession() { return { id: 17, preset_id: "companion" }; },
     async deleteSessionPermanently(userId, sessionId, { client }) {
       events.push(["raw-delete", userId, sessionId, client]);
-      return { id: sessionId };
+      return { id: sessionId, firstMessageId: 42 };
     },
   };
-  for (const method of ["listSessions", "listTrashedSessions", "createSession", "getSession", "trashSession", "restoreSession", "listMessages"]) {
+  for (const method of ["listSessions", "listTrashedSessions", "createSession", "getSession", "getSessionMessageIdRange", "trashSession", "restoreSession", "listMessages"]) {
     chatRepository[method] = async () => null;
   }
   const memory = {
     async mutateSourceAndRebuild() {},
     async privacyHardDelete(userId, presetId, options) {
       events.push(["privacy", userId, presetId]);
+      const mutationResult = await options.deleteRawSource(transactionClient);
+      assert.equal(await options.affectedFromMessageId(mutationResult, transactionClient), 42);
       return {
         operationId: "privacy-session",
         status: "purging",
         rawMutationCommitted: true,
-        mutationResult: await options.deleteRawSource(transactionClient),
+        mutationResult,
       };
     },
   };
@@ -101,7 +103,7 @@ test("Session creation resolves one preset and persists normalized provider sett
     async createSession(userId, value) { inserted = { userId, ...value }; return { id: 3, ...value }; },
   };
   for (const method of [
-    "listSessions", "listTrashedSessions", "getSession", "trashSession", "getTrashedSession",
+    "listSessions", "listTrashedSessions", "getSession", "getSessionMessageIdRange", "trashSession", "getTrashedSession",
     "restoreSession", "deleteSessionPermanently", "listMessages",
   ]) chatRepository[method] = async () => null;
   const settings = {

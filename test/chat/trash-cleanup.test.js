@@ -30,17 +30,19 @@ async function waitFor(predicate, timeoutMs = 250) {
 
 test("trash cleanup groups raw deletes by Memory scope and uses the injected transaction client", async () => {
   chatModel.listTrashedSessionPurgeCandidates = async () => [
-    { id: 1, userId: 7, presetId: "a" },
-    { id: 2, userId: 7, presetId: "a" },
-    { id: 3, userId: 7, presetId: "b" },
+    { id: 1, userId: 7, presetId: "a", firstMessageId: 30 },
+    { id: 2, userId: 7, presetId: "a", firstMessageId: 20 },
+    { id: 3, userId: 7, presetId: "b", firstMessageId: 80 },
   ];
   const deletes = [];
+  const affected = [];
   chatModel.purgeTrashedSessionIds = async (userId, presetId, ids, { client }) => {
     deletes.push({ userId, presetId, ids, client });
     return ids.length;
   };
-  memoryRuntime.privacyHardDelete = async (userId, presetId, { deleteRawSource }) => {
+  memoryRuntime.privacyHardDelete = async (userId, presetId, { deleteRawSource, affectedFromMessageId }) => {
     const client = { scope: `${userId}:${presetId}` };
+    affected.push({ userId, presetId, affectedFromMessageId });
     return { mutationResult: await deleteRawSource(client) };
   };
 
@@ -52,6 +54,10 @@ test("trash cleanup groups raw deletes by Memory scope and uses the injected tra
   assert.deepEqual(deletes, [
     { userId: 7, presetId: "a", ids: [1, 2], client: { scope: "7:a" } },
     { userId: 7, presetId: "b", ids: [3], client: { scope: "7:b" } },
+  ]);
+  assert.deepEqual(affected, [
+    { userId: 7, presetId: "a", affectedFromMessageId: 20 },
+    { userId: 7, presetId: "b", affectedFromMessageId: 80 },
   ]);
 });
 

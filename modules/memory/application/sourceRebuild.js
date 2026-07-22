@@ -3,23 +3,127 @@ const { isDeepStrictEqual } = require("node:util");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+const MAX_SNAPSHOT_RESTORE_ATTEMPTS = 8;
+
+function normalizeAffectedFromMessageId(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized <= 0) {
+    throw new Error("affectedFromMessageId must be a positive safe integer");
+  }
+  return normalized;
+}
+
+function collectSourceRefs(value, refs = new Map()) {
+  if (!value || typeof value !== "object") return refs;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!collectSourceRefs(entry, refs)) return null;
+    }
+    return refs;
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (key !== "sourceRefs") {
+      if (!collectSourceRefs(entry, refs)) return null;
+      continue;
+    }
+    for (const ref of entry) {
+      const previous = refs.get(ref.messageId);
+      if (previous && previous !== ref.contentHash) return null;
+      refs.set(ref.messageId, ref.contentHash);
+    }
+  }
+  return refs;
+}
+
+function cloneSnapshotState(snapshot, current, sourceGeneration) {
+  const next = structuredClone(snapshot.state);
+  next.meta.revision = current.meta.revision + 1;
+  next.meta.sourceGeneration = sourceGeneration;
+  next.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, next.meta.targetCursors[key] ?? 0]));
+  assertMemoryState(next);
+  return next;
+}
 
 function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work(), now = () => new Date() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.source || !repositories.runtime || !repositories.audit || !repositories.sidecars) throw new Error("Source rebuild repositories are required");
   if (!normalWritePipeline?.createTask || !normalWritePipeline?.processEnvelope) throw new Error("Source rebuild requires the normal write pipeline");
 
-  async function initializeGeneration(userId, presetId, { mutateSource = async () => {}, purgeDerived = null, reason = "source_mutation" } = {}) {
+  async function findSafeSnapshotState(userId, presetId, current, affectedFromMessageId, boundaryMessageId, client) {
+    if (affectedFromMessageId === null) return null;
+    if (typeof repositories.audit.getLatestSnapshotBeforeMessage !== "function") {
+      throw new Error("Source rebuild snapshot restore repository is required");
+    }
+    let beforeRevision = current.meta.revision + 1;
+    const maxCursorMessageId = Math.min(boundaryMessageId, affectedFromMessageId - 1);
+    for (let attempt = 0; attempt < MAX_SNAPSHOT_RESTORE_ATTEMPTS; attempt += 1) {
+      const snapshot = await repositories.audit.getLatestSnapshotBeforeMessage(userId, presetId, {
+        sourceGeneration: current.meta.sourceGeneration,
+        beforeRevision,
+        affectedFromMessageId,
+        maxCursorMessageId,
+      }, { client });
+      if (!snapshot) return null;
+      const revision = Number(rowValue(snapshot, "revision", "revision"));
+      beforeRevision = Number.isSafeInteger(revision) ? revision : beforeRevision - 1;
+      try {
+        if (!Number.isSafeInteger(revision) || revision < 0 || revision > current.meta.revision) continue;
+        if (Number(rowValue(snapshot, "source_generation", "sourceGeneration")) !== current.meta.sourceGeneration) continue;
+        if (String(rowValue(snapshot, "schema_version", "schemaVersion")) !== SCHEMA_VERSION) continue;
+        assertMemoryState(snapshot.state);
+        if (snapshot.state.meta.revision !== revision || snapshot.state.meta.sourceGeneration !== current.meta.sourceGeneration) continue;
+        const cursorsAreSafe = TARGET_KEYS.every((key) => {
+          const cursor = snapshot.state.meta.targetCursors[key] ?? 0;
+          return cursor < affectedFromMessageId && cursor <= boundaryMessageId;
+        });
+        if (!cursorsAreSafe) continue;
+        const refs = collectSourceRefs(snapshot.state);
+        if (!refs || [...refs.keys()].some((messageId) => messageId >= affectedFromMessageId)) continue;
+        if (refs.size) {
+          const sourceRows = await repositories.source.getByIds(userId, presetId, [...refs.keys()], { client });
+          if (sourceRows.length !== refs.size) continue;
+          if (sourceRows.some((message) => refs.get(message.id) !== message.contentHash)) continue;
+        }
+        return { state: cloneSnapshotState(snapshot, current, current.meta.sourceGeneration + 1), revision };
+      } catch (error) {
+        if (error?.code !== "MEMORY_V201_STATE_INVALID") throw error;
+      }
+    }
+    return null;
+  }
+
+  async function initializeGeneration(userId, presetId, {
+    mutateSource = async () => {},
+    purgeDerived = null,
+    reason = "source_mutation",
+    affectedFromMessageId: affectedFromOption = null,
+  } = {}) {
     return repositories.withTransaction(async (client) => {
       const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
       if (!current) throw new Error("Memory state must be initialized before source mutation");
       const mutationResult = await mutateSource(client);
+      const affectedFromMessageId = normalizeAffectedFromMessageId(
+        typeof affectedFromOption === "function"
+          ? await affectedFromOption(mutationResult, client)
+          : affectedFromOption,
+      );
       const boundary = await repositories.source.getBoundary(userId, presetId, { client });
       const sourceGeneration = current.meta.sourceGeneration + 1;
+      const restored = await findSafeSnapshotState(
+        userId,
+        presetId,
+        current,
+        affectedFromMessageId,
+        boundary,
+        client,
+      );
       if (purgeDerived) await purgeDerived(client, { sourceGeneration, boundaryMessageId: boundary, revision: current.meta.revision + 1 });
-      const next = createInitialMemoryState();
-      next.meta.revision = current.meta.revision + 1;
-      next.meta.sourceGeneration = sourceGeneration;
-      next.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 0]));
+      const next = restored?.state ?? createInitialMemoryState();
+      if (!restored) {
+        next.meta.revision = current.meta.revision + 1;
+        next.meta.sourceGeneration = sourceGeneration;
+        next.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 0]));
+      }
       assertMemoryState(next);
       await repositories.runtime.cancelNonTerminalTasks(userId, presetId, sourceGeneration, reason, { client });
       await repositories.state.writeState(userId, presetId, next, { client });
@@ -32,7 +136,16 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
       }
       if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, sourceGeneration, { client });
       if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, sourceGeneration, { client });
-      return { sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, mutationResult };
+      return {
+        sourceGeneration,
+        revision: next.meta.revision,
+        boundaryMessageId: boundary,
+        mutationResult,
+        ...(affectedFromMessageId === null ? {} : {
+          affectedFromMessageId,
+          restoredFromSnapshotRevision: restored?.revision ?? null,
+        }),
+      };
     });
   }
 

@@ -1,4 +1,5 @@
 const { normalizeScope, executor } = require("./helpers");
+const { TARGET_KEYS } = require("../../contracts");
 
 const EVENT_JSONB_FIELDS = new Set(["merged_from_item_ids", "patch_summary", "normalized_operation"]);
 
@@ -42,6 +43,49 @@ async function listSnapshots(userId, presetId, sourceGeneration, { client } = {}
   const scope = normalizeScope(userId, presetId);
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 ORDER BY revision`, [scope.userId, scope.presetId, sourceGeneration]);
   return rows;
+}
+async function getLatestSnapshotBeforeMessage(userId, presetId, {
+  sourceGeneration,
+  beforeRevision,
+  affectedFromMessageId,
+  maxCursorMessageId,
+}, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) throw new Error("Invalid snapshot sourceGeneration");
+  if (!Number.isSafeInteger(beforeRevision) || beforeRevision <= 0) throw new Error("Invalid snapshot beforeRevision");
+  if (!Number.isSafeInteger(affectedFromMessageId) || affectedFromMessageId <= 0) throw new Error("Invalid affectedFromMessageId");
+  if (!Number.isSafeInteger(maxCursorMessageId) || maxCursorMessageId < 0) throw new Error("Invalid maxCursorMessageId");
+  const cursorPredicates = TARGET_KEYS.map((key) => `
+    CASE
+      WHEN jsonb_typeof(state #> '{meta,targetCursors,${key}}') = 'number'
+        THEN (state #>> '{meta,targetCursors,${key}}')::NUMERIC
+      ELSE 0
+    END < $5::NUMERIC
+    AND CASE
+      WHEN jsonb_typeof(state #> '{meta,targetCursors,${key}}') = 'number'
+        THEN (state #>> '{meta,targetCursors,${key}}')::NUMERIC
+      ELSE 0
+    END <= $6::NUMERIC
+  `).join(" AND ");
+  const { rows } = await executor(client).query(`
+    SELECT *
+    FROM chat_memory_snapshots
+    WHERE user_id=$1
+      AND preset_id=$2
+      AND source_generation=$3
+      AND revision<$4
+      AND ${cursorPredicates}
+    ORDER BY revision DESC
+    LIMIT 1
+  `, [
+    scope.userId,
+    scope.presetId,
+    sourceGeneration,
+    beforeRevision,
+    affectedFromMessageId,
+    maxCursorMessageId,
+  ]);
+  return rows[0] || null;
 }
 async function listSnapshotsForRecovery(userId, presetId, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -92,4 +136,4 @@ async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBe
   if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
   return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
 }
-module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit };
+module.exports = { insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, getLatestSnapshotBeforeMessage, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit };

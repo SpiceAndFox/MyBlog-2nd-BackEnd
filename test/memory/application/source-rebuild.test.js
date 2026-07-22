@@ -51,6 +51,126 @@ test("source mutation atomically advances generation, preserves global revision,
   assert.equal(harness.data.snapshots.length, 1);
 });
 
+test("source mutation restores the latest unaffected snapshot into the new generation", async () => {
+  const current = createInitialMemoryState();
+  current.meta.revision = 15;
+  current.meta.sourceGeneration = 3;
+  current.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 80]));
+
+  const safe = createInitialMemoryState();
+  safe.meta.revision = 10;
+  safe.meta.sourceGeneration = 3;
+  safe.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 40]));
+  safe.longTerm.worldFacts.push(item("safe-fact", [OLD_SOURCE]));
+
+  const tooNew = structuredClone(safe);
+  tooNew.meta.revision = 14;
+  tooNew.meta.targetCursors.scene = 50;
+  const snapshots = [
+    { revision: 10, source_generation: 3, schema_version: "2.01", state: safe },
+    { revision: 14, source_generation: 3, schema_version: "2.01", state: tooNew },
+  ];
+  const statuses = {};
+  const repositories = {
+    async withTransaction(work) { return work({ transaction: true }); },
+    state: {
+      async getState() { return structuredClone(current); },
+      async writeState(_u, _p, next) { Object.assign(current, structuredClone(next)); },
+    },
+    source: {
+      async getBoundary() { return 90; },
+      async getByIds(_u, _p, ids) {
+        return ids.map((id) => ({ id, contentHash: OLD_SOURCE.contentHash }));
+      },
+    },
+    runtime: {
+      async cancelNonTerminalTasks() {},
+      async upsertTargetStatus(_u, _p, status) { statuses[status.targetKey] = status; },
+    },
+    audit: {
+      async getLatestSnapshotBeforeMessage(_u, _p, options) {
+        return snapshots
+          .filter((snapshot) => snapshot.revision < options.beforeRevision)
+          .filter((snapshot) => TARGET_KEYS.every((key) => (snapshot.state.meta.targetCursors[key] ?? 0) < options.affectedFromMessageId))
+          .sort((left, right) => right.revision - left.revision)[0] ?? null;
+      },
+      async insertSnapshot(_u, _p, snapshot) { snapshots.push(structuredClone(snapshot)); },
+    },
+    sidecars: {},
+  };
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline: { async createTask() {}, async processEnvelope() {} },
+    config: { targets: {} },
+  });
+
+  const result = await rebuild.initializeGeneration(7, "companion", {
+    affectedFromMessageId: 50,
+    mutateSource: () => "edited",
+    purgeDerived: () => { snapshots.length = 0; },
+  });
+
+  assert.equal(result.restoredFromSnapshotRevision, 10);
+  assert.equal(result.affectedFromMessageId, 50);
+  assert.equal(current.meta.revision, 16);
+  assert.equal(current.meta.sourceGeneration, 4);
+  assert.deepEqual(current.meta.targetCursors, Object.fromEntries(TARGET_KEYS.map((key) => [key, 40])));
+  assert.equal(current.longTerm.worldFacts[0].id, "safe-fact");
+  assert.equal(Object.values(statuses).every((status) => status.rebuildBoundaryMessageId === 90), true);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].sourceGeneration, 4);
+});
+
+test("snapshot restore rejects stale provenance and safely falls back to an empty rebuild", async () => {
+  const current = createInitialMemoryState();
+  current.meta.revision = 11;
+  current.meta.sourceGeneration = 2;
+  current.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 60]));
+  const candidate = createInitialMemoryState();
+  candidate.meta.revision = 8;
+  candidate.meta.sourceGeneration = 2;
+  candidate.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 30]));
+  candidate.longTerm.worldFacts.push(item("stale-fact", [OLD_SOURCE]));
+  let queried = false;
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: {
+      async getState() { return structuredClone(current); },
+      async writeState(_u, _p, next) { Object.assign(current, structuredClone(next)); },
+    },
+    source: {
+      async getBoundary() { return 70; },
+      async getByIds() { return [{ id: OLD_SOURCE.messageId, contentHash: `sha256:${"b".repeat(64)}` }]; },
+    },
+    runtime: { async cancelNonTerminalTasks() {}, async upsertTargetStatus() {} },
+    audit: {
+      async getLatestSnapshotBeforeMessage(_u, _p, { beforeRevision }) {
+        if (queried || beforeRevision <= candidate.meta.revision) return null;
+        queried = true;
+        return { revision: 8, source_generation: 2, schema_version: "2.01", state: structuredClone(candidate) };
+      },
+      async insertSnapshot() {},
+    },
+    sidecars: {},
+  };
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline: { async createTask() {}, async processEnvelope() {} },
+    config: { targets: {} },
+  });
+
+  const result = await rebuild.initializeGeneration(7, "companion", {
+    affectedFromMessageId: 40,
+    mutateSource: () => "edited",
+  });
+
+  assert.equal(result.restoredFromSnapshotRevision, null);
+  assert.equal(current.meta.revision, 12);
+  assert.equal(current.meta.sourceGeneration, 3);
+  assert.deepEqual(current.meta.targetCursors, Object.fromEntries(TARGET_KEYS.map((key) => [key, 0])));
+  assert.deepEqual(current.longTerm.worldFacts, []);
+});
+
 test("force drain ignores lag eligibility and keeps each target rebuilding until boundary validation", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;

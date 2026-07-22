@@ -380,12 +380,22 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     return Promise.resolve({ status: "queued", operationId, deduplicated: false });
   }
 
-  async function mutateSourceAndRebuild(userId, presetId, { mutateSource, purgeDerived = null, reason = "source_mutation" } = {}) {
+  async function mutateSourceAndRebuild(userId, presetId, {
+    mutateSource,
+    purgeDerived = null,
+    reason = "source_mutation",
+    affectedFromMessageId = null,
+  } = {}) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
     await initialize();
     const initialized = await enqueueByKey(`${userId}:${presetId}`, async () => {
       await ensureState(userId, presetId);
-      return sourceRebuild.initializeGeneration(userId, presetId, { mutateSource, purgeDerived, reason });
+      return sourceRebuild.initializeGeneration(userId, presetId, {
+        mutateSource,
+        purgeDerived,
+        reason,
+        affectedFromMessageId,
+      });
     });
     runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
       const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);

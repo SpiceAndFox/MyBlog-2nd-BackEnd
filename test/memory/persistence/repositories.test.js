@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { prepareValue } = require("pg/lib/utils");
 const db = require("../../../db");
 const { initializeRevisionZero } = require("../../../modules/memory/infrastructure/repositories/stateRepository");
-const { insertEvents } = require("../../../modules/memory/infrastructure/repositories/auditRepository");
+const { insertEvents, getLatestSnapshotBeforeMessage } = require("../../../modules/memory/infrastructure/repositories/auditRepository");
 const { upsertTargetStatus } = require("../../../modules/memory/infrastructure/repositories/runtimeRepository");
 const { upsertActiveDiagnostic, resolveGapDiagnosticIfProven, resolveProjectionDiagnosticIfCovered, listProjectionCheckpoints } = require("../../../modules/memory/infrastructure/repositories/sidecarRepository");
 const privacyRepository = require("../../../modules/memory/infrastructure/repositories/privacyRepository");
@@ -69,6 +69,34 @@ test("merge event arrays are encoded as JSONB rather than PostgreSQL arrays", as
   assert.deepEqual(JSON.parse(prepareValue(insertedParams[17])).itemIds, mergedFromItemIds);
   assert.deepEqual(JSON.parse(prepareValue(insertedParams[18])).itemIds, mergedFromItemIds);
 });
+
+test("snapshot lookup constrains every target cursor to the unaffected source prefix", async () => {
+  let statement;
+  let parameters;
+  const expected = { revision: 10 };
+  const client = {
+    async query(sql, params) {
+      statement = sql;
+      parameters = params;
+      return { rows: [expected] };
+    },
+  };
+
+  const result = await getLatestSnapshotBeforeMessage(1, "default", {
+    sourceGeneration: 3,
+    beforeRevision: 16,
+    affectedFromMessageId: 50,
+    maxCursorMessageId: 49,
+  }, { client });
+
+  assert.equal(result, expected);
+  assert.deepEqual(parameters, [1, "default", 3, 16, 50, 49]);
+  for (const targetKey of ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"]) {
+    assert.match(statement, new RegExp(`targetCursors,${targetKey}`));
+  }
+  assert.match(statement, /ORDER BY revision DESC\s+LIMIT 1/);
+});
+
 test("2.01 privacy purge has no suppression tombstone store dependency", async () => {
   const statements = [];
   const client = { async query(sql) { statements.push(sql); return { rows: [], rowCount: 0 }; } };

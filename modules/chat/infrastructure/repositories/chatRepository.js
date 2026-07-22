@@ -134,14 +134,14 @@ function createChatRepository({ database } = {}) {
     return rows[0] || null;
   },
 
-  async getSessionMessageIdRange(userId, sessionId) {
+  async getSessionMessageIdRange(userId, sessionId, { client } = {}) {
     const query = `
       SELECT MIN(id) AS min_id,
              MAX(id) AS max_id
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2
     `;
-    const { rows } = await db.query(query, [sessionId, userId]);
+    const { rows } = await executor(client).query(query, [sessionId, userId]);
     const row = rows[0] || {};
 
     const min = row.min_id === null || row.min_id === undefined ? null : Number(row.min_id);
@@ -217,13 +217,21 @@ function createChatRepository({ database } = {}) {
     if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) throw new Error("Invalid cutoff date");
     if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) throw new Error("Invalid purge limit");
     const { rows } = await db.query(`
-      SELECT id, user_id, preset_id
-      FROM chat_sessions
-      WHERE deleted_at IS NOT NULL AND deleted_at < $1
-      ORDER BY deleted_at ASC, id ASC
+      SELECT s.id, s.user_id, s.preset_id,
+             (SELECT MIN(m.id) FROM chat_messages m WHERE m.session_id=s.id AND m.user_id=s.user_id) AS first_message_id
+      FROM chat_sessions s
+      WHERE s.deleted_at IS NOT NULL AND s.deleted_at < $1
+      ORDER BY s.deleted_at ASC, s.id ASC
       LIMIT $2
     `, [cutoff, limit]);
-    return rows.map((row) => ({ id: Number(row.id), userId: Number(row.user_id), presetId: String(row.preset_id) }));
+    return rows.map((row) => ({
+      id: Number(row.id),
+      userId: Number(row.user_id),
+      presetId: String(row.preset_id),
+      firstMessageId: row.first_message_id === null || row.first_message_id === undefined
+        ? null
+        : Number(row.first_message_id),
+    }));
   },
 
   async purgeTrashedSessionIds(userId, presetId, sessionIds, { client } = {}) {

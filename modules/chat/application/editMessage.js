@@ -81,6 +81,7 @@ function createEditMessageUseCase({
     const regenerationKey = String(message.idempotency_key || "").trim() || `edit:${randomUUID()}`;
     let editedMessage = null;
     const mutation = await memory.privacyHardDelete(userId, presetId, {
+      affectedFromMessageId: messageId,
       deleteRawSource: async (client) => {
         if (truncate) await chatRepository.deleteMessagesAfter(userId, sessionId, messageId, { client });
         const updated = await chatRepository.updateMessageContent(userId, sessionId, messageId, content, {

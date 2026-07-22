@@ -8,6 +8,7 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
     "listTrashedSessions",
     "createSession",
     "getSession",
+    "getSessionMessageIdRange",
     "trashSession",
     "getTrashedSession",
     "restoreSession",
@@ -80,6 +81,9 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
       const mutation = await memory.mutateSourceAndRebuild(userId, presetId, {
         reason: "session_trashed",
         mutateSource: (client) => chatRepository.trashSession(userId, sessionId, { client }),
+        affectedFromMessageId: async (_result, client) => (
+          await chatRepository.getSessionMessageIdRange(userId, sessionId, { client })
+        )?.minMessageId ?? null,
       });
       if (!mutation.mutationResult) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
     },
@@ -93,6 +97,9 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
       const mutation = await memory.mutateSourceAndRebuild(userId, presetId, {
         reason: "session_restored",
         mutateSource: (client) => chatRepository.restoreSession(userId, sessionId, { client }),
+        affectedFromMessageId: async (_result, client) => (
+          await chatRepository.getSessionMessageIdRange(userId, sessionId, { client })
+        )?.minMessageId ?? null,
       });
       if (!mutation.mutationResult) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
       return mutation.mutationResult;
@@ -106,6 +113,7 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
       cancelScope(userId, presetId, "Session permanently deleted");
       const mutation = await memory.privacyHardDelete(userId, presetId, {
         deleteRawSource: (client) => chatRepository.deleteSessionPermanently(userId, sessionId, { client }),
+        affectedFromMessageId: (deletedSession) => deletedSession?.firstMessageId ?? null,
       });
       if (!mutation.mutationResult) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
       return { sessionId, privacy: privacyPayload(mutation) };

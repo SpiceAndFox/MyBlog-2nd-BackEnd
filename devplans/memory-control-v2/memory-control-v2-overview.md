@@ -68,7 +68,7 @@ Memory State + Raw Messages
 - PostgreSQL `chat_preset_memory.memory_state` 是唯一当前 Memory authority。
 - 协议版本固定为字符串 `"2.01"`；数据库 `schema_version` 使用 `TEXT`。
 - `chat_messages` 中有效 User/Assistant 原文是 rebuild authority。
-- snapshot 是恢复 anchor，不是第二份当前状态。
+- snapshot 是 crash recovery、retention 和 source mutation 增量 rebuild 的 anchor，不是第二份当前状态。Source mutation 只能复用最早受影响消息之前、且 provenance 经当前 raw source 重新验证的 snapshot。
 - Renderer 输出、Semantic IR 和 compiled proposal 都不是当前 Memory authority。
 - `sourceGeneration` 是 Memory 与 RAG 共用的 raw-source 世代；普通 append 不增加，编辑/删除/恢复/归属或排序语义变化增加并触发 rebuild。
 - 旧 rolling/core memory 与旧 v2 派生数据都不转换为 2.01 state。
@@ -149,6 +149,7 @@ Reducer 不再执行 evidenceKind policy、quote matching、new-batch gate、Pro
 - revision/generation/cursor stale 校验与 successor task；
 - durable stage、phase identity、dedupe key 和 commit-outcome recovery；
 - 每 revision 完整 snapshot 与 normalized event replay；
+- source mutation 从最新安全 snapshot 建立新 generation anchor，只重放受影响后缀；无安全 anchor 时从零重建；
 - capacity-blocked、maintenance compaction 和 compiled proposal replay；
 - per-target healthy/retry_wait/capacity_blocked/halted/rebuilding；
 - GapBridge、RAG projection coverage、diagnostic projection 与恢复通知。
@@ -193,7 +194,7 @@ Reducer 不再执行 evidenceKind policy、quote matching、new-batch gate、Pro
 | C11 | structured output | 保留 Provider schema、preflight、schema repair |
 | C12 | durability | 保留 task/revision/snapshot/event/phase identity |
 | C13 | capacity | 保留 section budget、compaction 和 compiled proposal replay |
-| C14 | rebuild | 保留 sourceGeneration 与 force-drain，不做 suppression terminal filter |
+| C14 | rebuild | 保留 sourceGeneration 与 force-drain；从最新未受影响且 provenance 有效的 snapshot 续建，无安全 anchor 时从零开始；不做 suppression terminal filter |
 | C15 | privacy | hard delete 不削弱，并覆盖新增 artifact/IR/compiled payload |
 
 ## 11. 成功标准

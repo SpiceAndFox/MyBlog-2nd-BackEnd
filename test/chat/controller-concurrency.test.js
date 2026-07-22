@@ -61,6 +61,7 @@ let nextMessageId = 1;
 let completeChat = async () => "assistant";
 let createStreamResponse = async () => { throw new Error("stream not expected"); };
 let readStreamDeltas = async function* empty() {};
+let lastPrivacyOptions = null;
 let compileContext = async ({ upToMessageId, signal }) => {
   if (signal?.aborted) throw signal.reason;
   events.push(`context:${upToMessageId}`);
@@ -76,6 +77,7 @@ function resetHarness() {
   completeChat = async () => "assistant";
   createStreamResponse = async () => { throw new Error("stream not expected"); };
   readStreamDeltas = async function* empty() {};
+  lastPrivacyOptions = null;
   compileContext = async ({ upToMessageId, signal }) => {
     if (signal?.aborted) throw signal.reason;
     events.push(`context:${upToMessageId}`);
@@ -200,6 +202,7 @@ const memoryRuntime = {
   async processScope() {},
   async rebuildScope() {},
   async privacyHardDelete(userId, presetId, options) {
+    lastPrivacyOptions = options;
     return scopeCoordinator.enqueueByKey(scopeCoordinator.buildKey(userId, presetId), async () => {
       const mutationResult = await options.deleteRawSource(null);
       await options.afterGenerationInitialized?.(null, { sourceGeneration: 1, boundaryMessageId: 0 });
@@ -353,6 +356,7 @@ test("edit cancels an active send, waits for its lane, and returns an asynchrono
   assert.equal(editResponse.body.regeneration.status, "blocked_until_privacy_completed");
   assert.equal(messages.some((message) => message.role === "assistant"), false);
   assert.equal(messages[0].content, "new");
+  assert.equal(lastPrivacyOptions.affectedFromMessageId, userMessage.id);
   assert.equal(events.indexOf("provider:aborted") < events.indexOf("edit:update"), true);
 });
 

@@ -12,8 +12,14 @@ const {
 
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {
   const calls = [];
+  let affectedFromMessageId = null;
   const sourceRebuild = {
-    async initializeGeneration(_u, _p, options) { await options.mutateSource({}); await options.purgeDerived({}, { sourceGeneration: 3, boundaryMessageId: 20 }); return { sourceGeneration: 3, boundaryMessageId: 20 }; },
+    async initializeGeneration(_u, _p, options) {
+      affectedFromMessageId = options.affectedFromMessageId;
+      await options.mutateSource({});
+      await options.purgeDerived({}, { sourceGeneration: 3, boundaryMessageId: 20 });
+      return { sourceGeneration: 3, boundaryMessageId: 20 };
+    },
     async forceDrainTo() { calls.push("drain"); return { status: "completed" }; },
   };
   let operation;
@@ -27,8 +33,12 @@ test("privacy hard delete does not force-drain while any external store still re
   };
   const stores = [{ name: "rag", async purge() { calls.push("rag-purge"); }, async verifyPurged() { return false; } }];
   const hardDelete = createPrivacyHardDelete({ repositories, sourceRebuild, stores });
-  const result = await hardDelete.execute(7, "companion", { async deleteRawSource() { calls.push("raw-delete"); } });
+  const result = await hardDelete.execute(7, "companion", {
+    affectedFromMessageId: 12,
+    async deleteRawSource() { calls.push("raw-delete"); },
+  });
   assert.equal(result.status, "purging");
+  assert.equal(affectedFromMessageId, 12);
   assert.equal(result.rawMutationCommitted, true);
   assert.deepEqual(calls, ["raw-delete", "memory-purge"]);
   const continued = await hardDelete.continueOperation(7, "companion", operation, { repurge: true });

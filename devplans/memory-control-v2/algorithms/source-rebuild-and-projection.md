@@ -20,17 +20,32 @@ Correction/forget active Memory 不改变 raw source，不增加 generation。
 
 Source mutation 必须进入 scope 串行 lane，并在一个事务中：
 
-1. 提交 raw source 变化；
-2. 捕获新有效 source boundary；
-3. `sourceGeneration + 1`；
-4. 取消旧 generation 非终态 tasks；
-5. 初始化 version=`"2.01"` 空 state/cursors；
-6. 写下一个全局 revision 的完整 snapshot；
-7. 六个 target status 进入 rebuilding 并保存 boundary。
+1. 锁定当前 authority state，提交 raw source 变化，并确定最早受影响的 `affectedFromMessageId`；
+2. 捕获变化后的有效 source boundary，令 `sourceGeneration + 1`；
+3. 在旧 generation 中寻找严格位于受影响点之前的最新安全 snapshot；
+4. privacy 流程如需清理旧派生历史，先保留候选 snapshot 的内存副本，再清理 events、snapshots、tasks、projection 与 sidecar；
+5. 将安全 snapshot 克隆成新 generation 的 anchor；如果没有安全 snapshot，则初始化 version=`"2.01"` 的空 state/cursors；
+6. 取消旧 generation 非终态 tasks；
+7. 使用当前全局 `revision + 1` 写 authority state 和完整 anchor snapshot，六个 target status 进入 rebuilding 并保存变化后的 boundary。
+
+安全 snapshot 必须同时满足：
+
+- snapshot schema、generation、revision 与旧 authority 一致且 state 通过完整契约校验；
+- 六个 target cursor 都 `< affectedFromMessageId`，并且不超过变化后的有效 source boundary；
+- state 中每个 `sourceRef.messageId` 都 `< affectedFromMessageId`；
+- 所有 source refs 在变化后的 raw source 中仍存在，且 `contentHash` 完全一致。
+
+snapshot 只要违反任一条件就不能作为 anchor。实现可以继续检查更早的候选；仍找不到时必须安全降级为空 state 全量 rebuild，不能猜测或部分删除 snapshot 内容。没有明确失效边界的 manual/schema recovery rebuild 同样从空 state 开始。
 
 Generation 初始化不伪造 event group。任一步失败整体 rollback。
 
 ## 3. Rebuild 与 Force Drain
+
+“snapshot 未被影响”表示 snapshot 所覆盖的 source 前缀无需重新计算，不表示整个 source mutation 可以跳过 rebuild。新 generation 仍必须从 anchor 中保存的各 target cursor 向变化后的 boundary 重放，因为被编辑的消息可能形成新的 Memory，且修改点之后的归纳可能依赖新的对话语义。对于这种情况，rebuild 的工作量只包含未被 snapshot 覆盖的后缀；只有找不到安全 anchor 时才从 cursor 0 重放全部历史。
+
+如果 source mutation 后六个保留 cursor 已经全部到达新的 boundary，force drain 不创建 Provider task，只执行新 generation 的 snapshot/event-chain 与 target 状态校验。常规消息编辑不会命中这个零重放分支：安全 cursor 必须小于被编辑 messageId，而变化后的 boundary 仍包含该消息，因此至少要重放从编辑点开始的后缀。
+
+即使 raw mutation 最终没有改变某个 target 的 active Memory，也不能直接沿用旧 generation：旧 task、RAG projection、diagnostic 与 source-generation fence 仍需失效并重新建立一致性。
 
 Worker 从当前有效 raw messages 重放正式 2.01 pipeline：
 
@@ -93,4 +108,4 @@ Worker：
 
 ## 6. Harness
 
-覆盖 source mutation原子性、old task stale、force drain recovery、无 suppression terminal filter、RAG generation/boundary checkpoint、无 suppress adapter、privacy purge与 2.01 rebuild gate。
+覆盖 source mutation原子性、安全 snapshot 选择、candidate provenance/hash 复核、无安全 anchor 时从零降级、old task stale、force drain recovery、无 suppression terminal filter、RAG generation/boundary checkpoint、无 suppress adapter、privacy purge与 2.01 rebuild gate。

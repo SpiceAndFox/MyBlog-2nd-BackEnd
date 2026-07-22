@@ -88,6 +88,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
     resetAuthority = false,
     operationPayload = {},
     afterGenerationInitialized,
+    affectedFromMessageId = null,
   } = {}) {
     if (typeof deleteRawSource !== "function") throw new Error("deleteRawSource transaction callback is required");
     if (deleteScope && resetAuthority) throw new Error("Privacy delete cannot both delete and reset a scope");
@@ -135,6 +136,7 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
       const initialized = await sourceRebuild.initializeGeneration(userId, presetId, {
         reason: "privacy_hard_delete",
         mutateSource: deleteRawSource,
+        affectedFromMessageId,
         purgeDerived: async (client, metadata) => {
           if (typeof afterGenerationInitialized === "function") {
             await afterGenerationInitialized(client, metadata);

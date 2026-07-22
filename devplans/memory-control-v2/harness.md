@@ -262,6 +262,11 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 ### 3.14 Rebuild 与 Projection
 
 - append不增加generation，source mutation增加并原子初始化rebuilding；
+- edit/truncate/session visibility mutation传入最早受影响messageId；
+- 最新安全snapshot的六target cursors必须全部早于受影响messageId，且不超过变化后的boundary；
+- snapshot schema/generation/revision/state与全部sourceRefs hash复核通过后，克隆为新generation anchor并保留各target cursor；
+- snapshot含受影响sourceRef、raw source缺失或hash变化时拒绝该candidate；无更早安全candidate时从cursor 0重建；
+- privacy purge删除旧audit history后只保留克隆出的新generation anchor；
 - forceDrain使用正式2.01 Renderer→Semantic→Compiler→Reducer pipeline；
 - 六target到boundary前保持rebuilding；
 - crash后target boundary reconciliation继续；
@@ -289,7 +294,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 4. Provider schema repair后refs不变；
 5. unable扩窗后crash复用expanded messageMeta，compile后crash恢复不重复LLM；
 6. capacity→Semantic merge→compile→original compiled replay；
-7. source edit→generation rebuild；
+7. source edit→从最新安全snapshot建立新generation anchor→只重放受影响后缀；
 8. active forget后rebuild允许复活；
 9. privacy hard delete清除artifact/IR/Patch；
 10. Main context同时包含Memory、GapBridge、RAG和健康标记。
