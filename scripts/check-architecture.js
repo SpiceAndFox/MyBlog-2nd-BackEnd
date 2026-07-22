@@ -44,6 +44,17 @@ const FROZEN_INTERNAL_IMPORT_DEBT = Object.freeze([
   },
 ]);
 
+const ROOT_ENVIRONMENT_BOUNDARIES = new Set([
+  "regenerateChatRag.js",
+]);
+
+function isEnvironmentBoundary(relativePath) {
+  return relativePath.startsWith("app/composition/")
+    || relativePath.startsWith("config/")
+    || relativePath.startsWith("scripts/")
+    || ROOT_ENVIRONMENT_BOUNDARIES.has(relativePath);
+}
+
 function toPosix(value) {
   return value.split(path.sep).join("/");
 }
@@ -191,12 +202,16 @@ function analyzeArchitecture({
   const allowedByKey = new Map(allowedInternalImports.map((entry) => [debtKey(entry.importer, entry.target), entry]));
   const observedDebt = new Set();
   const boundaryViolations = [];
+  const environmentViolations = [];
   let edgeCount = 0;
 
   for (const importer of files) {
     const importerRelative = relativeByAbsolute.get(importer);
     const importerOwner = moduleOwner(importerRelative);
     const source = fs.readFileSync(importer, "utf8");
+    if (/\bprocess\s*\.\s*env\b/.test(source) && !isEnvironmentBoundary(importerRelative)) {
+      environmentViolations.push(`process.env is restricted to configuration/startup boundaries: ${importerRelative}`);
+    }
     for (const specifier of extractStaticSpecifiers(source)) {
       const target = resolveLocalSpecifier({ importer, specifier, rootDir: normalizedRoot, aliases });
       if (!target || !relativeByAbsolute.has(target)) continue;
@@ -231,7 +246,8 @@ function analyzeArchitecture({
     allowedInternalImports: [...observedDebt].sort(),
     boundaryViolations: [...new Set([...boundaryViolations, ...staleDebt])].sort(),
     cycles,
-    errors: [...new Set([...boundaryViolations, ...staleDebt, ...cycleViolations])].sort(),
+    environmentViolations: [...new Set(environmentViolations)].sort(),
+    errors: [...new Set([...boundaryViolations, ...environmentViolations, ...staleDebt, ...cycleViolations])].sort(),
   });
 }
 
@@ -266,4 +282,5 @@ module.exports = {
   analyzeArchitecture,
   extractStaticSpecifiers,
   formatReport,
+  isEnvironmentBoundary,
 };

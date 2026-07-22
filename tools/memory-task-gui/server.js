@@ -326,7 +326,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return { status: "help" };
   }
-  const db = dependencies.db || require("../../db");
+  const db = dependencies.db || require("../../app/composition/commandDatabase").createCommandDatabase();
   const server = createServer({ db });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -338,7 +338,6 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
-  require("dotenv").config({ quiet: true });
   let resources;
   main().then((value) => { resources = value; }).catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);

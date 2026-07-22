@@ -175,8 +175,8 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
-  require("dotenv").config({ path: path.join(__dirname, "../.env"), quiet: true });
-  const db = require("../db");
+  const { createCommandContext } = require("../app/composition/commandContext");
+  const { database: db } = createCommandContext();
   main()
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);

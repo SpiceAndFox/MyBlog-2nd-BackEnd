@@ -32,6 +32,8 @@ test("the architecture gate detects cycles and dependency-direction violations",
       "shared/clock.js": 'require("../modules/memory");\n',
       "app/composition/index.js": "module.exports = {};\n",
       "modules/chat/application/useCase.js": 'require("../../../app/composition");\n',
+      "services/leaky-config.js": "module.exports = process.env.SECRET;\n",
+      "config/allowed.js": "module.exports = process.env.ALLOWED;\n",
     };
     for (const [relativePath, source] of Object.entries(fixtures)) {
       const target = path.join(rootDir, relativePath);
@@ -43,6 +45,8 @@ test("the architecture gate detects cycles and dependency-direction violations",
     assert.match(result.errors.join("\n"), /Internal module import is forbidden: modules\/chat\/index\.js -> modules\/memory\/internal\.js/);
     assert.match(result.errors.join("\n"), /shared must not depend on a business module/);
     assert.match(result.errors.join("\n"), /Business modules must not depend on app\/composition/);
+    assert.match(result.errors.join("\n"), /process\.env is restricted.*services\/leaky-config\.js/);
+    assert.doesNotMatch(result.errors.join("\n"), /config\/allowed\.js/);
     assert.equal(result.cycles.length, 1);
     assert.deepEqual(result.cycles[0], ["cycle-a.js", "cycle-b.js"]);
   } finally {

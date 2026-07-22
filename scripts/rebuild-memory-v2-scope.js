@@ -74,7 +74,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return { status: "help" };
   }
-  const db = dependencies.db || require("../db");
+  const db = dependencies.db || require("../app/composition/commandContext").createCommandContext().database;
   const migration = dependencies.migration || createScopedMigration();
   const result = await rebuildScope({ db, migration, ...options });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -82,11 +82,10 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
-  require("dotenv").config({ quiet: true });
   let db;
   main(process.argv.slice(2), {
     get db() {
-      if (!db) db = require("../db");
+      if (!db) db = require("../app/composition/commandContext").createCommandContext().database;
       return db;
     },
   }).catch((error) => {

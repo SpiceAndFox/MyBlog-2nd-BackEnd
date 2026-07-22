@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 // pnpm migrate-chat-rag-embedding-meta -- --apply
-const path = require("path");
-const dotenv = require("dotenv");
-
-dotenv.config({ path: path.join(__dirname, ".env") });
-
-const db = require("./db");
-const { chatRagConfig } = require("./config");
+const { createCommandContext } = require("./app/composition/commandContext");
+const { database: db, config: { chatRagConfig } } = createCommandContext();
 
 const DEFAULT_OLD_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
 

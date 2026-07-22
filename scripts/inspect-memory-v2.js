@@ -161,18 +161,17 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return;
   }
-  const db = dependencies.db || require("../db");
+  const db = dependencies.db || require("../app/composition/commandDatabase").createCommandDatabase();
   const memory = dependencies.memory || require("../modules/memory");
   const output = await inspectMemory({ db, memory, ...options });
   process.stdout.write(`${output}\n`);
 }
 
 if (require.main === module) {
-  require("dotenv").config({ quiet: true });
   let db;
   main(process.argv.slice(2), {
     get db() {
-      if (!db) db = require("../db");
+      if (!db) db = require("../app/composition/commandDatabase").createCommandDatabase();
       return db;
     },
   }).catch((error) => {

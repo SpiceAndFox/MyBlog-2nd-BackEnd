@@ -4,7 +4,6 @@ const { stripHtml } = require("string-strip-html");
 const sharp = require("sharp");
 const path = require("path");
 const fs = require("fs");
-const { articleConfig } = require("../config");
 const { logger, withRequestContext } = require("../logger");
 
 const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
@@ -12,8 +11,6 @@ const contentDir = path.join(uploadsRoot, "content");
 const contentTmpDir = path.join(contentDir, "tmp");
 const headerDir = path.join(uploadsRoot, "headers");
 const thumbDir = path.join(uploadsRoot, "thumbnails");
-const TEMP_IMAGE_TTL_MS = articleConfig.tempImageTtlMs; // 24h 过期（可用 env 覆盖）
-const CLEAN_INTERVAL_MS = articleConfig.cleanupIntervalMs; // 每 6h 清理（可用 env 覆盖）
 
 // 目录创建与输入标准化
 const ensureDir = (dir) => fs.mkdirSync(dir, { recursive: true });
@@ -28,11 +25,6 @@ const normalizeArrayInput = (value) => {
     return [];
   }
 };
-
-ensureDir(contentDir);
-ensureDir(contentTmpDir);
-ensureDir(headerDir);
-ensureDir(thumbDir);
 
 const safeUnlink = async (filePath) => {
   if (!filePath) return;
@@ -185,30 +177,6 @@ const promoteTempContentImages = (html = "", rawKeys = []) => {
 
   return { normalizedContent, promoted };
 };
-
-// 定期删除过期的临时正文图片
-const cleanupStaleTempContentImages = () => {
-  ensureDir(contentTmpDir);
-  const now = Date.now();
-  fs.readdir(contentTmpDir, (err, files = []) => {
-    if (err) {
-      logger.warn("article_temp_cleanup_read_failed", { error: err });
-      return;
-    }
-    files.forEach((file) => {
-      const fullPath = path.join(contentTmpDir, file);
-      fs.stat(fullPath, (statErr, stats) => {
-        if (statErr) return;
-        if (now - stats.mtimeMs > TEMP_IMAGE_TTL_MS) {
-          fs.unlink(fullPath, () => {});
-        }
-      });
-    });
-  });
-};
-
-cleanupStaleTempContentImages();
-setInterval(cleanupStaleTempContentImages, CLEAN_INTERVAL_MS);
 
 const articleController = {
   // 获取所有已发布的文章列表

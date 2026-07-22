@@ -1,7 +1,10 @@
-require("dotenv").config({ quiet: true });
-
-const db = require("../db");
+const { createCommandContext } = require("../app/composition/commandContext");
+const { database: db, config, logger } = createCommandContext();
 const memoryRuntime = require("../services/chat/memoryRuntime");
+memoryRuntime.configureChatMemoryRuntime(memoryRuntime.createChatMemoryRuntime({
+  config: config.memoryV2Config,
+  logger,
+}));
 
 function readArgs(argv) {
   const values = {};

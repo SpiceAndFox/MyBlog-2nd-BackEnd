@@ -24,10 +24,17 @@ function normalizeProviderId(providerId) {
   return String(providerId || "").trim();
 }
 
-function firstEnvValue(keys) {
+let configuredEnvironment = Object.freeze({});
+
+function configureProviderEnvironment(env) {
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Provider environment is required");
+  configuredEnvironment = Object.freeze({ ...env });
+}
+
+function firstEnvValue(keys, env = configuredEnvironment) {
   const list = Array.isArray(keys) ? keys : [];
   for (const key of list) {
-    const value = process.env[key];
+    const value = env[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
@@ -117,4 +124,5 @@ module.exports = {
   listConfiguredProviders,
   isProviderConfigured,
   isBodyParamAllowed,
+  configureProviderEnvironment,
 };

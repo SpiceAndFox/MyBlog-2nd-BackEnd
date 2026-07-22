@@ -1,13 +1,7 @@
 #!/usr/bin/env node
-const path = require("path");
-const dotenv = require("dotenv");
-
 require("module-alias/register");
-
-dotenv.config({ path: path.join(__dirname, ".env") });
-
-const db = require("./db");
-const { chatConfig, chatContextConfig } = require("./config");
+const { createCommandContext } = require("./app/composition/commandContext");
+const { database: db, config: { chatConfig, chatContextConfig } } = createCommandContext();
 const { buildRecentWindowContext } = require("./services/chat/context/buildRecentWindowContext");
 const { requestAssistantGistGeneration } = require("./services/chat/gistPipeline");
 

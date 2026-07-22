@@ -1,4 +1,16 @@
-function isProduction(env = process.env) {
+let configuredEnvironment = Object.freeze({});
+
+function configureProductionModelPolicy(env) {
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Production model policy environment is required");
+  configuredEnvironment = Object.freeze({ ...env });
+}
+
+function resolveEnvironment(env) {
+  return env && typeof env === "object" ? env : configuredEnvironment;
+}
+
+function isProduction(env) {
+  env = resolveEnvironment(env);
   return String(env.NODE_ENV || "").trim().toLowerCase() === "production";
 }
 
@@ -9,7 +21,8 @@ function normalizedList(value, path) {
   return Object.freeze(list);
 }
 
-function loadProductionModelPolicy(env = process.env) {
+function loadProductionModelPolicy(env) {
+  env = resolveEnvironment(env);
   if (!isProduction(env)) return null;
   const raw = String(env.CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON || "").trim();
   if (!raw) throw new Error("Production requires CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON");
@@ -36,7 +49,7 @@ function loadProductionModelPolicy(env = process.env) {
   return Object.freeze({ chat: Object.freeze(chat), memory });
 }
 
-function isChatModelAllowed(providerId, modelId, env = process.env) {
+function isChatModelAllowed(providerId, modelId, env) {
   const policy = loadProductionModelPolicy(env);
   if (!policy) return true;
   const provider = String(providerId || "").trim();
@@ -44,10 +57,15 @@ function isChatModelAllowed(providerId, modelId, env = process.env) {
   return Boolean(provider && model && policy.chat[provider]?.includes(model));
 }
 
-function isMemoryModelAllowed(modelId, env = process.env) {
+function isMemoryModelAllowed(modelId, env) {
   const policy = loadProductionModelPolicy(env);
   if (!policy) return true;
   return policy.memory.includes(String(modelId || "").trim());
 }
 
-module.exports = { loadProductionModelPolicy, isChatModelAllowed, isMemoryModelAllowed };
+module.exports = {
+  configureProductionModelPolicy,
+  loadProductionModelPolicy,
+  isChatModelAllowed,
+  isMemoryModelAllowed,
+};

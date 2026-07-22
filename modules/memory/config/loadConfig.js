@@ -19,7 +19,7 @@ function requiredInt(env, name, { min = 0 } = {}) {
 }
 function envName(value) { return value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase(); }
 
-function loadMemoryV2Config(env = process.env) {
+function loadMemoryV2Config(env = {}) {
   const enabled = parseBool(env, "CHAT_MEMORY_V2_ENABLED", false);
   if (!enabled) {
     if (String(env.NODE_ENV || "").trim().toLowerCase() === "production") {

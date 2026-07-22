@@ -20,7 +20,7 @@ function optionalInt(env, name, fallback, { min = 0 } = {}) {
   return requiredInt(env, name, { min });
 }
 
-function loadMemoryProviderConfig(env = process.env) {
+function loadMemoryProviderConfig(env = {}) {
   const adapter = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_ADAPTER");
   if (!ADAPTER_IDS.includes(adapter)) {
     throw new Error(`Env CHAT_MEMORY_V2_PROVIDER_ADAPTER must be one of: ${ADAPTER_IDS.join(", ")}`);

@@ -72,8 +72,8 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
-  require("dotenv").config({ quiet: true });
-  const db = require("../db");
+  const { createCommandDatabase } = require("../app/composition/commandDatabase");
+  const db = createCommandDatabase();
   main().catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);
     process.exitCode = 1;

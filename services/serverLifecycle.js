@@ -31,7 +31,7 @@ function installHealthEndpoints(app, health) {
 }
 
 function validateProductionStartup({
-  env = process.env,
+  env = {},
   memoryEnabled,
   memoryModel,
   defaultChatProviderId,
@@ -123,11 +123,14 @@ function createServerLifecycle({
   port = 3000,
   shutdownTimeoutMs = 90_000,
   productionModels = {},
+  startupEnvironment = {},
+  startBackgroundServices,
 } = {}) {
   if (!app?.listen || !memoryRuntime || !database?.end || !logger) throw new Error("Server lifecycle dependencies are required");
   const timeoutMs = parseShutdownTimeout(shutdownTimeoutMs);
   let server = null;
-  let stopCleanup = async () => {};
+  const startBackground = startBackgroundServices || startCleanup;
+  let stopBackgroundServices = async () => {};
   let shutdownPromise = null;
   let stopRequested = false;
   let databaseClosed = false;
@@ -157,7 +160,7 @@ function createServerLifecycle({
       }));
       const work = Promise.allSettled([
         closeServer(server),
-        Promise.resolve(stopCleanup()),
+        Promise.resolve(stopBackgroundServices()),
         Promise.resolve(memoryRuntime.shutdown?.()),
         Promise.resolve(waitForInFlight()),
       ]);
@@ -189,7 +192,7 @@ function createServerLifecycle({
 
   async function start() {
     try {
-      validateProductionStartup({ memoryEnabled: memoryRuntime.enabled, ...productionModels });
+      validateProductionStartup({ env: startupEnvironment, memoryEnabled: memoryRuntime.enabled, ...productionModels });
       health.set("starting");
       if (memoryRuntime.enabled) {
         await memoryRuntime.initialize();
@@ -203,8 +206,8 @@ function createServerLifecycle({
       server = await listen(app, port, host);
       assertStartupActive();
       health.set("ready");
-      const cleanup = await Promise.resolve(startCleanup());
-      stopCleanup = typeof cleanup === "function" ? cleanup : async () => {};
+      const stopBackground = await Promise.resolve(startBackground());
+      stopBackgroundServices = typeof stopBackground === "function" ? stopBackground : async () => {};
       assertStartupActive();
       const address = server.address?.();
       logger.info("server_started", {

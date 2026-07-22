@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
-require("dotenv").config({ path: path.join(__dirname, "../.env"), quiet: true });
-const db = require("../db");
+const { createCommandDatabase } = require("../app/composition/commandDatabase");
+const db = createCommandDatabase();
 
 async function main() {
   const directory = path.join(__dirname, "../migrations/memory");

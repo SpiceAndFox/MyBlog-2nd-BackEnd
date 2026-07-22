@@ -3,13 +3,22 @@ function normalizeOptionalString(value) {
   return normalized || "";
 }
 
+let attribution = Object.freeze({ siteUrl: "", appName: "" });
+
+function configureOpenRouterAttribution({ siteUrl, appName } = {}) {
+  attribution = Object.freeze({
+    siteUrl: normalizeOptionalString(siteUrl),
+    appName: normalizeOptionalString(appName),
+  });
+}
+
 function buildOpenRouterAttributionHeaders() {
   const headers = {};
 
-  const siteUrl = normalizeOptionalString(process.env.OPENROUTER_SITE_URL);
+  const siteUrl = attribution.siteUrl;
   if (siteUrl) headers["HTTP-Referer"] = siteUrl;
 
-  const appName = normalizeOptionalString(process.env.OPENROUTER_APP_NAME);
+  const appName = attribution.appName;
   if (appName) headers["X-OpenRouter-Title"] = appName;
 
   return headers;
@@ -17,4 +26,5 @@ function buildOpenRouterAttributionHeaders() {
 
 module.exports = {
   buildOpenRouterAttributionHeaders,
+  configureOpenRouterAttribution,
 };

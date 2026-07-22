@@ -1,13 +1,7 @@
 #!/usr/bin/env node
-const path = require("path");
-const dotenv = require("dotenv");
-
 require("module-alias/register");
-
-dotenv.config({ path: path.join(__dirname, ".env") });
-
-const db = require("./db");
-const { chatRagConfig, memoryV2Config } = require("./config");
+const { createCommandContext } = require("./app/composition/commandContext");
+const { database: db, config: { chatRagConfig, memoryV2Config } } = createCommandContext();
 const { indexChatTurn, deleteChunksFromMessageId } = require("./services/chat/rag/indexer");
 const chatRagRepo = require("./services/chat/rag/repo");
 

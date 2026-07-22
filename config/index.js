@@ -1,4 +1,4 @@
-const { readBoolEnv, readFloatEnv, readIntEnv, readStringEnv } = require("./readEnv");
+const envReaders = require("./readEnv");
 const {
   getGlobalNumericRange,
   getProviderNumericRange,
@@ -9,6 +9,30 @@ const {
 } = require("../services/llm/settingsSchema");
 const { getProviderDefinition } = require("../services/llm/providers");
 
+const CONFIG_KEYS = Object.freeze([
+  "serverConfig",
+  "databaseConfig",
+  "authConfig",
+  "chatConfig",
+  "chatTimeContextConfig",
+  "chatContextConfig",
+  "chatGistConfig",
+  "chatRagConfig",
+  "llmConfig",
+  "logConfig",
+  "articleConfig",
+  "memoryV2Config",
+]);
+
+function loadApplicationConfig(env = {}) {
+  if (!env || typeof env !== "object" || Array.isArray(env)) {
+    throw new Error("Application configuration requires an environment object");
+  }
+  const readBoolEnv = (name, defaultValue) => envReaders.readBoolEnv(name, defaultValue, env);
+  const readFloatEnv = (name, defaultValue) => envReaders.readFloatEnv(name, defaultValue, env);
+  const readIntEnv = (name, defaultValue) => envReaders.readIntEnv(name, defaultValue, env);
+  const readStringEnv = (name, defaultValue) => envReaders.readStringEnv(name, defaultValue, env);
+
 function normalizeKey(value) {
   return String(value || "").trim();
 }
@@ -17,12 +41,19 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function deepFreeze(value, seen = new Set()) {
+  if (!value || (typeof value !== "object" && typeof value !== "function") || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+
 function readOptionalStringEnv(name) {
   return readStringEnv(name, undefined);
 }
 
 function readRequiredJsonEnv(name) {
-  const raw = process.env[name];
+  const raw = env[name];
   if (typeof raw !== "string" || !raw.trim()) throw new Error(`Missing required env: ${name}`);
 
   try {
@@ -76,7 +107,7 @@ function readRequiredIntEnv(name) {
 }
 
 function readOptionalFloatEnvStrict(name) {
-  const raw = process.env[name];
+  const raw = env[name];
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
@@ -87,7 +118,7 @@ function readOptionalFloatEnvStrict(name) {
 }
 
 function readOptionalIntEnvStrict(name) {
-  const raw = process.env[name];
+  const raw = env[name];
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
@@ -98,7 +129,7 @@ function readOptionalIntEnvStrict(name) {
 }
 
 function readOptionalBoolEnvStrict(name) {
-  const raw = process.env[name];
+  const raw = env[name];
   if (typeof raw !== "string") return undefined;
   if (!raw.trim()) return undefined;
 
@@ -869,6 +900,7 @@ const llmConfig = {
 };
 
 const logConfig = {
+  nodeEnv: readStringEnv("NODE_ENV", "development"),
   level: readStringEnv("LOG_LEVEL", "info"),
   toConsole: readBoolEnv("LOG_TO_CONSOLE", true),
   toFile: readBoolEnv("LOG_TO_FILE", true),
@@ -886,7 +918,7 @@ const logConfig = {
 };
 
 const { loadMemoryV2Config } = require("../modules/memory");
-const memoryV2Config = loadMemoryV2Config();
+const memoryV2Config = loadMemoryV2Config(env);
 
 const articleConfig = {
   tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), {
@@ -897,7 +929,31 @@ const articleConfig = {
   }),
 };
 
-module.exports = {
+const serverConfig = Object.freeze({
+  host: readStringEnv("HOST", "127.0.0.1").trim() || "127.0.0.1",
+  port: (() => {
+    const value = readIntEnv("PORT", 3000);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 65_535) {
+      throw new Error(`Env PORT must be an integer between 0 and 65535. Got: ${String(value)}`);
+    }
+    return value;
+  })(),
+  shutdownTimeoutMs: readIntEnv("SERVER_SHUTDOWN_TIMEOUT_MS", 90_000),
+});
+
+const databaseConfig = Object.freeze({
+  connectionString: readRequiredStringEnv("DATABASE_URL"),
+});
+
+const authConfig = Object.freeze({
+  jwtSecret: readRequiredStringEnv("JWT_SECRET"),
+  tokenExpiresIn: "7d",
+});
+
+return deepFreeze({
+  serverConfig,
+  databaseConfig,
+  authConfig,
   chatConfig,
   chatTimeContextConfig,
   chatContextConfig,
@@ -907,4 +963,35 @@ module.exports = {
   logConfig,
   articleConfig,
   memoryV2Config,
+});
+}
+
+let configuredApplicationConfig = null;
+
+function configureApplicationConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("A loaded application configuration object is required");
+  }
+  configuredApplicationConfig = config;
+  return configuredApplicationConfig;
+}
+
+function getApplicationConfig() {
+  if (!configuredApplicationConfig) {
+    configuredApplicationConfig = loadApplicationConfig(process.env);
+  }
+  return configuredApplicationConfig;
+}
+
+module.exports = {
+  loadApplicationConfig,
+  configureApplicationConfig,
+  getApplicationConfig,
 };
+
+for (const key of CONFIG_KEYS) {
+  Object.defineProperty(module.exports, key, {
+    enumerable: true,
+    get() { return getApplicationConfig()[key]; },
+  });
+}

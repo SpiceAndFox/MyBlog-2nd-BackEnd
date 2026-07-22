@@ -1,12 +1,12 @@
-function readStringEnv(name, defaultValue = "") {
-  const raw = process.env[name];
+function readStringEnv(name, defaultValue = "", env = {}) {
+  const raw = env[name];
   if (typeof raw !== "string") return defaultValue;
   const trimmed = raw.trim();
   return trimmed ? trimmed : defaultValue;
 }
 
-function readIntEnv(name, defaultValue) {
-  const raw = process.env[name];
+function readIntEnv(name, defaultValue, env = {}) {
+  const raw = env[name];
   if (typeof raw !== "string") return defaultValue;
   const trimmed = raw.trim();
   if (!trimmed) return defaultValue;
@@ -14,8 +14,8 @@ function readIntEnv(name, defaultValue) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-function readFloatEnv(name, defaultValue) {
-  const raw = process.env[name];
+function readFloatEnv(name, defaultValue, env = {}) {
+  const raw = env[name];
   if (typeof raw !== "string") return defaultValue;
   const trimmed = raw.trim();
   if (!trimmed) return defaultValue;
@@ -23,8 +23,8 @@ function readFloatEnv(name, defaultValue) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-function readBoolEnv(name, defaultValue = false) {
-  const raw = process.env[name];
+function readBoolEnv(name, defaultValue = false, env = {}) {
+  const raw = env[name];
   if (typeof raw !== "string") return defaultValue;
   const trimmed = raw.trim().toLowerCase();
   if (!trimmed) return defaultValue;

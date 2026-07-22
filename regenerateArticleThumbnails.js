@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 const path = require("path");
 const fs = require("fs");
-const dotenv = require("dotenv");
 const sharp = require("sharp");
 
 require("module-alias/register");
 
-dotenv.config({ path: path.join(__dirname, ".env") });
-
-const db = require("./db");
+const { createCommandContext } = require("./app/composition/commandContext");
+const { database: db } = createCommandContext();
 const articleModel = require("@models/articleModel");
 
 const uploadsRoot = path.join(__dirname, "uploads", "articles");

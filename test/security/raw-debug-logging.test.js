@@ -20,6 +20,24 @@ test("raw prompt logging API is absent by default", () => {
   }
 });
 
+test("importing the logger does not create or delete log files", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-v2-logger-import-"));
+  const canaryPath = path.join(tempDir, "debug-full.log");
+  fs.writeFileSync(canaryPath, "import-side-effect-canary");
+  try {
+    const result = spawnSync(process.execPath, ["-e", "require('./logger')"], {
+      cwd: path.join(__dirname, "../.."),
+      env: { ...process.env, LOG_DIR: tempDir, LOG_TO_FILE: "true" },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(canaryPath, "utf8"), "import-side-effect-canary");
+    assert.deepEqual(fs.readdirSync(tempDir), ["debug-full.log"]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("logger startup removes legacy raw prompt files and production cannot recreate them", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-v2-raw-logs-"));
   const fullPath = path.join(tempDir, "debug-full.log");
@@ -27,7 +45,8 @@ test("logger startup removes legacy raw prompt files and production cannot recre
   fs.writeFileSync(fullPath, "unique-chat-canary");
   fs.writeFileSync(gistPath, "unique-gist-canary");
   try {
-    const cleanup = spawnSync(process.execPath, ["-e", "require('./logger')"], {
+    const createCommand = "const {createLogger}=require('./logger');createLogger({config:{nodeEnv:process.env.NODE_ENV,toConsole:false,toFile:false,dir:process.env.LOG_DIR,debugFullFile:process.env.LOG_DEBUG_FULL_FILE,debugGistFile:process.env.LOG_DEBUG_GIST_FILE,debugFullEnabled:process.env.LOG_DEBUG_FULL_ENABLED==='true',debugGistEnabled:process.env.LOG_DEBUG_GIST_ENABLED==='true'}})";
+    const cleanup = spawnSync(process.execPath, ["-e", createCommand], {
       cwd: path.join(__dirname, "../.."),
       env: {
         ...process.env,
@@ -46,7 +65,7 @@ test("logger startup removes legacy raw prompt files and production cannot recre
     assert.equal(fs.existsSync(fullPath), false);
     assert.equal(fs.existsSync(gistPath), false);
 
-    const rejected = spawnSync(process.execPath, ["-e", "require('./logger')"], {
+    const rejected = spawnSync(process.execPath, ["-e", createCommand], {
       cwd: path.join(__dirname, "../.."),
       env: {
         ...process.env,
