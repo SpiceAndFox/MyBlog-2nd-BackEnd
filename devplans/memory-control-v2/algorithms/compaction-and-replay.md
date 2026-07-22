@@ -19,7 +19,7 @@ Normal：
 compiled_proposal_persisted
 → capacity_blocked
 → replaying_compiled_proposal
-→ succeeded | replay_failed
+→ status=succeeded,stage=committed | status=failed,stage=replay_failed
 ```
 
 Maintenance：
@@ -27,14 +27,20 @@ Maintenance：
 ```text
 pending
 → proposing
-→ semantic_result_persisted
-→ compiling
-→ compiled_proposal_persisted
-→ compacting
-→ compaction_applied | compaction_failed
+├→ changes
+│   → semantic_result_persisted
+│   → compiling
+│   → compiled_proposal_persisted
+│   → compacting
+│   → status=succeeded,stage=compaction_applied|hygiene_applied
+│     | status=succeeded,stage=hygiene_noop|hygiene_skipped
+│     | status=failed,stage=compaction_failed
+└→ unable_to_compact
+    → unable_result_persisted
+    → status=failed,stage=compaction_failed（lengthBudget）| status=succeeded,stage=hygiene_noop（hygiene）
 ```
 
-Hygiene 使用同一 task 类型。正常的 `unable_to_compact`、merge rejection 或容量未改善不改变 healthy target；终态可以是 `hygiene_applied/noop/skipped/stale`。Provider/schema 重试耗尽和确定性 Compiler error 仍按全局技术失败规则 halt target。
+Hygiene 使用同一 task 类型。正常的 `unable_to_compact`、merge rejection 或容量未改善不改变 healthy target；成功/无操作 stage 可以是 `hygiene_applied/hygiene_noop/hygiene_skipped`，stale 时使用 `status=cancelled,stage=stale`。Provider/schema 重试耗尽和确定性 Compiler error 仍按全局技术失败规则 halt target。
 
 ## 3. 权威流程
 
@@ -42,8 +48,8 @@ Hygiene 使用同一 task 类型。正常的 `unable_to_compact`、merge rejecti
 2. 本轮不 apply 任何 normal patch；只为触发阻塞的 patch 写 `deferred`、`result_revision=null` 审计 group。
 3. Parent task 保存 `compiledProposal/identities/blockingViolation/maintenanceTaskId`，target 进入 `capacity_blocked`，cursor 不推进。
 4. 创建 maintenance child，Renderer 给单个 section items 分配 writable short refs；不显示 raw messages、read-only Memory、真实 ID 或 provenance。
-5. compactionProposer 输出 `{action:"merge",refs,text}` 或 `unable_to_compact`。
-6. Compiler 将 refs 映射为真实 itemIds，生成 `mergeItems` compiled patch；不从 Proposer读取 sources。
+5. compactionProposer 输出 `{action:"merge",refs,text}` 或 `unable_to_compact`；后者持久化为 unable result并按 mode终结，绝不进入 Compiler。
+6. 只有 `changes` 结果进入 Compiler；Compiler 将 refs 映射为真实 itemIds，生成 `mergeItems` compiled patch，不从 Proposer读取 sources。
 7. Reducer 检查 item 存在、同 section、pending proposal protection 和领域兼容性；merge 后继承所有 source items 的 sourceRefs。
 8. Compaction apply 成功形成独立 maintenance revision/snapshot；仍有其他阻塞 section 时创建下一 child。
 9. 容量释放后，parent 进入 `replaying_compiled_proposal`，读取已持久化 original compiled proposal，重新做纯代码预检并 replay；不重新调用 normal Proposer 或 Compiler。
@@ -75,7 +81,8 @@ Replay 条件：
 
 ## 6. Failure 与 Resume
 
-- `unable_to_compact`、全部 patch rejected 或容量仍不足：halt 对应 target；
+- lengthBudget maintenance 的 `unable_to_compact`、全部 patch rejected 或容量仍不足：halt 对应 target；
+- hygiene maintenance 的正常 `unable_to_compact`、merge rejection或容量未改善：以 `status=succeeded, stage=hygiene_noop|hygiene_skipped` 终结并保持 target healthy；不套用 lengthBudget halt语义；
 - Provider/schema failure：沿用 task error恢复；
 - maintenance ref/source/date/invariant compile failure：先重校 stale；非 stale 时 child failed、target halted并写 ops log，不推进 parent、cursor、revision或event，也不自动重调LLM/Compiler；
 - lengthBudget resume 创建新 child、`resume_epoch+1`，不复用终态 child；

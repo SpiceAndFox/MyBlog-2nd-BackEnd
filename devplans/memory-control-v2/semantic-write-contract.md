@@ -70,7 +70,7 @@ Normal task 创建时必须一次性生成并持久化以下 artifact：
 }
 ```
 
-只有 `publicInput` 发送给 LLM。`refMap`、`messageMeta`、真实 itemId 和 provenance 只保存在受控 durable task payload 中，供 Compiler 与 Validator 使用。
+只有 `publicInput` 发送给 LLM。`refMap`、`messageMeta`、真实 itemId 和 provenance 只保存在受控 durable payload 中，供 Compiler 与 Validator 使用。首次调用使用 `task_payload` 中的 base artifact；若发生 context expansion，则使用 §3.3 定义的 durable expanded artifact。最终 Semantic result 必须同时固化其 `semanticInputVariant=base|expanded`，Compiler 只能读取对应 variant 的 public input 与 message metadata。
 
 ### 3.2 可读渲染
 
@@ -106,7 +106,16 @@ R1 | 双方遇到分歧时通常愿意复盘。
 - item 使用 item 级 ref；scene 使用 field 级 ref，不提供 item 内子句级定位。
 - successor task 读取新 revision 并生成新 artifact；新 task 不承诺沿用 predecessor 的 ref 编号。
 
-Context expansion 只扩展早期 observed messages；Memory 文本和 ref map 沿用首次 artifact。新增消息继续使用其真实 messageId，因此不需要重新编号。
+Context expansion 只扩展早期 observed messages；Memory 文本和 ref map 沿用首次 artifact。扩窗前必须生成并持久化：
+
+```js
+expandedArtifact: {
+  publicInput: { /* Memory 文本不变，messages 增加更早 raw messages */ },
+  messageMeta: { /* 覆盖 expanded publicInput 中全部 messages */ }
+}
+```
+
+`expandedArtifact.messageMeta` 是 base metadata 与新增早期消息 metadata 的完整合并结果，必须和 expanded public input 在同一短事务中固化；不得只保存消息文本。新增消息继续使用真实 messageId，Memory ref map 仍只读取 immutable base artifact，不重新编号。一次 task 最多生成一个 expanded artifact，retry/restart 复用同一份，不从变化后的数据库窗口重新构造。
 
 ### 3.4 可见范围
 
@@ -158,7 +167,8 @@ Normal Proposer 保留 per-section 终局：
 - `sectionResults` 必须恰好覆盖 task 的 target sections；
 - `changes` 必须是非空数组；
 - section 由 `sectionResults` key 确定，change 内不重复保存 section；
-- `unable_to_decide` 不能伪装成 `noop`。
+- `unable_to_decide` 不能伪装成 `noop`；
+- 联合 Proposer 任一 section 为 `unable_to_decide` 时，整个 Semantic result 都不是 compiler-ready；同一结果中其他 section 的 `changes/noop` 不得部分 compile 或 apply。首次 unable 对整个 task 扩窗重提，二次 unable 原子丢弃该次全部候选并提交 cursor-only revision。
 
 ### 4.2 普通 change 公共字段
 
@@ -177,7 +187,7 @@ Normal Proposer 保留 per-section 终局：
 - `action` 是领域动作，不是持久化 op；
 - 修改或终结现有对象时 `ref` 必填；新增时禁止提供 `ref`；
 - 新增或改写内容时 `text` 必填；terminal action 通常不含 `text`；
-- `evidenceMessageIds` 只能引用 `publicInput.messages` 中实际出现的 messageId；
+- `evidenceMessageIds` 只能引用生成本次 Semantic result 的 effective `publicInput.messages` 中实际出现的 messageId；
 - `supportRefs` 只能引用 `refMap.readOnly`；
 - 每个 normal change 至少提供非空 `evidenceMessageIds` 或非空 `supportRefs`；两者可以混用；
 - 不要求任一来源属于 new batch，也不要求某个 support ref 的底层来源属于 new batch；
@@ -227,11 +237,11 @@ Relative Todo 日期必须额外提供 `anchorMessageId`：
 
 Compiler 必须：
 
-1. 校验 Semantic IR 与本 Proposer 的领域 schema；
+1. 校验 Semantic IR 与本 Proposer 的领域 schema，并根据持久化的 `semanticInputVariant` 选择 base 或 expanded artifact；
 2. 用 writable ref 映射真实 itemId 或 scene path；
 3. 用 read-only ref 展开对应权威 Memory 对象的 `sourceRefs`；
 4. 合并直接消息来源与 support 来源，按 `messageId + contentHash` 去重；
-5. 从数据库重新校验消息存在、scope、有效 User/Assistant role 与 contentHash；direct source 还必须将 role/createdAt 与 artifact `messageMeta` 对照，support source 的 createdAt 以当前权威数据库行为准；
+5. 从数据库重新校验消息存在、scope、有效 User/Assistant role 与 contentHash；direct source 还必须将 role/createdAt 与 effective artifact `messageMeta` 对照，support source 的 createdAt 以当前权威数据库行为准；
 6. 规范化 Todo 日期和其他确定性字段；
 7. 将 Semantic action 映射为持久化 op；
 8. 生成完整 compiled proposal；
@@ -260,7 +270,7 @@ compaction merge       → mergeItems
 
 ```text
 evidenceMessageId
-  → renderer artifact messageMeta
+  → semanticInputVariant 对应的 effective artifact messageMeta
   → authoritative chat_messages row
 
 supportRef
@@ -310,23 +320,35 @@ supportRef
 
 ### 6.2 Durable stage
 
-推荐 normal stage：
+Normal task 只有不含 unable 的 Semantic result 才能进入 Compiler：
 
 ```text
 pending
 → proposing
-→ semantic_result_persisted
-→ compiling
-→ compiled_proposal_persisted
-→ reducing
-→ committed | capacity_blocked | failed
+├→ compiler-ready semantic result
+│   → semantic_result_persisted
+│   → compiling
+│   → compiled_proposal_persisted
+│   → reducing
+│   → status=succeeded,stage=committed | status=running,stage=capacity_blocked | status=failed
+└→ contains unable_to_decide
+    → unable_result_persisted
+    ├→ first unable
+    │   → context_expanding
+    │   → context_expanded
+    │   → proposing（使用 expandedArtifact）
+    └→ second unable
+        → status=succeeded,stage=unable_cursor_committed
 ```
 
 - `task_payload` 固化 Renderer artifact；
-- `stage_payload.semanticResult` 保存通过 schema 的 Semantic IR；
+- `stage_payload.semanticResult` 只保存通过 schema 且不含 unable 的 compiler-ready Semantic IR，并同时保存 `semanticInputVariant`；
+- `stage_payload.unableResult` 保存最近一次通过 schema但含 `unable_to_decide` 或 `unable_to_compact` 的结果；它绝不能被 Compiler 消费；
+- `stage_payload.expandedArtifact` 保存 expanded public input及其完整 messageMeta；
 - `stage_payload.compiledProposal` 保存 Compiler 结果；
-- Provider retry/recovery 复用同一 artifact；
+- Provider retry/recovery 按 input variant复用同一 base/expanded artifact；
 - Compiler 或 commit crash 后恢复时复用已持久化阶段产物，不重复调用 LLM；
+- 恢复看到 `unable_result_persisted` 时不得转入 Compiler：normal task 只继续 expansion或 cursor-only分支，maintenance task只进入 lengthBudget/hygiene终局；
 - successor task 不复用 predecessor 的 Semantic IR 或 compiled proposal。
 
 Capacity-blocked replay 使用已持久化 compiled proposal，不重新调用 Proposer 或 Compiler；replay 前仍重新校验 generation、cursor、引用 item 和 source hashes。

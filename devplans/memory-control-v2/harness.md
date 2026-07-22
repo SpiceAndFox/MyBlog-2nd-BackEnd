@@ -63,11 +63,25 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
   "artifact": {},
   "semanticResult": {},
   "compiledProposal": {},
-  "crashPoint": "semantic_result_persisted|compiled_proposal_persisted|commit_unknown",
-  "expectedProviderCalls": 0,
-  "expectedCompilerCalls": 0
+  "crashPoint": "unable_result_persisted|context_expanded|semantic_result_persisted|compiled_proposal_persisted|commit_unknown",
+  "unableAttempt": 0,
+  "expectedProviderCalls": null,
+  "expectedCompilerCalls": null
 }
 ```
+
+每个具体 fixture 必须把 expected calls 固化为数字，不使用通配值：
+
+| crash point | 条件 | Provider | Compiler |
+| --- | --- | ---: | ---: |
+| `unable_result_persisted` | 首次 unable，expanded artifact尚未生成 | 1 | 1（expanded mock返回compiler-ready时） |
+| `unable_result_persisted` | 二次 unable | 0 | 0 |
+| `context_expanded` | expanded Provider结果尚未持久化 | 1 | 1（mock返回compiler-ready时） |
+| `semantic_result_persisted` | compiler-ready result已持久化 | 0 | 1 |
+| `compiled_proposal_persisted` | compiled proposal已持久化 | 0 | 0 |
+| `commit_unknown` | durable compiled proposal已存在 | 0 | 0 |
+
+若 expanded mock仍返回 unable，则对应 fixture 的 Compiler期望为 0，并验证 cursor-only分支。
 
 ## 3. 必测用例
 
@@ -92,6 +106,8 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - item与scene field粒度正确；
 - 同一 artifact 的 retry/schema repair/context expansion/restart/shadow replay refs不变；
 - context expansion只增加更早 messages，不重新编号 Memory refs；
+- expanded public input与覆盖其中全部消息的 expanded messageMeta同事务持久化；restart不按当前数据库窗口重建；
+- expanded input新增消息可以作为direct evidence，并使用expanded messageMeta通过Compiler复核；
 - successor在新 revision重新 render，允许新 ref编号；
 - 各 Proposer可见范围与 Semantic Contract表一致；
 - fixed read-only scope完整渲染，Todo overdue使用配置窗口。
@@ -100,10 +116,12 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 
 - normal outer status只允许 `changes/noop/unable_to_decide`；
 - compaction只允许 `changes/unable_to_compact`；
+- `unable_to_decide/unable_to_compact` 都进入 unable durable分支且绝不调用Compiler；
 - sectionResults恰好覆盖 target sections；
+- 联合结果任一section unable时整体不是compiler-ready，其他section changes不得部分compile/apply；
 - add禁止 ref；修改/terminal要求 writable ref；
 - supportRefs只接受 read-only namespace；
-- evidenceMessageIds只接受本 task显示消息；
+- evidenceMessageIds只接受生成该结果的base/expanded input实际显示消息；
 - normal change direct/support至少一个；
 - compaction merge不带 direct/support；
 - IR 出现 itemId/op/evidenceKind/quote/contentHash/typed Profile字段时拒绝；
@@ -125,7 +143,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - 输出sourceRefs稳定排序；
 - writable ref用作support、read-only ref用作target时 `ref_resolution_failed`；
 - missing/stale ref、section不匹配、item不存在时fail closed；
-- missing message 或 scope/hash不一致时 `source_validation_failed`；direct source 的 role/createdAt 与 artifact `messageMeta` 不一致时失败；support source 只持久化 messageId/hash，createdAt 使用权威数据库值且 role 必须是有效 User/Assistant；
+- missing message 或 scope/hash不一致时 `source_validation_failed`；direct source 的 role/createdAt 与 effective base/expanded artifact `messageMeta` 不一致时失败；support source 只持久化 messageId/hash，createdAt 使用权威数据库值且 role 必须是有效 User/Assistant；
 - Compiler不自动替换hash、不选择相似item、不把update降级成add。
 
 ### 3.5 Todo 日期
@@ -153,7 +171,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - add item使用compiled sources；
 - update/correct保留itemId/createdAt，合并旧新sources并更新updatedAt；
 - merge继承所有source items sources并生成新ID；
-- scene set支持多source refs；clear写空sourceRefs；
+- scene set支持多source refs并以本次compiled sources替换旧field provenance；clear写空sourceRefs；
 - forget/terminal移除active对象，动作sources保存在event；
 - correction/forget不写tombstone、不触发RAG invalidation；
 - state/event/snapshot都不含evidenceKind/quote/supportRef；
@@ -182,17 +200,23 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - compaction Semantic merge经Compiler生成mergeItems；
 - Profile/Relationship不要求facet/key相等；
 - Todo merge领域字段必须相等；
+- lengthBudget unable/rejection/容量未改善halt target；hygiene对应结果以noop/skipped终结并保持healthy；
 - pending item保护、全部protected失败、多section顺序maintenance；
 - original compiled proposal replay不重调normal Proposer/Compiler；
+- original normal compiled proposal replay成功统一为`status=succeeded,stage=committed`；
 - compaction/replay失败只halt对应target；resumeEpoch创建新child。
 
 ### 3.10 Cursor、Task 与 Recovery
 
 - 同tick多个targets按最新revision逐个创建task；
 - immutable task payload包含artifact；
-- Semantic结果先持久化，再允许Compiler；
+- compiler-ready Semantic结果先持久化，再允许Compiler；
+- unable结果进入独立`unable_result_persisted`分支，恢复时绝不调用Compiler；
+- 首次unable的expanded artifact先持久化再重调Provider；二次unable不调用Compiler并提交cursor-only revision；
+- 联合changes+unable首次整体重提、二次整体丢弃，不发生部分state写入；
 - compiled proposal先持久化，再允许Reducer；
 - semantic_result_persisted恢复不调LLM，只重跑Compiler；
+- context_expanded恢复复用expanded input/messageMeta；
 - compiled_proposal_persisted恢复不调LLM/Compiler；
 - Provider/schema/compile error不推进cursor/revision/snapshot；
 - compile error先发现stale时走successor而非误报compile failure；
@@ -248,7 +272,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 
 ### 3.15 Privacy 与 Retention
 
-- privacy purge覆盖raw、state/events/snapshots、artifact/ref map/messageMeta、Semantic IR、compiled proposal、diagnostics/notifications、RAG和debug store；
+- privacy purge覆盖raw、state/events/snapshots、base/expanded artifact、ref map/messageMeta、unable/Semantic result、compiled proposal、diagnostics/notifications、RAG和debug store；
 - 任一store残留时operation不completed；
 - 普通forget不执行privacy delete；
 - 无tombstone表不削弱purge verification；
@@ -263,7 +287,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 2. Profile support-only归纳且无typed metadata；
 3. Todo direct relative日期与support-only relative失败；
 4. Provider schema repair后refs不变；
-5. compile后crash恢复不重复LLM；
+5. unable扩窗后crash复用expanded messageMeta，compile后crash恢复不重复LLM；
 6. capacity→Semantic merge→compile→original compiled replay；
 7. source edit→generation rebuild；
 8. active forget后rebuild允许复活；

@@ -131,7 +131,7 @@ Reducer 不再执行 evidenceKind policy、quote matching、new-batch gate、Pro
 
 - 当前 state 使用扁平 `sourceRefs: [{messageId, contentHash}]`；不保存 evidenceKind、quote、证据组或 Memory-to-Memory 图。
 - support ref 在编译时展开为 raw source refs，最终只持久化 raw provenance。
-- update/correct 保留目标旧 provenance并与本 change sources 合并去重。
+- item update/correct 保留目标旧 provenance并与本 change sources 合并去重；scene set/correct 使用本 change sources替换 field provenance。
 - merge 继承所有 source items 的 provenance。
 - `correct` 与 `update` 编译成同一个持久化 op，不保留独立诊断差异。
 - 所有 item section 都允许 explicit forget；Scene forget 等价于清空目标 field。
@@ -153,7 +153,7 @@ Reducer 不再执行 evidenceKind policy、quote matching、new-batch gate、Pro
 - per-target healthy/retry_wait/capacity_blocked/halted/rebuilding；
 - GapBridge、RAG projection coverage、diagnostic projection 与恢复通知。
 
-2.01 新增 durable 阶段：Renderer artifact、Semantic result 和 compiled proposal 均需在跨越不可重复边界前持久化。确定性 compile failure 不推进 cursor；若先发现 state/generation/cursor 已变化，使用既有 stale/successor 语义。
+2.01 新增 durable 阶段：base/expanded Renderer artifact、unable/compiler-ready Semantic result 和 compiled proposal 均需在跨越不可重复边界前持久化。Unable result 使用独立阶段且不得进入 Compiler；确定性 compile failure 不推进 cursor；若先发现 state/generation/cursor 已变化，使用既有 stale/successor 语义。
 
 ## 8. 上下文边界
 
