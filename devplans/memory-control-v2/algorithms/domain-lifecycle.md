@@ -4,10 +4,10 @@
 
 ## 1. 时间输入与日历运算
 
-Semantic Todo 的 `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`，或只含一个单位的 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`。`days` 允许大于等于 0，`months` / `years` 必须大于 0；今天规范表示为 `days=0`。Compiler 在生成 persistent Patch 前把两者解析为 ISO timestamp，Reducer 不接收未规范化表达式。
+Semantic Todo 的 `dueAt` 表达式为 `{ "mode": "absolute", "date": "YYYY-MM-DD" }`、只含一个单位的 `{ "mode": "relative", "days": N }` / `{ "months": N }` / `{ "years": N }`，或 `{ "mode": "dayOfMonth", "day": 1..31 }`。`days` 允许大于等于 0，`months` / `years` 必须大于 0；今天规范表示为 `days=0`。Compiler 在生成 persistent Patch 前把它们解析为 ISO timestamp，Reducer 不接收未规范化表达式。
 
 - absolute date 的 deadline 是该日期在用户时区下结束后的首个日界线（即用户时区次日 00:00）；用户时区从 User 字段读取并在 task 创建时固化，默认 UTC。
-- relative deadline 必须显式携带 `anchorMessageId`，且该 ID 必须属于同一 Semantic change 的直接 `evidenceMessageIds`。Compiler 以该消息经数据库复核的 `createdAt` 为 anchor，先取得该 instant 在用户时区下的本地日历日期，再增加唯一的 relative 单位。support-only change 不得生成 relative deadline。
+- relative/dayOfMonth deadline 必须显式携带 `anchorMessageId`，且该 ID 必须属于同一 Semantic change 的直接 `evidenceMessageIds`。Compiler 以该消息经数据库复核的 `createdAt` 为 anchor，先取得该 instant 在用户时区下的本地日历日期；relative 增加唯一时长单位，dayOfMonth 选择 anchor 当天或之后最近一次存在该日号的月份。support-only change 不得生成消息锚定 deadline。
 - relative `months`/`years` 运算遵循日历月规则：若结果日期不存在（如 1 月 31 日 + 1 个月），取目标月的最后一天（2 月 28 日或 29 日）。
 - relative 运算不保留 anchor 的时、分、秒和毫秒，统一解析为目标日期结束后的首个日界线。该日界线落入 DST overlap 时选择较早 instant；落入 DST gap 时按 transition gap 向后顺延，采用 Temporal `compatible` 的确定性 disambiguation。
 - 禁止使用 task/worker 执行时间作 anchor。

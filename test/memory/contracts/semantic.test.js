@@ -233,6 +233,45 @@ test("Compiler resolves relative Todo dates from the explicit direct-message anc
   assert.equal(contracts.validateSemanticResult(semanticResult, artifact).ok, false);
 });
 
+test("Compiler resolves a Todo day-of-month from message time and the frozen user time zone", async () => {
+  const state = contracts.createInitialMemoryState();
+  state.meta.targetCursors.todos = 10;
+  const anchor = message(11, "user", "咱们9号出去看电影吧。", "2026-07-22T16:30:00.000Z");
+  const artifact = buildProposerTaskArtifact({
+    state,
+    intent: { targetKey: "todos", proposer: "todoProposer", cursorBefore: 10 },
+    messages: [anchor],
+    now: "2026-08-20T00:00:00.000Z",
+    taskId: "task-todo-day-of-month",
+    tickId: 203,
+    userTimeZone: "Asia/Shanghai",
+  });
+  const compiler = createSemanticCompiler({
+    sourceReader: { async getByIds() { return [{ ...anchor, userId: 9, presetId: "default" }]; } },
+  });
+  const semanticResult = {
+    tickId: 203,
+    proposer: "todoProposer",
+    sectionResults: {
+      todos: { status: "changes", changes: [{
+        action: "add",
+        text: "出去看电影",
+        actor: "both",
+        requester: "user",
+        dueAt: { mode: "dayOfMonth", day: 9 },
+        anchorMessageId: 11,
+        evidenceMessageIds: [11],
+      }] },
+    },
+  };
+  assert.equal(contracts.validateSemanticResult(semanticResult, artifact).ok, true);
+  const compiled = await compiler.compile({ artifact, semanticResult, baseState: state, userId: 9, presetId: "default" });
+  assert.equal(compiled.sectionResults.todos.patches[0].value.dueAt, "2026-08-09T16:00:00.000Z");
+
+  delete semanticResult.sectionResults.todos.changes[0].anchorMessageId;
+  assert.equal(contracts.validateSemanticResult(semanticResult, artifact).ok, false);
+});
+
 test("Compiled Patch uses sourceRefs and permits forget for every item section", () => {
   const ref = source(7, "忘记这条");
   for (const section of contracts.ITEM_SECTIONS) {

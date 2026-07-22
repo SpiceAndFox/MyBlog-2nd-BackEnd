@@ -79,8 +79,9 @@ facet/canonicalKey/factBasis
 - overdue 可 complete/cancel/forget；未来改期使用 update/correct + set；
 - Wall-clock 到期不输出 expire，由 lifecycle 管理；
 - relative dueAt 必须提供属于本 change `evidenceMessageIds` 的 `anchorMessageId`；
-- support-only change 不得生成 relative date；已有 absolute deadline 可以直接表达或 keep；
-- 不用 task.now/worker 时间补全相对日期。
+- 只有日号、没有明确年月时输出 `{mode:"dayOfMonth",day:1..31}`，并同样提供 direct `anchorMessageId`；Compiler 选择消息本地日期当天或之后最近一次有效的目标日号；
+- support-only change 不得生成 relative/dayOfMonth date；已有 absolute deadline 可以直接表达或 keep；
+- 不用 task.now、worker/Provider 时间补全日期；其他无法结构化的模糊日期保留在 text 并省略 dueAt。
 
 ## 6. agreementProposer
 

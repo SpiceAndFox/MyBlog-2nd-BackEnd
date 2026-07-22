@@ -12,11 +12,31 @@ function taskRow(overrides = {}) {
   const envelope = {
     task: {
       taskId: "00000000-0000-4000-8000-000000000001",
+      tickId: 1,
       proposer: "episodeProposer",
+      targetKey: "episodes",
       targetSections: ["recentEpisodes", "milestones"],
+      cursorBefore: 0,
+      targetMessageId: 1,
+      now: "2026-07-19T00:00:01.000Z",
+      userTimeZone: "Asia/Shanghai",
     },
     artifact: {
-      publicInput: { task: {}, memoryText: "", messages: [{ id: 1, role: "user", content: "hello", createdAt: "2026-07-19T00:00:00.000Z" }] },
+      publicInput: {
+        task: {
+          taskId: "00000000-0000-4000-8000-000000000001",
+          tickId: 1,
+          proposer: "episodeProposer",
+          targetKey: "episodes",
+          targetSections: ["recentEpisodes", "milestones"],
+          cursorBefore: 0,
+          targetMessageId: 1,
+          now: "2026-07-19T00:00:01.000Z",
+          userTimeZone: "Asia/Shanghai",
+        },
+        memoryText: "",
+        messages: [{ id: 1, role: "user", content: "hello", createdAt: "2026-07-19T00:00:00.000Z" }],
+      },
       refMap: { writable: {}, readOnly: {} },
       messageMeta: { "1": { role: "user", createdAt: "2026-07-19T00:00:00.000Z", contentHash: `sha256:${"a".repeat(64)}` } },
     },
@@ -77,6 +97,9 @@ test("Memory task GUI reconstructs current provider request and persisted output
   assert.equal(task.input.currentPrompt, "prompt");
   assert.deepEqual(task.input.responseSchema.sections, ["recentEpisodes", "milestones"]);
   assert.equal(task.input.effectiveEnvelope.task.proposer, "episodeProposer");
+  assert.equal(task.input.providerUserPayload.task.userTimeZone, "Asia/Shanghai");
+  assert.equal(Object.prototype.hasOwnProperty.call(task.input.providerUserPayload.task, "taskId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(task.input.providerUserPayload.task, "now"), false);
   assert.equal(task.output.availability, "persisted");
   assert.equal(task.output.semanticResult.proposer, "episodeProposer");
   assert.equal(task.output.compiledProposal.proposer, "episodeProposer");

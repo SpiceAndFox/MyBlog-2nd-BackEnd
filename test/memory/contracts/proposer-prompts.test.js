@@ -65,7 +65,9 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
   assert.match(prompt, /目标未显示.*unable_to_decide/s, "todoProposer must not guess hidden overdue refs");
   assert.match(prompt, /不生成.*status.*becameOverdueAt/s, "todoProposer must treat lifecycle fields as reducer-owned");
   assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
-  assert.match(prompt, /相对日期必须且只能有一个|relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
+  assert.match(prompt, /相对(?:日期|时长)必须且只能有一个|relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
+  assert.match(prompt, /dayOfMonth.*day.*1\.\.31/s, "todoProposer must represent an incomplete day-of-month without guessing a full date");
+  assert.match(prompt, /dayOfMonth.*anchorMessageId/s, "todoProposer must anchor day-of-month dates to direct message time");
   assert.match(prompt, /overdue 可完成、取消/s, "todoProposer must allow overdue completion and cancellation");
   assert.match(prompt, /overdue.*不能再次 expire/s, "todoProposer must not expire an already-overdue todo");
   assert.match(prompt, /产出、交付、使用或验收.*complete/s, "todoProposer must recognize implicit completion");

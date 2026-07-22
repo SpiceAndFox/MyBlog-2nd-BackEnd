@@ -128,8 +128,8 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - 所有 item sections接受 add/update/correct/forget Semantic action；
 - scene接受 set/correct/clear/forget；
 - Todo/Agreement领域 terminal actions shape正确；
-- relative Todo要求 anchorMessageId且属于 direct evidence；
-- support-only relative date schema/compile失败；
+- relative/dayOfMonth Todo要求 anchorMessageId且属于 direct evidence；
+- support-only relative/dayOfMonth date schema/compile失败；
 - Provider输出schema repair最多一次，非法原文不持久化。
 
 ### 3.4 Source Resolution
@@ -149,11 +149,11 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 ### 3.5 Todo 日期
 
 - absolute date按用户时区次日00:00；
-- relative使用显式direct anchor message createdAt，不使用task.now；
+- relative/dayOfMonth 使用显式 direct anchor message createdAt，不使用 task.now；dayOfMonth 覆盖当月、跨月、无效月日与时区边界；
 - `days=0`、month-end、leap year、DST gap/overlap；
 - anchor不在direct IDs中 `date_anchor_invalid`；
-- support-only relative失败；
-- Compiler输出ISO dueAt，Reducer不接收relative表达式；
+- support-only relative/dayOfMonth 失败；
+- Compiler输出ISO dueAt，Reducer不接收未规范化日期表达式；
 - rebuild发生在deadline后仍能写入并由lifecycle转overdue。
 
 ### 3.6 Action 编译
@@ -290,7 +290,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 
 1. Episode add/update/correct/forget垂直切片；
 2. Profile support-only归纳且无typed metadata；
-3. Todo direct relative日期与support-only relative失败；
+3. Todo direct relative/dayOfMonth 日期与 support-only anchored date 失败；
 4. Provider schema repair后refs不变；
 5. unable扩窗后crash复用expanded messageMeta，compile后crash恢复不重复LLM；
 6. capacity→Semantic merge→compile→original compiled replay；

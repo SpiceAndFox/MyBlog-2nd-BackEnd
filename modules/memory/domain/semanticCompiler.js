@@ -6,6 +6,7 @@ const {
   validateCompiledProposal,
 } = require("../contracts");
 const { resolveDueAt } = require("./calendar");
+const { dueAtRequiresMessageAnchor } = require("../contracts/dueAt");
 
 class SemanticCompileError extends Error {
   constructor(reason, detail = {}) {
@@ -137,7 +138,7 @@ function sourcesForChange(change, artifact, messageById) {
 function resolveSemanticDueAt(expression, change, messageById, task) {
   if (!expression) return null;
   let anchor = task.now;
-  if (expression.mode === "relative") {
+  if (dueAtRequiresMessageAnchor(expression)) {
     if (!change.anchorMessageId || !change.evidenceMessageIds?.includes(change.anchorMessageId)) fail("date_anchor_invalid", { reason: "anchor_not_direct" });
     const message = messageById.get(change.anchorMessageId);
     if (!message) fail("date_anchor_invalid", { reason: "anchor_missing" });

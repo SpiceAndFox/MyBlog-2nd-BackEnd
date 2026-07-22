@@ -206,7 +206,7 @@ Section/op 权限：
 
 不在表中的组合以 `policy_not_allowed` 拒绝。Policy 不读取 source role 或语义原因枚举。
 
-Todo value/dueAt union 沿用既有日历契约，但 relative expression 的 Semantic change 必须带直接 `anchorMessageId`；Compiler 输出 Patch 前已经将其转换为 ISO timestamp。Reducer 不再接收相对表达式。
+Todo value/dueAt union 支持 `absolute | relative | dayOfMonth`；`relative/dayOfMonth` Semantic change 必须带直接 `anchorMessageId`。Compiler 输出 Patch 前已经将其转换为 ISO timestamp，Reducer 不接收未规范化日期表达式。
 
 ## 7. Reducer Reject Reason
 

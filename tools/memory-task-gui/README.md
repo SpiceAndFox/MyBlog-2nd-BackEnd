@@ -14,9 +14,9 @@ npm run gui:memory-v2 -- --port 4318
 
 界面按 scope 和 generation 展示：
 
-- 当前 Prompt、持久化 task envelope 与响应 JSON Schema；
+- 当前 Prompt、按当前代码重建的实际 Provider user payload、完整持久化 task envelope 与响应 JSON Schema；
 - 分支持久化的 `stage_payload.semanticResult` / `stage_payload.unableResult` 与 `stage_payload.compiledProposal`；
-- 由 immutable base artifact 和 `stage_payload.expandedArtifact` 重建的 expanded Provider 输入；
+- 由 immutable base artifact 和 `stage_payload.expandedArtifact` 重建的 effective 输入及其 Provider 投影；
 - task 状态、重试、context expansion、ops 与 Schema 错误。
 
 服务只监听 `127.0.0.1`，API 只执行参数化 `SELECT`。Prompt 未随 task 保存，因此界面展示的是当前工作区版本。无效的 Provider 原始输出按现有隐私设计不会落库，界面只能显示已持久化的校验错误。

@@ -1,6 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createMemoryProviderAdapter, createMockMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
+const {
+  buildProposerUserPayload,
+  createMemoryProviderAdapter,
+  createMockMemoryProviderAdapter,
+} = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { envelope } = require("../support/provider-envelopes");
 
 test("Provider Adapter accepts valid native structured output", async () => {
@@ -66,5 +70,9 @@ test("Provider Adapter appends bounded schema repair feedback without replaying 
   assert.match(request.systemPrompt, /\[SCHEMA_REPAIR\]/);
   assert.match(request.systemPrompt, /dueAt.*days must be non-negative/s);
   assert.doesNotMatch(request.systemPrompt, /rawInvalidOutput/);
-  assert.deepEqual(request.userPayload, envelope().artifact.publicInput);
+  assert.deepEqual(request.userPayload, buildProposerUserPayload(envelope()));
+  assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "taskId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "now"), false);
+  assert.equal(request.userPayload.task.userTimeZone, "UTC");
+  assert.equal(request.userPayload.messages[0].createdAt, "2026-07-12T00:00:00.000Z");
 });

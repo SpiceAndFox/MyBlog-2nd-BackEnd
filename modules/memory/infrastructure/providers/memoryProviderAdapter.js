@@ -33,6 +33,25 @@ function validateSemanticEnvelope(envelope) {
   return { ok: errors.length === 0, errors };
 }
 
+function buildProposerUserPayload(envelope) {
+  const publicInput = envelope?.artifact?.publicInput;
+  const task = publicInput?.task;
+  if (!publicInput || !task) throw new Error("semantic task public input is required");
+  return {
+    task: {
+      tickId: task.tickId,
+      proposer: task.proposer,
+      targetKey: task.targetKey,
+      targetSections: structuredClone(task.targetSections),
+      cursorBefore: task.cursorBefore,
+      targetMessageId: task.targetMessageId,
+      userTimeZone: task.userTimeZone,
+    },
+    memoryText: publicInput.memoryText,
+    messages: structuredClone(publicInput.messages),
+  };
+}
+
 function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
@@ -48,7 +67,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         response = await invokeStructured({
           proposer: task.proposer,
           systemPrompt: schemaRepairPrompt(basePrompt, repairFeedback),
-          userPayload: envelope.artifact.publicInput,
+          userPayload: buildProposerUserPayload(envelope),
           responseSchema: schema,
         });
       } catch (error) {
@@ -92,6 +111,7 @@ function createMockMemoryProviderAdapter({ outputs, promptLoader = async () => "
 module.exports = {
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
+  buildProposerUserPayload,
   validateSemanticEnvelope,
   schemaRepairPrompt,
   ERROR_REASONS,

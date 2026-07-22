@@ -18,6 +18,7 @@ function matchesSchema(schema, value) {
   if (schema.type === "integer" && !Number.isSafeInteger(value)) return false;
   if (schema.type === "string" && typeof value !== "string") return false;
   if (schema.minimum !== undefined && value < schema.minimum) return false;
+  if (schema.maximum !== undefined && value > schema.maximum) return false;
   if (schema.pattern && !new RegExp(schema.pattern).test(value)) return false;
   return true;
 }
@@ -29,6 +30,13 @@ test("Provider dueAt schema and local validator agree on canonical structural bo
     [{ mode: "relative", days: 1 }, true],
     [{ mode: "relative", months: 1 }, true],
     [{ mode: "relative", years: 1 }, true],
+    [{ mode: "dayOfMonth", day: 9 }, true],
+    [{ mode: "dayOfMonth", day: 1 }, true],
+    [{ mode: "dayOfMonth", day: 31 }, true],
+    [{ mode: "dayOfMonth", day: 0 }, false],
+    [{ mode: "dayOfMonth", day: 32 }, false],
+    [{ mode: "dayOfMonth" }, false],
+    [{ mode: "dayOfMonth", day: 9, month: 8 }, false],
     [{ mode: "relative", days: -1 }, false],
     [{ mode: "relative", months: 0 }, false],
     [{ mode: "relative", years: 0 }, false],
@@ -36,6 +44,7 @@ test("Provider dueAt schema and local validator agree on canonical structural bo
     [{ mode: "relative", days: 1, months: 1 }, false],
     [{ mode: "relative", days: 0, months: 0 }, false],
     [{ mode: "relative", hours: 1 }, false],
+    [{ mode: "calendarDay", day: 9 }, false],
     [null, false],
     ["today", false],
   ];

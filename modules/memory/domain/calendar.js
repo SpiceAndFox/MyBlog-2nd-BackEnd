@@ -57,6 +57,14 @@ function localPartsToInstant(parts, timeZone) {
 
 function daysInMonth(year, month) { return new Date(Date.UTC(year, month, 0)).getUTCDate(); }
 
+function endOfLocalDate(year, month, day, timeZone) {
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+  return localPartsToInstant({
+    year: nextDay.getUTCFullYear(), month: nextDay.getUTCMonth() + 1,
+    day: nextDay.getUTCDate(), hour: 0, minute: 0, second: 0, fractionalSecond: 0,
+  }, timeZone);
+}
+
 function addCalendarDuration(anchor, duration, timeZone = "UTC") {
   const local = partsAt(anchor, timeZone);
   const years = duration.years || 0;
@@ -77,14 +85,25 @@ function addCalendarDuration(anchor, duration, timeZone = "UTC") {
   }, timeZone);
 }
 
-function resolveDueAt(expression, anchor, timeZone = "UTC") {
-  if (expression.mode === "relative") return addCalendarDuration(anchor, expression, timeZone);
-  const [year, month, day] = expression.date.split("-").map(Number);
-  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
-  return localPartsToInstant({
-    year: nextDay.getUTCFullYear(), month: nextDay.getUTCMonth() + 1,
-    day: nextDay.getUTCDate(), hour: 0, minute: 0, second: 0,
-  }, timeZone);
+function nextDayOfMonth(anchor, day, timeZone = "UTC") {
+  if (!Number.isSafeInteger(day) || day < 1 || day > 31) throw new Error("dayOfMonth must be between 1 and 31");
+  const local = partsAt(anchor, timeZone);
+  for (let offset = 0; offset <= 12; offset += 1) {
+    const monthIndex = local.year * 12 + (local.month - 1) + offset;
+    const year = Math.floor(monthIndex / 12);
+    const month = ((monthIndex % 12) + 12) % 12 + 1;
+    if (day > daysInMonth(year, month)) continue;
+    if (offset === 0 && day < local.day) continue;
+    return endOfLocalDate(year, month, day, timeZone);
+  }
+  throw new Error("dayOfMonth has no resolvable calendar occurrence");
 }
 
-module.exports = { partsAt, localPartsToInstant, addCalendarDuration, resolveDueAt };
+function resolveDueAt(expression, anchor, timeZone = "UTC") {
+  if (expression.mode === "relative") return addCalendarDuration(anchor, expression, timeZone);
+  if (expression.mode === "dayOfMonth") return nextDayOfMonth(anchor, expression.day, timeZone);
+  const [year, month, day] = expression.date.split("-").map(Number);
+  return endOfLocalDate(year, month, day, timeZone);
+}
+
+module.exports = { partsAt, localPartsToInstant, addCalendarDuration, nextDayOfMonth, resolveDueAt };

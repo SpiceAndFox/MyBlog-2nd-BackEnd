@@ -33,7 +33,7 @@ update/correct 的 dueChange 必须是 `{mode:"keep"}`、`{mode:"clear"}` 或 `{
 
 ## 日期
 
-完整日期用 `{mode:"absolute",date:"YYYY-MM-DD"}`。相对日期必须且只能有一个 `days>=0 | months>=1 | years>=1`；今天 days=0，明天 days=1。relative 必须提供 `anchorMessageId`，且该 ID 必须同时出现在本 change 的 `evidenceMessageIds`；support-only change 不能产生 relative date。不要由 task.now 或现实日期猜测不完整日期；日期不确定时 add 可省略 dueAt。承接回答可继承相邻消息的明确日期，并将实际日期来源消息作为直接 evidence 与 anchor。
+完整日期用 `{mode:"absolute",date:"YYYY-MM-DD"}`。相对时长必须且只能有一个 `days>=0 | months>=1 | years>=1`；今天 days=0，明天 days=1。只有日号、没有明确年月时使用 `{mode:"dayOfMonth",day:1..31}`，表示以来源消息的本地日期为锚点，选择当天或之后最近一次有效的该日号；例如“9号”使用 dayOfMonth=9，不猜成完整日期。`relative` 和 `dayOfMonth` 都必须提供 `anchorMessageId`，且该 ID 必须同时出现在本 change 的 `evidenceMessageIds`；support-only change 不能产生这两类日期。不要由 task.now、Provider 调用时间或现实日期补全日期；承接回答可继承相邻消息中明确的完整日期，并将实际日期来源消息作为 direct evidence。仍无法结构化的日期表达保留在 text 中并省略 dueAt。
 
 明确请求、承诺、接受或确定共同计划才准入。愿望、假设、普通问答、当场已完成指令、持续规则和无 pending 行动的闲聊都输出 noop。已明确产出、交付、使用或验收可 complete，不要求出现“完成”字样。同义事项不重复 add，text 使用简短行动短语。
 

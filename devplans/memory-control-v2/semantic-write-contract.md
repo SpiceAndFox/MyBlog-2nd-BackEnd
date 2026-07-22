@@ -70,7 +70,7 @@ Normal task 创建时必须一次性生成并持久化以下 artifact：
 }
 ```
 
-只有 `publicInput` 发送给 LLM。`refMap`、`messageMeta`、真实 itemId 和 provenance 只保存在受控 durable payload 中，供 Compiler 与 Validator 使用。首次调用使用 `task_payload` 中的 base artifact；若发生 context expansion，则使用 §3.3 定义的 durable expanded artifact。最终 Semantic result 必须同时固化其 `semanticInputVariant=base|expanded`，Compiler 只能读取对应 variant 的 public input 与 message metadata。
+Provider user payload 从 effective `publicInput` 显式投影：保留 `tickId/proposer/targetKey/targetSections/cursorBefore/targetMessageId/userTimeZone`、`memoryText` 和完整 public messages，不发送 `taskId` 与 `task.now`。完整 `publicInput` 仍作为 durable artifact 保存。`refMap`、`messageMeta`、真实 itemId 和 provenance 只保存在受控 durable payload 中，供 Compiler 与 Validator 使用。首次调用使用 `task_payload` 中的 base artifact；若发生 context expansion，则使用 §3.3 定义的 durable expanded artifact。最终 Semantic result 必须同时固化其 `semanticInputVariant=base|expanded`，Compiler 只能读取对应 variant 的 public input 与 message metadata。
 
 ### 3.2 可读渲染
 
@@ -215,20 +215,20 @@ Normal Proposer 保留 per-section 终局：
 
 - Todo add：`text`、`actor`、`requester`，可选 `dueAt`；
 - Todo update/correct：允许 `text`、`actor`、`requester` 和必填 `dueChange`；
-- Todo `dueAt`/`dueChange.set` 使用现有 absolute/relative 判别 union；
+- Todo `dueAt`/`dueChange.set` 使用 `absolute | relative | dayOfMonth` 判别 union；
 - standing agreement、episode、milestone、world fact、Profile、relationship 的 add/update/correct 只需要 `text`；
 - Profile/Relationship 不包含 `facet`、`canonicalKey` 或 `factBasis`；
 - scene set/correct 提供目标 field ref 和 `text`；clear/forget 只提供目标 field ref；
 - compaction change 为 `{ action:"merge", refs:[...], text }`，不提供 evidence/support；来源由 Reducer 从 source items 继承。
 
-### 4.5 Todo 相对日期 anchor
+### 4.5 Todo 消息锚定日期
 
-Relative Todo 日期必须额外提供 `anchorMessageId`：
+`relative` 与 `dayOfMonth` Todo 日期必须额外提供 `anchorMessageId`：
 
 - 必须属于同 change 的 `evidenceMessageIds`；
-- Compiler 使用该消息的数据库 `createdAt` 和 task 固化的用户时区做日历运算；
+- Compiler 使用该消息的数据库 `createdAt` 和 task 固化的用户时区做日历运算；`dayOfMonth` 选择 anchor 本地日期当天或之后最近一次有效的目标日号；
 - 禁止用 task/worker 当前时间；
-- support-only change 不得产生 relative date，只能使用已经规范化的 absolute date，或不改变期限；
+- support-only change 不得产生消息锚定日期，只能使用已经规范化的 absolute date，或不改变期限；
 - absolute date 不需要 anchor。
 
 ## 5. Deterministic Compiler
@@ -313,7 +313,7 @@ supportRef
 - `semantic_schema_invalid`：Semantic IR 不符合领域 schema；属于 Provider 输出边界错误，可使用现有一次 schema repair。
 - `ref_resolution_failed`：目标或 support ref 无法解析；确定性失败，不盲重试。
 - `source_validation_failed`：source 不存在、scope/hash/metadata 不一致；确定性失败。
-- `date_anchor_invalid`：relative date 缺少合法直接 anchor；确定性失败。
+- `date_anchor_invalid`：relative/dayOfMonth date 缺少合法直接 anchor，或日期无法确定性解析；确定性失败。
 - `compile_invariant_failed`：Compiler 内部不变量错误。
 
 确定性 compile 失败不推进 cursor、不产生 revision/snapshot/event；task failed、对应 target halted并写 ops log。若失败前发现 generation/revision/cursor 已变化，则优先走既有 stale/successor 规则，不记录为 compile failure。

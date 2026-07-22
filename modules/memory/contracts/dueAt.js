@@ -5,6 +5,11 @@ const RELATIVE_DUE_UNITS = Object.freeze({
   months: Object.freeze({ minimum: 1 }),
   years: Object.freeze({ minimum: 1 }),
 });
+const MESSAGE_ANCHORED_DUE_MODES = Object.freeze(["relative", "dayOfMonth"]);
+
+function dueAtRequiresMessageAnchor(value) {
+  return MESSAGE_ANCHORED_DUE_MODES.includes(value?.mode);
+}
 
 function validCalendarDate(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -15,8 +20,8 @@ function validCalendarDate(value) {
 
 function validateDueAtExpression(value) {
   const errors = [];
-  if (!isPlainObject(value) || !["absolute", "relative"].includes(value.mode)) {
-    return [{ path: "$", message: "must be an absolute or relative due expression" }];
+  if (!isPlainObject(value) || !["absolute", "relative", "dayOfMonth"].includes(value.mode)) {
+    return [{ path: "$", message: "must be an absolute, relative, or dayOfMonth due expression" }];
   }
   if (value.mode === "absolute") {
     const keys = Object.keys(value);
@@ -24,6 +29,17 @@ function validateDueAtExpression(value) {
     ["mode", "date"].filter((key) => !Object.prototype.hasOwnProperty.call(value, key)).forEach((key) => errors.push({ path: `$.${key}`, message: "is required" }));
     if (Object.prototype.hasOwnProperty.call(value, "date") && !validCalendarDate(value.date)) {
       errors.push({ path: "$.date", message: "must be a valid YYYY-MM-DD calendar date" });
+    }
+    return errors;
+  }
+
+  if (value.mode === "dayOfMonth") {
+    const keys = Object.keys(value);
+    keys.filter((key) => !["mode", "day"].includes(key)).forEach((key) => errors.push({ path: `$.${key}`, message: "is not allowed" }));
+    ["mode", "day"].filter((key) => !Object.prototype.hasOwnProperty.call(value, key)).forEach((key) => errors.push({ path: `$.${key}`, message: "is required" }));
+    if (Object.prototype.hasOwnProperty.call(value, "day")
+      && (!Number.isSafeInteger(value.day) || value.day < 1 || value.day > 31)) {
+      errors.push({ path: "$.day", message: "must be a safe integer between 1 and 31" });
     }
     return errors;
   }
@@ -61,7 +77,23 @@ function buildDueAtSchema() {
       [unit]: { type: "integer", minimum },
     },
   }));
-  return { oneOf: [absolute, ...relative] };
+  const dayOfMonth = {
+    type: "object",
+    additionalProperties: false,
+    required: ["mode", "day"],
+    properties: {
+      mode: { const: "dayOfMonth" },
+      day: { type: "integer", minimum: 1, maximum: 31 },
+    },
+  };
+  return { oneOf: [absolute, ...relative, dayOfMonth] };
 }
 
-module.exports = { RELATIVE_DUE_UNITS, validCalendarDate, validateDueAtExpression, buildDueAtSchema };
+module.exports = {
+  RELATIVE_DUE_UNITS,
+  MESSAGE_ANCHORED_DUE_MODES,
+  dueAtRequiresMessageAnchor,
+  validCalendarDate,
+  validateDueAtExpression,
+  buildDueAtSchema,
+};

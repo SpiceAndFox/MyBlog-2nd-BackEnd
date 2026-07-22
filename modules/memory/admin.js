@@ -21,6 +21,7 @@ const { createSemanticCompiler } = require("./application/semanticCompiler");
 const {
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
+  buildProposerUserPayload,
   schemaRepairPrompt,
 } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
@@ -82,6 +83,7 @@ module.exports = Object.freeze({
   buildMigrationEvidence,
   buildNormalEnvelope,
   buildOutputSchema,
+  buildProposerUserPayload,
   buildProposerTaskArtifact,
   contracts,
   createMemoryAdministration,

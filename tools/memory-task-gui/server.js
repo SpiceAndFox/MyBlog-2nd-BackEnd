@@ -5,6 +5,7 @@ const path = require("node:path");
 const {
   loadProposerPrompt,
   buildOutputSchema,
+  buildProposerUserPayload,
   schemaRepairPrompt,
 } = require("../../modules/memory/admin");
 
@@ -118,6 +119,7 @@ function reconstructEffectiveEnvelope(taskPayload, stagePayload, contextExpansio
 async function hydrateTask(row, dependencies = {}) {
   const promptLoader = dependencies.promptLoader || loadProposerPrompt;
   const schemaBuilder = dependencies.schemaBuilder || buildOutputSchema;
+  const userPayloadBuilder = dependencies.userPayloadBuilder || buildProposerUserPayload;
   const repairPromptBuilder = dependencies.repairPromptBuilder || schemaRepairPrompt;
   const taskPayload = row.task_payload || null;
   const stagePayload = row.stage_payload || null;
@@ -131,6 +133,7 @@ async function hydrateTask(row, dependencies = {}) {
   const repairFeedback = stagePayload?.schemaRepairFeedback || null;
   let currentPrompt = null;
   let currentRepairPrompt = null;
+  let providerUserPayload = null;
   let responseSchema = null;
   let reconstructionError = semanticInputVariant === "expanded" && !effectiveEnvelope
     ? "Expanded task artifact is missing from durable state"
@@ -140,6 +143,7 @@ async function hydrateTask(row, dependencies = {}) {
     try {
       currentPrompt = await promptLoader(proposer);
       currentRepairPrompt = repairFeedback ? repairPromptBuilder(currentPrompt, repairFeedback) : null;
+      providerUserPayload = effectiveEnvelope ? userPayloadBuilder(effectiveEnvelope) : null;
       responseSchema = schemaBuilder(proposer, targetSections);
     } catch (error) {
       reconstructionError = String(error?.message || error);
@@ -181,6 +185,7 @@ async function hydrateTask(row, dependencies = {}) {
       expandedArtifact,
       semanticInputVariant,
       effectiveEnvelope,
+      providerUserPayload,
       currentPrompt,
       currentRepairPrompt,
       responseSchema,

@@ -2,7 +2,7 @@ const {
   TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS,
 } = require("./constants");
 const { isPlainObject, isIsoTimestamp } = require("./state");
-const { validateDueAtExpression } = require("./dueAt");
+const { dueAtRequiresMessageAnchor, validateDueAtExpression } = require("./dueAt");
 
 const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const NORMAL_RESULT_STATUSES = Object.freeze(["changes", "noop", "unable_to_decide"]);
@@ -244,11 +244,11 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
       if (change.dueChange === undefined) add(errors, `${path}.dueChange`, "is required for todo update/correct");
       else validateDueChange(change.dueChange, `${path}.dueChange`, errors);
     }
-    const relative = change.dueAt?.mode === "relative" || change.dueChange?.dueAt?.mode === "relative";
-    if (relative) {
-      if (!positiveInteger(change.anchorMessageId)) add(errors, `${path}.anchorMessageId`, "is required for a relative date");
+    const anchored = dueAtRequiresMessageAnchor(change.dueAt) || dueAtRequiresMessageAnchor(change.dueChange?.dueAt);
+    if (anchored) {
+      if (!positiveInteger(change.anchorMessageId)) add(errors, `${path}.anchorMessageId`, "is required for a message-anchored date");
       else if (!change.evidenceMessageIds?.includes(change.anchorMessageId)) add(errors, `${path}.anchorMessageId`, "must belong to evidenceMessageIds");
-    } else if (change.anchorMessageId !== undefined) add(errors, `${path}.anchorMessageId`, "is only allowed for a relative date");
+    } else if (change.anchorMessageId !== undefined) add(errors, `${path}.anchorMessageId`, "is only allowed for a message-anchored date");
   }
 }
 
