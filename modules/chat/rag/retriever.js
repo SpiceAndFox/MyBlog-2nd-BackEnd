@@ -1,7 +1,7 @@
 const { chatRagConfig } = require("../../../config");
 const { logger } = require("../../../logger");
-const { createEmbeddings } = require("../../llm/embeddings");
-const { rerankDocuments } = require("../../llm/reranker");
+const { createEmbeddings } = require("../../../services/llm/embeddings");
+const { rerankDocuments } = require("../../../services/llm/reranker");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const { generateSceneRecallForSource } = require("./sceneRecall");
 const chatRagRepo = require("./repo");

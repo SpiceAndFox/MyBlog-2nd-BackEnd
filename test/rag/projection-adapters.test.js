@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildTurns } = require("../../services/chat/rag/projectionAdapters");
+const { buildTurns } = require("../../modules/chat/rag/projectionAdapters");
 
 test("RAG projection append includes a user message immediately before the checkpoint", () => {
   const messages = [

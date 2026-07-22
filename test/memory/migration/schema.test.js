@@ -34,7 +34,7 @@ test("fresh RAG schema includes the embedding text required by the v2 projection
 
 test("privacy recovery schema survives preset deletion and RAG verification checks exact live source refs", () => {
   const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/007-privacy-operation-recovery.sql"), "utf8");
-  const ragRepository = fs.readFileSync(path.join(__dirname, "../../../services/chat/rag/repo.js"), "utf8");
+  const ragRepository = fs.readFileSync(path.join(__dirname, "../../../modules/chat/rag/repo.js"), "utf8");
   assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_memory_privacy_operations/i);
   assert.doesNotMatch(migration, /REFERENCES\s+chat_prompt_presets/i);
   assert.match(ragRepository, /jsonb_array_elements/);

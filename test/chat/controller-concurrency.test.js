@@ -162,7 +162,7 @@ replaceModule("../../config", {
   chatRagConfig: { enabled: true, debugIncludeContent: false },
 });
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
-replaceModule("../../services/chat/rag/indexer", { requestChatTurnIndexing() {}, requestDeleteChunksFromMessageId() {} });
+replaceModule("../../modules/chat/rag/indexer", { requestChatTurnIndexing() {}, requestDeleteChunksFromMessageId() {} });
 const testLogger = { debug() {}, warn() {}, error() {} };
 replaceModule("../../logger", { logger: testLogger, withRequestContext: (_req, value) => value });
 const providerCatalog = {

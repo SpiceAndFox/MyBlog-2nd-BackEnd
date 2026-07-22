@@ -4,7 +4,7 @@ function loadProjectionDependencies() {
   return {
     db: require("../../../db"),
     chatRagConfig: require("../../../config").chatRagConfig,
-    createEmbeddings: require("../../llm/embeddings").createEmbeddings,
+    createEmbeddings: require("../../../services/llm/embeddings").createEmbeddings,
     chunker: require("./chunker"),
     chatRagRepo: require("./repo"),
   };

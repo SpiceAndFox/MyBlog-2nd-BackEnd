@@ -17,7 +17,7 @@ const {
   installLegacyAuthBindings,
 } = require("../../modules/auth");
 const { createMemoryModule } = require("../../modules/memory");
-const { createChatMemoryAdapters, createChatScopeCoordinator } = require("../../modules/chat");
+const { createChatMemoryAdapters, createChatScopeCoordinator, configureProductionModelPolicy } = require("../../modules/chat");
 const { createRequestLogger } = require("../../middleware/requestLogger");
 const {
   createHealthState,
@@ -29,8 +29,6 @@ const { createArticleTempImageCleanup } = require("../../modules/blog");
 const { createChatComposition } = require("./chat");
 const { configureProviderEnvironment } = require("../../services/llm/providers");
 const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
-const { configureProductionModelPolicy } = require("../../services/chat/productionModelPolicy");
-
 function createApplicationComposition({ environment, loadDotenv, adapters = {} } = {}) {
   const startupEnvironment = loadEnvironment({
     environment: environment || process.env,

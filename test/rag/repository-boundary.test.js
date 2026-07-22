@@ -25,7 +25,7 @@ function fake(request, exports) {
 fake("../../db", database);
 fake("../../config", { chatRagConfig: {} });
 
-const { listMessagesAroundChunk } = require("../../services/chat/rag/repo");
+const { listMessagesAroundChunk } = require("../../modules/chat/rag/repo");
 
 test("dialogue lookup forwards and enforces the effective retrieval cutoff", async () => {
   const messages = await listMessagesAroundChunk({

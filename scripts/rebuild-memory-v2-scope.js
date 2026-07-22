@@ -46,7 +46,7 @@ function createScopedMigration({ database } = {}) {
   const administration = createMemoryAdministrationComposition({ database });
   const config = memory.loadMemoryV2Config(process.env);
   if (!config.enabled) throw new Error("Memory v2 is disabled");
-  const { createChatRagProjectionAdapter } = require("../services/chat/rag/projectionAdapters");
+  const { createChatRagProjectionAdapter } = require("../modules/chat/admin");
   return administration.createMigration({
     config,
     projectionDrains: {

@@ -30,14 +30,14 @@ const config = {
 
 replaceModule("../../config", { chatRagConfig: config, memoryV2Config: { enabled: true } });
 replaceModule("../../logger", { logger: { warn() {}, error() {} } });
-replaceModule("../../services/chat/rag/sceneRecall", { generateSceneRecallForSource: async () => "" });
-replaceModule("../../services/chat/rag/repo", {
+replaceModule("../../modules/chat/rag/sceneRecall", { generateSceneRecallForSource: async () => "" });
+replaceModule("../../modules/chat/rag/repo", {
   searchSimilarChunks: async () => [],
   listMessagesAroundChunk: async () => [],
 });
 replaceModule("../../modules/memory", { listSuppressionTombstones: async () => [] });
 
-const { retrieveChatRagContext } = require("../../services/chat/rag/retriever");
+const { retrieveChatRagContext } = require("../../modules/chat/rag/retriever");
 
 let behavior = "429";
 let server;

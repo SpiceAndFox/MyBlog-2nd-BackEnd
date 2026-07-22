@@ -1,7 +1,7 @@
 const { createChatMemorySourceReader } = require("./memorySourceReader");
 
 function createChatMemoryPrivacyStores({ database } = {}) {
-  const chatRagRepository = require("../../services/chat/rag/repo");
+  const chatRagRepository = require("./rag/repo");
   const { createChatGistRepository } = require("./infrastructure/repositories/gistRepository");
   const { createAvatarStorage, operationAvatarUrls } = require("./infrastructure/avatarStorage");
   const chatMessageGistModel = createChatGistRepository({ database });
@@ -29,7 +29,7 @@ function createChatMemoryPrivacyStores({ database } = {}) {
 }
 
 function createChatMemoryAdapters({ database, scopeCoordinator } = {}) {
-  const { createChatRagProjectionAdapter } = require("../../services/chat/rag/projectionAdapters");
+  const { createChatRagProjectionAdapter } = require("./rag/projectionAdapters");
   if (typeof scopeCoordinator?.enqueueByKey !== "function") throw new Error("Chat scope coordinator is required");
   return Object.freeze({
     sourceReader: createChatMemorySourceReader({ database }),

@@ -19,14 +19,14 @@ fake("../../config", {
 fake("../../logger", { logger: { warn() {}, error() {} } });
 fake("../../services/llm/embeddings", { createEmbeddings: (options) => embed(options) });
 fake("../../services/llm/reranker", { rerankDocuments: async () => [] });
-fake("../../services/chat/rag/sceneRecall", { generateSceneRecallForSource: async () => "" });
-fake("../../services/chat/rag/repo", {
+fake("../../modules/chat/rag/sceneRecall", { generateSceneRecallForSource: async () => "" });
+fake("../../modules/chat/rag/repo", {
   searchSimilarChunks: (options) => search(options),
   listMessagesAroundChunk: async () => [],
 });
 fake("../../modules/memory", { listSuppressionTombstones: async () => [] });
 
-const { retrieveChatRagContext } = require("../../services/chat/rag/retriever");
+const { retrieveChatRagContext } = require("../../modules/chat/rag/retriever");
 
 async function assertDegraded() {
   const result = await retrieveChatRagContext({ userId: 1, presetId: "p", query: "hello", beforeMessageId: 10 });

@@ -4,7 +4,7 @@ const databaseEntry = require("../../db");
 const { createLogger, configureLogger } = require("../../logger");
 const { configureProviderEnvironment } = require("../../services/llm/providers");
 const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
-const { configureProductionModelPolicy } = require("../../services/chat/productionModelPolicy");
+const { configureProductionModelPolicy } = require("../../modules/chat");
 
 function createCommandContext({ environment, loadDotenv } = {}) {
   const loadedEnvironment = loadEnvironment({

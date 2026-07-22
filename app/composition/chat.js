@@ -1,4 +1,4 @@
-const { createAvatarStorage, createChatModule, createChatPersistence } = require("../../modules/chat");
+const { createAvatarStorage, createChatModule, createChatPersistence, isChatModelAllowed } = require("../../modules/chat");
 
 function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, adapters = {} } = {}) {
   if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator) {
@@ -8,9 +8,7 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
   const models = require("../../services/llm/models");
   const settingsSchema = require("../../services/llm/settingsSchema");
   const llmCompletions = require("../../services/llm/chatCompletions");
-  const { isChatModelAllowed } = require("../../services/chat/productionModelPolicy");
-  const { retrieveChatRagContext } = require("../../services/chat/rag/retriever");
-  const { requestChatTurnIndexing, requestDeleteChunksFromMessageId } = require("../../services/chat/rag/indexer");
+  const { retrieveChatRagContext, requestChatTurnIndexing, requestDeleteChunksFromMessageId } = require("../../modules/chat");
   const { createChatController } = require("../../controllers/chatController");
   const { createChatRouter } = require("../../routes/chat");
   const uploadPresetAvatar = require("../../middleware/uploadChatPresetAvatar");

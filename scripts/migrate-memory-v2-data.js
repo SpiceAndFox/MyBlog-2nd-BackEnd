@@ -88,7 +88,7 @@ function createMigration(config, providerTelemetry, dependencies = {}) {
     throw new Error("Memory administration composition is required");
   }
   const createChatRagProjectionAdapter = dependencies.createChatRagProjectionAdapter
-    || require("../services/chat/rag/projectionAdapters").createChatRagProjectionAdapter;
+    || require("../modules/chat/admin").createChatRagProjectionAdapter;
   const projectionDrains = {
     rag: administration.createProjectionDrain("rag", createChatRagProjectionAdapter()),
   };

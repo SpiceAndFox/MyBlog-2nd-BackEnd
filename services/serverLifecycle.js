@@ -1,5 +1,5 @@
 const ALLOWED_HEALTH_STATES = new Set(["starting", "recovering", "ready", "draining", "stopped", "failed"]);
-const { isChatModelAllowed, isMemoryModelAllowed } = require("./chat/productionModelPolicy");
+const { isChatModelAllowed, isMemoryModelAllowed } = require("../modules/chat");
 
 function createHealthState(initial = "starting") {
   let status = initial;

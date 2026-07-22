@@ -1,6 +1,6 @@
 const { chatRagConfig } = require("../../../config");
 const { logger } = require("../../../logger");
-const { createChatCompletion } = require("../../llm/chatCompletions");
+const { createChatCompletion } = require("../../../services/llm/chatCompletions");
 const { renderTemplate, normalizeTemplate } = require("./templates");
 const chatRagRepo = require("./repo");
 

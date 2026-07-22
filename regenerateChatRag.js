@@ -2,8 +2,7 @@
 require("module-alias/register");
 const { createCommandContext } = require("./app/composition/commandContext");
 const { database: db, config: { chatRagConfig, memoryV2Config } } = createCommandContext();
-const { indexChatTurn, deleteChunksFromMessageId } = require("./services/chat/rag/indexer");
-const chatRagRepo = require("./services/chat/rag/repo");
+const { indexChatTurn, deleteChunksFromMessageId, listExistingTurnKeys } = require("./modules/chat/admin");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -251,7 +250,7 @@ function buildTurns(messages, { limit } = {}) {
       console.log("cleared:", result);
     }
 
-    const existingTurnKeys = clear ? new Set() : await chatRagRepo.listExistingTurnKeys({ userId, presetId });
+    const existingTurnKeys = clear ? new Set() : await listExistingTurnKeys({ userId, presetId });
 
     const turnsToIndex = turns.filter((turn) => {
       const turnKey = `${Number(turn.userMessage.id)}-${Number(turn.assistantMessage.id)}`;

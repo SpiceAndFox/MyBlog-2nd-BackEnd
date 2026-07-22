@@ -1,6 +1,6 @@
 const { chatRagConfig, memoryV2Config } = require("../../../config");
 const { logger } = require("../../../logger");
-const { createEmbeddings } = require("../../llm/embeddings");
+const { createEmbeddings } = require("../../../services/llm/embeddings");
 const { buildTurnChunks, buildDocumentEmbeddingText } = require("./chunker");
 const chatRagRepo = require("./repo");
 const { contentHash } = require("./sourceRefs");

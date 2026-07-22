@@ -14,7 +14,7 @@ const {
   loadProductionModelPolicy,
   isChatModelAllowed,
   isMemoryModelAllowed,
-} = require("../../services/chat/productionModelPolicy");
+} = require("../../modules/chat");
 
 function logger(events = []) {
   return {
