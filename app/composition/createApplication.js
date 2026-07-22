@@ -20,7 +20,7 @@ const {
 } = require("../../services/serverLifecycle");
 const { createBackgroundServices } = require("./backgroundServices");
 const { createHttpApplication } = require("./httpApplication");
-const { createArticleTempImageCleanup } = require("../../services/blog/articleTempImageCleanup");
+const { createArticleTempImageCleanup } = require("../../modules/blog");
 const { configureProviderEnvironment } = require("../../services/llm/providers");
 const { configureOpenRouterAttribution } = require("../../services/llm/providers/openrouter/headers");
 const { configureProductionModelPolicy } = require("../../services/chat/productionModelPolicy");

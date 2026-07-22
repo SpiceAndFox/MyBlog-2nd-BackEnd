@@ -13,6 +13,7 @@
 - `db.js` 与 `logger.js` 改为工厂和已装配适配器入口；单纯导入不再创建 Pool、日志目录或清理文件。
 - 命令行工具通过 `commandDatabase` 或 `commandContext` 建立自己的显式装配，不依赖 Server 入口，也不在共享模块中回退读取环境变量。
 - Chat 垃圾清理与 Article 临时图片清理由统一后台服务组启动并按逆序排空；Article Controller 被导入时不再创建目录或 timer。
+- Article 临时图片清理归入 `modules/blog/articles/infrastructure`，composition 只通过 `modules/blog` 公开入口装配；这不展开 Auth/Blog 的其余完整目录迁移。
 
 Memory 运行时实例现在由 composition 发起创建，但 Memory 内部的默认 runtime、具体 repository/projection/privacy/source/user 接线仍按计划留给 C 阶段收紧。
 

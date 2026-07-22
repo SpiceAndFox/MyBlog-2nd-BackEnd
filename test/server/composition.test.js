@@ -7,7 +7,7 @@ const dotenv = require("dotenv");
 const express = require("express");
 const { createApplicationComposition } = require("../../app/composition/createApplication");
 const { createBackgroundServices } = require("../../app/composition/backgroundServices");
-const { createArticleTempImageCleanup } = require("../../services/blog/articleTempImageCleanup");
+const { createArticleTempImageCleanup } = require("../../modules/blog");
 
 function fixtureEnvironment() {
   const environment = dotenv.parse(fs.readFileSync(path.join(__dirname, "../../.env.example")));

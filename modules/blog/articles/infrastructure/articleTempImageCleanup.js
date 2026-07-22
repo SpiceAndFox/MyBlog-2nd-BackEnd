@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const defaultTempDirectory = path.join(__dirname, "..", "..", "uploads", "articles", "content", "tmp");
+const defaultTempDirectory = path.join(__dirname, "..", "..", "..", "..", "uploads", "articles", "content", "tmp");
 
 function createArticleTempImageCleanup({ logger, ttlMs, intervalMs, tempDirectory = defaultTempDirectory } = {}) {
   if (!logger?.warn) throw new Error("Article temp cleanup logger is required");
