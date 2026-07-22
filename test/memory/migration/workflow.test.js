@@ -1,11 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const { createInitialMemoryState, TARGET_KEYS, SCHEMA_VERSION } = require("../../../modules/memory/contracts");
 const { createMemoryMigration } = require("../../../modules/memory/application/migration");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/migration.json"), "utf8"));
+const migrationScenario = Object.freeze({
+  scope: { userId: 7, presetId: "companion" },
+  history: { messageCount: 20, characterCount: 4096, boundaryMessageId: 20 },
+  sourceGeneration: 1,
+  revision: 1,
+});
 
 function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false } = {}) {
   let state = initialAuthority ? createInitialMemoryState() : null;
@@ -28,12 +31,12 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
     source: {
       async getHistoryMetrics() {
         return {
-          ...fixture.history,
-          ...(inventoryChanges && forceDrainCount > 0 ? { messageCount: fixture.history.messageCount + 1 } : {}),
+          ...migrationScenario.history,
+          ...(inventoryChanges && forceDrainCount > 0 ? { messageCount: migrationScenario.history.messageCount + 1 } : {}),
         };
       },
       async getHistoryFingerprint() { return `sha256:${"f".repeat(64)}`; },
-      async getBoundary() { return fixture.history.boundaryMessageId + (verificationFailure === "boundary" ? 1 : 0); },
+      async getBoundary() { return migrationScenario.history.boundaryMessageId + (verificationFailure === "boundary" ? 1 : 0); },
     },
     runtime: { async getTargetStatuses() { return structuredClone(statuses); } },
     audit: {
@@ -41,7 +44,7 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async listSnapshots() { return structuredClone(snapshots); },
       async listRevisionGroups() {
         if (verificationFailure !== "eventChain") return [];
-        return [{ base_revision: fixture.revision, result_revision: fixture.revision + 2 }];
+        return [{ base_revision: migrationScenario.revision, result_revision: migrationScenario.revision + 2 }];
       },
     },
     sidecars: { async listProjectionCheckpoints() { return structuredClone(checkpoints); } },
@@ -50,23 +53,23 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async purgeAuthorityState() { authorityPurges += 1; state = null; },
     },
     migration: {
-      async listSourceScopes() { return [fixture.scope]; },
+      async listSourceScopes() { return [migrationScenario.scope]; },
       async hasIncompatibleDerivedData() { return incompatible; },
     },
   };
   const sourceRebuild = {
     async initializeGeneration() {
       initializeCount += 1;
-      state.meta.sourceGeneration = fixture.sourceGeneration;
-      state.meta.revision = fixture.revision;
-      snapshots = [{ source_generation: fixture.sourceGeneration, revision: fixture.revision, schema_version: SCHEMA_VERSION, state: structuredClone(state) }];
+      state.meta.sourceGeneration = migrationScenario.sourceGeneration;
+      state.meta.revision = migrationScenario.revision;
+      snapshots = [{ source_generation: migrationScenario.sourceGeneration, revision: migrationScenario.revision, schema_version: SCHEMA_VERSION, state: structuredClone(state) }];
       statuses = TARGET_KEYS.map((targetKey) => ({
         target_key: targetKey,
-        source_generation: fixture.sourceGeneration,
-        rebuild_boundary_message_id: fixture.history.boundaryMessageId,
+        source_generation: migrationScenario.sourceGeneration,
+        rebuild_boundary_message_id: migrationScenario.history.boundaryMessageId,
         status: "rebuilding",
       }));
-      return { sourceGeneration: fixture.sourceGeneration, revision: fixture.revision, boundaryMessageId: fixture.history.boundaryMessageId };
+      return { sourceGeneration: migrationScenario.sourceGeneration, revision: migrationScenario.revision, boundaryMessageId: migrationScenario.history.boundaryMessageId };
     },
     async forceDrainTo() {
       forceDrainCount += 1;
@@ -76,20 +79,20 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
           : status);
         return {
           status: "incomplete",
-          sourceGeneration: fixture.sourceGeneration,
+          sourceGeneration: migrationScenario.sourceGeneration,
           targetKey: "scene",
           result: { status: "queued", outcome: "transaction_failed", taskId: "task-1" },
           results: [{ status: "queued" }],
         };
       }
-      state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, fixture.history.boundaryMessageId]));
+      state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, migrationScenario.history.boundaryMessageId]));
       state.current.scene.location = {
         value: "上海😊",
-        sourceRefs: [{ messageId: fixture.history.boundaryMessageId, contentHash: `sha256:${"a".repeat(64)}` }],
-        updatedAtMessageId: fixture.history.boundaryMessageId,
+        sourceRefs: [{ messageId: migrationScenario.history.boundaryMessageId, contentHash: `sha256:${"a".repeat(64)}` }],
+        updatedAtMessageId: migrationScenario.history.boundaryMessageId,
       };
       snapshots[0].state = structuredClone(state);
-      statuses = TARGET_KEYS.map((targetKey) => ({ target_key: targetKey, source_generation: fixture.sourceGeneration, status: "healthy" }));
+      statuses = TARGET_KEYS.map((targetKey) => ({ target_key: targetKey, source_generation: migrationScenario.sourceGeneration, status: "healthy" }));
       if (verificationFailure === "target") statuses[0].status = "halted";
       if (verificationFailure === "snapshot") snapshots[0].state.current.scene.location = createInitialMemoryState().current.scene.location;
       return { status: "completed" };
@@ -100,8 +103,8 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       if (projectionFailure === projectionKey) return { status: "stale" };
       checkpoints.push({
         projection_key: projectionKey,
-        processed_generation: fixture.sourceGeneration,
-        processed_boundary_message_id: fixture.history.boundaryMessageId - (verificationFailure === "checkpoint" ? 1 : 0),
+        processed_generation: migrationScenario.sourceGeneration,
+        processed_boundary_message_id: migrationScenario.history.boundaryMessageId - (verificationFailure === "checkpoint" ? 1 : 0),
         status: "healthy",
       });
       return { status: "healthy" };
@@ -118,9 +121,9 @@ test("migration rehearsal rebuilds every raw-history scope", async () => {
   assert.deepEqual(harness.getPurgeCounts(), { derivedPurges: 1, authorityPurges: 1 });
   assert.equal(report.canStartService, false);
   assert.equal(report.scopeCount, 1);
-  assert.equal(report.results[0].messageCount, fixture.history.messageCount);
-  assert.equal(report.results[0].characterCount, fixture.history.characterCount);
-  assert.equal(report.results[0].boundaryMessageId, fixture.history.boundaryMessageId);
+  assert.equal(report.results[0].messageCount, migrationScenario.history.messageCount);
+  assert.equal(report.results[0].characterCount, migrationScenario.history.characterCount);
+  assert.equal(report.results[0].boundaryMessageId, migrationScenario.history.boundaryMessageId);
   assert.deepEqual(report.results[0].sectionUsage.scene, { itemCount: 1, textChars: 3 });
   assert.deepEqual(report.results[0].sectionUsage.todos, { itemCount: 0, textChars: 0 });
   assert.deepEqual(report.results[0].verification, {
@@ -168,8 +171,8 @@ test("an explicitly forced scoped rebuild starts a new generation after a comple
   assert.equal(first.status, "completed");
   assert.equal(harness.getInitializeCount(), 1);
 
-  const [history] = await harness.migration.inventory([fixture.scope]);
-  const rebuilt = await harness.migration.rebuildScope(fixture.scope, history, { forceNewGeneration: true });
+  const [history] = await harness.migration.inventory([migrationScenario.scope]);
+  const rebuilt = await harness.migration.rebuildScope(migrationScenario.scope, history, { forceNewGeneration: true });
 
   assert.equal(rebuilt.verification.healthyTargetCount, TARGET_KEYS.length);
   assert.equal(harness.getInitializeCount(), 2);
@@ -180,7 +183,7 @@ test("migration resumes an incomplete force drain without resetting its generati
   const first = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(first.status, "failed");
   assert.deepEqual(first.error.detail, {
-    sourceGeneration: fixture.sourceGeneration,
+    sourceGeneration: migrationScenario.sourceGeneration,
     targetKey: "scene",
     result: { status: "queued", outcome: "transaction_failed", reason: null, taskId: "task-1" },
     completedTaskCount: 1,

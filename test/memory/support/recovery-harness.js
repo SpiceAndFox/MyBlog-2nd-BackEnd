@@ -1,9 +1,19 @@
-const fs = require("node:fs");
-const path = require("node:path");
 const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/task-recovery.json"), "utf8"));
+const recoveryScenario = Object.freeze({
+  providerErrors: [
+    { reason: "llm_call_failed", expectedStatus: "retry_wait", expectedDelayMs: 1000, expectedConsecutiveErrors: 1 },
+    { reason: "max_output_truncated", expectedStatus: "retry_wait", expectedDelayMs: 2000, expectedConsecutiveErrors: 2 },
+    { reason: "safety_policy_blocked", expectedStatus: "halted", expectedDelayMs: null, expectedConsecutiveErrors: 3 },
+  ],
+  unableToDecide: {
+    firstStatus: "context_expansion_required",
+    secondStatus: "committed",
+    cursorAfter: 1,
+    revisionAfter: 1,
+  },
+});
 const fixedNow = new Date("2026-07-13T00:00:00.000Z");
 const messageContent = "今天先不记录";
 const message = {
@@ -64,4 +74,4 @@ function store() {
   return { repositories, inspect: { tasks, groups, snapshots, events, ops, statuses, get state() { return state; } }, bumpRevision() { state.meta.revision += 1; }, failAt(point) { failurePoint = point; } };
 }
 
-module.exports = { fixture, fixedNow, config, intent, store };
+module.exports = { recoveryScenario, fixedNow, config, intent, store };

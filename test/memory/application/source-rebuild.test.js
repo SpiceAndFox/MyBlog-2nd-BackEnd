@@ -1,17 +1,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createInitialMemoryState } = require("../../../modules/memory/contracts");
+const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
 const { createMemorySourceRebuild } = require("../../../modules/memory/application/sourceRebuild");
-const fs = require("node:fs");
-const path = require("node:path");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/source-rebuild.json"), "utf8"));
+const REBUILD_BOUNDARY_MESSAGE_ID = 20;
+const OLD_SOURCE = { messageId: 10, contentHash: `sha256:${"a".repeat(64)}` };
 const item = (id, sourceRefs) => ({ id, text: id, sourceRefs, createdAtMessageId: sourceRefs[0].messageId, updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)) });
 
 function makeRebuildHarness() {
   const state = createInitialMemoryState();
   state.meta.revision = 5;
-  state.meta.targetCursors = Object.fromEntries(fixture.targets.map((key) => [key, 9]));
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 9]));
   const data = { state, statuses: {}, snapshots: [], checkpointsMarked: false, cancelled: false, mutationRan: false };
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
@@ -20,7 +19,7 @@ function makeRebuildHarness() {
       async writeState(_u, _p, next) { data.state = structuredClone(next); },
     },
     source: {
-      async getBoundary() { return fixture.boundaryMessageId; },
+      async getBoundary() { return REBUILD_BOUNDARY_MESSAGE_ID; },
       async getForceDrainWindow() { return []; },
     },
     runtime: {
@@ -47,7 +46,7 @@ test("source mutation atomically advances generation, preserves global revision,
   assert.equal(harness.data.cancelled, true);
   assert.equal(harness.data.checkpointsMarked, true);
   assert.equal(harness.data.state.meta.revision, 6);
-  assert.deepEqual(harness.data.state.meta.targetCursors, Object.fromEntries(fixture.targets.map((key) => [key, 0])));
+  assert.deepEqual(harness.data.state.meta.targetCursors, Object.fromEntries(TARGET_KEYS.map((key) => [key, 0])));
   assert.equal(Object.values(harness.data.statuses).every((entry) => entry.status === "rebuilding" && entry.rebuildBoundaryMessageId === 20), true);
   assert.equal(harness.data.snapshots.length, 1);
 });
@@ -56,8 +55,8 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
   state.meta.revision = 6;
-  state.meta.targetCursors = Object.fromEntries(fixture.targets.map((key) => [key, 0]));
-  const statuses = Object.fromEntries(fixture.targets.map((key) => [key, {
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 0]));
+  const statuses = Object.fromEntries(TARGET_KEYS.map((key) => [key, {
     target_key: key,
     source_generation: 1,
     status: key === "scene" ? "halted" : "rebuilding",
@@ -109,11 +108,11 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
       return { status: "committed" };
     },
   };
-  const targets = Object.fromEntries(fixture.targets.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
+  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config: { targets } });
   const result = await rebuild.forceDrainTo(7, "companion", { sourceGeneration: 1, boundaryMessageId: 20 });
   assert.equal(result.status, "completed");
-  assert.deepEqual(processed, ["scene", ...fixture.targets]);
+  assert.deepEqual(processed, ["scene", ...TARGET_KEYS]);
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
@@ -122,7 +121,7 @@ test("target validation preserves valid rebuilt 2.01 state without suppression s
   state.meta.sourceGeneration = 1;
   state.meta.revision = 5;
   state.meta.targetCursors.worldFacts = 10;
-  state.longTerm.worldFacts.push(item("old-fact", [fixture.oldSource]));
+  state.longTerm.worldFacts.push(item("old-fact", [OLD_SOURCE]));
   const snapshots = new Map([[5, { revision: 5, source_generation: 1, schema_version: "2.01", state: structuredClone(state) }]]);
   const groups = [];
   const events = [];
@@ -160,7 +159,7 @@ test("target validation preserves valid rebuilt 2.01 state without suppression s
 test("rebuild reconciliation honors a durable retry_wait boundary before invoking the provider", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
-  state.meta.targetCursors = Object.fromEntries(fixture.targets.map((key) => [key, 0]));
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 0]));
   const future = "2026-07-13T00:01:00.000Z";
   const repositories = {
     state: { async getState() { return structuredClone(state); } },
@@ -175,7 +174,7 @@ test("rebuild reconciliation honors a durable retry_wait boundary before invokin
     audit: {}, sidecars: {}, async withTransaction(work) { return work({}); },
   };
   let providerCalls = 0;
-  const targets = Object.fromEntries(fixture.targets.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
+  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
   const rebuild = createMemorySourceRebuild({
     repositories,
     normalWritePipeline: { async createTask() { throw new Error("must reuse retry task"); }, async processEnvelope() { providerCalls += 1; } },

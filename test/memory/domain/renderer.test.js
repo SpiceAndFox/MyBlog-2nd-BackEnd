@@ -14,7 +14,7 @@ const ref = { messageId: 1, contentHash: `sha256:${"a".repeat(64)}` };
 
 test("empty renderer output is locked by a complete golden file", () => {
   const rendered = renderMemory({ state: createInitialMemoryState(), requestNow: "2026-01-01T00:00:00.000Z", config }).renderedText;
-  const golden = fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/golden/renderer-empty.txt"), "utf8").trimEnd();
+  const golden = fs.readFileSync(path.join(__dirname, "golden/renderer-empty.txt"), "utf8").trimEnd();
   assert.equal(rendered, golden);
 });
 
@@ -24,7 +24,7 @@ test("renderer consumes effective view and labels stale/rebuilding targets witho
   state.longTerm.milestones.push({ id: "milestone:1", text: "第一次互相信任", sourceRefs: [ref], createdAtMessageId: 1, updatedAtMessageId: 1 });
   state.working.recentEpisodes.push({ id: "episode:1", text: "雨夜和解", sourceRefs: [ref], createdAtMessageId: 1, updatedAtMessageId: 1 });
   const result = renderMemory({ state, lifecycleAnchors: { sceneAnchorCreatedAt: "2026-01-01T00:00:00.000Z" }, requestNow: "2026-01-01T00:01:00.000Z", config, targetStatuses: { episodes: "halted", scene: "rebuilding" } });
-  const golden = fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/golden/renderer-health-populated.txt"), "utf8").replace(/\r?\n$/, "");
+  const golden = fs.readFileSync(path.join(__dirname, "golden/renderer-health-populated.txt"), "utf8").replace(/\r?\n$/, "");
   assert.equal(result.renderedText, golden);
   assert.equal(result.needsHousekeeping, true);
   assert.match(result.renderedText, /\[已过期场景 \/ 上次已知场景\]\n- 地点: 屋顶/);

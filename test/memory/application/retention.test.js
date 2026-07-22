@@ -1,11 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createInitialMemoryState } = require("../../../modules/memory/contracts");
+const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
 const { createMemoryRetention } = require("../../../modules/memory/application/retention");
-const fs = require("node:fs");
-const path = require("node:path");
-
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/source-rebuild.json"), "utf8"));
 
 test("retention promotes only a validated continuous anchor and preserves referenced runtime rows", async () => {
   const state = createInitialMemoryState();
@@ -43,7 +39,7 @@ test("retention promotes only a validated continuous anchor and preserves refere
       async deleteExpiredAudit() { return { expiredEvents: 0, expiredGroups: 0, expiredSnapshots: 0 }; },
     },
     runtime: {
-      async getTargetStatuses() { return fixture.targets.map((targetKey) => ({ targetKey, sourceGeneration: 2, status: "healthy" })); },
+      async getTargetStatuses() { return TARGET_KEYS.map((targetKey) => ({ targetKey, sourceGeneration: 2, status: "healthy" })); },
       async deleteRetainedRuntime(_u, _p, options) { runtimeAnchor = options.anchorRevision; return { tasks: 1, ops: 1 }; },
     },
     sidecars: { async listProjectionCheckpoints() { return [{ projectionKey: "rag", processedGeneration: 2, status: "healthy" }]; } },

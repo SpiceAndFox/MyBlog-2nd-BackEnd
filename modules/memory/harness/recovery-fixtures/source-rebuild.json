@@ -1,9 +1,0 @@
-{
-  "name": "source-rebuild",
-  "fixtureKind": "recovery",
-  "scope": { "userId": 7, "presetId": "companion" },
-  "oldSource": { "messageId": 10, "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-  "correctionSource": { "messageId": 20, "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
-  "boundaryMessageId": 20,
-  "targets": ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"]
-}

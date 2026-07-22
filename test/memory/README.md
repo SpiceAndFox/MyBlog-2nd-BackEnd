@@ -10,20 +10,13 @@
 - `integration/`: multi-layer vertical slices across renderer, Provider adapter, Compiler, Reducer, and persistence.
 - `tools/`: read-only inspection, rebuild, and shadow-replay tooling.
 - `migration/`: time-bounded schema, cutover, telemetry, and migration workflow coverage. Its retirement gate is documented in `migration/README.md`.
-- `harness/`: fixture catalog and deterministic fixture-runner coverage.
 - `support/`: small contract-focused builders shared across nearby suites.
 
 Chat, RAG, server, security, LLM, and developer-tool tests live in their corresponding top-level `test/` directories rather than under Memory.
 
-## Fixtures
+## Shared test data
 
-Structured fixtures live under `modules/memory/harness/` and declare one implemented `fixtureKind`:
-
-- `compiledReducer`: validated and executed by the deterministic reducer runner.
-- `context`: validated catalog data consumed by context tests.
-- `recovery`: validated catalog data consumed by explicit durable workflow harnesses.
-
-Do not execute the same behavior through both a fixture runner and a hand-written test. Put generated state, events, cursors, snapshots, and render expectations in a fixture when its runner can express them.
+Shared builders and cross-suite scenarios live under `support/`. Keep test-local inputs and expected values next to the assertions that use them. Byte-for-byte golden output stays beside its owning suite, such as `domain/golden/` for Renderer output.
 
 Real Provider checks remain explicit networked commands and are not part of the offline suite:
 

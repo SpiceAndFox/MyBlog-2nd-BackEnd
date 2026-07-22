@@ -1,15 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
 const { createMemoryMetrics } = require("../../../modules/memory/application/metrics");
 const { createMemoryRecovery } = require("../../../modules/memory/application/recovery");
 const { reduceCompiledProposal } = require("../../../modules/memory/domain/compiledReducer");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/recovery-fixtures/capacity-replay.json"), "utf8"));
 const hash = (value) => `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: hash("还要记得归还杂志") };
 const config = {
@@ -76,11 +73,11 @@ test("capacity block persists deferred audit, compacts, and replays the original
   const parent = tasks.find((task) => task.task_type === "normal");
   const child = tasks.find((task) => task.task_type === "maintenance");
   assert.equal(result.status, "committed");
-  assert.equal(groups[0].result_revision, fixture.expected.capacityAuditResultRevision);
-  assert.deepEqual(groups.slice(1).map((group) => group.result_revision), [fixture.expected.compactionRevision, fixture.expected.replayRevision]);
-  assert.equal(data.inspect.state.meta.revision, fixture.expected.replayRevision);
-  assert.equal(data.inspect.state.meta.targetCursors.todos, fixture.expected.finalCursor);
-  assert.equal(data.inspect.state.working.todos.length, fixture.expected.finalActiveItems);
+  assert.equal(groups[0].result_revision, null);
+  assert.deepEqual(groups.slice(1).map((group) => group.result_revision), [1, 2]);
+  assert.equal(data.inspect.state.meta.revision, 2);
+  assert.equal(data.inspect.state.meta.targetCursors.todos, 3);
+  assert.equal(data.inspect.state.working.todos.length, 2);
   assert.equal(data.inspect.events.filter((event) => event.decision === "deferred").length, 1);
   assert.equal(data.inspect.events.find((event) => event.decision === "deferred").maintenance_task_id, child.task_id);
   assert.equal(parent.stage_payload.compiledProposal.proposer, "todoProposer");
@@ -90,12 +87,12 @@ test("capacity block persists deferred audit, compacts, and replays the original
   assert.ok(childStages.indexOf("semantic_result_persisted") < childStages.indexOf("compiling"));
   assert.ok(childStages.indexOf("compiling") < childStages.indexOf("compiled_proposal_persisted"));
   assert.ok(childStages.indexOf("compiled_proposal_persisted") < childStages.indexOf("compacting"));
-  assert.equal(data.inspect.statuses.get("todos").status, fixture.expected.targetStatus);
+  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
   assert.equal(parent.stage_payload.compiledProposal.sectionResults.todos.patches[0].op, "addItem");
   const duplicate = await pipeline.processEnvelope(parent.task_payload);
   assert.equal(duplicate.duplicate, true);
   assert.equal(normalCalls, 1, "recovery must replay persisted output without calling the normal Proposer again");
-  assert.equal(data.inspect.state.meta.revision, fixture.expected.replayRevision);
+  assert.equal(data.inspect.state.meta.revision, 2);
   const metricSnapshot = metrics.snapshot();
   assert.equal(metricSnapshot.counters["memory_capacity_deferred_total{section=todos,targetKey=todos}"], 1);
   for (const workflow of ["deferred", "compaction", "replay"]) {

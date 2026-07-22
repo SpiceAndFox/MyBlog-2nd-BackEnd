@@ -1,11 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { selectRecentWindow, buildGapBridgeCoverage } = require("../../../modules/memory/domain");
+const contextScenario = require("../support/context-scenario");
 
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../modules/memory/harness/fixtures/context/gap-bridge-health-recovery.json"), "utf8"));
 const TARGETS = ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"];
 
 test("recent window uses Unicode code points, complete messages, and a user boundary", () => {
@@ -24,12 +22,12 @@ test("recent window uses Unicode code points, complete messages, and a user boun
 
 test("GapBridge deduplicates target overlap and never truncates a raw message", () => {
   const state = createInitialMemoryState();
-  const result = buildGapBridgeCoverage({ messages: fixture.sourceMessages, state, recentWindowStartMessageId: 5, ...fixture.gapBridge });
-  assert.deepEqual(result.messages.map((row) => row.id), fixture.expected.retainedGapMessageIds);
+  const result = buildGapBridgeCoverage({ messages: contextScenario.sourceMessages, state, recentWindowStartMessageId: contextScenario.expected.recentWindowStartMessageId, ...contextScenario.gapBridge });
+  assert.deepEqual(result.messages.map((row) => row.id), contextScenario.expected.retainedGapMessageIds);
   assert.deepEqual(result.messages[0].targetKeys, TARGETS);
   assert.equal(result.messages[0].content, "第四条");
   assert.equal(result.diagnostics.length, 6);
-  assert.equal(result.diagnostics[0].omittedUpperMessageId, fixture.expected.omittedUpperMessageId);
+  assert.equal(result.diagnostics[0].omittedUpperMessageId, contextScenario.expected.omittedUpperMessageId);
   assert.equal(result.stats.truncated, true);
 });
 

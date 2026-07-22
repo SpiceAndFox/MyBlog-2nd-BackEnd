@@ -1,13 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
-const { fixture, fixedNow, config, intent, store } = require("../support/recovery-harness");
+const { recoveryScenario, fixedNow, config, intent, store } = require("../support/recovery-harness");
 
 test("recovery fixture applies bounded retry backoff and halts only the failing target", async () => {
   const data = store();
   const pipeline = createNormalWritePipeline({ observer: {}, providerAdapter: {}, repositories: data.repositories, config, now: () => fixedNow });
   const envelope = await pipeline.createTask(1, "default", intent);
-  for (const expected of fixture.providerErrors) {
+  for (const expected of recoveryScenario.providerErrors) {
     const result = await pipeline.recordAdapterError(envelope, { status: "error", reason: expected.reason });
     const target = data.inspect.statuses.get("todos");
     assert.equal(target.status, expected.expectedStatus);
@@ -16,7 +16,7 @@ test("recovery fixture applies bounded retry backoff and halts only the failing 
   }
   assert.equal(data.inspect.state.meta.revision, 0);
   assert.equal(data.inspect.snapshots.length, 0);
-  assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), fixture.providerErrors.map((entry) => entry.reason));
+  assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), recoveryScenario.providerErrors.map((entry) => entry.reason));
 });
 
 test("provider retryMax halts even before the broader consecutive-error circuit breaker", async () => {
@@ -127,11 +127,11 @@ test("unable_to_decide expands once, then commits one cursor-only revision idemp
   const first = await pipeline.processEnvelope(envelope);
   const second = await pipeline.processEnvelope(envelope);
   const duplicate = await pipeline.processEnvelope(envelope);
-  assert.equal(first.status, fixture.unableToDecide.firstStatus);
-  assert.equal(second.status, fixture.unableToDecide.secondStatus);
+  assert.equal(first.status, recoveryScenario.unableToDecide.firstStatus);
+  assert.equal(second.status, recoveryScenario.unableToDecide.secondStatus);
   assert.equal(duplicate.duplicate, true);
-  assert.equal(data.inspect.state.meta.revision, fixture.unableToDecide.revisionAfter);
-  assert.equal(data.inspect.state.meta.targetCursors.todos, fixture.unableToDecide.cursorAfter);
+  assert.equal(data.inspect.state.meta.revision, recoveryScenario.unableToDecide.revisionAfter);
+  assert.equal(data.inspect.state.meta.targetCursors.todos, recoveryScenario.unableToDecide.cursorAfter);
   assert.equal(data.inspect.groups.size, 1);
   assert.equal(data.inspect.events.length, 0);
   assert.equal(data.inspect.snapshots.length, 1);
