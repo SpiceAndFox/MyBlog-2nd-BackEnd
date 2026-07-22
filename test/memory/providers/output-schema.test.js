@@ -68,3 +68,17 @@ test("profile output schema exposes only text Semantic changes and source select
     assert.equal(JSON.stringify(schema).includes(`\"${forbidden}\"`), false, forbidden);
   }
 });
+
+test("profile specialist schemas each expose exactly one owned section", () => {
+  const specialists = {
+    userProfileProposer: "userProfile",
+    assistantProfileProposer: "assistantProfile",
+    relationshipProposer: "relationship",
+  };
+  for (const [proposer, section] of Object.entries(specialists)) {
+    const schema = buildOutputSchema(proposer).schema;
+    assert.deepEqual(schema.properties.sectionResults.required, [section]);
+    assert.deepEqual(Object.keys(schema.properties.sectionResults.properties), [section]);
+    assert.equal(schema.properties.proposer.const, proposer);
+  }
+});

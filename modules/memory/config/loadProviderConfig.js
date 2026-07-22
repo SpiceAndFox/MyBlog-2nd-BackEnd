@@ -5,6 +5,9 @@ const PROPOSER_IDS = Object.freeze([
   "agreementProposer",
   "episodeProposer",
   "profileRelationshipProposer",
+  "userProfileProposer",
+  "assistantProfileProposer",
+  "relationshipProposer",
   "worldFactProposer",
   "compactionProposer",
 ]);
@@ -56,7 +59,12 @@ function optionalProposerModels(env) {
 
 function resolveMemoryProviderModel(providerConfig, proposer) {
   const proposerId = String(proposer ?? "").trim();
-  return providerConfig?.proposerModels?.[proposerId] || providerConfig?.model;
+  const explicit = providerConfig?.proposerModels?.[proposerId];
+  if (explicit) return explicit;
+  if (["userProfileProposer", "assistantProfileProposer", "relationshipProposer"].includes(proposerId)) {
+    return providerConfig?.proposerModels?.profileRelationshipProposer || providerConfig?.model;
+  }
+  return providerConfig?.model;
 }
 
 function loadMemoryProviderConfig(env = {}) {

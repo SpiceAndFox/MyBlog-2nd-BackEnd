@@ -20,7 +20,7 @@ function validEnv() {
     TODOS: [8, 48],
     STANDING_AGREEMENTS: [16, 64],
     EPISODES: [32, 96],
-    PROFILE_RELATIONSHIP: [32, 128],
+    PROFILE_RELATIONSHIP: [32, 64],
     WORLD_FACTS: [16, 96],
   };
   for (const [target, [lagThreshold, contextWindow]] of Object.entries(targets)) {
@@ -58,7 +58,7 @@ test("v2 config requires an explicit structured-output adapter", () => {
     todos: { lagThreshold: 8, contextWindow: 48 },
     standingAgreements: { lagThreshold: 16, contextWindow: 64 },
     episodes: { lagThreshold: 32, contextWindow: 96 },
-    profileRelationship: { lagThreshold: 32, contextWindow: 128 },
+    profileRelationship: { lagThreshold: 32, contextWindow: 64 },
     worldFacts: { lagThreshold: 16, contextWindow: 96 },
   });
   assert.deepEqual(config.hygiene, { highWatermarkPercent: 70, minItemDelta: 5 });
@@ -91,7 +91,16 @@ test("provider config supports validated per-proposer model overrides with a def
   });
   assert.equal(resolveMemoryProviderModel(provider, "currentStateProposer"), "scene-model");
   assert.equal(resolveMemoryProviderModel(provider, "profileRelationshipProposer"), "profile-model");
+  assert.equal(resolveMemoryProviderModel(provider, "userProfileProposer"), "profile-model");
+  assert.equal(resolveMemoryProviderModel(provider, "assistantProfileProposer"), "profile-model");
+  assert.equal(resolveMemoryProviderModel(provider, "relationshipProposer"), "profile-model");
   assert.equal(resolveMemoryProviderModel(provider, "todoProposer"), "structured-model");
+
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({
+    profileRelationshipProposer: "profile-model",
+    relationshipProposer: "relationship-model",
+  });
+  assert.equal(resolveMemoryProviderModel(loadMemoryProviderConfig(env), "relationshipProposer"), "relationship-model");
 
   env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = "not-json";
   assert.throws(() => loadMemoryProviderConfig(env), /must be valid JSON/);

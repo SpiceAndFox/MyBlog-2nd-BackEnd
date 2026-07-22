@@ -12,9 +12,11 @@ test("provider preflight exercises every normal proposer and compaction schema",
     },
   });
   assert.deepEqual(results.map((entry) => entry.name), [
-    "scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts", "compaction:todos",
+    "scene", "todos", "standingAgreements", "episodes",
+    "profileRelationship:userProfile", "profileRelationship:assistantProfile", "profileRelationship:relationship",
+    "worldFacts", "compaction:todos",
   ]);
-  assert.equal(new Set(requests.map((request) => request.responseSchema.name)).size, 7);
+  assert.equal(new Set(requests.map((request) => request.responseSchema.name)).size, 9);
   assert.equal(requests.every((request) => request.responseSchema.strict === true), true);
   assert.equal(requests.every((request) => request.systemPrompt.startsWith(`prompt:${request.proposer}`)), true);
   assert.equal(results.every((entry) => entry.proposer), true);

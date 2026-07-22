@@ -8,6 +8,9 @@ const NORMAL_PROPOSERS = [
   "agreementProposer",
   "episodeProposer",
   "profileRelationshipProposer",
+  "userProfileProposer",
+  "assistantProfileProposer",
+  "relationshipProposer",
   "worldFactProposer",
 ];
 
@@ -58,6 +61,36 @@ test("each normal Proposer treats payload text as data and documents its source 
   }
 });
 
+test("profile and agreement prompts keep writable refs out of support sources", async () => {
+  for (const proposer of ["profileRelationshipProposer", "agreementProposer"]) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.match(prompt, /可修改.*绝不能放入 `supportRefs`/s);
+    assert.match(prompt, /`add` 不引用可修改条目/);
+    assert.match(prompt, /`ref` 必须逐字复制实际显示的可修改短引用/);
+    assert.match(prompt, /没有可修改.*不能输出/s);
+  }
+});
+
+test("profile specialists own one semantic section without an example bank", async () => {
+  const specialists = {
+    userProfileProposer: "userProfile",
+    assistantProfileProposer: "assistantProfile",
+    relationshipProposer: "relationship",
+  };
+  for (const [proposer, section] of Object.entries(specialists)) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.match(prompt, new RegExp(`只维护 .*${section}`));
+    assert.match(prompt, new RegExp(`sectionResults.*只包含 .*${section}`, "s"));
+    assert.match(prompt, /可修改引用绝不能放入 `supportRefs`/);
+    assert.match(prompt, /没有可修改条目时不能使用/);
+    assert.doesNotMatch(prompt, /## 判断示例|```/);
+    assert.ok(prompt.length < 1800, `${proposer} should stay compact, got ${prompt.length} characters`);
+  }
+  assert.match(await loadProposerPrompt("userProfileProposer"), /回复语言、语气、长度、结构、主动性、追问和幽默/);
+  assert.match(await loadProposerPrompt("assistantProfileProposer"), /用户希望怎样被回应通常是 `userProfile` 或 standingAgreements/);
+  assert.match(await loadProposerPrompt("relationshipProposer"), /过去阶段—关键转折—当前模式/);
+});
+
 test("todo prompt covers overdue visibility and rescheduling", async () => {
   const prompt = await loadProposerPrompt("todoProposer");
   assert.match(prompt, /overdue items 只提供最近 N 条/, "todoProposer must disclose the partial overdue view");
@@ -75,10 +108,13 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
   assert.match(prompt, /同一句话.*两个可独立行动.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
 });
 
-test("agreement prompt distinguishes explicit long-term commitments from emotional rhetoric", async () => {
+test("agreement prompt distinguishes durable commitments and cancels context-dependent rules", async () => {
   const prompt = await loadProposerPrompt("agreementProposer");
   assert.match(prompt, /明确承诺语义.*长期承诺|长期承诺.*明确承诺语义/s);
   assert.match(prompt, /单纯抒情|情绪化宣誓/);
+  assert.match(prompt, /结束某个关系、角色、角色扮演或互动模式.*扫描全部可修改约定.*cancel/s);
+  assert.match(prompt, /只取消依赖关系明确.*不波及.*独立成立/s);
+  assert.match(prompt, /覆盖所有明确依赖.*不能在找到第一个 cancel 后停止/s);
 });
 
 test("episode prompt clusters coherent interaction arcs instead of producing a turn log", async () => {
@@ -90,22 +126,50 @@ test("episode prompt clusters coherent interaction arcs instead of producing a t
   assert.match(prompt, /连续消息聚合为互动弧|按场景、主题、目标与因果连续性聚合/);
   assert.match(prompt, /不默认双写/);
   assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
+  assert.match(prompt, /不要只给旧 milestone 追加免责声明.*correct.*当前意义.*forget/s);
 });
 
-test("profile prompt keeps durable admission while allowing support-only long-term derivation", async () => {
+test("profile prompt performs compact coverage-first semantic calibration", async () => {
   const prompt = await loadProposerPrompt("profileRelationshipProposer");
-  assert.match(prompt, /不要求固定消息数量、独立互动片段数量或 new-batch evidence/);
-  assert.match(prompt, /单次 Episode 或一个 support ref.*长程归纳/s);
-  assert.match(prompt, /可仅用该 Episode 的 `supportRefs`/);
-  assert.match(prompt, /一次行为或单次 Episode.*不能仅凭一次动作猜测技能、人格、心理动机/s);
-  assert.match(prompt, /User 与 Assistant.*三个 section.*不按消息 role/s);
-  assert.match(prompt, /模型错误.*坏习惯.*不能固化.*assistant 人格/s);
-  assert.match(prompt, /不要生成.*facet.*canonicalKey.*factBasis/s);
+  assert.match(prompt, /静默语义扫描/);
+  assert.match(prompt, /分别检查三个 section.*全部可见消息.*任何一个 section.*不能替代.*不只看最后一条.*记住\/以后/s);
+  assert.match(prompt, /身份与称呼.*背景与所在地.*工作\/项目\/能力.*长期目标与价值.*沟通语言\/语气\/长度\/格式\/主动性\/追问\/幽默偏好/s);
+  assert.match(prompt, /用户希望怎样被回应通常属于 userProfile 或 standingAgreements/);
+  assert.match(prompt, /不要求包含.*永远、以后、记住/s);
+  assert.match(prompt, /用户对未来回复方式的直接要求、反复纠正和明确身份事实优先于.*角色历史/s);
+  assert.match(prompt, /当前偏好或自我描述.*不夸大的范围和条件/s);
+  assert.match(prompt, /多个独立片段.*可观察的互动倾向.*不推断心理动机、诊断或敏感属性/s);
+  assert.match(prompt, /明确说明\/否认.*优先决定当前含义/s);
+  assert.match(prompt, /玩笑、称呼、回忆或短暂重现.*不会自动恢复旧状态/s);
+  assert.match(prompt, /结束某个身份、关系、角色扮演或互动模式.*检查依赖.*条目/s);
+  assert.match(prompt, /过去阶段、伪装\/误解、真相揭示或关系转变.*解释当前状态.*共同经历连续性.*避免未来误读/s);
+  assert.match(prompt, /明确区分.*当时\/曾经.*当前/s);
+  assert.match(prompt, /过去阶段.*当前状态.*一个演化事实/s);
+  assert.match(prompt, /确曾成立.*关系身份\/结构.*不得仅因已结束而 forget.*必须 update\/correct.*带时态的演化事实/s);
+  assert.match(prompt, /不要保留未标明时态的自我抵消描述/s);
+  assert.match(prompt, /不把互不相关的事实塞进同一 text/);
+  assert.match(prompt, /已有条目表达相同事实或已包含候选时禁止 add/);
+  assert.match(prompt, /项目或测试.*抽象掉本轮阶段、操作步骤和触发频率/s);
+  assert.match(prompt, /虚构身世、能力或职位不能写成 Assistant (?:的)?现实履历/);
+  assert.match(prompt, /用户已拒绝或要求改掉的 Assistant 行为不是当前人格/);
+  assert.match(prompt, /历史演化只保留过去阶段、转折与当前模式.*不列场景名、任务清单、协议条款、消息编号或系统诊断/s);
+  assert.match(prompt, /不(?:要)?生成.*facet.*canonicalKey.*factBasis/s);
+  assert.doesNotMatch(prompt, /## 判断示例|```/, "semantic coverage must not grow through an embedded example bank");
+  assert.ok(prompt.length < 3000, `profile prompt should stay compact, got ${prompt.length} characters`);
+});
+
+test("current state prompt rejects clock inference and figurative scene reactivation", async () => {
+  const prompt = await loadProposerPrompt("currentStateProposer");
+  assert.match(prompt, /不得从消息 createdAt、task\.now 或日历时钟推导 time/);
+  assert.match(prompt, /比喻性地点.*旧场景的回忆.*不代表.*重新启动角色扮演/s);
 });
 
 test("world fact prompt keeps role-neutral canon authority", async () => {
   const prompt = await loadProposerPrompt("worldFactProposer");
   assert.match(prompt, /User 与 Assistant.*新增.*修正.*遗忘/s);
+  assert.match(prompt, /不保存用户\/Assistant 的偏好、能力、人格、关系或事件履历/);
+  assert.match(prompt, /只是测试、临时角色扮演.*角色世界已经结束.*不再是当前 canon/s);
+  assert.match(prompt, /玩笑、称呼、回忆或短暂重现.*不会自动恢复 canon/s);
 });
 
 test("normal prompts prohibit persistence metadata while maintenance keeps its storage protocol", async () => {

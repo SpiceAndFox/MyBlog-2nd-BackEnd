@@ -1,5 +1,5 @@
 const {
-  TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS,
+  TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS, PROFILE_TEXT_MAX_CHARS,
 } = require("./constants");
 const { isPlainObject, isIsoTimestamp } = require("./state");
 const { dueAtRequiresMessageAnchor, validateDueAtExpression } = require("./dueAt");
@@ -225,6 +225,10 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
   const terminal = ["forget", "clear", "complete", "cancel", "expire"].includes(change.action);
   const needsText = !terminal && !(section === "todos" && ["update", "correct"].includes(change.action));
   if (needsText && !positiveText(change.text)) add(errors, `${path}.text`, "must be a non-empty string");
+  const textLimit = PROFILE_TEXT_MAX_CHARS[section];
+  if (change.text !== undefined && textLimit && [...String(change.text)].length > textLimit) {
+    add(errors, `${path}.text`, `must contain at most ${textLimit} characters for ${section}`);
+  }
   if (terminal && change.text !== undefined) add(errors, `${path}.text`, "is not allowed for terminal actions");
 
   const todoEdit = section === "todos" && ["add", "update", "correct"].includes(change.action);
@@ -282,6 +286,14 @@ function validateSemanticResult(result, taskOrArtifact) {
             const changePath = `${sectionPath}.changes[${index}]`;
             validateSemanticChange(change, section, changePath, errors, { maintenance });
             if (!artifact) return;
+            const writableRefs = change.action === "merge" ? change.refs : (change.action === "add" ? [] : [change.ref]);
+            for (const ref of writableRefs || []) {
+              const writable = artifact.refMap?.writable?.[ref];
+              if (!writable || writable.section !== section || Object.prototype.hasOwnProperty.call(artifact.refMap?.readOnly || {}, ref)) {
+                const field = change.action === "merge" ? "refs" : "ref";
+                add(errors, `${changePath}.${field}`, `ref ${ref} was not rendered as writable Memory for ${section}`);
+              }
+            }
             for (const id of change.evidenceMessageIds || []) {
               if (!Object.prototype.hasOwnProperty.call(artifact.messageMeta, String(id))) add(errors, `${changePath}.evidenceMessageIds`, `message ${id} was not rendered`);
             }

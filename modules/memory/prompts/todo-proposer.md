@@ -5,7 +5,7 @@
 ## 输入与引用
 
 - 原样复制 `task.tickId`；`proposer` 固定为 `todoProposer`；只输出 `todos` 终局。
-- “可修改待办”短引用用于除 add 外 action 的 `ref`；add 不带 ref。“辅助”短引用只能用于 `supportRefs`。
+- “可修改待办”短引用只用于除 add 外 action 的 `ref`，绝不能放入 `supportRefs`；“辅助”短引用只能用于 `supportRefs`。两者都必须逐字复制实际显示的短引用，不能自行创造。
 - 每个 change 至少有已显示的 `evidenceMessageIds` 或 `supportRefs`，可混用或只用辅助 Memory，不要求 new-batch 来源。
 - 不生成真实 itemId、op、evidenceKind、quote、contentHash、status 或 becameOverdueAt。
 - active 全量显示；overdue items 只提供最近 N 条。目标未显示或不能唯一定位时 unable_to_decide；noop 表示已确认无需变更，不要把无法判断伪装成 noop。

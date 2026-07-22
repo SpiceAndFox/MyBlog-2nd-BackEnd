@@ -15,6 +15,7 @@
     "migrate:memory-v2-data": "node --use-env-proxy scripts/migrate-memory-v2-data.js",
     "probe:memory-v2-provider": "node --use-env-proxy scripts/probe-memory-v2-provider.js",
     "smoke:memory-v2-provider": "node --use-env-proxy scripts/smoke-memory-v2-provider.js",
+    "eval:memory-v2-prompts": "node --use-env-proxy scripts/evaluate-memory-v2-semantic-prompts.js",
     "check:memory-schema": "node scripts/check-memory-schema.js",
     "inspect:memory-v2": "node --use-env-proxy scripts/inspect-memory-v2.js",
     "shadow:memory-v2": "node --use-env-proxy scripts/shadow-replay-memory-v2-task.js",

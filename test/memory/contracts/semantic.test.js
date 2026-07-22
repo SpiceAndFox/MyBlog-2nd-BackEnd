@@ -70,6 +70,8 @@ test("Renderer artifact exposes readable refs but keeps ids, hashes and provenan
   assert.equal(contracts.validateRendererArtifact(artifact).ok, true);
   assert.match(artifact.publicInput.memoryText, /E1 \| 用户因连续追问感到压力/);
   assert.match(artifact.publicInput.memoryText, /R1 \| 双方遇到分歧后通常愿意复盘/);
+  assert.match(artifact.publicInput.memoryText, /\[可修改最近经历（仅作 ref 目标，不得放入 supportRefs）\]/);
+  assert.match(artifact.publicInput.memoryText, /\[辅助关系记忆（仅作 supportRefs 来源，不得作为 ref 目标）\]/);
   assert.equal(JSON.stringify(artifact.publicInput).includes("episode:1"), false);
   assert.equal(JSON.stringify(artifact.publicInput).includes("contentHash"), false);
   assert.equal(JSON.stringify(artifact.publicInput).includes("sourceRefs"), false);
@@ -102,6 +104,30 @@ test("Semantic contract accepts support-only changes and rejects persistent prot
   const invalid = contracts.validateSemanticResult(supportOnly, artifact);
   assert.equal(invalid.ok, false);
   assert.ok(invalid.errors.some((error) => error.path.endsWith(".evidenceKind") && error.message === "is not allowed"));
+});
+
+test("Semantic contract rejects invented, read-only and wrong-section writable refs before persistence", () => {
+  const { artifact } = fixture();
+  const result = (ref) => ({
+    tickId: 101,
+    proposer: "episodeProposer",
+    sectionResults: {
+      recentEpisodes: { status: "changes", changes: [{ action: "forget", ref, evidenceMessageIds: [3] }] },
+      milestones: { status: "noop" },
+    },
+  });
+
+  assert.equal(contracts.validateSemanticResult(result("E1"), artifact).ok, true);
+  for (const ref of ["E99", "R1"]) {
+    const invalid = contracts.validateSemanticResult(result(ref), artifact);
+    assert.equal(invalid.ok, false);
+    assert.ok(invalid.errors.some((error) => error.path.endsWith(".ref") && /rendered as writable Memory/.test(error.message)));
+  }
+
+  artifact.refMap.writable.T1 = { section: "todos", itemId: "todo:1" };
+  const wrongSection = contracts.validateSemanticResult(result("T1"), artifact);
+  assert.equal(wrongSection.ok, false);
+  assert.ok(wrongSection.errors.some((error) => /writable Memory for recentEpisodes/.test(error.message)));
 });
 
 test("Compiler expands historical support sources, merges direct sources and maps correct to updateItem", async () => {

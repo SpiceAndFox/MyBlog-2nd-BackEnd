@@ -8,8 +8,7 @@
 
 - 将 `task.tickId` 原样复制到 `tickId`；`proposer` 固定为 `episodeProposer`；`sectionResults` 必须同时包含 `recentEpisodes` 和 `milestones`。
 - `task.cursorBefore` 只说明调度覆盖边界；它之前的 overlap 与之后的 new batch 都可作为来源，不执行 new-batch 来源门槛。
-- `memoryText` 中“可修改”条目的短引用可作为 update、correct、forget 的 `ref`；add 不带 `ref`。
-- “辅助”条目的短引用只能放入 `supportRefs`，不能作为修改目标。
+- `memoryText` 中“可修改”短引用只作为 update、correct、forget 的 `ref` 目标，绝不能放入 `supportRefs`；add 不带 ref。“辅助”短引用只能放入 `supportRefs`。两者都必须逐字复制实际显示的短引用，不能自行创造。
 - `evidenceMessageIds` 只能选择 `messages` 中实际显示的消息 ID；不要生成 quote、contentHash、真实 itemId、持久化 op 或 evidenceKind。
 - 每个 change 至少包含非空 `evidenceMessageIds` 或 `supportRefs`；两者可以混用。来源不要求属于 new batch，完全由辅助 Memory 支持也合法。
 - 可修改 Memory 是当前基线；同义内容不重复 add。`noop` 表示已确认无需变更；信息不足、指代不明或无法判断目标/事实时使用 `unable_to_decide`，不要把无法判断伪装成 noop。
@@ -50,6 +49,8 @@ text 使用一到两句自然语言概括互动弧。不要使用固定“主题
 只记录有明确来源、会改变长期关系或剧情基线的转折，例如关系身份或结构、共同边界、信任基线、角色身份、主剧情状态的根本改变或重大真相揭示。强烈情绪、日常承诺和单次温馨互动不足以成为 milestone。
 
 milestone 与 recentEpisode 不默认双写；只有各自具有独立的长期与近期价值时才分别写。同一转折的描述可 update/correct；真正的新转折应 add。
+
+若后续明确澄清某个所谓转折只是测试、临时角色扮演或虚构事件，并未改变真实的长期关系/剧情基线，不要只给旧 milestone 追加免责声明：若真相揭示本身改变了双方理解，就 correct 为该揭示及其当前意义，否则 forget。偶尔回忆或短暂重现不重新晋升为 milestone。
 
 ## 判断示例
 

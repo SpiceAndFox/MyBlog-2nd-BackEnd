@@ -97,9 +97,9 @@ test("enabled runtime performs one complete Provider preflight before becoming r
     });
     const first = await runtime.initialize();
     const second = await runtime.initialize();
-    assert.equal(first.length, 7);
+    assert.equal(first.length, 9);
     assert.deepEqual(second, first);
-    assert.equal(calls, 7);
+    assert.equal(calls, 9);
   } finally {
     globalThis.fetch = originalFetch;
   }

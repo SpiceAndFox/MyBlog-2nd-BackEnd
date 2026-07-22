@@ -242,10 +242,11 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         metrics?.increment("memory_provider_admission_deferred_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer });
         return result;
       }
-      metrics?.increment("memory_provider_calls_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, status: result.status });
+      const providerCallCount = Number.isSafeInteger(result.callCount) && result.callCount > 0 ? result.callCount : 1;
+      metrics?.increment("memory_provider_calls_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer, status: result.status }, providerCallCount);
       const messageCount = observedMessages(envelope).length;
-      metrics?.increment("memory_provider_observed_messages_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, messageCount);
-      metrics?.observe("memory_provider_calls_per_message", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, 1 / Math.max(1, messageCount));
+      metrics?.increment("memory_provider_observed_messages_total", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, messageCount * providerCallCount);
+      metrics?.observe("memory_provider_calls_per_message", { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer }, providerCallCount / Math.max(1, messageCount));
       const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
       const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
       if (Number.isFinite(inputTokens)) metrics?.observe("memory_provider_input_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, inputTokens);

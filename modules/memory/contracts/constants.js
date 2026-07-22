@@ -35,6 +35,11 @@ const SEMANTIC_NORMAL_PROPOSERS = Object.freeze([
 ]);
 const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));
+const PROFILE_TEXT_MAX_CHARS = Object.freeze({
+  userProfile: 180,
+  assistantProfile: 180,
+  relationship: 240,
+});
 const READ_ONLY_CONTEXT_PATHS = Object.freeze({
   currentStateProposer: ["working.recentEpisodes"],
   todoProposer: ["current.scene", "working.standingAgreements", "working.recentEpisodes", "longTerm.userProfile", "longTerm.assistantProfile"],
@@ -56,6 +61,7 @@ module.exports = {
   SEMANTIC_NORMAL_PROPOSERS,
   SCENE_FIELDS,
   ITEM_SECTIONS,
+  PROFILE_TEXT_MAX_CHARS,
   READ_ONLY_CONTEXT_PATHS,
   TARGET_STATUSES,
   TASK_STATUSES,

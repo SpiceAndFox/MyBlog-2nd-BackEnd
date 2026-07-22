@@ -84,10 +84,10 @@ Renderer 按 Proposer 的固定可见范围输出：
 示例：
 
 ```text
-[可修改的最近经历]
+[可修改最近经历（仅作 ref 目标，不得放入 supportRefs）]
 E1 | 用户因连续追问感到压力，双方暂停交流后重新和解。
 
-[辅助关系记忆]
+[辅助关系记忆（仅作 supportRefs 来源，不得作为 ref 目标）]
 R1 | 双方遇到分歧时通常愿意复盘。
 
 [消息]
@@ -130,6 +130,8 @@ expandedArtifact: {
 | `profileRelationshipProposer` | 两个 Profile、`relationship` | `scene`、`recentEpisodes`、`standingAgreements`、`milestones`、`worldFacts` |
 | `worldFactProposer` | `worldFacts` | `scene`、`recentEpisodes`、`standingAgreements`、`milestones`、两个 Profile、`relationship` |
 | `compactionProposer` | 单个 compactable section | 无 |
+
+`profileRelationshipProposer` 的表项描述持久化 task 的联合可见范围。实际 Provider 阶段由 `userProfileProposer`、`assistantProfileProposer`、`relationshipProposer` 三个内部专家分别输出单 section Semantic 结果；它们不是新增 target，不拥有独立 cursor，也不产生独立提交。合并后的 `proposer` 仍为 `profileRelationshipProposer`。
 
 一旦 section 进入本 task 的可见范围，Renderer 渲染其当前完整有效子集；Todo overdue 的可见窗口仍使用集中配置。
 

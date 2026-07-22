@@ -4,6 +4,12 @@ const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 
+const PROFILE_SPECIALISTS = Object.freeze([
+  Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),
+  Object.freeze({ proposer: "assistantProfileProposer", section: "assistantProfile" }),
+  Object.freeze({ proposer: "relationshipProposer", section: "relationship" }),
+]);
+
 function normalCase(targetKey, definition, tickId) {
   const task = {
     targetKey,
@@ -21,7 +27,17 @@ function normalCase(targetKey, definition, tickId) {
 }
 
 function preflightCases() {
-  const cases = Object.entries(TARGETS).map(([targetKey, definition], index) => normalCase(targetKey, definition, index + 1));
+  const cases = [];
+  for (const [targetKey, definition] of Object.entries(TARGETS)) {
+    if (targetKey !== "profileRelationship") {
+      cases.push(normalCase(targetKey, definition, cases.length + 1));
+      continue;
+    }
+    for (const specialist of PROFILE_SPECIALISTS) {
+      cases.push(normalCase(targetKey, { proposer: specialist.proposer, sections: [specialist.section] }, cases.length + 1));
+      cases.at(-1).name = `${targetKey}:${specialist.section}`;
+    }
+  }
   const tickId = cases.length + 1;
   const task = { targetKey: "todos", proposer: "compactionProposer", targetSections: ["todos"], tickId, mode: "maintenance" };
   cases.push({

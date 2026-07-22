@@ -94,8 +94,8 @@ function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit
   const refMap = { writable: {}, readOnly: {} };
   const blocks = [];
   const scopes = [
-    { namespace: "writable", sections: targetSections, heading: "可修改" },
-    { namespace: "readOnly", sections: visibleReadOnlySections(proposer), heading: "辅助" },
+    { namespace: "writable", sections: targetSections, heading: "可修改", hint: "仅作 ref 目标，不得放入 supportRefs" },
+    { namespace: "readOnly", sections: visibleReadOnlySections(proposer), heading: "辅助", hint: "仅作 supportRefs 来源，不得作为 ref 目标" },
   ];
   for (const scope of scopes) {
     for (const section of scope.sections) {
@@ -103,7 +103,7 @@ function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit
       const value = getSection(state, section);
       if (section === "scene") addSceneRefs({ scene: value, namespace: scope.namespace, map: refMap[scope.namespace], lines });
       else addItemRefs({ items: value, section, namespace: scope.namespace, map: refMap[scope.namespace], lines, overdueTodoLimit });
-      blocks.push(`[${scope.heading}${SECTION_LABELS[section]}]\n${lines.length ? lines.join("\n") : "(无)"}`);
+      blocks.push(`[${scope.heading}${SECTION_LABELS[section]}（${scope.hint}）]\n${lines.length ? lines.join("\n") : "(无)"}`);
     }
   }
   return { memoryText: blocks.join("\n\n"), refMap };

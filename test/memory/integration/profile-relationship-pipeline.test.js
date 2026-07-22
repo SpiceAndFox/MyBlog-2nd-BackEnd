@@ -109,23 +109,24 @@ test("Profile/Relationship uses readable Semantic input and can derive long-term
   state.working.recentEpisodes.push(item("episode:pause", "用户在交流压力过大时需要先暂停，冷静后再继续沟通。", historical));
   state.meta.targetCursors.profileRelationship = 1;
   const store = storeFixture({ state, observedMessages: [trigger], databaseMessages: [historical, trigger] });
-  let providerRequest;
+  const providerRequests = [];
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "profile prompt",
     invokeStructured: async (request) => {
-      providerRequest = request;
+      providerRequests.push(request);
+      const section = {
+        userProfileProposer: "userProfile",
+        assistantProfileProposer: "assistantProfile",
+        relationshipProposer: "relationship",
+      }[request.proposer];
       return { output: {
         tickId: request.userPayload.task.tickId,
-        proposer: "profileRelationshipProposer",
-        sectionResults: {
-          userProfile: { status: "changes", changes: [{
+        proposer: request.proposer,
+        sectionResults: { [section]: section === "userProfile" ? { status: "changes", changes: [{
             action: "add",
             text: "用户在交流压力过大时需要先暂停，冷静后再继续沟通。",
             supportRefs: ["E1"],
-          }] },
-          assistantProfile: { status: "noop" },
-          relationship: { status: "noop" },
-        },
+          }] } : { status: "noop" } },
       } };
     },
   });
@@ -142,6 +143,8 @@ test("Profile/Relationship uses readable Semantic input and can derive long-term
   const result = await pipeline.processIntent(1, "default", profileIntent());
 
   assert.equal(result.status, "committed");
+  assert.equal(providerRequests.length, 3);
+  const providerRequest = providerRequests.find((request) => request.proposer === "userProfileProposer");
   assert.deepEqual(Object.keys(providerRequest.userPayload).sort(), ["memoryText", "messages", "task"]);
   assert.match(providerRequest.userPayload.memoryText, /E1 \| 用户在交流压力过大时需要先暂停/);
   assert.equal(JSON.stringify(providerRequest.userPayload).includes("episode:pause"), false);

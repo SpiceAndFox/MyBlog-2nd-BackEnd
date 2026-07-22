@@ -7,6 +7,9 @@ const FILES = Object.freeze({
   agreementProposer: "agreement-proposer.md",
   episodeProposer: "episode-proposer.md",
   profileRelationshipProposer: "profile-relationship-proposer.md",
+  userProfileProposer: "user-profile-proposer.md",
+  assistantProfileProposer: "assistant-profile-proposer.md",
+  relationshipProposer: "relationship-proposer.md",
   worldFactProposer: "world-fact-proposer.md",
   compactionProposer: "compaction-proposer.md",
 });

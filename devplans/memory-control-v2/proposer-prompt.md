@@ -12,7 +12,10 @@
 | `todoProposer` | `todo-proposer.md` | `todos` |
 | `agreementProposer` | `agreement-proposer.md` | `standingAgreements` |
 | `episodeProposer` | `episode-proposer.md` | `recentEpisodes`, `milestones` |
-| `profileRelationshipProposer` | `profile-relationship-proposer.md` | 两个 Profile、`relationship` |
+| `profileRelationshipProposer` | `profile-relationship-proposer.md` | 持久化 task/联合结果契约 |
+| `userProfileProposer` | `user-profile-proposer.md` | `userProfile`（task 内专家） |
+| `assistantProfileProposer` | `assistant-profile-proposer.md` | `assistantProfile`（task 内专家） |
+| `relationshipProposer` | `relationship-proposer.md` | `relationship`（task 内专家） |
 | `worldFactProposer` | `world-fact-proposer.md` | `worldFacts` |
 | `compactionProposer` | `compaction-proposer.md` | 单个 maintenance section |
 
@@ -88,6 +91,7 @@ facet/canonicalKey/factBasis
 - 只记录未来反复适用的互动规则、边界或长期承诺；
 - 一次性事项、单方偏好、关系描述和抒情应 noop；
 - add/update/correct/forget 均可用；明确取消使用 `cancel`；
+- 当消息明确结束关系、角色、角色扮演或互动模式时，cancel 明显依赖该上层情境的可修改约定；不取消仍可独立成立的规则；
 - update/correct/cancel/forget 必须引用 writable agreement ref。
 
 ## 7. episodeProposer
@@ -105,15 +109,18 @@ facet/canonicalKey/factBasis
 
 ## 8. profileRelationshipProposer
 
-- 两个 Profile 与 relationship 只保存跨场景仍有价值、会影响未来回应的内容；
-- item 只输出 text 与 sources，不分类 facet/key/factBasis；
-- 不要求固定消息数量、独立互动片段数量或 new-batch evidence；
-- 单次 Episode 或一个/多个 support refs 可以促成长程归纳；
-- 当前接受语义重复、单次过度归纳和派生强化风险；
-- 仍不得做心理诊断、敏感属性推断或把临时动作机械固化成人格；
-- section 由事实主体和语义决定，不由消息 role决定；
-- 三个 sections 都允许 add/update/correct/forget；
-- interaction rule 应进入 standingAgreements，而不是 relationship。
+`profileRelationshipProposer` 是调度、cursor 与提交身份，不再用一次模型调用同时裁决三个 section。Provider Adapter 对同一 immutable artifact 展开三个专用调用；每个 prompt 与 structured schema 只拥有一个 section，三个结果通过本地 ref/source 契约后合并为原 proposer 的联合结果，再进入 Compiler/Reducer。三个专家均看到完整 observed window，不切块、不只看候选附近消息；模型覆盖配置默认继承 `profileRelationshipProposer`，也允许显式单独覆盖。
+
+- 两个 Profile 与 relationship 保存跨场景可复用、会改善未来回应或维持角色/关系连续的内容；不以条目数量为目标，也不把“遗忘后必须造成严重错误”作为准入门槛；
+- Proposer 在内部依次完成覆盖扫描、长期性分级、基线比较和完整性检查，但只输出 Schema 约束的终局，不输出分析过程；
+- 覆盖维度是识别用 ontology，不是持久化字段：User 包括身份背景、项目能力、目标价值、兴趣偏好、边界、沟通方式和可观察互动倾向；Assistant 包括双方建立的身份、人格、价值、限制和稳定行为；Relationship 包括当前关系、称呼、信任亲密度、角色/权力结构、互动模式和共享边界；
+- item 只输出 text 与 sources，不持久化 facet/key/factBasis；移除 typed metadata 不等于移除语义扫描维度；
+- 明确且未来可复用的事实不要求出现“永远/以后/记住”；当前偏好或自我描述使用保守范围表达；多个独立片段才可归纳为可观察模式，且不得推断心理动机、诊断或敏感属性；
+- 单次消息可以直接表达长期事实；单次普通动作、即时情绪、当前话题、事件流水和本轮测试步骤本身不进入 Profile；
+- 用户希望怎样被回应通常进入 userProfile 或 standingAgreements，不固化为 Assistant 人格；section 由事实主体和语义决定，不由消息 role 决定；
+- 新信息明确结束身份、关系、角色扮演或互动模式时，以 update/correct 刷新当前含义并处理依赖条目；同一维度的过去阶段、真相揭示或关系转变若能解释当前状态、维持共同经历连续性或避免误读，可以明确标注过去与当前后作为演化事实保留，整条无长期价值时才 forget；
+- 每个 text 保持原子性；三个 sections 都允许 add/update/correct/forget；来源可以是 direct、support 或混合且不要求属于 new batch。
+- Provider schema 根据 immutable artifact 动态枚举当前 section 可写 ref、辅助 ref 与可见 message id；模型不能把 Memory 整行、其他 section ref 或虚构消息 id 当成 selector。
 
 ## 9. worldFactProposer
 

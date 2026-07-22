@@ -38,10 +38,12 @@ normalContextWindow
 | todos | 8 / 48 |
 | standingAgreements | 16 / 64 |
 | episodes | 32 / 96 |
-| profileRelationship | 32 / 128 |
+| profileRelationship | 32 / 64 |
 | worldFacts | 16 / 96 |
 
 Force drain忽略 lagThreshold 到 captured boundary。
+
+`profileRelationship` 仍是一个持久化 target、一个 cursor 和一次原子提交；Provider Adapter 在 task 内依次调用 User Profile、Assistant Profile、Relationship 三个单 section 专家。三个专家都读取同一完整 observed window 与同一份基线 Memory，分别通过本地 schema/ref 校验后才合并成联合结果。任何一个调用失败或 unable 都不会部分应用其他 section。32/64 使每条消息通常被两个相邻批次覆盖；更早历史由已沉淀 section 递归承载，不靠无限放大 raw window 重读。
 
 ## 3. Normal Stage
 

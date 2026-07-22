@@ -1,4 +1,5 @@
 const { buildDueAtSchema } = require("../../contracts/dueAt");
+const { PROFILE_TEXT_MAX_CHARS } = require("../../contracts/constants");
 
 const dueAt = buildDueAtSchema();
 const dueChange = { oneOf: [
@@ -12,7 +13,7 @@ const semanticSourceProperties = Object.freeze({
   supportRefs: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
 });
 
-function semanticTextItemChangeSchema(action) {
+function semanticTextItemChangeSchema(action, { maxTextLength } = {}) {
   const properties = { action: { const: action }, ...semanticSourceProperties };
   const required = ["action"];
   if (action !== "add") {
@@ -20,7 +21,7 @@ function semanticTextItemChangeSchema(action) {
     required.push("ref");
   }
   if (action !== "forget") {
-    properties.text = { type: "string", minLength: 1 };
+    properties.text = { type: "string", minLength: 1, ...(maxTextLength ? { maxLength: maxTextLength } : {}) };
     required.push("text");
   }
   return {
@@ -32,7 +33,7 @@ function semanticTextItemChangeSchema(action) {
   };
 }
 
-function semanticTextItemResultSchema({ maxItems } = {}) {
+function semanticTextItemResultSchema({ maxItems, maxTextLength } = {}) {
   return {
     oneOf: [
       {
@@ -45,7 +46,7 @@ function semanticTextItemResultSchema({ maxItems } = {}) {
             type: "array",
             minItems: 1,
             ...(maxItems ? { maxItems } : {}),
-            items: { oneOf: ["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema) },
+            items: { oneOf: ["add", "update", "correct", "forget"].map((action) => semanticTextItemChangeSchema(action, { maxTextLength })) },
           },
         },
       },
@@ -55,7 +56,7 @@ function semanticTextItemResultSchema({ maxItems } = {}) {
   };
 }
 
-function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySection = {} } = {}) {
+function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySection = {}, maxTextLengthBySection = {} } = {}) {
   return {
     name: `memory_${proposer}_semantic`,
     strict: true,
@@ -72,6 +73,7 @@ function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySecti
           required: sections,
           properties: Object.fromEntries(sections.map((section) => [section, semanticTextItemResultSchema({
             maxItems: maxItemsBySection[section],
+            maxTextLength: maxTextLengthBySection[section],
           })])),
         },
       },
@@ -91,8 +93,15 @@ function buildProfileRelationshipSemanticOutputSchema() {
   return buildTextItemSemanticOutputSchema(
     "profileRelationshipProposer",
     ["userProfile", "assistantProfile", "relationship"],
+    { maxTextLengthBySection: PROFILE_TEXT_MAX_CHARS },
   );
 }
+
+const PROFILE_SPECIALIST_SECTIONS = Object.freeze({
+  userProfileProposer: "userProfile",
+  assistantProfileProposer: "assistantProfile",
+  relationshipProposer: "relationship",
+});
 
 function semanticChangeSchema(action, {
   ref = action !== "add",
@@ -219,6 +228,11 @@ function buildOutputSchema(proposer, targetSections) {
   }
   if (proposer === "episodeProposer") return buildEpisodeSemanticOutputSchema();
   if (proposer === "profileRelationshipProposer") return buildProfileRelationshipSemanticOutputSchema();
+  if (PROFILE_SPECIALIST_SECTIONS[proposer]) {
+    return buildTextItemSemanticOutputSchema(proposer, [PROFILE_SPECIALIST_SECTIONS[proposer]], {
+      maxTextLengthBySection: PROFILE_TEXT_MAX_CHARS,
+    });
+  }
   if (proposer === "worldFactProposer") return buildWorldFactSemanticOutputSchema();
   if (proposer === "agreementProposer") return buildAgreementSemanticOutputSchema();
   if (proposer === "todoProposer") return buildTodoSemanticOutputSchema();
@@ -230,6 +244,7 @@ module.exports = {
   buildOutputSchema,
   buildEpisodeSemanticOutputSchema,
   buildProfileRelationshipSemanticOutputSchema,
+  PROFILE_SPECIALIST_SECTIONS,
   buildWorldFactSemanticOutputSchema,
   buildAgreementSemanticOutputSchema,
   buildTodoSemanticOutputSchema,

@@ -79,10 +79,12 @@ test("structured transport routes models by proposer and falls back to the defau
   };
   const scene = await invoke({ ...request, proposer: "currentStateProposer" });
   const profile = await invoke({ ...request, proposer: "profileRelationshipProposer" });
+  const relationship = await invoke({ ...request, proposer: "relationshipProposer" });
   const todo = await invoke({ ...request, proposer: "todoProposer" });
-  assert.deepEqual(models, ["scene-model", "profile-model", "default-model"]);
+  assert.deepEqual(models, ["scene-model", "profile-model", "profile-model", "default-model"]);
   assert.equal(scene.model, "scene-model");
   assert.equal(profile.model, "profile-model");
+  assert.equal(relationship.model, "profile-model");
   assert.equal(todo.model, "default-model");
 });
 
