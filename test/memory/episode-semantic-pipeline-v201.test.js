@@ -235,6 +235,9 @@ test("Episode unable retry expands messages while preserving the original refs a
   assert.deepEqual(artifacts[1].refMap, artifacts[0].refMap);
   assert.equal(artifacts[1].publicInput.memoryText, artifacts[0].publicInput.memoryText);
   assert.deepEqual(artifacts.map((artifact) => artifact.publicInput.messages.map((entry) => entry.id)), [[3], [2, 3]]);
+  assert.equal(task.stage_payload.semanticResult, undefined);
+  assert.equal(task.stage_payload.compiledProposal, undefined);
+  assert.equal(task.stage_payload.unableResult.sectionResults.milestones.status, "noop");
   assert.equal(store.inspect.state.meta.targetCursors.episodes, 3);
   assert.equal(store.inspect.state.meta.revision, 1);
 });

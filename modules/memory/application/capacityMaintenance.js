@@ -33,6 +33,9 @@ function proposalItemIds(proposal) {
   if (!proposal?.sectionResults) return [];
   return Object.values(proposal.sectionResults).flatMap((result) => (result.patches || []).flatMap((patch) => [patch.itemId, ...(patch.itemIds || [])].filter(Boolean)));
 }
+function isUnableToCompact(output, envelope) {
+  return output?.sectionResults?.[envelope.task.targetSections[0]]?.status === "unable_to_compact";
+}
 
 function createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry } = {}) {
   if (!repositories?.withTransaction || !repositories.runtime || !providerAdapter) throw new Error("Capacity maintenance dependencies are required");
@@ -148,7 +151,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     return [...new Set(tasks.flatMap((task) => {
       if (rowValue(task, "task_id", "taskId") === envelope.task.taskId || TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return [];
       const stage = rowValue(task, "stage", "stage");
-      if (!["capacity_blocked", "replaying_original_proposal", "compacting"].includes(stage)) return [];
+      if (!["capacity_blocked", "replaying_original_proposal", "compiled_proposal_persisted", "compacting"].includes(stage)) return [];
       const payload = rowValue(task, "stage_payload", "stagePayload");
       return proposalItemIds(payload?.compiledProposal);
     }))];
@@ -172,7 +175,8 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: rowValue(task, "status", "status"), duplicate: true, taskId: envelope.task.taskId };
       const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
-      await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: { semanticResult: { unableToCompact: true } }, attempt, last_error_reason: "unable_to_compact" }, { client });
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      await repositories.runtime.updateTask(envelope.task.taskId, { status: "failed", stage: "compaction_failed", stage_payload: payload, attempt, last_error_reason: "unable_to_compact" }, { client });
       await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, status: "halted", consecutiveErrors: 0, lastErrorReason: "unable_to_compact", lastTaskId: envelope.task.taskId, nextRetryAt: null }, { client });
       await appendOps(envelope, "unable_to_compact", attempt, { parentTaskId: envelope.task.parentTaskId }, client);
       return { status: "halted", reason: "unable_to_compact", taskId: envelope.task.taskId };
@@ -198,12 +202,16 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
   }
 
   async function persistMaintenanceSemanticResult(envelope, output) {
+    if (isUnableToCompact(output, envelope)) throw new Error("unable_to_compact must be persisted through unableResult");
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Maintenance task not found while persisting provider proposal");
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return null;
       const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       payload.semanticResult = structuredClone(output);
+      payload.semanticInputVariant = "base";
+      delete payload.unableResult;
+      delete payload.compiledProposal;
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running", stage: "semantic_result_persisted", stage_payload: payload,
         not_before: null, last_error_reason: null,
@@ -218,9 +226,85 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     } catch (error) {
       if (!error?.commitOutcomeUnknown) throw error;
       const task = await repositories.runtime.getTask(envelope.task.taskId);
-      const persisted = rowValue(task, "stage_payload", "stagePayload")?.semanticResult;
-      if (rowValue(task, "stage", "stage") === "semantic_result_persisted" && isDeepStrictEqual(persisted, output)) return output;
+      const payload = rowValue(task, "stage_payload", "stagePayload") || {};
+      const persisted = payload.semanticResult;
+      if (rowValue(task, "stage", "stage") === "semantic_result_persisted"
+        && payload.semanticInputVariant === "base"
+        && isDeepStrictEqual(persisted, output)) return output;
       return persistMaintenanceSemanticResult(envelope, output);
+    }
+  }
+
+  async function persistMaintenanceUnableResult(envelope, output) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Maintenance task not found while persisting unable_to_compact");
+      if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return null;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      payload.unableResult = structuredClone(output);
+      delete payload.semanticResult;
+      delete payload.semanticInputVariant;
+      delete payload.compiledProposal;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "unable_result_persisted", stage_payload: payload,
+        not_before: null, last_error_reason: "unable_to_compact",
+      }, { client });
+      return output;
+    });
+  }
+
+  async function persistMaintenanceUnableResultWithRecovery(envelope, output) {
+    try {
+      return await persistMaintenanceUnableResult(envelope, output);
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const task = await repositories.runtime.getTask(envelope.task.taskId);
+      const persisted = rowValue(task, "stage_payload", "stagePayload")?.unableResult;
+      if (rowValue(task, "stage", "stage") === "unable_result_persisted" && isDeepStrictEqual(persisted, output)) return output;
+      return persistMaintenanceUnableResult(envelope, output);
+    }
+  }
+
+  async function persistMaintenanceCompiledProposal(envelope, proposal) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Maintenance task not found while persisting compiled proposal");
+      if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return null;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      payload.compiledProposal = structuredClone(proposal);
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "compiled_proposal_persisted", stage_payload: payload,
+        not_before: null, last_error_reason: null,
+      }, { client });
+      return proposal;
+    });
+  }
+
+  async function markMaintenanceCompiling(envelope) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Maintenance task not found before compilation");
+      if (rowValue(task, "stage", "stage") === "compiling") return;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      if (!payload.semanticResult || payload.unableResult || payload.semanticInputVariant !== "base") {
+        throw new Error("Maintenance Compiler requires a compiler-ready durable base Semantic result");
+      }
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "compiling", stage_payload: payload,
+        not_before: null, last_error_reason: null,
+      }, { client });
+    });
+  }
+
+  async function persistMaintenanceCompiledProposalWithRecovery(envelope, proposal) {
+    try {
+      return await persistMaintenanceCompiledProposal(envelope, proposal);
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const task = await repositories.runtime.getTask(envelope.task.taskId);
+      const persisted = rowValue(task, "stage_payload", "stagePayload")?.compiledProposal;
+      if (rowValue(task, "stage", "stage") === "compiled_proposal_persisted" && isDeepStrictEqual(persisted, proposal)) return proposal;
+      return persistMaintenanceCompiledProposal(envelope, proposal);
     }
   }
 
@@ -364,16 +448,26 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
 
   async function processMaintenanceEnvelope(envelope) {
     const current = await repositories.runtime.getTask(envelope.task.taskId);
-    if (rowValue(current, "stage", "stage") === "compaction_applied") return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
+    const currentStage = rowValue(current, "stage", "stage");
+    const durablePayload = rowValue(current, "stage_payload", "stagePayload") || {};
+    if (currentStage === "compaction_applied") return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
     if (TERMINAL_STATUSES.has(rowValue(current, "status", "status"))) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
     const notBefore = rowValue(current, "not_before", "notBefore");
     if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
       return { status: "retry_wait", taskId: envelope.task.taskId, notBefore };
     }
-    let output = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "compacting"].includes(rowValue(current, "stage", "stage"))
-      ? rowValue(current, "stage_payload", "stagePayload")?.semanticResult
+    if (currentStage === "unable_result_persisted") return failUnable(envelope);
+    let output = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "compacting"].includes(currentStage)
+      ? durablePayload.semanticResult
       : null;
-    if (!output) {
+    let compiled = ["compiled_proposal_persisted", "compacting"].includes(currentStage)
+      ? durablePayload.compiledProposal
+      : null;
+    if (compiled && output && durablePayload.semanticInputVariant !== "base") {
+      await persistMaintenanceSemanticResultWithRecovery(envelope, output);
+      await persistMaintenanceCompiledProposalWithRecovery(envelope, compiled);
+    }
+    if (!output && !compiled) {
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
       output = buildDeterministicExactMergeOutput(state, envelope.task, envelope.artifact);
       if (!output) {
@@ -391,20 +485,27 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       } else {
         metrics?.increment("memory_deterministic_exact_merge_total", { targetKey: envelope.task.targetKey, section: envelope.task.targetSections[0] });
       }
-      await persistMaintenanceSemanticResultWithRecovery(envelope, output);
     }
-    const validation = validateSemanticResult(output, envelope.artifact);
-    if (!validation.ok) {
-      if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_skipped", { reason: "output_schema_invalid" });
-      return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });
-    }
-    const sectionResult = output.sectionResults[envelope.task.targetSections[0]];
-    if (sectionResult.status === "unable_to_compact") return failUnable(envelope);
-    let compiled;
-    try {
-      compiled = await compileSemanticResult({ artifact: envelope.artifact, semanticResult: output, baseState: await repositories.state.getState(envelope.task.userId, envelope.task.presetId), sourceRepository: repositories.source, userId: envelope.task.userId, presetId: envelope.task.presetId });
-    } catch (error) {
-      return recordAdapterError(envelope, { status: "error", reason: error.code || "compile_invariant_failed", detail: error.detail });
+    if (!compiled) {
+      const validation = validateSemanticResult(output, envelope.artifact);
+      if (!validation.ok) {
+        if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_skipped", { reason: "output_schema_invalid" });
+        return recordAdapterError(envelope, { status: "error", reason: "output_schema_invalid", detail: validation.errors });
+      }
+      if (isUnableToCompact(output, envelope)) {
+        await persistMaintenanceUnableResultWithRecovery(envelope, output);
+        return failUnable(envelope);
+      }
+      if (currentStage !== "semantic_result_persisted" || durablePayload.semanticInputVariant !== "base") {
+        await persistMaintenanceSemanticResultWithRecovery(envelope, output);
+      }
+      if (currentStage !== "compiling") await markMaintenanceCompiling(envelope);
+      try {
+        compiled = await compileSemanticResult({ artifact: envelope.artifact, semanticResult: output, baseState: await repositories.state.getState(envelope.task.userId, envelope.task.presetId), sourceRepository: repositories.source, userId: envelope.task.userId, presetId: envelope.task.presetId });
+      } catch (error) {
+        return recordAdapterError(envelope, { status: "error", reason: error.code || "compile_invariant_failed", detail: error.detail });
+      }
+      await persistMaintenanceCompiledProposalWithRecovery(envelope, compiled);
     }
     let result;
     try {

@@ -328,10 +328,10 @@ function renderDetail() {
   inputColumn.append(
     inputTitle,
     codePanel({ kicker: "SYSTEM", title: task.input.currentRepairPrompt ? "当前 Prompt + repair feedback" : "当前 Prompt", note: "Prompt 本身未随 task 保存；这里展示当前工作区版本。", value: task.input.currentRepairPrompt || task.input.currentPrompt, emptyMessage: task.input.reconstructionError || "无法重建 Prompt" }),
-    codePanel({ kicker: "USER PAYLOAD", title: task.input.expandedEnvelope ? "Effective expanded envelope" : "Persisted task envelope", note: task.input.expandedEnvelope ? "该任务发生过 context expansion；这里展示扩展后的 Provider 输入。" : "来自 chat_memory_tasks.task_payload。", value: task.input.effectiveEnvelope }),
+    codePanel({ kicker: "USER PAYLOAD", title: task.input.expandedArtifact ? "Effective expanded envelope" : "Persisted task envelope", note: task.input.expandedArtifact ? "由 immutable base envelope 与 durable expandedArtifact 重建。" : "来自 chat_memory_tasks.task_payload。", value: task.input.effectiveEnvelope }),
     codePanel({ kicker: "JSON SCHEMA", title: "Response schema", note: "根据 proposer 与 targetSections 从当前代码重建。", value: task.input.responseSchema }),
   );
-  if (task.input.expandedEnvelope) {
+  if (task.input.expandedArtifact) {
     inputColumn.append(codePanel({ kicker: "ORIGINAL", title: "Original persisted envelope", value: task.input.persistedEnvelope }));
   }
 
@@ -346,6 +346,7 @@ function renderDetail() {
   outputColumn.append(
     outputTitle,
     codePanel({ kicker: "SEMANTIC IR", title: "Persisted Semantic result", note: "来自 stage_payload.semanticResult。", value: task.output.semanticResult, emptyMessage: missingOutput }),
+    codePanel({ kicker: "UNABLE", title: "Persisted unable result", note: "来自 stage_payload.unableResult；该分支不会进入 Compiler。", value: task.output.unableResult }),
     codePanel({ kicker: "COMPILED", title: "Compiled proposal", note: "来自 stage_payload.compiledProposal；尚未编译时为空。", value: task.output.compiledProposal }),
     codePanel({ kicker: "STAGE", title: "Raw stage payload", note: "用于查看 retry、context expansion 与持久化阶段。", value: task.stagePayload }),
     diagnosticSection(task),

@@ -70,7 +70,7 @@ test("task shadow replay is read-only and reports schema, Reducer, and provenanc
           status: "succeeded",
           stage: "committed",
           task_payload: envelope,
-          stage_payload: { normalContextWindow: 64, semanticResult: proposal },
+          stage_payload: { normalContextWindow: 64, semanticResult: proposal, semanticInputVariant: "base" },
         };
       },
       updateTask: async () => { throw new Error("must not write task"); },
@@ -175,4 +175,52 @@ test("task shadow replay mirrors the bounded schema repair before preflight", as
   assert.equal(report.replay.providerAttempts.length, 2);
   assert.equal(options[0].repairFeedback, null);
   assert.deepEqual(options[1].repairFeedback.errors, [{ path: "$.tickId", message: "is required" }]);
+});
+
+test("task shadow replay reconstructs expanded input with the immutable base ref map", async () => {
+  const { state, config, envelope } = fixture();
+  const older = {
+    id: 1076,
+    role: "user",
+    content: "更早的上下文",
+    createdAt: "2026-07-18T09:59:59.000Z",
+  };
+  const expandedMessages = [older, ...envelope.artifact.publicInput.messages];
+  const expandedArtifact = {
+    publicInput: { ...structuredClone(envelope.artifact.publicInput), messages: expandedMessages },
+    messageMeta: {
+      ...structuredClone(envelope.artifact.messageMeta),
+      "1076": { role: "user", createdAt: older.createdAt, contentHash: sha256(older.content) },
+    },
+  };
+  const unableResult = {
+    tickId: envelope.task.tickId,
+    proposer: envelope.task.proposer,
+    sectionResults: { todos: { status: "unable_to_decide" } },
+  };
+  let providerEnvelope;
+  const replay = createMemoryTaskShadowReplay({
+    repositories: {
+      runtime: { getTask: async () => ({
+        task_payload: envelope,
+        context_expansion_attempt: 1,
+        stage_payload: { expandedArtifact, unableResult },
+      }) },
+      audit: { getSnapshot: async () => ({ source_generation: 4, state }) },
+      source: { getByIds: async () => { throw new Error("unable replay must not compile"); } },
+    },
+    config,
+    providerAdapter: { propose: async (effectiveEnvelope) => {
+      providerEnvelope = effectiveEnvelope;
+      return { status: "ok", output: unableResult };
+    } },
+    promptLoader: async () => "current prompt",
+  });
+
+  const report = await replay.replay(TASK_ID);
+  assert.equal(report.status, "completed");
+  assert.equal(report.task.semanticInputVariant, "expanded");
+  assert.equal(report.baseline.resultKind, "unableResult");
+  assert.deepEqual(providerEnvelope.artifact.refMap, envelope.artifact.refMap);
+  assert.deepEqual(providerEnvelope.artifact.publicInput.messages.map((message) => message.id), [1076, 1078, 1079, 1080]);
 });

@@ -6,7 +6,7 @@ const {
   summarizeGenerations,
   hydrateTask,
   createServer,
-} = require("../../evals/gui/server");
+} = require("../gui/server");
 
 function taskRow(overrides = {}) {
   const envelope = {
@@ -41,6 +41,7 @@ function taskRow(overrides = {}) {
     task_payload: envelope,
     stage_payload: {
       semanticResult: { tickId: 1, proposer: "episodeProposer", sectionResults: {} },
+      semanticInputVariant: "base",
       compiledProposal: { tickId: 1, proposer: "episodeProposer", sectionResults: {} },
     },
     created_at: "2026-07-19T00:00:00.000Z",
@@ -79,6 +80,34 @@ test("Memory task GUI reconstructs current provider request and persisted output
   assert.equal(task.output.availability, "persisted");
   assert.equal(task.output.semanticResult.proposer, "episodeProposer");
   assert.equal(task.output.compiledProposal.proposer, "episodeProposer");
+});
+
+test("Memory task GUI reconstructs expanded input from expandedArtifact and base refMap", async () => {
+  const row = taskRow();
+  const baseRefMap = structuredClone(row.task_payload.artifact.refMap);
+  const expandedMessage = { id: 0, role: "user", content: "older", createdAt: "2026-07-18T23:59:59.000Z" };
+  row.context_expansion_attempt = 1;
+  row.stage_payload = {
+    semanticInputVariant: "expanded",
+    expandedArtifact: {
+      publicInput: { ...structuredClone(row.task_payload.artifact.publicInput), messages: [expandedMessage, ...row.task_payload.artifact.publicInput.messages] },
+      messageMeta: {
+        ...structuredClone(row.task_payload.artifact.messageMeta),
+        "0": { role: "user", createdAt: expandedMessage.createdAt, contentHash: `sha256:${"b".repeat(64)}` },
+      },
+    },
+    unableResult: { tickId: 1, proposer: "episodeProposer", sectionResults: {} },
+  };
+
+  const task = await hydrateTask(row, {
+    promptLoader: async () => "prompt",
+    schemaBuilder: () => ({ strict: true }),
+  });
+  assert.equal(task.input.semanticInputVariant, "expanded");
+  assert.deepEqual(task.input.effectiveEnvelope.artifact.refMap, baseRefMap);
+  assert.deepEqual(task.input.effectiveEnvelope.artifact.publicInput.messages.map((message) => message.id), [0, 1]);
+  assert.equal(task.output.semanticResult, null);
+  assert.equal(task.output.unableResult.proposer, "episodeProposer");
 });
 
 test("Memory task GUI HTTP API performs SELECT-only reads", async (context) => {

@@ -135,4 +135,8 @@ test("unable_to_decide expands once, then commits one cursor-only revision idemp
   assert.equal(data.inspect.groups.size, 1);
   assert.equal(data.inspect.events.length, 0);
   assert.equal(data.inspect.snapshots.length, 1);
+  const task = data.inspect.tasks.get(envelope.task.taskId);
+  assert.equal(task.stage_payload.semanticResult, undefined);
+  assert.equal(task.stage_payload.compiledProposal, undefined);
+  assert.equal(task.stage_payload.unableResult.sectionResults.todos.status, "unable_to_decide");
 });

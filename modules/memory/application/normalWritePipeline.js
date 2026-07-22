@@ -23,8 +23,36 @@ const ADAPTER_METRIC_RESULTS = new Set(["ok", "llm_call_failed", "safety_policy_
 const NORMAL_REDUCTION_STAGES = new Set([
   "proposing", "provider_error", "schema_invalid_retry",
   "semantic_result_persisted", "compiling", "compiled_proposal_persisted",
-  "context_expansion", "resumed", "transaction_failed", "commit_outcome_unknown",
+  "context_expanded", "resumed", "transaction_failed", "commit_outcome_unknown",
 ]);
+
+function containsUnableToDecide(output) {
+  return Object.values(output?.sectionResults || {}).some((result) => result?.status === "unable_to_decide");
+}
+
+function expandedArtifactFromEnvelope(envelope) {
+  return {
+    publicInput: structuredClone(envelope.artifact.publicInput),
+    messageMeta: structuredClone(envelope.artifact.messageMeta),
+  };
+}
+
+function envelopeWithExpandedArtifact(baseEnvelope, expandedArtifact) {
+  if (!expandedArtifact?.publicInput || !expandedArtifact?.messageMeta) {
+    const error = new Error("Expanded 2.01 task input is missing from durable state");
+    error.code = "MEMORY_EXPANDED_INPUT_MISSING";
+    throw error;
+  }
+  const envelope = structuredClone(baseEnvelope);
+  envelope.artifact = {
+    ...envelope.artifact,
+    publicInput: structuredClone(expandedArtifact.publicInput),
+    messageMeta: structuredClone(expandedArtifact.messageMeta),
+    refMap: structuredClone(baseEnvelope.artifact.refMap),
+  };
+  envelope.task.observedMessageIds = (envelope.artifact.publicInput.messages || []).map((message) => message.id);
+  return envelope;
+}
 
 function phaseId(taskId, phase = "normal_commit") {
   const hex = crypto.createHash("sha256").update(`${taskId}:${phase}`).digest("hex").slice(0, 32).split("");
@@ -273,14 +301,18 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     return expanded;
   }
 
-  async function expandContextForRetry(envelope, persistedTask) {
-    const expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
-    if (expansionAttempt < 1) return envelope;
-    const existing = rowValue(persistedTask, "stage_payload", "stagePayload")?.expandedEnvelope;
-    if (existing) return structuredClone(existing);
-    const error = new Error("Expanded 2.01 task input is missing from durable state");
-    error.code = "MEMORY_EXPANDED_INPUT_MISSING";
-    throw error;
+  async function envelopeForInputVariant(envelope, persistedTask, inputVariant) {
+    if (inputVariant === "base") return envelope;
+    if (inputVariant !== "expanded") {
+      const error = new Error("Durable Semantic result is missing its input variant");
+      error.code = "MEMORY_SEMANTIC_INPUT_VARIANT_MISSING";
+      throw error;
+    }
+    const payload = rowValue(persistedTask, "stage_payload", "stagePayload") || {};
+    // Rolling-upgrade read compatibility only; every subsequent write removes expandedEnvelope.
+    const expandedArtifact = payload.expandedArtifact
+      ?? (payload.expandedEnvelope?.artifact ? expandedArtifactFromEnvelope(payload.expandedEnvelope) : null);
+    return envelopeWithExpandedArtifact(envelope, expandedArtifact);
   }
 
   async function recordStale(envelope, reason, { cancel = true } = {}) {
@@ -294,25 +326,95 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
-  async function handleUnableToDecide(envelope, output) {
+  async function persistUnableResult(envelope, output) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task not found while persisting unable_to_decide");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return null;
+      const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      payload.unableResult = structuredClone(output);
+      if (numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") > 0 && !payload.expandedArtifact) {
+        payload.expandedArtifact = expandedArtifactFromEnvelope(envelope);
+      }
+      delete payload.semanticResult;
+      delete payload.semanticInputVariant;
+      delete payload.compiledProposal;
+      delete payload.expandedEnvelope;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "unable_result_persisted", stage_payload: payload,
+        not_before: null, last_error_reason: "unable_to_decide",
+      }, { client });
+      return output;
+    });
+  }
+
+  async function persistUnableResultWithRecovery(envelope, output) {
+    try {
+      return await persistUnableResult(envelope, output);
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const task = await repositories.runtime.getTask(envelope.task.taskId);
+      const persisted = rowValue(task, "stage_payload", "stagePayload")?.unableResult;
+      if (rowValue(task, "stage", "stage") === "unable_result_persisted" && isDeepStrictEqual(persisted, output)) return output;
+      return persistUnableResult(envelope, output);
+    }
+  }
+
+  async function beginContextExpansion(envelope) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task not found before context expansion");
+      if (rowValue(task, "stage", "stage") === "context_expanding") return task;
+      if (rowValue(task, "stage", "stage") !== "unable_result_persisted"
+        || numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") !== 0) return task;
+      const attempt = numberValue(task, "attempt", "attempt") + 1;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running", stage: "context_expanding", attempt,
+        context_expansion_attempt: 1, not_before: null, last_error_reason: "unable_to_decide",
+      }, { client });
+      await appendOps(envelope, "unable_to_decide", attempt, { contextExpansionAttempt: 1 }, client);
+      return { ...task, stage: "context_expanding", attempt, context_expansion_attempt: 1 };
+    });
+  }
+
+  async function completeContextExpansion(envelope) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task not found during context expansion");
+      const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      if (!stagePayload.expandedArtifact) {
+        const expandedEnvelope = await buildExpandedEnvelope(envelope, client, stagePayload.normalContextWindow);
+        stagePayload.expandedArtifact = expandedArtifactFromEnvelope(expandedEnvelope);
+      }
+      delete stagePayload.expandedEnvelope;
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "queued", stage: "context_expanded", stage_payload: stagePayload,
+        not_before: null, last_error_reason: "unable_to_decide",
+      }, { client });
+      return { status: "context_expansion_required", taskId: envelope.task.taskId };
+    });
+  }
+
+  async function handleUnableToDecide(envelope) {
+    let persistedTask = await repositories.runtime.getTask(envelope.task.taskId);
+    let expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
+    let stage = rowValue(persistedTask, "stage", "stage");
+    if (expansionAttempt === 0 && stage === "unable_result_persisted") {
+      persistedTask = await beginContextExpansion(envelope);
+      expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
+      stage = rowValue(persistedTask, "stage", "stage");
+    }
+    if (stage === "context_expanding") return completeContextExpansion(envelope);
     return repositories.withTransaction(async (client) => {
       const groupId = phaseId(envelope.task.taskId, "unable_cursor_commit");
       const existing = await repositories.audit.getEventGroup(groupId, { client });
       if (existing) return { status: "committed", revision: Number(existing.result_revision), duplicate: true, taskId: envelope.task.taskId };
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found for unable_to_decide");
-      const expansionAttempt = numberValue(task, "context_expansion_attempt", "contextExpansionAttempt");
       const attempt = numberValue(task, "attempt", "attempt") + 1;
-      if (expansionAttempt === 0) {
-        const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
-        stagePayload.semanticResult = structuredClone(output);
-        stagePayload.expandedEnvelope = await buildExpandedEnvelope(envelope, client, stagePayload.normalContextWindow);
-        await repositories.runtime.updateTask(envelope.task.taskId, {
-          status: "queued", stage: "context_expansion", stage_payload: stagePayload,
-          attempt, context_expansion_attempt: 1, not_before: null, last_error_reason: "unable_to_decide",
-        }, { client });
-        await appendOps(envelope, "unable_to_decide", attempt, { contextExpansionAttempt: 1 }, client);
-        return { status: "context_expansion_required", taskId: envelope.task.taskId };
+      if (numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") < 1
+        || rowValue(task, "stage", "stage") !== "unable_result_persisted") {
+        throw new Error("Cursor-only unable commit requires a persisted second unable result");
       }
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       const cursor = state.meta.targetCursors[envelope.task.targetKey] ?? 0;
@@ -333,7 +435,6 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       }, { client });
       await repositories.audit.insertSnapshot(envelope.task.userId, envelope.task.presetId, { sourceGeneration: nextState.meta.sourceGeneration, revision: nextState.meta.revision, schemaVersion: envelope.task.schemaVersion, state: nextState }, { client });
       const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
-      stagePayload.semanticResult = structuredClone(output);
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "succeeded", stage: "unable_cursor_committed", stage_payload: stagePayload, attempt, result_revision: nextState.meta.revision, not_before: null, last_error_reason: null }, { client });
       await recordSuccessfulTarget(repositories, envelope, client);
       return { status: "committed", taskId: envelope.task.taskId, revision: nextState.meta.revision, cursorOnly: true };
@@ -474,13 +575,19 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
-  async function persistSemanticResult(envelope, output) {
+  async function persistSemanticResult(envelope, output, inputVariant = "base") {
+    if (containsUnableToDecide(output)) throw new Error("unable_to_decide must be persisted through unableResult");
+    if (!["base", "expanded"].includes(inputVariant)) throw new Error("Semantic input variant must be base or expanded");
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found while persisting provider proposal");
       if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return null;
       const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       payload.semanticResult = structuredClone(output);
+      payload.semanticInputVariant = inputVariant;
+      if (inputVariant === "expanded" && !payload.expandedArtifact) payload.expandedArtifact = expandedArtifactFromEnvelope(envelope);
+      delete payload.unableResult;
+      delete payload.expandedEnvelope;
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running", stage: "semantic_result_persisted", stage_payload: payload,
         not_before: null, last_error_reason: null,
@@ -489,16 +596,19 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
-  async function persistSemanticResultWithRecovery(envelope, output) {
+  async function persistSemanticResultWithRecovery(envelope, output, inputVariant = "base") {
     try {
-      return await persistSemanticResult(envelope, output);
+      return await persistSemanticResult(envelope, output, inputVariant);
     } catch (error) {
       if (!error?.commitOutcomeUnknown) throw error;
       const task = await repositories.runtime.getTask(envelope.task.taskId);
-      const persisted = rowValue(task, "stage_payload", "stagePayload")?.semanticResult;
+      const payload = rowValue(task, "stage_payload", "stagePayload") || {};
+      const persisted = payload.semanticResult;
       const expectedStage = "semantic_result_persisted";
-      if (rowValue(task, "stage", "stage") === expectedStage && isDeepStrictEqual(persisted, output)) return output;
-      return persistSemanticResult(envelope, output);
+      if (rowValue(task, "stage", "stage") === expectedStage
+        && payload.semanticInputVariant === inputVariant
+        && isDeepStrictEqual(persisted, output)) return output;
+      return persistSemanticResult(envelope, output, inputVariant);
     }
   }
 
@@ -548,9 +658,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       return await commit(envelope, output);
     } catch (error) {
       if (error?.commitOutcomeUnknown) {
-        const unable = Object.values(output.sectionResults).some((result) => result.status === "unable_to_decide");
-        const identity = phaseId(envelope.task.taskId, unable ? "unable_cursor_commit" : "normal_commit");
-        const existing = await repositories.audit.getEventGroup(identity);
+        const existing = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "normal_commit"));
         if (existing) return { status: "committed", taskId: envelope.task.taskId, revision: Number(existing.result_revision), duplicate: true, reconciledCommitOutcome: true };
         const capacityGroup = await repositories.audit.getEventGroup(stablePhaseId(envelope.task.taskId, "capacity_blocked"));
         if (capacityGroup) return { status: "capacity_deferred", taskId: envelope.task.taskId, duplicate: true, reconciledCommitOutcome: true };
@@ -581,12 +689,40 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     const group = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId))
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
-    const attemptEnvelope = await expandContextForRetry(envelope, persistedTask);
     const stage = rowValue(persistedTask, "stage", "stage");
     const durablePayload = rowValue(persistedTask, "stage_payload", "stagePayload") || {};
-    let semanticResult = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "transaction_failed", "commit_outcome_unknown"].includes(stage)
-      ? durablePayload.semanticResult
-      : null;
+    const semanticStages = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "transaction_failed", "commit_outcome_unknown"];
+    const durableSemanticResult = semanticStages.includes(stage) ? durablePayload.semanticResult : null;
+    if (["unable_result_persisted", "context_expanding"].includes(stage)) {
+      const unable = await handleUnableToDecide(envelope);
+      if (unable.status === "successor_required") {
+        const successor = await createSuccessor(envelope);
+        return processEnvelope(successor);
+      }
+      if (unable.status === "stale") return recordStale(envelope, unable.reason);
+      return unable;
+    }
+    const inferredInputVariant = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt") > 0
+      ? "expanded"
+      : "base";
+    const inputVariant = durableSemanticResult
+      ? durablePayload.semanticInputVariant ?? inferredInputVariant
+      : inferredInputVariant;
+    const attemptEnvelope = await envelopeForInputVariant(envelope, persistedTask, inputVariant);
+    if (durableSemanticResult && containsUnableToDecide(durableSemanticResult)) {
+      await persistUnableResultWithRecovery(attemptEnvelope, durableSemanticResult);
+      const unable = await handleUnableToDecide(attemptEnvelope);
+      if (unable.status === "successor_required") {
+        const successor = await createSuccessor(attemptEnvelope);
+        return processEnvelope(successor);
+      }
+      if (unable.status === "stale") return recordStale(attemptEnvelope, unable.reason);
+      return unable;
+    }
+    if (durableSemanticResult && !durablePayload.semanticInputVariant) {
+      await persistSemanticResultWithRecovery(attemptEnvelope, durableSemanticResult, inputVariant);
+    }
+    let semanticResult = durableSemanticResult;
     let output = ["compiled_proposal_persisted", "transaction_failed", "commit_outcome_unknown"].includes(stage)
       ? durablePayload.compiledProposal
       : null;
@@ -602,11 +738,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         return recordAdapterError(envelope, adapterResult);
       }
       semanticResult = adapterResult.output;
-      await persistSemanticResultWithRecovery(attemptEnvelope, adapterResult.output);
-    }
-    if (!output) {
-      if (Object.values(semanticResult.sectionResults).some((result) => result.status === "unable_to_decide")) {
-        const unable = await handleUnableToDecide(attemptEnvelope, semanticResult);
+      if (containsUnableToDecide(semanticResult)) {
+        await persistUnableResultWithRecovery(attemptEnvelope, semanticResult);
+        const unable = await handleUnableToDecide(attemptEnvelope);
         if (unable.status === "successor_required") {
           const successor = await createSuccessor(attemptEnvelope);
           return processEnvelope(successor);
@@ -614,6 +748,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         if (unable.status === "stale") return recordStale(attemptEnvelope, unable.reason);
         return unable;
       }
+      await persistSemanticResultWithRecovery(attemptEnvelope, semanticResult, inputVariant);
+    }
+    if (!output) {
       let compiled;
       try {
         compiled = await compileSemanticProposal(attemptEnvelope, semanticResult);
@@ -651,7 +788,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     for (const intent of observation.eligibleTasks) results.push(await processIntent(userId, presetId, intent));
     return results;
   }
-  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, persistSemanticResult, persistSemanticResultWithRecovery, recordAdapterError, capacity });
+  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, persistSemanticResult, persistSemanticResultWithRecovery, persistUnableResult, persistUnableResultWithRecovery, recordAdapterError, capacity });
 }
 
 module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent: mapEventToRow };

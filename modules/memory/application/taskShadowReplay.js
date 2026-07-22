@@ -13,6 +13,30 @@ function rowValue(row, snake, camel = snake) {
   return row?.[snake] ?? row?.[camel];
 }
 
+function effectiveReplayEnvelope(baseEnvelope, stagePayload, contextExpansionAttempt) {
+  const inputVariant = stagePayload.semanticInputVariant
+    ?? (Number(contextExpansionAttempt || 0) > 0 ? "expanded" : "base");
+  if (inputVariant === "base") return { envelope: baseEnvelope, inputVariant };
+  // Read-only compatibility for terminal tasks written before expandedArtifact was introduced.
+  const expandedArtifact = stagePayload.expandedArtifact
+    ?? (stagePayload.expandedEnvelope?.artifact ? {
+      publicInput: stagePayload.expandedEnvelope.artifact.publicInput,
+      messageMeta: stagePayload.expandedEnvelope.artifact.messageMeta,
+    } : null);
+  if (inputVariant !== "expanded" || !expandedArtifact?.publicInput || !expandedArtifact?.messageMeta) {
+    throw new Error("Expanded shadow-replay input is missing from durable state");
+  }
+  const envelope = structuredClone(baseEnvelope);
+  envelope.artifact = {
+    ...envelope.artifact,
+    publicInput: structuredClone(expandedArtifact.publicInput),
+    messageMeta: structuredClone(expandedArtifact.messageMeta),
+    refMap: structuredClone(baseEnvelope.artifact.refMap),
+  };
+  envelope.task.observedMessageIds = (envelope.artifact.publicInput.messages || []).map((message) => message.id);
+  return { envelope, inputVariant };
+}
+
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -82,14 +106,21 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
   async function replay(taskId) {
     const row = await repositories.runtime.getTask(taskId);
     if (!row) throw new Error(`Memory task not found: ${taskId}`);
-    const envelope = structuredClone(rowValue(row, "task_payload", "taskPayload"));
-    if (!envelope?.task) throw new Error(`Memory task has no replayable task_payload: ${taskId}`);
+    const baseEnvelope = structuredClone(rowValue(row, "task_payload", "taskPayload"));
+    if (!baseEnvelope?.task) throw new Error(`Memory task has no replayable task_payload: ${taskId}`);
 
-    if (!isSemanticTaskEnvelope(envelope)) throw new Error(`Memory task is not a 2.01 Semantic task: ${taskId}`);
+    if (!isSemanticTaskEnvelope(baseEnvelope)) throw new Error(`Memory task is not a 2.01 Semantic task: ${taskId}`);
+    const stagePayload = rowValue(row, "stage_payload", "stagePayload") || {};
+    const { envelope, inputVariant } = effectiveReplayEnvelope(
+      baseEnvelope,
+      stagePayload,
+      rowValue(row, "context_expansion_attempt", "contextExpansionAttempt"),
+    );
     const prompt = await promptLoader(envelope.task.proposer);
     const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections);
-    const stagePayload = rowValue(row, "stage_payload", "stagePayload") || {};
     const persistedSemanticResult = stagePayload.semanticResult ?? null;
+    const persistedUnableResult = stagePayload.unableResult ?? null;
+    const persistedResult = persistedSemanticResult ?? persistedUnableResult;
     const report = {
       reportVersion: 1,
       mode: "read_only_task_shadow_replay",
@@ -110,6 +141,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
           targetMessageId: envelope.task.targetMessageId,
         },
         observedMessageIds: envelope.task.observedMessageIds.slice(),
+        semanticInputVariant: inputVariant,
       },
       provenance: {
         adapter: config.provider.adapter,
@@ -123,10 +155,14 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
           observedCount: envelope.task.observedMessageIds.length,
         },
       },
-      baseline: persistedSemanticResult ? {
-        semanticResultHash: sha256(persistedSemanticResult),
-        summary: semanticResultSummary(persistedSemanticResult, envelope.task.targetSections),
+      baseline: persistedResult ? {
+        resultKind: persistedSemanticResult ? "semanticResult" : "unableResult",
+        resultHash: sha256(persistedResult),
+        semanticResultHash: persistedSemanticResult ? sha256(persistedSemanticResult) : null,
+        unableResultHash: persistedUnableResult ? sha256(persistedUnableResult) : null,
+        summary: semanticResultSummary(persistedResult, envelope.task.targetSections),
         semanticResult: persistedSemanticResult,
+        unableResult: persistedUnableResult,
       } : null,
       replay: null,
     };

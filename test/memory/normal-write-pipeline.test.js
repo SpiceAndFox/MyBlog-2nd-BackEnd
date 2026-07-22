@@ -67,7 +67,10 @@ test("normal task atomically persists state, event group, snapshot, task and tar
   assert.equal(store.inspect.events[0].decision, "accepted");
   assert.equal(store.inspect.events[0].patch_summary.op, "addItem");
   assert.equal(store.inspect.snapshots.length, 1);
-  assert.equal([...store.inspect.tasks.values()][0].status, "succeeded");
+  const task = [...store.inspect.tasks.values()][0];
+  assert.equal(task.status, "succeeded");
+  assert.equal(task.stage_payload.semanticInputVariant, "base");
+  assert.equal(task.stage_payload.unableResult, undefined);
   assert.equal(store.inspect.statuses.at(-1).status, "healthy");
 });
 
@@ -215,12 +218,46 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const task = [...store.inspect.tasks.values()][0];
   const envelope = task.task_payload;
   assert.equal(task.stage_payload.normalContextWindow, 2);
-  assert.deepEqual(task.stage_payload.expandedEnvelope.artifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
+  assert.deepEqual(task.stage_payload.expandedArtifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
+  assert.deepEqual(Object.keys(task.stage_payload.expandedArtifact).sort(), ["messageMeta", "publicInput"]);
+  assert.equal(task.stage_payload.semanticResult, undefined);
+  assert.equal(task.stage_payload.unableResult.sectionResults.todos.status, "unable_to_decide");
   store.repositories.source.getForceDrainWindow = async () => { throw new Error("durable expanded input must be reused"); };
   const second = await pipeline.processEnvelope(envelope);
   assert.equal(second.status, "committed");
   assert.deepEqual(observedCounts, [1, 2]);
   assert.deepEqual(expansionOptions, { newBatchSize: 1, contextWindow: 4 });
-  assert.deepEqual(task.stage_payload.expandedEnvelope.artifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
+  assert.deepEqual(task.stage_payload.expandedArtifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
+  assert.equal(task.stage_payload.semanticInputVariant, "expanded");
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
+});
+
+test("legacy durable unable Semantic result is reclassified without Provider or Compiler work", async () => {
+  const store = fakes();
+  let providerCalls = 0;
+  let compilerCalls = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: store.repositories, config,
+    providerAdapter: { propose: async () => { providerCalls += 1; throw new Error("must not call Provider"); } },
+    semanticCompiler: { compile: async () => { compilerCalls += 1; throw new Error("must not call Compiler"); } },
+  });
+  const envelope = await pipeline.createTask(1, "default", {
+    targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0,
+  });
+  const task = store.inspect.tasks.get(envelope.task.taskId);
+  task.stage = "semantic_result_persisted";
+  task.status = "running";
+  task.stage_payload.semanticResult = {
+    tickId: envelope.task.tickId,
+    proposer: envelope.task.proposer,
+    sectionResults: { todos: { status: "unable_to_decide" } },
+  };
+
+  const result = await pipeline.processEnvelope(envelope);
+  assert.equal(result.status, "context_expansion_required");
+  assert.equal(providerCalls, 0);
+  assert.equal(compilerCalls, 0);
+  assert.equal(task.stage_payload.semanticResult, undefined);
+  assert.equal(task.stage_payload.unableResult.sectionResults.todos.status, "unable_to_decide");
+  assert.ok(task.stage_payload.expandedArtifact);
 });

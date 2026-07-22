@@ -91,21 +91,51 @@ function summarizeGenerations(rows) {
   return [...generations.values()].sort((left, right) => right.sourceGeneration - left.sourceGeneration);
 }
 
+function reconstructEffectiveEnvelope(taskPayload, stagePayload, contextExpansionAttempt) {
+  const semanticInputVariant = stagePayload?.semanticInputVariant
+    ?? (Number(contextExpansionAttempt || 0) > 0 ? "expanded" : "base");
+  // The viewer may inspect terminal rows written by the pre-expandedArtifact implementation.
+  const legacyExpandedArtifact = stagePayload?.expandedEnvelope?.artifact;
+  const expandedArtifact = stagePayload?.expandedArtifact
+    ?? (legacyExpandedArtifact ? {
+      publicInput: legacyExpandedArtifact.publicInput,
+      messageMeta: legacyExpandedArtifact.messageMeta,
+    } : null);
+  if (semanticInputVariant !== "expanded") return { effectiveEnvelope: taskPayload, expandedArtifact, semanticInputVariant };
+  if (!expandedArtifact?.publicInput || !expandedArtifact?.messageMeta || !taskPayload?.artifact) {
+    return { effectiveEnvelope: null, expandedArtifact, semanticInputVariant };
+  }
+  const effectiveEnvelope = structuredClone(taskPayload);
+  effectiveEnvelope.artifact = {
+    ...effectiveEnvelope.artifact,
+    publicInput: structuredClone(expandedArtifact.publicInput),
+    messageMeta: structuredClone(expandedArtifact.messageMeta),
+    refMap: structuredClone(taskPayload.artifact.refMap),
+  };
+  effectiveEnvelope.task.observedMessageIds = (effectiveEnvelope.artifact.publicInput.messages || []).map((message) => message.id);
+  return { effectiveEnvelope, expandedArtifact, semanticInputVariant };
+}
+
 async function hydrateTask(row, dependencies = {}) {
   const promptLoader = dependencies.promptLoader || loadProposerPrompt;
   const schemaBuilder = dependencies.schemaBuilder || buildOutputSchema;
   const repairPromptBuilder = dependencies.repairPromptBuilder || schemaRepairPrompt;
   const taskPayload = row.task_payload || null;
   const stagePayload = row.stage_payload || null;
-  const expandedEnvelope = stagePayload?.expandedEnvelope || null;
-  const effectiveEnvelope = expandedEnvelope || taskPayload;
+  const { effectiveEnvelope, expandedArtifact, semanticInputVariant } = reconstructEffectiveEnvelope(
+    taskPayload,
+    stagePayload,
+    row.context_expansion_attempt,
+  );
   const proposer = effectiveEnvelope?.task?.proposer || taskPayload?.task?.proposer || null;
   const targetSections = effectiveEnvelope?.task?.targetSections || taskPayload?.task?.targetSections || [];
   const repairFeedback = stagePayload?.schemaRepairFeedback || null;
   let currentPrompt = null;
   let currentRepairPrompt = null;
   let responseSchema = null;
-  let reconstructionError = null;
+  let reconstructionError = semanticInputVariant === "expanded" && !effectiveEnvelope
+    ? "Expanded task artifact is missing from durable state"
+    : null;
 
   if (proposer) {
     try {
@@ -118,8 +148,9 @@ async function hydrateTask(row, dependencies = {}) {
   }
 
   const semanticResult = stagePayload?.semanticResult || null;
+  const unableResult = stagePayload?.unableResult || null;
   const compiledProposal = stagePayload?.compiledProposal || null;
-  const outputAvailability = semanticResult
+  const outputAvailability = semanticResult || unableResult
     ? "persisted"
     : ["output_schema_invalid", "semantic_schema_invalid"].includes(row.last_error_reason)
       ? "invalid_output_not_persisted"
@@ -148,7 +179,8 @@ async function hydrateTask(row, dependencies = {}) {
     updatedAt: row.updated_at,
     input: {
       persistedEnvelope: taskPayload,
-      expandedEnvelope,
+      expandedArtifact,
+      semanticInputVariant,
       effectiveEnvelope,
       currentPrompt,
       currentRepairPrompt,
@@ -159,6 +191,7 @@ async function hydrateTask(row, dependencies = {}) {
     output: {
       availability: outputAvailability,
       semanticResult,
+      unableResult,
       compiledProposal,
     },
     stagePayload,

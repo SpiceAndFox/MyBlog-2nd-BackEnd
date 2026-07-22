@@ -37,7 +37,7 @@ function compactionOutput(envelope) {
 function store() {
   let state = createInitialMemoryState();
   state.working.todos.push(todo("todo:1", "归还图书", 1), todo("todo:2", "把借来的书还回去", 2));
-  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = [];
+  const tasks = new Map(); const groups = new Map(); const events = []; const snapshots = []; const ops = []; const taskUpdates = [];
   const sourceMessages = [
     { id: 1, role: "user", createdAt: "2026-07-11T00:00:00.000Z", content: "归还图书", contentHash: hash("归还图书"), userId: 1, presetId: "default" },
     { id: 2, role: "user", createdAt: "2026-07-12T00:00:00.000Z", content: "把借来的书还回去", contentHash: hash("把借来的书还回去"), userId: 1, presetId: "default" },
@@ -51,7 +51,7 @@ function store() {
     runtime: {
       createTask: async (row) => { const existing = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key); if (existing) return existing; tasks.set(row.task_id, { ...structuredClone(row), created_at: row.created_at ?? "2026-07-13T00:00:00.000Z" }); return tasks.get(row.task_id); },
       getTask: async (id) => tasks.get(id) || null, getTaskForUpdate: async (id) => tasks.get(id) || null,
-      updateTask: async (id, changes) => Object.assign(tasks.get(id), structuredClone(changes)),
+      updateTask: async (id, changes) => { taskUpdates.push({ id, ...structuredClone(changes) }); return Object.assign(tasks.get(id), structuredClone(changes)); },
       listTasksForTarget: async () => [...tasks.values()].reverse(),
       listRecoverableTasks: async () => [...tasks.values()].filter((task) => ["queued", "running", "retry_wait"].includes(task.status)),
       getTargetStatus: async (_u, _p, key) => statuses.get(key),
@@ -61,7 +61,7 @@ function store() {
     audit: { getEventGroup: async (id) => groups.get(id) || null, insertEventGroup: async (group) => groups.set(group.event_group_id, structuredClone(group)), insertEvents: async (rows) => events.push(...structuredClone(rows)), insertSnapshot: async (_u, _p, value) => snapshots.push(structuredClone(value)) },
     sidecars: {},
   };
-  return { repositories, inspect: { tasks, groups, events, snapshots, ops, statuses, sourceMessages, get state() { return state; } } };
+  return { repositories, inspect: { tasks, groups, events, snapshots, ops, taskUpdates, statuses, sourceMessages, get state() { return state; } } };
 }
 
 test("capacity block persists deferred audit, compacts, and replays the original proposal", async () => {
@@ -86,6 +86,10 @@ test("capacity block persists deferred audit, compacts, and replays the original
   assert.equal(parent.stage_payload.compiledProposal.proposer, "todoProposer");
   assert.equal(parent.status, "succeeded");
   assert.equal(child.stage, "compaction_applied");
+  const childStages = data.inspect.taskUpdates.filter((update) => update.id === child.task_id).map((update) => update.stage);
+  assert.ok(childStages.indexOf("semantic_result_persisted") < childStages.indexOf("compiling"));
+  assert.ok(childStages.indexOf("compiling") < childStages.indexOf("compiled_proposal_persisted"));
+  assert.ok(childStages.indexOf("compiled_proposal_persisted") < childStages.indexOf("compacting"));
   assert.equal(data.inspect.statuses.get("todos").status, fixture.expected.targetStatus);
   assert.equal(parent.stage_payload.compiledProposal.sectionResults.todos.patches[0].op, "addItem");
   const duplicate = await pipeline.processEnvelope(parent.task_payload);
@@ -178,6 +182,10 @@ test("unable_to_compact halts only the target and capacity resume creates a new 
   assert.equal(halted.status, "halted");
   assert.equal(data.inspect.state.meta.revision, 0);
   assert.equal(data.inspect.statuses.get("todos").status, "halted");
+  const firstChild = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(firstChild.stage_payload.semanticResult, undefined);
+  assert.equal(firstChild.stage_payload.compiledProposal, undefined);
+  assert.equal(firstChild.stage_payload.unableResult.sectionResults.todos.status, "unable_to_compact");
   compactable = true;
   const recovery = createMemoryRecovery({ repositories: data.repositories, pipeline });
   const resumed = await recovery.resumeTarget(1, "default", "todos", { run: true });
@@ -283,4 +291,32 @@ test("failed high-water hygiene remains non-blocking", async () => {
   assert.equal(child.stage, "hygiene_skipped");
   assert.equal(data.inspect.statuses.get("todos").status, "healthy");
   assert.equal(data.inspect.state.working.todos.length, 3);
+});
+
+test("unable high-water hygiene persists unableResult and leaves the target healthy", async () => {
+  const data = store();
+  const hygieneConfig = {
+    ...config,
+    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
+    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
+  };
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config: hygieneConfig,
+    providerAdapter: { propose: async (envelope) => ({
+      status: "ok",
+      output: envelope.task.mode === "maintenance"
+        ? { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "unable_to_compact" } } }
+        : normalOutput(envelope),
+    }) },
+  });
+
+  const result = await pipeline.processIntent(1, "default", intent);
+  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(result.status, "committed");
+  assert.equal(result.hygiene[0].status, "hygiene_noop");
+  assert.equal(child.status, "succeeded");
+  assert.equal(child.stage, "hygiene_noop");
+  assert.equal(child.stage_payload.unableResult.sectionResults.todos.status, "unable_to_compact");
+  assert.equal(child.stage_payload.semanticResult, undefined);
+  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
 });
