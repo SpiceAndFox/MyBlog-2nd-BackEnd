@@ -14,6 +14,38 @@
 - `recentEpisodes` 每个 task 通常有 0–2 个 change，硬上限为 3 个；不能为凑数量合并无关互动弧。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
 
+最小 noop 示例（`0` 仅示意类型；`recentEpisodes` 与 `milestones` 必须同时返回终局）：
+
+```json
+{
+  "tickId": 0,
+  "proposer": "episodeProposer",
+  "sectionResults": { "recentEpisodes": { "status": "noop" }, "milestones": { "status": "noop" } }
+}
+```
+
+典型变化示例（编号仅表示输入中确实显示的占位值）：
+
+```json
+{
+  "tickId": 0,
+  "proposer": "episodeProposer",
+  "sectionResults": {
+    "recentEpisodes": {
+      "status": "changes",
+      "changes": [
+        {
+          "action": "add",
+          "text": "user将遗失的橡皮还给assistant，assistant为表达谢意提议请user吃饭",
+          "evidenceMessageIds": [101]
+        }
+      ]
+    },
+    "milestones": { "status": "noop" }
+  }
+}
+```
+
 ## 互动弧形成与动作选择
 
 1. 按场景、主题、目标与因果连续性聚合全部可见消息；一个完整互动弧最多形成一个候选，不能按消息或过渡动作切片。

@@ -13,6 +13,18 @@
 - 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
 
+最小 noop 示例（`0` 仅示意类型）：
+
+```json
+{"tickId":0,"proposer":"relationshipProposer","sectionResults":{"relationship":{"status":"noop"}}}
+```
+
+典型变化示例（编号仅表示输入中确实显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"relationshipProposer","sectionResults":{"relationship":{"status":"changes","changes":[{"action":"update","ref":"R1","text":"过去采用引导关系，现为平等协作","evidenceMessageIds":[105]}]}}}
+```
+
 ## 候选准入与动作选择
 
 只有同时满足以下条件才生成候选：
