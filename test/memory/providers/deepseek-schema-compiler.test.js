@@ -35,3 +35,26 @@ test("DeepSeek compiler adds primitive types to const and enum schemas", () => {
   assert.deepEqual(compileDeepSeekSchema({ enum: [1, 2] }), { enum: [1, 2], type: "integer" });
   assert.throws(() => compileDeepSeekSchema({ enum: ["one", 2] }), /must share one primitive type/);
 });
+
+test("DeepSeek compiler preserves dropped constraints as positive descriptions", () => {
+  assert.deepEqual(
+    compileDeepSeekSchema({
+      type: "string",
+      minLength: 1,
+      maxLength: 240,
+      description: "One atomic relationship memory.",
+    }),
+    {
+      type: "string",
+      description: "One atomic relationship memory. String length must be at least 1 Unicode characters. String length must be at most 240 Unicode characters.",
+    },
+  );
+  assert.deepEqual(
+    compileDeepSeekSchema({ type: "array", minItems: 1, maxItems: 3, uniqueItems: true, items: { type: "integer" } }),
+    {
+      type: "array",
+      items: { type: "integer" },
+      description: "Array must contain at least 1 items. Array must contain at most 3 items. Array items must be unique.",
+    },
+  );
+});

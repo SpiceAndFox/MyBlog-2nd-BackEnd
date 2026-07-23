@@ -6,6 +6,7 @@ const {
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
 const { createSemanticCompiler } = require("./semanticCompiler");
 const { isSemanticTaskEnvelope } = require("./envelope");
+const { createRepairFeedback } = require("./outputRepair");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
@@ -173,10 +174,9 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     let providerResult;
     const schemaRetryMax = Number(config.providerRecovery?.schemaInvalidRetryMax ?? 0);
     for (let attempt = 0; attempt <= schemaRetryMax; attempt += 1) {
-      const repairFeedback = attempt === 0 ? null : {
-        attempt,
-        errors: providerResult?.detail?.errors ?? [],
-      };
+      const repairFeedback = attempt === 0
+        ? null
+        : createRepairFeedback(providerResult?.detail, attempt, envelope.task);
       providerResult = await providerAdapter.propose(envelope, { repairFeedback });
       providerAttempts.push({
         attempt,

@@ -4,6 +4,12 @@ const {
 } = require("../../contracts");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
+const {
+  normalizeSemanticOutput,
+  renderRepairInstruction,
+  summarizeOutputShape,
+} = require("../../application/outputRepair");
+const { bindOutputSchema, bindSpecialistSchema } = require("./bindOutputSchema");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const PROFILE_SPECIALISTS = Object.freeze([
@@ -22,21 +28,8 @@ function mergeUsage(responses) {
   return Object.keys(totals).length ? totals : null;
 }
 
-function schemaRepairPrompt(systemPrompt, feedback) {
-  const errors = Array.isArray(feedback?.errors) ? feedback.errors.slice(0, 8) : [];
-  if (!errors.length) return systemPrompt;
-  const lines = errors.map((error, index) => (
-    `${index + 1}. ${String(error.path || "$").slice(0, 240).replace(/[^A-Za-z0-9_$.[\]-]/g, "?")}: ${String(error.message || "does not satisfy the contract").replace(/[\r\n]+/g, " ").slice(0, 240)}`
-  ));
-  const hasRefNamespaceError = errors.some((error) => /rendered as (?:read-only|writable) Memory/i.test(String(error?.message || "")));
-  const copiedRenderedLines = [...new Set(errors.flatMap((error) => {
-    const match = String(error?.message || "").match(/\bref\s+([A-Z][A-Z0-9-]*)\s*\|.+?was not rendered as (read-only|writable) Memory/i);
-    return match ? [`${match[1]}:${match[2]}`] : [];
-  }))];
-  const refRepair = hasRefNamespaceError
-    ? `\n[REF_NAMESPACE_REPAIR]\nref 目标只能逐字复制“可修改”分区显示的短引用；supportRefs 只能逐字复制“辅助”分区显示的短引用。删除放错命名空间或自行创造的引用，不要把可修改 ref 移到 supportRefs。${copiedRenderedLines.length ? ` 检测到把 Memory 整行误当引用：${copiedRenderedLines.map((value) => value.split(":")[0]).join("、")}。竖线及其右侧文本绝不是 ref；只在该短引用确实位于错误所要求的分区时改为短 token，否则删除它。` : ""}删除后每个 change 仍须保留至少一个实际显示的 evidenceMessageId 或合法辅助 ref；若无法满足则移除该 change，并重新判断该 section 的终局。`
-    : "";
-  return `${systemPrompt}\n\n[SCHEMA_REPAIR]\n上一份 tool arguments 未通过本地契约校验。请根据以下错误重新生成一份完整的替代结果，不要只返回局部字段，也不要解释。\n${lines.join("\n")}${refRepair}\n只修复格式或契约错误；事实判断仍必须完全依据原始 Memory task。`;
+function schemaRepairPrompt(systemPrompt, feedback, task = null) {
+  return renderRepairInstruction(systemPrompt, feedback, task);
 }
 
 function validateSemanticEnvelope(envelope) {
@@ -102,41 +95,15 @@ function buildSpecialistArtifact(artifact, specialist) {
   };
 }
 
-function bindSpecialistSchema(schema, artifact, section) {
-  const bound = structuredClone(schema);
-  const writableRefs = Object.entries(artifact.refMap?.writable || {})
-    .filter(([, entry]) => entry.section === section)
-    .map(([ref]) => ref);
-  const readOnlyRefs = Object.keys(artifact.refMap?.readOnly || {});
-  const messageIds = Object.keys(artifact.messageMeta || {}).map(Number).filter(Number.isSafeInteger);
-  const resultSchema = bound.schema.properties.sectionResults.properties[section];
-  const changesBranch = resultSchema.oneOf.find((branch) => branch.properties?.status?.const === "changes");
-  if (!changesBranch) return bound;
-  const variants = changesBranch.properties.changes.items.oneOf.filter((variant) => {
-    if (variant.properties.ref) {
-      if (!writableRefs.length) return false;
-      variant.properties.ref = { type: "string", enum: writableRefs };
-    }
-    if (messageIds.length) variant.properties.evidenceMessageIds.items = { type: "integer", enum: messageIds };
-    else {
-      delete variant.properties.evidenceMessageIds;
-      variant.anyOf = variant.anyOf.filter((entry) => !entry.required?.includes("evidenceMessageIds"));
-    }
-    if (readOnlyRefs.length) variant.properties.supportRefs.items = { type: "string", enum: readOnlyRefs };
-    else {
-      delete variant.properties.supportRefs;
-      variant.anyOf = variant.anyOf.filter((entry) => !entry.required?.includes("supportRefs"));
-    }
-    return variant.anyOf.length > 0;
-  });
-  if (variants.length) changesBranch.properties.changes.items.oneOf = variants;
-  else resultSchema.oneOf = resultSchema.oneOf.filter((branch) => branch !== changesBranch);
-  return bound;
-}
-
 function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
+  const profileRepairCache = new WeakMap();
+
+  function rememberProfileSections(envelope, sectionResults) {
+    profileRepairCache.set(envelope, { sectionResults: structuredClone(sectionResults) });
+  }
+
   return Object.freeze({
     async propose(envelope, { repairFeedback = null } = {}) {
       let response;
@@ -146,12 +113,27 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         const { task } = envelope;
         const userPayload = buildProposerUserPayload(envelope);
         if (task.proposer === "profileRelationshipProposer") {
-          const settledRuns = await Promise.allSettled(PROFILE_SPECIALISTS.map(async (specialist) => {
+          const retrySpecialist = PROFILE_SPECIALISTS.find((entry) => entry.proposer === repairFeedback?.specialist) || null;
+          const cached = retrySpecialist ? profileRepairCache.get(envelope) : null;
+          const cacheComplete = cached && PROFILE_SPECIALISTS
+            .filter((entry) => entry.proposer !== retrySpecialist.proposer)
+            .every((entry) => Object.prototype.hasOwnProperty.call(cached.sectionResults, entry.section));
+          const selectedSpecialists = cacheComplete ? [retrySpecialist] : PROFILE_SPECIALISTS;
+          const settledRuns = await Promise.allSettled(selectedSpecialists.map(async (specialist) => {
             const specialistPayload = buildSpecialistPayload(userPayload, specialist);
             const specialistArtifact = buildSpecialistArtifact(envelope.artifact, specialist);
+            const specialistFeedback = !repairFeedback
+              ? null
+              : !retrySpecialist || retrySpecialist.proposer === specialist.proposer
+                ? repairFeedback
+                : null;
             const specialistResponse = await invokeStructured({
               proposer: specialist.proposer,
-              systemPrompt: schemaRepairPrompt(await promptLoader(specialist.proposer), repairFeedback),
+              systemPrompt: schemaRepairPrompt(
+                await promptLoader(specialist.proposer),
+                specialistFeedback,
+                specialistPayload.task,
+              ),
               userPayload: specialistPayload,
               responseSchema: bindSpecialistSchema(
                 buildOutputSchema(specialist.proposer, [specialist.section]),
@@ -165,24 +147,48 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           if (rejected) throw rejected.reason;
           const specialistRuns = settledRuns.map((run) => run.value);
           const responses = specialistRuns.map((run) => run.specialistResponse);
-          const sectionResults = {};
+          const sectionResults = structuredClone(cacheComplete ? cached.sectionResults : {});
+          let invalidRun = null;
           for (const { specialist, specialistArtifact, specialistResponse } of specialistRuns) {
             if (specialistResponse?.refusal || specialistResponse?.safetyBlocked || isSafetySignal(specialistResponse?.finishReason)) {
+              profileRepairCache.delete(envelope);
               return { status: "error", reason: "safety_policy_blocked", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }
             if (isTruncationSignal(specialistResponse?.finishReason)) {
+              profileRepairCache.delete(envelope);
               return { status: "error", reason: "max_output_truncated", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }
-            const specialistValidation = validateSemanticResult(specialistResponse?.output, specialistArtifact);
+            const normalized = normalizeSemanticOutput(specialistResponse?.output);
+            const specialistValidation = validateSemanticResult(normalized.output, specialistArtifact);
             if (!specialistValidation.ok) {
-              return {
-                status: "error", reason: "output_schema_invalid",
-                detail: { boundary: "output", specialist: specialist.proposer, errors: specialistValidation.errors },
-                usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length,
+              invalidRun ??= {
+                specialist,
+                specialistResponse,
+                specialistValidation,
+                normalizedOutput: normalized.output,
               };
+              continue;
             }
-            sectionResults[specialist.section] = specialistResponse.output.sectionResults[specialist.section];
+            sectionResults[specialist.section] = normalized.output.sectionResults[specialist.section];
           }
+          if (invalidRun) {
+            if (cacheComplete) profileRepairCache.delete(envelope);
+            else rememberProfileSections(envelope, sectionResults);
+            return {
+              status: "error",
+              reason: "output_schema_invalid",
+              detail: {
+                boundary: "output",
+                specialist: invalidRun.specialist.proposer,
+                errors: invalidRun.specialistValidation.errors,
+                shape: summarizeOutputShape(invalidRun.normalizedOutput),
+              },
+              usage: mergeUsage(responses),
+              model: invalidRun.specialistResponse?.model ?? null,
+              callCount: responses.length,
+            };
+          }
+          profileRepairCache.delete(envelope);
           response = {
             output: { tickId: task.tickId, proposer: task.proposer, sectionResults },
             usage: mergeUsage(responses),
@@ -190,9 +196,13 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             callCount: responses.length,
           };
         } else {
-          const schema = buildOutputSchema(task.proposer, task.targetSections);
+          const schema = bindOutputSchema(
+            buildOutputSchema(task.proposer, task.targetSections),
+            envelope.artifact,
+            task.targetSections,
+          );
           const loadedPrompt = await promptLoader(task.proposer);
-          const basePrompt = schemaRepairPrompt(loadedPrompt, repairFeedback);
+          const basePrompt = schemaRepairPrompt(loadedPrompt, repairFeedback, userPayload.task);
           response = await invokeStructured({
             proposer: task.proposer,
             systemPrompt: basePrompt,
@@ -211,15 +221,29 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       if (isTruncationSignal(response?.finishReason)) {
         return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1 };
       }
-      const output = response?.output;
+      const normalized = normalizeSemanticOutput(response?.output);
+      const output = normalized.output;
       const validated = validateSemanticResult(output, envelope.artifact);
       if (!validated.ok) {
         return {
-          status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validated.errors },
+          status: "error",
+          reason: "output_schema_invalid",
+          detail: {
+            boundary: "output",
+            errors: validated.errors,
+            shape: summarizeOutputShape(output),
+          },
           usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1,
         };
       }
-      return { status: "ok", output, usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1 };
+      return {
+        status: "ok",
+        output,
+        ...(normalized.applied.length ? { normalizations: normalized.applied } : {}),
+        usage: response?.usage ?? null,
+        model: response?.model ?? null,
+        callCount: response?.callCount ?? 1,
+      };
     },
   });
 }

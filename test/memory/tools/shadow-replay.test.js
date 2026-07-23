@@ -180,7 +180,12 @@ test("task shadow replay mirrors the bounded schema repair before preflight", as
   assert.equal(report.status, "completed");
   assert.equal(report.replay.providerAttempts.length, 2);
   assert.equal(options[0].repairFeedback, null);
-  assert.deepEqual(options[1].repairFeedback.errors, [{ path: "$.tickId", message: "is required" }]);
+  assert.equal(options[1].repairFeedback.policyVersion, 1);
+  assert.deepEqual(options[1].repairFeedback.errors, [{
+    code: "CONTRACT_INVALID",
+    path: "$.tickId",
+    message: "is required",
+  }]);
 });
 
 test("task shadow replay reconstructs expanded input with the immutable base ref map", async () => {

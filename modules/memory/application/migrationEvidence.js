@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { OUTPUT_REPAIR_POLICY_VERSION } = require("./outputRepair/policy");
 
 const REPORT_FORMAT_VERSION = 3;
 
@@ -78,7 +79,11 @@ function buildSchemaFingerprint(rootDir) {
 }
 
 function buildMigrationEvidence({ rootDir, memoryConfig, ragConfig = null } = {}) {
-  const sanitizedConfig = sanitizeConfig({ memory: memoryConfig, rag: ragConfig });
+  const sanitizedConfig = sanitizeConfig({
+    memory: memoryConfig,
+    rag: ragConfig,
+    outputRepair: { policyVersion: OUTPUT_REPAIR_POLICY_VERSION },
+  });
   return {
     reportFormatVersion: REPORT_FORMAT_VERSION,
     code: buildCodeFingerprint(rootDir),

@@ -32,6 +32,7 @@ test("migration evidence fingerprints code, every schema migration, and redacted
   assert.equal(evidence.config.values.memory.provider.model, "deepseek-v4-flash");
   assert.deepEqual(evidence.config.values.memory.provider.apiKey, { configured: true });
   assert.deepEqual(evidence.config.values.rag.embeddingApiKey, { configured: true });
+  assert.equal(evidence.config.values.outputRepair.policyVersion, 1);
   assert.doesNotMatch(JSON.stringify(evidence), /memory-secret|embedding-secret/);
 });
 

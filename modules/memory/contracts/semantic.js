@@ -3,6 +3,7 @@ const {
 } = require("./constants");
 const { isPlainObject, isIsoTimestamp } = require("./state");
 const { dueAtRequiresMessageAnchor, validateDueAtExpression } = require("./dueAt");
+const { VALIDATION_ISSUE_CODES } = require("./validationIssueCodes");
 
 const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const NORMAL_RESULT_STATUSES = Object.freeze(["changes", "noop", "unable_to_decide"]);
@@ -51,13 +52,25 @@ const SECTION_OPS = Object.freeze({
   relationship: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
 });
 
-function add(errors, path, message) { errors.push({ path, message }); }
+function add(errors, path, message, code, meta) {
+  errors.push({
+    path,
+    message,
+    ...(code ? { code } : {}),
+    ...(meta ? { meta } : {}),
+  });
+}
 function positiveInteger(value) { return Number.isSafeInteger(value) && value > 0; }
 function nonNegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0; }
 function positiveText(value) { return typeof value === "string" && value.trim().length > 0; }
 
 function checkObject(value, required, optional, path, errors) {
-  if (!isPlainObject(value)) { add(errors, path, "must be an object"); return false; }
+  if (!isPlainObject(value)) {
+    add(errors, path, "must be an object", VALIDATION_ISSUE_CODES.OBJECT_REQUIRED, {
+      actualType: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+    });
+    return false;
+  }
   const allowed = new Set([...required, ...optional]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) add(errors, `${path}.${key}`, "is not allowed");
   for (const key of required) if (!Object.prototype.hasOwnProperty.call(value, key)) add(errors, `${path}.${key}`, "is required");
@@ -215,7 +228,9 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
   if (!SECTION_ACTIONS[section]?.includes(change.action)) add(errors, `${path}.action`, `is not allowed for ${section}`);
   if (change.evidenceMessageIds !== undefined) validateUniqueSelectors(change.evidenceMessageIds, `${path}.evidenceMessageIds`, errors, positiveInteger, "must be a positive safe integer");
   if (change.supportRefs !== undefined) validateUniqueSelectors(change.supportRefs, `${path}.supportRefs`, errors, positiveText, "must be a non-empty short ref");
-  if (!change.evidenceMessageIds?.length && !change.supportRefs?.length) add(errors, path, "must include evidenceMessageIds or supportRefs");
+  if (!change.evidenceMessageIds?.length && !change.supportRefs?.length) {
+    add(errors, path, "must include evidenceMessageIds or supportRefs", VALIDATION_ISSUE_CODES.SOURCE_MISSING);
+  }
   if (change.refs !== undefined) add(errors, `${path}.refs`, "is only allowed for merge");
 
   const addAction = change.action === "add";
@@ -227,7 +242,13 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
   if (needsText && !positiveText(change.text)) add(errors, `${path}.text`, "must be a non-empty string");
   const textLimit = PROFILE_TEXT_MAX_CHARS[section];
   if (change.text !== undefined && textLimit && [...String(change.text)].length > textLimit) {
-    add(errors, `${path}.text`, `must contain at most ${textLimit} characters for ${section}`);
+    add(
+      errors,
+      `${path}.text`,
+      `must contain at most ${textLimit} characters for ${section}`,
+      VALIDATION_ISSUE_CODES.TEXT_LENGTH_EXCEEDED,
+      { limit: textLimit, actual: [...String(change.text)].length, section },
+    );
   }
   if (terminal && change.text !== undefined) add(errors, `${path}.text`, "is not allowed for terminal actions");
 
@@ -264,7 +285,15 @@ function validateSemanticResult(result, taskOrArtifact) {
   if (!checkObject(result, ["tickId", "proposer", "sectionResults"], [], "$", errors)) return { ok: false, errors };
   if (result.tickId !== task.tickId) add(errors, "$.tickId", "does not match task");
   if (result.proposer !== task.proposer) add(errors, "$.proposer", "does not match task");
-  if (!isPlainObject(result.sectionResults)) add(errors, "$.sectionResults", "must be an object");
+  if (!isPlainObject(result.sectionResults)) {
+    add(
+      errors,
+      "$.sectionResults",
+      "must be an object",
+      VALIDATION_ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT,
+      { actualType: result.sectionResults === null ? "null" : Array.isArray(result.sectionResults) ? "array" : typeof result.sectionResults },
+    );
+  }
   else {
     const expected = task.targetSections || TARGETS[task.targetKey].sections;
     const actual = Object.keys(result.sectionResults);
@@ -277,7 +306,15 @@ function validateSemanticResult(result, taskOrArtifact) {
       const statuses = maintenance ? COMPACTION_RESULT_STATUSES : NORMAL_RESULT_STATUSES;
       if (!statuses.includes(entry.status)) add(errors, `${sectionPath}.status`, "is invalid");
       if (entry.status === "changes") {
-        if (!Array.isArray(entry.changes) || entry.changes.length === 0) add(errors, `${sectionPath}.changes`, "must be a non-empty array");
+        if (!Array.isArray(entry.changes) || entry.changes.length === 0) {
+          add(
+            errors,
+            `${sectionPath}.changes`,
+            "must be a non-empty array",
+            VALIDATION_ISSUE_CODES.CHANGES_EMPTY,
+            { actualType: Array.isArray(entry.changes) ? "array" : typeof entry.changes },
+          );
+        }
         else {
           if (task.proposer === "episodeProposer" && section === "recentEpisodes" && entry.changes.length > 3) {
             add(errors, `${sectionPath}.changes`, "must contain at most three interaction arcs");
@@ -291,14 +328,36 @@ function validateSemanticResult(result, taskOrArtifact) {
               const writable = artifact.refMap?.writable?.[ref];
               if (!writable || writable.section !== section || Object.prototype.hasOwnProperty.call(artifact.refMap?.readOnly || {}, ref)) {
                 const field = change.action === "merge" ? "refs" : "ref";
-                add(errors, `${changePath}.${field}`, `ref ${ref} was not rendered as writable Memory for ${section}`);
+                add(
+                  errors,
+                  `${changePath}.${field}`,
+                  `ref ${ref} was not rendered as writable Memory for ${section}`,
+                  VALIDATION_ISSUE_CODES.WRITABLE_REF_INVALID,
+                  { ref, section },
+                );
               }
             }
             for (const id of change.evidenceMessageIds || []) {
-              if (!Object.prototype.hasOwnProperty.call(artifact.messageMeta, String(id))) add(errors, `${changePath}.evidenceMessageIds`, `message ${id} was not rendered`);
+              if (!Object.prototype.hasOwnProperty.call(artifact.messageMeta, String(id))) {
+                add(
+                  errors,
+                  `${changePath}.evidenceMessageIds`,
+                  `message ${id} was not rendered`,
+                  VALIDATION_ISSUE_CODES.EVIDENCE_MESSAGE_INVALID,
+                  { messageId: id },
+                );
+              }
             }
             for (const ref of change.supportRefs || []) {
-              if (!Object.prototype.hasOwnProperty.call(artifact.refMap.readOnly, ref)) add(errors, `${changePath}.supportRefs`, `ref ${ref} was not rendered as read-only Memory`);
+              if (!Object.prototype.hasOwnProperty.call(artifact.refMap.readOnly, ref)) {
+                add(
+                  errors,
+                  `${changePath}.supportRefs`,
+                  `ref ${ref} was not rendered as read-only Memory`,
+                  VALIDATION_ISSUE_CODES.SUPPORT_REF_INVALID,
+                  { ref },
+                );
+              }
             }
           });
         }

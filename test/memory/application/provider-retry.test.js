@@ -48,7 +48,12 @@ test("output schema invalid retries once durably and commits a valid second resu
   assert.equal(result.status, "committed");
   assert.equal(calls, 2);
   assert.equal(repairFeedbacks[0], null);
-  assert.deepEqual(repairFeedbacks[1].errors, [{ path: "$.sectionResults", message: "is invalid" }]);
+  assert.equal(repairFeedbacks[1].policyVersion, 1);
+  assert.deepEqual(repairFeedbacks[1].errors, [{
+    code: "CONTRACT_INVALID",
+    path: "$.sectionResults",
+    message: "is invalid",
+  }]);
   assert.equal(task.attempt, 1);
   assert.deepEqual(task.stage_payload.schemaRepairFeedback, repairFeedbacks[1]);
   assert.equal(data.inspect.ops[0].outcome, "output_schema_invalid_retry");
@@ -113,7 +118,11 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   assert.equal(calls, 3, "recovery may call once but must not grant another schema retry");
   assert.equal(repairFeedbacks[0], null);
   assert.deepEqual(repairFeedbacks[1], repairFeedbacks[2], "recovery must reuse the durable repair feedback");
-  assert.deepEqual(repairFeedbacks[2].errors, [{ path: "$", message: "broken output" }]);
+  assert.deepEqual(repairFeedbacks[2].errors, [{
+    code: "CONTRACT_INVALID",
+    path: "$",
+    message: "broken output",
+  }]);
 });
 
 test("unable_to_decide expands once, then commits one cursor-only revision idempotently", async () => {

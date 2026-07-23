@@ -141,7 +141,7 @@ test("Provider Adapter appends bounded schema repair feedback without replaying 
     repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.changes[0].dueAt", message: "days must be non-negative" }] },
   });
   assert.equal(result.status, "ok");
-  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR\]/);
+  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V1\]/);
   assert.match(request.systemPrompt, /dueAt.*days must be non-negative/s);
   assert.doesNotMatch(request.systemPrompt, /rawInvalidOutput/);
   assert.deepEqual(request.userPayload, buildProposerUserPayload(envelope()));
@@ -151,20 +151,15 @@ test("Provider Adapter appends bounded schema repair feedback without replaying 
   assert.equal(request.userPayload.messages[0].createdAt, "2026-07-12T00:00:00.000Z");
 });
 
-test("schema repair adds dynamic ref-namespace guidance only for ref resolution errors", () => {
+test("schema repair adds concise positive enum guidance only for selector errors", () => {
   const { schemaRepairPrompt } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
   const repaired = schemaRepairPrompt("base", {
     errors: [{ path: "$.changes[0].supportRefs", message: "ref S-LOCATION was not rendered as read-only Memory" }],
   });
-  assert.match(repaired, /REF_NAMESPACE_REPAIR/);
-  assert.match(repaired, /不要把可修改 ref 移到 supportRefs/);
-  assert.match(repaired, /evidenceMessageId.*合法辅助 ref/s);
-  const copiedLine = schemaRepairPrompt("base", {
-    errors: [{ path: "$.changes[0].supportRefs", message: "ref S-TIME | time: 2026-01-16 was not rendered as read-only Memory" }],
-  });
-  assert.match(copiedLine, /Memory 整行误当引用/);
-  assert.match(copiedLine, /竖线及其右侧文本绝不是 ref/);
-  assert.match(copiedLine, /S-TIME/);
+  assert.match(repaired, /SELECT_ONLY_SCHEMA_ENUM_SOURCES|tool schema 的 enum/);
+  assert.match(repaired, /\[SUPPORT_REF_INVALID\]/);
+  assert.doesNotMatch(repaired, /不要|误当|竖线/);
+  assert.doesNotMatch(repaired, /S-LOCATION/);
   const ordinary = schemaRepairPrompt("base", { errors: [{ path: "$.tickId", message: "must match" }] });
-  assert.doesNotMatch(ordinary, /REF_NAMESPACE_REPAIR/);
+  assert.doesNotMatch(ordinary, /tool schema 的 enum/);
 });

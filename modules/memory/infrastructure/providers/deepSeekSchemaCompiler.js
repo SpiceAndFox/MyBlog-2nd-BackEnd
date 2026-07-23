@@ -1,5 +1,15 @@
 const DROPPED_KEYWORDS = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 
+function constraintDescriptions(schema) {
+  const descriptions = [];
+  if (Number.isSafeInteger(schema.minLength)) descriptions.push(`String length must be at least ${schema.minLength} Unicode characters.`);
+  if (Number.isSafeInteger(schema.maxLength)) descriptions.push(`String length must be at most ${schema.maxLength} Unicode characters.`);
+  if (Number.isSafeInteger(schema.minItems)) descriptions.push(`Array must contain at least ${schema.minItems} items.`);
+  if (Number.isSafeInteger(schema.maxItems)) descriptions.push(`Array must contain at most ${schema.maxItems} items.`);
+  if (schema.uniqueItems === true) descriptions.push("Array items must be unique.");
+  return descriptions;
+}
+
 function literalType(value) {
   if (value === null) return "null";
   if (Number.isInteger(value)) return "integer";
@@ -63,6 +73,7 @@ function compileDeepSeekSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   if (schema.type === "object" || schema.properties) return compileObject(schema);
   const compiled = {};
+  const descriptions = constraintDescriptions(schema);
   for (const [key, value] of Object.entries(schema)) {
     if (DROPPED_KEYWORDS.has(key)) continue;
     if (key === "const") {
@@ -83,6 +94,9 @@ function compileDeepSeekSchema(schema) {
     }
     compiled[key] = value;
   }
+  if (descriptions.length) {
+    compiled.description = [compiled.description, ...descriptions].filter(Boolean).join(" ");
+  }
   // DeepSeek strict tools reject enum-only schema nodes. JSON Schema permits
   // both `const` and `enum` without an explicit type, so add the type when all
   // literals share one representable primitive type.
@@ -94,4 +108,4 @@ function compileDeepSeekSchema(schema) {
   return compiled;
 }
 
-module.exports = { compileDeepSeekSchema };
+module.exports = { compileDeepSeekSchema, constraintDescriptions };

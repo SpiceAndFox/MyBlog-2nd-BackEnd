@@ -17,6 +17,7 @@ const { expandProposerTaskArtifact } = require("./proposerTaskRenderer");
 const { createCapacityMaintenance, stablePhaseId } = require("./capacityMaintenance");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
+const { createRepairFeedback, summarizeOutputShape } = require("./outputRepair");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set(["llm_call_failed", "safety_policy_blocked", "max_output_truncated"]);
@@ -76,20 +77,14 @@ function taskRow(envelope, overrides = {}) {
 }
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function numberValue(row, snake, camel, fallback = 0) { return Number(rowValue(row, snake, camel) ?? fallback); }
-function safeRepairPath(value) {
-  return String(value || "$").slice(0, 240).replace(/[^A-Za-z0-9_$.[\]-]/g, "?");
-}
-function schemaRepairFeedback(detail, attempt) {
-  const source = Array.isArray(detail?.errors) ? detail.errors : [];
-  const errors = source.slice(0, 8).map((error) => ({
-    path: safeRepairPath(error?.path),
-    message: String(error?.message || "does not satisfy the local output contract").replace(/[\r\n]+/g, " ").slice(0, 240),
-  }));
-  if (!errors.length) errors.push({ path: "$", message: "does not satisfy the local output contract" });
-  return { attempt, errors };
-}
 function schemaErrorLogDetail(detail, feedback) {
-  return { boundary: detail?.boundary ?? null, errors: feedback.errors };
+  return {
+    boundary: detail?.boundary ?? null,
+    ...(detail?.specialist ? { specialist: detail.specialist } : {}),
+    ...(detail?.shape ? { shape: detail.shape } : {}),
+    repairPolicyVersion: feedback.policyVersion,
+    errors: feedback.errors,
+  };
 }
 async function recordSuccessfulTarget(repositories, envelope, client) {
   const args = { targetKey: envelope.task.targetKey, sourceGeneration: envelope.task.sourceGeneration, taskId: envelope.task.taskId };
@@ -200,7 +195,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         lastErrorReason: adapterResult.reason, lastTaskId: envelope.task.taskId, nextRetryAt: retryAt,
       }, { client });
       const detail = ["output_schema_invalid", "semantic_schema_invalid"].includes(adapterResult.reason)
-        ? schemaErrorLogDetail(adapterResult.detail, schemaRepairFeedback(adapterResult.detail, 0))
+        ? schemaErrorLogDetail(adapterResult.detail, createRepairFeedback(adapterResult.detail, 0, envelope.task))
         : adapterResult.detail;
       await appendOps(envelope, adapterResult.reason, attempt, detail, client);
       return { ...adapterResult, taskId: envelope.task.taskId, halted, attempt, consecutiveErrors, notBefore: retryAt };
@@ -218,7 +213,11 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (used >= limit) return false;
       const attempt = numberValue(task, "attempt", "attempt") + 1;
       stagePayload.schemaInvalidAttempts = used + 1;
-      stagePayload.schemaRepairFeedback = schemaRepairFeedback(adapterResult.detail, stagePayload.schemaInvalidAttempts);
+      stagePayload.schemaRepairFeedback = createRepairFeedback(
+        adapterResult.detail,
+        stagePayload.schemaInvalidAttempts,
+        envelope.task,
+      );
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running", stage: "schema_invalid_retry", stage_payload: stagePayload,
         attempt, not_before: null, last_error_reason: "output_schema_invalid",
@@ -254,7 +253,17 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (Number.isFinite(outputTokens)) metrics?.observe("memory_provider_output_tokens", { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" }, outputTokens);
       if (result.status !== "error") {
         const validation = validateProviderOutput(result.output, envelope);
-        if (!validation.ok) result = { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: validation.errors } };
+        if (!validation.ok) {
+          result = {
+            status: "error",
+            reason: "output_schema_invalid",
+            detail: {
+              boundary: "output",
+              errors: validation.errors,
+              shape: summarizeOutputShape(result.output),
+            },
+          };
+        }
       }
       const metricResult = result.status === "error" ? result.reason : "ok";
       metrics?.increment("memory_provider_results_total", {
