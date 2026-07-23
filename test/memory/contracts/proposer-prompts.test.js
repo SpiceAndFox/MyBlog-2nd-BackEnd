@@ -179,10 +179,21 @@ test("current state prompt rejects clock inference and figurative scene reactiva
 
 test("world fact prompt keeps role-neutral canon authority", async () => {
   const prompt = await loadProposerPrompt("worldFactProposer");
-  assert.match(prompt, /User 与 Assistant.*新增.*修正.*遗忘/s);
-  assert.match(prompt, /不保存用户\/Assistant 的偏好、能力、人格、关系或事件履历/);
-  assert.match(prompt, /只是测试、临时角色扮演.*角色世界已经结束.*不再是当前 canon/s);
-  assert.match(prompt, /玩笑、称呼、回忆或短暂重现.*不会自动恢复 canon/s);
+  for (const heading of ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"]) {
+    assert.match(prompt, new RegExp(`## ${heading}`), `worldFactProposer must include ${heading}`);
+  }
+  assert.match(prompt, /只有同时满足以下条件才生成候选/);
+  assert.match(prompt, /归属按核心语义判断，不按句子的语法主语或消息 role 判断/);
+  assert.match(prompt, /User 与 Assistant 的明确陈述都可以建立、修订或移除 canon/);
+  assert.match(prompt, /装饰性扩写、即兴补充或推测.*明确建立或确认后才成为 canon/s);
+  assert.match(prompt, /现实确实从旧状态变为新状态时用 `update`.*现实始终如此.*不准确描述时用 `correct`/s);
+  assert.match(prompt, /过去现实确实成立时写“曾是”.*认知或表象发生变化时写“曾被认为”或“曾呈现为”/s);
+  assert.match(prompt, /原子化以语义维度为单位，不要求每条文本只能包含一个时间阶段/);
+  assert.match(prompt, /实体位于何种世界.*是否共享同一现实层级.*不能仅因句子提及具体实体而排除/s);
+  assert.match(prompt, /简短、原子化、可独立理解的客观陈述句/);
+  assert.match(prompt, /只是测试、临时角色扮演.*角色世界已经结束.*全部明确依赖该情境/s);
+  assert.match(prompt, /玩笑、称呼、回忆与短暂重现不会自动恢复旧 canon/);
+  assert.doesNotMatch(prompt, /其他 section|## 判断示例|```|提交前自检/);
 });
 
 test("normal prompts prohibit persistence metadata while maintenance keeps its storage protocol", async () => {
