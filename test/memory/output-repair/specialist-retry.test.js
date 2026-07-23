@@ -54,7 +54,7 @@ test("Profile repair retries only the failed specialist and merges cached valid 
     "assistantProfile",
     "relationship",
   ]);
-  assert.match(calls[3].systemPrompt, /Unicode 字符数不得超过 240/);
+  assert.match(calls[3].systemPrompt, new RegExp(`Unicode 字符数不得超过 ${PROFILE_TEXT_MAX_CHARS.relationship}`));
   assert.equal(
     calls[3].responseSchema.schema.properties.proposer.const,
     "relationshipProposer",

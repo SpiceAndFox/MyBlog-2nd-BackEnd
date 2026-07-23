@@ -36,17 +36,51 @@ const SEMANTIC_NORMAL_PROPOSERS = Object.freeze([
 const SCENE_FIELDS = Object.freeze(["location", "time", "mood", "note"]);
 const ITEM_SECTIONS = Object.freeze(SECTIONS.filter((section) => section !== "scene"));
 const PROFILE_TEXT_MAX_CHARS = Object.freeze({
-  userProfile: 180,
-  assistantProfile: 180,
-  relationship: 240,
+  userProfile: 200,
+  assistantProfile: 200,
+  relationship: 300,
 });
 const READ_ONLY_CONTEXT_PATHS = Object.freeze({
   currentStateProposer: ["working.recentEpisodes"],
-  todoProposer: ["current.scene", "working.standingAgreements", "working.recentEpisodes", "longTerm.userProfile", "longTerm.assistantProfile"],
-  agreementProposer: ["current.scene", "working.todos", "working.recentEpisodes", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
-  episodeProposer: ["current.scene", "working.todos", "working.standingAgreements", "longTerm.relationship", "longTerm.userProfile", "longTerm.assistantProfile"],
-  profileRelationshipProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.worldFacts"],
-  worldFactProposer: ["current.scene", "working.recentEpisodes", "working.standingAgreements", "longTerm.milestones", "longTerm.userProfile", "longTerm.assistantProfile", "longTerm.relationship"],
+  todoProposer: [
+    "current.scene",
+    "working.standingAgreements",
+    "working.recentEpisodes",
+    "longTerm.userProfile",
+    "longTerm.assistantProfile",
+  ],
+  agreementProposer: [
+    "current.scene",
+    "working.todos",
+    "working.recentEpisodes",
+    "longTerm.relationship",
+    "longTerm.userProfile",
+    "longTerm.assistantProfile",
+  ],
+  episodeProposer: [
+    "current.scene",
+    "working.todos",
+    "working.standingAgreements",
+    "longTerm.relationship",
+    "longTerm.userProfile",
+    "longTerm.assistantProfile",
+  ],
+  profileRelationshipProposer: [
+    "current.scene",
+    "working.recentEpisodes",
+    "working.standingAgreements",
+    "longTerm.milestones",
+    "longTerm.worldFacts",
+  ],
+  worldFactProposer: [
+    "current.scene",
+    "working.recentEpisodes",
+    "working.standingAgreements",
+    "longTerm.milestones",
+    "longTerm.userProfile",
+    "longTerm.assistantProfile",
+    "longTerm.relationship",
+  ],
   compactionProposer: [],
 });
 

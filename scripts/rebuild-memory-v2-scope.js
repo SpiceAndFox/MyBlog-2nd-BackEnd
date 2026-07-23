@@ -94,7 +94,8 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 if (require.main === module) {
   const context = require("../app/composition/commandContext").createCommandContext();
   main(process.argv.slice(2), { context }).catch((error) => {
-    process.stderr.write(`${error?.stack || error}\n`);
+    const detail = error?.migrationDetail ? `\n${JSON.stringify(error.migrationDetail, null, 2)}\n` : "";
+    process.stderr.write(`${error?.stack || error}${detail}\n`);
     process.exitCode = 1;
   }).finally(async () => {
     await context.database.end();

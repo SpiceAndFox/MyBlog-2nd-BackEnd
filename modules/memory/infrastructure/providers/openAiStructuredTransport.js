@@ -52,11 +52,15 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
       if (message?.refusal || isSafetySignal(finishReason)) return { refusal: true, finishReason, model: data?.model ?? requestedModel, usage: data?.usage };
       const content = message?.parsed ?? message?.content;
       let output = content;
-      if (typeof content === "string") {
+      let transportError = null;
+      if (content == null) {
+        output = null;
+        transportError = "content_missing";
+      } else if (typeof content === "string") {
         try { output = JSON.parse(content); }
-        catch { output = null; }
+        catch { output = null; transportError = "content_invalid_json"; }
       }
-      return { output, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null };
+      return { output, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null, transportError, transportRecovery: null };
     } finally {
       clearTimeout(timeout);
     }

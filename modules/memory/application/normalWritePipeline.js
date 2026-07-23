@@ -82,6 +82,9 @@ function schemaErrorLogDetail(detail, feedback) {
     boundary: detail?.boundary ?? null,
     ...(detail?.specialist ? { specialist: detail.specialist } : {}),
     ...(detail?.shape ? { shape: detail.shape } : {}),
+    ...(detail?.transportError ? { transportError: detail.transportError } : {}),
+    ...(detail?.transportRecovery ? { transportRecovery: detail.transportRecovery } : {}),
+    ...(detail?.finishReason ? { finishReason: detail.finishReason } : {}),
     repairPolicyVersion: feedback.policyVersion,
     errors: feedback.errors,
   };
