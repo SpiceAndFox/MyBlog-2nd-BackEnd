@@ -116,21 +116,25 @@ test("profile specialists own one semantic section without an example bank", asy
   assert.doesNotMatch(relationshipPrompt, /userProfile|assistantProfile|standingAgreements|## 提交前检查/);
 });
 
-test("todo prompt covers overdue visibility and rescheduling", async () => {
+test("todo prompt covers semantic admission, dates, and lifecycle actions", async () => {
   const prompt = await loadProposerPrompt("todoProposer");
-  assert.match(prompt, /overdue items 只提供最近 N 条/, "todoProposer must disclose the partial overdue view");
-  assert.match(prompt, /overdue.*update.*dueChange\.mode=set/s, "todoProposer must reschedule overdue todos through Semantic update + set");
+  for (const heading of ["输出契约", "候选准入与动作语义", "责任归属与任务拆分", "日期理解与证据锚定", "内容格式", "排除范围与禁止行为"]) {
+    assert.match(prompt, new RegExp(`## ${heading}`), `todoProposer must include ${heading}`);
+  }
+  assert.match(prompt, /最小 noop 示例/);
+  assert.match(prompt, /典型变化示例/);
+  assert.match(prompt, /```json/);
+  assert.doesNotMatch(prompt, /overdue items 只提供最近 N 条|active 全量显示|提交前自检/);
+  assert.match(prompt, /已逾期事项.*不能再次 `expire`.*update.*未来期限/s, "todoProposer must reschedule overdue todos through an update");
   assert.match(prompt, /目标未显示.*unable_to_decide/s, "todoProposer must not guess hidden overdue refs");
-  assert.match(prompt, /不生成.*status.*becameOverdueAt/s, "todoProposer must treat lifecycle fields as reducer-owned");
   assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
-  assert.match(prompt, /相对(?:日期|时长)必须且只能有一个|relative.*必须且只能包含一个时长字段/s, "todoProposer must require one canonical relative unit");
-  assert.match(prompt, /dayOfMonth.*day.*1\.\.31/s, "todoProposer must represent an incomplete day-of-month without guessing a full date");
   assert.match(prompt, /dayOfMonth.*anchorMessageId/s, "todoProposer must anchor day-of-month dates to direct message time");
-  assert.match(prompt, /overdue 可完成、取消/s, "todoProposer must allow overdue completion and cancellation");
-  assert.match(prompt, /overdue.*不能再次 expire/s, "todoProposer must not expire an already-overdue todo");
+  assert.match(prompt, /已逾期事项.*complete.*cancel/s, "todoProposer must allow overdue completion and cancellation");
   assert.match(prompt, /产出、交付、使用或验收.*complete/s, "todoProposer must recognize implicit completion");
   assert.match(prompt, /承接回答.*继承相邻消息.*日期/s, "todoProposer must inherit relative dates from adjacent context");
   assert.match(prompt, /同一句话.*两个可独立行动.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
+  assert.match(prompt, /行动机会或成立条件已经自然消失.*expire/s, "todoProposer must define the positive expire condition");
+  assert.match(prompt, /没有这类明确消息.*不能仅根据可见期限推断失效/s);
 });
 
 test("agreement prompt distinguishes durable commitments and cancels context-dependent rules", async () => {
