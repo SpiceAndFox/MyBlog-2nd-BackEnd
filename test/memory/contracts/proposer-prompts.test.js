@@ -152,14 +152,19 @@ test("agreement prompt distinguishes durable commitments and cancels context-dep
 
 test("episode prompt clusters coherent interaction arcs instead of producing a turn log", async () => {
   const prompt = await loadProposerPrompt("episodeProposer");
+  for (const heading of ["输出契约", "互动弧形成与动作选择", "recentEpisodes 准入范围", "milestones 准入范围", "内容格式", "排除范围与禁止行为"]) {
+    assert.match(prompt, new RegExp(`## ${heading}`), `episodeProposer must include ${heading}`);
+  }
   assert.match(prompt, /不是逐轮摘要器.*聊天日志.*动作时间线/s);
-  assert.match(prompt, /一个完整互动弧最多形成一个 recentEpisodes item/);
+  assert.match(prompt, /一个完整互动弧最多形成一个候选/);
   assert.match(prompt, /同一互动弧有新进展.*update.*原 ref/s);
   assert.match(prompt, /recentEpisodes.*硬上限为 3 个/s);
   assert.match(prompt, /连续消息聚合为互动弧|按场景、主题、目标与因果连续性聚合/);
   assert.match(prompt, /不默认双写/);
   assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
   assert.match(prompt, /不要只给旧 milestone 追加免责声明.*correct.*当前意义.*forget/s);
+  assert.match(prompt, /一到两句自然语言概括一个连贯互动弧/);
+  assert.doesNotMatch(prompt, /## 判断示例|```|提交前确认/);
 });
 
 test("current state prompt rejects clock inference and figurative scene reactivation", async () => {
