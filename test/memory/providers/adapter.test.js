@@ -24,6 +24,8 @@ test("Provider Adapter accepts valid native structured output", async () => {
 
 test("Provider Adapter evaluates Profile sections independently and merges one atomic result", async () => {
   const requests = [];
+  let active = 0;
+  let maxActive = 0;
   const sections = {
     userProfileProposer: "userProfile",
     assistantProfileProposer: "assistantProfile",
@@ -33,6 +35,10 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
     promptLoader: async () => "base profile prompt",
     invokeStructured: async (request) => {
       requests.push(request);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
       const section = sections[request.proposer];
       return {
         output: {
@@ -47,10 +53,15 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
   const result = await adapter.propose(profileEnvelope({ messageCount: 64 }));
   assert.equal(result.status, "ok");
   assert.equal(result.callCount, 3);
+  assert.equal(maxActive, 3);
   assert.deepEqual(result.usage, { input_tokens: 30, output_tokens: 6 });
   assert.equal(requests.length, 3);
   assert.deepEqual(requests.map((request) => request.proposer), Object.keys(sections));
   assert.deepEqual(Object.keys(result.output.sectionResults), ["userProfile", "assistantProfile", "relationship"]);
+  assert.ok(requests.every((request) => request.userPayload.memoryText === requests[0].userPayload.memoryText));
+  assert.ok(requests.every((request) => (
+    JSON.stringify(request.userPayload.messages) === JSON.stringify(requests[0].userPayload.messages)
+  )));
   for (const request of requests) {
     const section = sections[request.proposer];
     assert.equal(request.userPayload.messages.length, 64);

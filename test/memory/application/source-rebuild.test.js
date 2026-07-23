@@ -217,29 +217,163 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   };
   const attempts = new Map();
   const pipeline = {
+    async processEnvelope() { throw new Error("force drain must use the wave-aware pipeline path"); },
     async createTask(_u, _p, intent, options) {
       assert.equal(intent.trigger.type, "forceDrain");
       if (intent.targetKey === "scene") assert.match(options.dedupeSuffix, /resume:failed-scene-task$/);
-      return { task: { targetKey: intent.targetKey }, options };
+      return {
+        task: {
+          taskId: `task-${intent.targetKey}`,
+          targetKey: intent.targetKey,
+          cursorBefore: state.meta.targetCursors[intent.targetKey],
+          targetMessageId: 20,
+          baseRevision: state.meta.revision,
+        },
+        options,
+      };
     },
-    async processEnvelope(envelope) {
+    async prepareEnvelope(envelope) {
       processed.push(envelope.task.targetKey);
       assert.equal(statuses[envelope.task.targetKey].status, "rebuilding");
       const attempt = (attempts.get(envelope.task.targetKey) || 0) + 1;
       attempts.set(envelope.task.targetKey, attempt);
       if (envelope.task.targetKey === "scene" && attempt === 1) return { status: "context_expansion_required" };
-      state.meta.targetCursors[envelope.task.targetKey] = 20;
-      state.meta.revision += 1;
-      snapshots.set(state.meta.revision, { source_generation: 1, schema_version: "2.01", state: structuredClone(state) });
-      return { status: "committed" };
+      return { status: "prepared", kind: "proposal", envelope, output: {} };
+    },
+    async commitPreparedWave(prepared) {
+      const committed = [];
+      for (const entry of prepared) {
+        state.meta.targetCursors[entry.envelope.task.targetKey] = 20;
+        state.meta.revision += 1;
+        snapshots.set(state.meta.revision, { source_generation: 1, schema_version: "2.01", state: structuredClone(state) });
+        committed.push({ status: "committed", targetKey: entry.envelope.task.targetKey });
+      }
+      return { status: "committed", results: committed };
     },
   };
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config: { targets } });
   const result = await rebuild.forceDrainTo(7, "companion", { sourceGeneration: 1, boundaryMessageId: 20 });
   assert.equal(result.status, "completed");
-  assert.deepEqual(processed, ["scene", ...TARGET_KEYS]);
+  assert.deepEqual(processed, [...TARGET_KEYS, "scene"]);
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
+});
+
+test("force drain advances targets by source-watermark waves from one frozen baseline", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  const statuses = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, {
+    target_key: targetKey,
+    source_generation: 1,
+    status: "rebuilding",
+    rebuild_boundary_message_id: 8,
+  }]));
+  const snapshots = new Map([[0, { revision: 0, source_generation: 1, schema_version: "2.01", state: structuredClone(state) }]]);
+  const groups = [];
+  const messages = Array.from({ length: 8 }, (_, index) => ({
+    id: index + 1,
+    role: "user",
+    content: `m${index + 1}`,
+    contentHash: `sha256:m${index + 1}`,
+    createdAt: `2026-07-13T00:00:0${index}.000Z`,
+  }));
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: { async getState() { return structuredClone(state); } },
+    source: {
+      async getForceDrainWindow(_u, _p, cursor, boundary, { newBatchSize }) {
+        return messages.filter((message) => message.id > cursor && message.id <= boundary).slice(0, newBatchSize);
+      },
+    },
+    runtime: {
+      async getTargetStatus(_u, _p, targetKey) { return statuses[targetKey]; },
+      async upsertTargetStatus(_u, _p, value) {
+        statuses[value.targetKey] = {
+          ...statuses[value.targetKey],
+          ...value,
+          source_generation: value.sourceGeneration,
+          rebuild_boundary_message_id: value.rebuildBoundaryMessageId,
+          status: value.status,
+        };
+      },
+      async listTasksForTarget() { return []; },
+    },
+    audit: {
+      async getSnapshot(_u, _p, revision) { return snapshots.get(revision) ?? null; },
+      async listSnapshots() { return [...snapshots.values()]; },
+      async listRevisionGroups(_u, _p, _g, afterRevision) {
+        return groups.filter((group) => group.result_revision > afterRevision);
+      },
+    },
+    sidecars: {},
+  };
+  const waves = [];
+  let activeProviders = 0;
+  let maxActiveProviders = 0;
+  const pipeline = {
+    async processEnvelope() { throw new Error("wave path required"); },
+    async createTask(_u, _p, intent, { messages: observed }) {
+      return {
+        task: {
+          taskId: `${intent.targetKey}:${state.meta.targetCursors[intent.targetKey]}:${observed.at(-1).id}`,
+          targetKey: intent.targetKey,
+          cursorBefore: state.meta.targetCursors[intent.targetKey],
+          targetMessageId: observed.at(-1).id,
+          baseRevision: state.meta.revision,
+        },
+      };
+    },
+    async prepareEnvelope(envelope) {
+      activeProviders += 1;
+      maxActiveProviders = Math.max(maxActiveProviders, activeProviders);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      activeProviders -= 1;
+      return { status: "prepared", kind: "proposal", envelope, output: {} };
+    },
+    async commitPreparedWave(prepared) {
+      assert.equal(new Set(prepared.map((entry) => entry.envelope.task.baseRevision)).size, 1);
+      waves.push(prepared.map((entry) => ({
+        targetKey: entry.envelope.task.targetKey,
+        targetMessageId: entry.envelope.task.targetMessageId,
+        baseRevision: entry.envelope.task.baseRevision,
+      })));
+      const committed = [];
+      for (const entry of prepared.sort((left, right) => (
+        TARGET_KEYS.indexOf(left.envelope.task.targetKey) - TARGET_KEYS.indexOf(right.envelope.task.targetKey)
+      ))) {
+        const baseRevision = state.meta.revision;
+        state.meta.targetCursors[entry.envelope.task.targetKey] = entry.envelope.task.targetMessageId;
+        state.meta.revision += 1;
+        groups.push({ base_revision: baseRevision, result_revision: state.meta.revision });
+        snapshots.set(state.meta.revision, {
+          revision: state.meta.revision,
+          source_generation: 1,
+          schema_version: "2.01",
+          state: structuredClone(state),
+        });
+        committed.push({ status: "committed", targetKey: entry.envelope.task.targetKey });
+      }
+      return { status: "committed", results: committed };
+    },
+  };
+  const targets = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, {
+    lagThreshold: targetKey === "scene" ? 2 : targetKey === "todos" ? 4 : 8,
+    contextWindow: 8,
+  }]));
+  const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config: { targets } });
+
+  const result = await rebuild.forceDrainTo(1, "default", { sourceGeneration: 1, boundaryMessageId: 8 });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(waves.map((wave) => wave.map((entry) => `${entry.targetKey}@${entry.targetMessageId}`)), [
+    ["scene@2"],
+    ["scene@4", "todos@4"],
+    ["scene@6"],
+    TARGET_KEYS.map((targetKey) => `${targetKey}@8`),
+  ]);
+  assert.ok(waves.every((wave) => new Set(wave.map((entry) => entry.baseRevision)).size === 1));
+  assert.equal(maxActiveProviders, TARGET_KEYS.length);
+  assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy"), true);
 });
 
 test("target validation preserves valid rebuilt 2.01 state without suppression storage", async () => {
@@ -303,7 +437,12 @@ test("rebuild reconciliation honors a durable retry_wait boundary before invokin
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
   const rebuild = createMemorySourceRebuild({
     repositories,
-    normalWritePipeline: { async createTask() { throw new Error("must reuse retry task"); }, async processEnvelope() { providerCalls += 1; } },
+    normalWritePipeline: {
+      async createTask() { throw new Error("must reuse retry task"); },
+      async processEnvelope() { providerCalls += 1; },
+      async prepareEnvelope() { providerCalls += 1; },
+      async commitPreparedWave() { throw new Error("retry wait must not commit"); },
+    },
     config: { targets },
     now: () => new Date("2026-07-13T00:00:00.000Z"),
   });

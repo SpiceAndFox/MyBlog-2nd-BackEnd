@@ -89,6 +89,65 @@ test("one broken durable task does not starve later recoverable tasks", async ()
   assert.deepEqual(results[1], { status: "committed", taskId: "second" });
 });
 
+test("generic task recovery leaves force-drain tasks to the rebuild wave coordinator", async () => {
+  let providerCalls = 0;
+  const forceEnvelope = {
+    task: {
+      taskId: "force-wave-task",
+      userId: 1,
+      presetId: "default",
+      targetKey: "scene",
+      trigger: { type: "forceDrain", sourceWatermark: 8 },
+    },
+  };
+  const maintenanceEnvelope = {
+    task: {
+      taskId: "force-wave-maintenance",
+      parentTaskId: forceEnvelope.task.taskId,
+      userId: 1,
+      presetId: "default",
+      targetKey: "scene",
+      trigger: { type: "lengthBudget" },
+    },
+  };
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    runtime: {
+      async getTask(taskId) {
+        return taskId === forceEnvelope.task.taskId ? { task_payload: forceEnvelope } : null;
+      },
+      async listRecoverableTasks() {
+        return [{
+          task_id: forceEnvelope.task.taskId,
+          status: "running",
+          target_key: "scene",
+          task_payload: forceEnvelope,
+        }, {
+          task_id: maintenanceEnvelope.task.taskId,
+          status: "running",
+          target_key: "scene",
+          task_payload: maintenanceEnvelope,
+        }];
+      },
+    },
+  };
+  const recovery = createMemoryRecovery({
+    repositories,
+    pipeline: { async processEnvelope() { providerCalls += 1; } },
+  });
+  const results = await recovery.recoverPending();
+  assert.deepEqual(results, [{
+    status: "rebuild_managed",
+    taskId: "force-wave-task",
+    targetKey: "scene",
+  }, {
+    status: "rebuild_managed",
+    taskId: "force-wave-maintenance",
+    targetKey: "scene",
+  }]);
+  assert.equal(providerCalls, 0);
+});
+
 test("unknown COMMIT outcome reconciles the stable phase before any retry write", async () => {
   const data = store();
   let calls = 0;

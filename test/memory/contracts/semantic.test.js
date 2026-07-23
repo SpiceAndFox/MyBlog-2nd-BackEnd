@@ -79,6 +79,33 @@ test("Renderer artifact exposes readable refs but keeps ids, hashes and provenan
   assert.deepEqual(artifact.refMap.readOnly.R1.sourceRefs.map((ref) => ref.messageId), [1]);
 });
 
+test("Renderer artifact hides derived Memory newer than its own targetMessageId", () => {
+  const trigger = message(3, "user", "只处理到这里。", "2026-07-22T10:00:00.000Z");
+  const state = contracts.createInitialMemoryState();
+  state.working.recentEpisodes.push(
+    item("episode:past", "消息三之前的经历。", [source(2, "过去")]),
+    item("episode:future", "来自消息五的未来经历。", [source(5, "未来")]),
+  );
+  state.current.scene.note = {
+    value: "消息六才确定的状态",
+    sourceRefs: [source(6, "未来状态")],
+    updatedAtMessageId: 6,
+  };
+  const artifact = buildProposerTaskArtifact({
+    state,
+    intent: { targetKey: "episodes", proposer: "episodeProposer", cursorBefore: 2 },
+    messages: [trigger],
+    now: "2026-07-22T10:01:00.000Z",
+  });
+  assert.equal(artifact.publicInput.task.targetMessageId, 3);
+  assert.match(artifact.publicInput.memoryText, /消息三之前的经历/);
+  assert.doesNotMatch(artifact.publicInput.memoryText, /未来经历|未来状态/);
+  assert.deepEqual(Object.keys(artifact.refMap.writable), ["E1"]);
+  assert.equal(Object.values(artifact.refMap.readOnly).some((entry) => (
+    entry.sourceRefs?.some((ref) => ref.messageId > 3)
+  )), false);
+});
+
 test("context expansion preserves the original Memory text and ref map byte-for-byte", () => {
   const { artifact, oldMessage, overlapMessage, newMessage } = fixture();
   const expanded = expandProposerTaskArtifact(artifact, [oldMessage, overlapMessage, newMessage]);

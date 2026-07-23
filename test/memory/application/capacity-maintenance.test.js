@@ -100,6 +100,68 @@ test("capacity block persists deferred audit, compacts, and replays the original
   }
 });
 
+test("rebuild wave compacts without advancing one parent and then reproposes from the new baseline", async () => {
+  const data = store();
+  data.inspect.statuses.set("todos", {
+    target_key: "todos",
+    source_generation: 0,
+    status: "rebuilding",
+    consecutive_errors: 0,
+    rebuild_boundary_message_id: 3,
+  });
+  let nextId = 0;
+  const pipeline = createNormalWritePipeline({
+    observer: {},
+    repositories: data.repositories,
+    config,
+    now: () => new Date("2026-07-13T00:00:10.000Z"),
+    idFactory: () => `wave-id-${++nextId}`,
+    providerAdapter: {
+      propose: async (envelope) => ({
+        status: "ok",
+        output: envelope.task.mode === "maintenance"
+          ? compactionOutput(envelope)
+          : normalOutput(envelope),
+      }),
+    },
+  });
+  const rebuildIntent = {
+    ...intent,
+    trigger: { type: "forceDrain", sourceWatermark: 3 },
+  };
+  const firstEnvelope = await pipeline.createTask(1, "default", rebuildIntent, {
+    dedupeSuffix: "force-drain:0:3",
+  });
+  const firstPrepared = await pipeline.prepareEnvelope(firstEnvelope);
+  const blocked = await pipeline.commitPreparedWave([firstPrepared]);
+  assert.equal(blocked.status, "capacity_deferred");
+  assert.equal(data.inspect.state.meta.revision, 0);
+  assert.equal(data.inspect.state.meta.targetCursors.todos ?? 0, 0);
+  assert.equal(data.inspect.groups.size, 0);
+
+  const deferred = await pipeline.deferPreparedWaveCapacity(firstPrepared);
+  assert.equal(deferred.status, "capacity_deferred");
+  const compacted = await pipeline.resolvePreparedWaveCapacity(firstEnvelope);
+  assert.equal(compacted.status, "compaction_applied");
+  assert.equal(data.inspect.state.meta.revision, 1);
+  assert.equal(data.inspect.state.meta.targetCursors.todos ?? 0, 0);
+  assert.equal(data.inspect.tasks.get(firstEnvelope.task.taskId).stage, "capacity_blocked");
+
+  await pipeline.cancelPreparedWave([firstEnvelope], "wave_capacity_compacted");
+  assert.equal(data.inspect.tasks.get(firstEnvelope.task.taskId).status, "cancelled");
+
+  const secondEnvelope = await pipeline.createTask(1, "default", rebuildIntent, {
+    dedupeSuffix: `force-drain:0:3:resume:${firstEnvelope.task.taskId}`,
+  });
+  assert.equal(secondEnvelope.task.baseRevision, 1);
+  const secondPrepared = await pipeline.prepareEnvelope(secondEnvelope);
+  const committed = await pipeline.commitPreparedWave([secondPrepared]);
+  assert.equal(committed.status, "committed");
+  assert.equal(data.inspect.state.meta.revision, 2);
+  assert.equal(data.inspect.state.meta.targetCursors.todos, 3);
+  assert.equal(data.inspect.state.working.todos.length, 2);
+});
+
 test("maintenance proposer shares the single durable schema-invalid retry", async () => {
   const data = store();
   const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"];

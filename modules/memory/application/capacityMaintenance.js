@@ -446,11 +446,16 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     });
   }
 
-  async function processMaintenanceEnvelope(envelope) {
+  async function processMaintenanceEnvelope(envelope, { advanceParentAfterCompaction = true } = {}) {
     const current = await repositories.runtime.getTask(envelope.task.taskId);
     const currentStage = rowValue(current, "stage", "stage");
     const durablePayload = rowValue(current, "stage_payload", "stagePayload") || {};
-    if (currentStage === "compaction_applied") return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
+    if (currentStage === "compaction_applied") {
+      if (!advanceParentAfterCompaction) {
+        return { status: "compaction_applied", revision: Number(rowValue(current, "result_revision", "resultRevision")), duplicate: true };
+      }
+      return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
+    }
     if (TERMINAL_STATUSES.has(rowValue(current, "status", "status"))) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
     const notBefore = rowValue(current, "not_before", "notBefore");
     if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
@@ -533,6 +538,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     if (result.status === "stale") return markStale(envelope, result.reason);
     if (result.status === "halted") return result;
     if (isHygiene(envelope)) return result;
+    if (!advanceParentAfterCompaction) return result;
     const parent = await repositories.runtime.getTask(envelope.task.parentTaskId);
     let advanced;
     try {

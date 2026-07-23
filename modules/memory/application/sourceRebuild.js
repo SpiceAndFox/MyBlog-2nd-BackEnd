@@ -206,13 +206,18 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
   }
 
   async function forceDrainTo(userId, presetId, { sourceGeneration, boundaryMessageId }) {
+    if (typeof normalWritePipeline.prepareEnvelope !== "function"
+      || typeof normalWritePipeline.commitPreparedWave !== "function") {
+      throw new Error("Source rebuild requires wave-aware prepare and commit pipeline operations");
+    }
     const results = [];
-    for (const targetKey of TARGET_KEYS) {
-      while (true) {
-        const state = await repositories.state.getState(userId, presetId);
-        if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", sourceGeneration, results };
+    while (true) {
+      const state = await repositories.state.getState(userId, presetId);
+      if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", sourceGeneration, results };
+      const candidates = [];
+      for (const targetKey of TARGET_KEYS) {
         const cursor = state.meta.targetCursors[targetKey] ?? 0;
-        if (cursor >= boundaryMessageId) break;
+        if (cursor >= boundaryMessageId) continue;
         const targetStatus = await repositories.runtime.getTargetStatus(userId, presetId, targetKey);
         if (!targetStatus || Number(rowValue(targetStatus, "source_generation", "sourceGeneration")) !== sourceGeneration) {
           return { status: "stale", sourceGeneration, results };
@@ -235,8 +240,27 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
           newBatchSize: targetConfig.lagThreshold, contextWindow: targetConfig.contextWindow,
         });
         if (!messages.length) throw new Error(`No valid source remains between cursor ${cursor} and rebuild boundary ${boundaryMessageId}`);
-        const intent = { targetKey, proposer: TARGETS[targetKey].proposer, targetSections: TARGETS[targetKey].sections.slice(), cursorBefore: cursor, trigger: { type: "forceDrain" } };
         const targetMessageId = Math.max(...messages.filter((message) => message.id > cursor).map((message) => message.id));
+        if (!Number.isSafeInteger(targetMessageId) || targetMessageId <= cursor || targetMessageId > boundaryMessageId) {
+          throw new Error(`Invalid force-drain targetMessageId for ${targetKey}`);
+        }
+        candidates.push({ targetKey, cursor, targetMessageId, messages });
+      }
+      if (!candidates.length) break;
+
+      const sourceWatermark = Math.min(...candidates.map((candidate) => candidate.targetMessageId));
+      const wave = candidates.filter((candidate) => candidate.targetMessageId === sourceWatermark);
+      const envelopes = [];
+      const capacityBlockedEnvelopes = [];
+      for (const candidate of wave) {
+        const { targetKey, cursor, targetMessageId, messages } = candidate;
+        const intent = {
+          targetKey,
+          proposer: TARGETS[targetKey].proposer,
+          targetSections: TARGETS[targetKey].sections.slice(),
+          cursorBefore: cursor,
+          trigger: { type: "forceDrain", sourceWatermark },
+        };
         const tasks = typeof repositories.runtime.listTasksForTarget === "function"
           ? await repositories.runtime.listTasksForTarget(userId, presetId, targetKey)
           : [];
@@ -250,7 +274,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         if (latestStatus === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
           const result = { status: "retry_wait", taskId: rowValue(latest, "task_id", "taskId"), notBefore };
           results.push(result);
-          return { status: "incomplete", sourceGeneration, targetKey, result, results };
+          return { status: "incomplete", sourceGeneration, sourceWatermark, targetKey, result, results };
         }
         let envelope;
         if (latest && !TERMINAL_TASK_STATUSES.has(latestStatus)) {
@@ -263,24 +287,122 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
           envelope = await normalWritePipeline.createTask(userId, presetId, intent, { messages, dedupeSuffix });
         }
         if (!envelope?.task) throw new Error(`Force-drain task payload is missing for ${targetKey}`);
-        let result;
-        try {
-          result = await normalWritePipeline.processEnvelope(envelope);
-          if (result.status === "context_expansion_required") result = await normalWritePipeline.processEnvelope(envelope);
-        } catch (error) {
-          error.migrationDetail ||= {
+        if (envelope.task.baseRevision !== state.meta.revision) {
+          return {
+            status: "stale",
             sourceGeneration,
+            sourceWatermark,
             targetKey,
-            cursorBefore: cursor,
-            targetMessageId,
-            taskId: envelope.task.taskId ?? null,
-            stage: "process_envelope",
+            reason: "wave_baseline_mismatch",
+            results,
           };
-          throw error;
         }
-        results.push(result);
-        if (!["committed"].includes(result.status)) return { status: "incomplete", sourceGeneration, targetKey, result, results };
+        envelopes.push(envelope);
+        if (rowValue(latest, "stage", "stage") === "capacity_blocked") capacityBlockedEnvelopes.push(envelope);
       }
+
+      if (capacityBlockedEnvelopes.length) {
+        if (typeof normalWritePipeline.resolvePreparedWaveCapacity !== "function"
+          || typeof normalWritePipeline.cancelPreparedWave !== "function") {
+          throw new Error("Source rebuild capacity recovery requires wave-aware pipeline operations");
+        }
+        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityBlockedEnvelopes[0]);
+        results.push(capacityResult);
+        if (capacityResult.status !== "compaction_applied") {
+          return {
+            status: "incomplete",
+            sourceGeneration,
+            sourceWatermark,
+            targetKey: capacityBlockedEnvelopes[0].task.targetKey,
+            result: capacityResult,
+            results,
+          };
+        }
+        await normalWritePipeline.cancelPreparedWave(envelopes, "wave_capacity_compacted");
+        continue;
+      }
+
+      let prepared;
+      try {
+        prepared = await Promise.all(envelopes.map((envelope) => normalWritePipeline.prepareEnvelope(envelope)));
+        if (prepared.some((result) => result.status === "context_expansion_required")) {
+          prepared = await Promise.all(envelopes.map((envelope, index) => (
+            prepared[index].status === "context_expansion_required"
+              ? normalWritePipeline.prepareEnvelope(envelope)
+              : prepared[index]
+          )));
+        }
+      } catch (error) {
+        error.migrationDetail ||= {
+          sourceGeneration,
+          sourceWatermark,
+          targetKeys: wave.map((candidate) => candidate.targetKey),
+          stage: "prepare_wave",
+        };
+        throw error;
+      }
+      const incompleteIndex = prepared.findIndex((result) => result.status !== "prepared");
+      if (incompleteIndex >= 0) {
+        const result = prepared[incompleteIndex];
+        results.push(...prepared);
+        return {
+          status: "incomplete",
+          sourceGeneration,
+          sourceWatermark,
+          targetKey: wave[incompleteIndex].targetKey,
+          result,
+          results,
+        };
+      }
+      const committed = await normalWritePipeline.commitPreparedWave(prepared);
+      if (committed.status === "capacity_deferred") {
+        if (typeof normalWritePipeline.deferPreparedWaveCapacity !== "function"
+          || typeof normalWritePipeline.resolvePreparedWaveCapacity !== "function"
+          || typeof normalWritePipeline.cancelPreparedWave !== "function") {
+          throw new Error("Source rebuild capacity handling requires wave-aware pipeline operations");
+        }
+        const capacityEntry = prepared.find((entry) => entry.envelope.task.taskId === committed.taskId);
+        if (!capacityEntry) throw new Error("Capacity-deferred wave member is missing");
+        const deferred = await normalWritePipeline.deferPreparedWaveCapacity(capacityEntry);
+        if (deferred.status !== "capacity_deferred") {
+          results.push(deferred);
+          return {
+            status: deferred.status === "stale" ? "stale" : "incomplete",
+            sourceGeneration,
+            sourceWatermark,
+            targetKey: committed.targetKey,
+            result: deferred,
+            results,
+          };
+        }
+        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityEntry.envelope);
+        results.push(deferred, capacityResult);
+        if (capacityResult.status !== "compaction_applied") {
+          return {
+            status: "incomplete",
+            sourceGeneration,
+            sourceWatermark,
+            targetKey: committed.targetKey,
+            result: capacityResult,
+            results,
+          };
+        }
+        await normalWritePipeline.cancelPreparedWave(envelopes, "wave_capacity_compacted");
+        continue;
+      }
+      results.push(...(committed.results ?? [committed]));
+      if (committed.status !== "committed") {
+        return {
+          status: committed.status === "stale" ? "stale" : "incomplete",
+          sourceGeneration,
+          sourceWatermark,
+          targetKey: committed.targetKey,
+          result: committed,
+          results,
+        };
+      }
+    }
+    for (const targetKey of TARGET_KEYS) {
       const validated = await validateTarget(userId, presetId, targetKey, sourceGeneration, boundaryMessageId);
       if (validated.status === "stale") return { status: "stale", sourceGeneration, results };
     }

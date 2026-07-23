@@ -4,6 +4,7 @@ const { isSemanticTaskEnvelope } = require("./envelope");
 const CAPACITY_REASONS = new Set(["capacity_still_exceeded", "unable_to_compact", "compaction_failed", "replay_failed"]);
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
+function isForceDrainEnvelope(envelope) { return envelope?.task?.trigger?.type === "forceDrain"; }
 
 function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date() } = {}) {
   if (!repositories?.runtime || !repositories.withTransaction || !pipeline?.processEnvelope) throw new Error("Memory recovery dependencies are required");
@@ -11,6 +12,14 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, o
   async function dispatch(envelope) {
     if (typeof enqueueByKey !== "function") return pipeline.processEnvelope(envelope);
     return enqueueByKey(buildKey(envelope.task.userId, envelope.task.presetId), () => pipeline.processEnvelope(envelope));
+  }
+
+  async function isRebuildManaged(envelope) {
+    if (isForceDrainEnvelope(envelope)) return true;
+    const parentTaskId = envelope?.task?.parentTaskId;
+    if (!parentTaskId || typeof repositories.runtime.getTask !== "function") return false;
+    const parent = await repositories.runtime.getTask(parentTaskId);
+    return isForceDrainEnvelope(rowValue(parent, "task_payload", "taskPayload"));
   }
 
   async function recoverPending() {
@@ -24,6 +33,10 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, o
       if (createdAt) metrics?.observe("memory_task_queue_age_ms", { status }, Math.max(0, now().getTime() - new Date(createdAt).getTime()));
       const envelope = rowValue(task, "task_payload", "taskPayload");
       if (!envelope?.task) throw new Error(`Recoverable Memory task ${task.task_id ?? task.taskId} has no immutable payload`);
+      if (await isRebuildManaged(envelope)) {
+        results.push({ status: "rebuild_managed", taskId: envelope.task.taskId, targetKey: envelope.task.targetKey });
+        continue;
+      }
       try {
         results.push(await dispatch(envelope));
       } catch (error) {

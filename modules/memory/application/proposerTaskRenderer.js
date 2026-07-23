@@ -43,6 +43,38 @@ function visibleReadOnlySections(proposer) {
   return (READ_ONLY_CONTEXT_PATHS[proposer] || []).map((path) => path.split(".")[1]);
 }
 
+function sourceRefsAreAtOrBefore(sourceRefs, targetMessageId) {
+  return (sourceRefs || []).every((ref) => (
+    Number.isSafeInteger(ref?.messageId) && ref.messageId <= targetMessageId
+  ));
+}
+
+function projectStateAtMessage(state, targetMessageId) {
+  if (!Number.isSafeInteger(targetMessageId) || targetMessageId <= 0) {
+    throw new Error("Memory as-of projection requires a positive targetMessageId");
+  }
+  const projected = structuredClone(state);
+  for (const path of SCENE_FIELDS) {
+    const field = projected.current?.scene?.[path];
+    if (!field) continue;
+    const updatedAt = field.updatedAtMessageId;
+    if ((Number.isSafeInteger(updatedAt) && updatedAt > targetMessageId)
+      || !sourceRefsAreAtOrBefore(field.sourceRefs, targetMessageId)) {
+      projected.current.scene[path] = { value: null, sourceRefs: [], updatedAtMessageId: null };
+    }
+  }
+  for (const section of Object.keys(REF_PREFIX).filter((key) => key !== "scene")) {
+    const [container, key] = sectionPath(section);
+    const items = projected[container]?.[key];
+    if (!Array.isArray(items)) continue;
+    projected[container][key] = items.filter((item) => (
+      (!Number.isSafeInteger(item.updatedAtMessageId) || item.updatedAtMessageId <= targetMessageId)
+      && sourceRefsAreAtOrBefore(item.sourceRefs, targetMessageId)
+    ));
+  }
+  return projected;
+}
+
 function renderTodo(item) {
   const details = [`actor=${item.actor}`, `requester=${item.requester}`];
   if (item.status) details.push(`status=${item.status}`);
@@ -125,7 +157,8 @@ function buildProposerTaskArtifact({
   const cursorBefore = Number(intent.cursorBefore ?? 0);
   const targetMessageId = Math.max(...messages.filter((message) => message.id > cursorBefore).map((message) => message.id));
   if (!Number.isSafeInteger(targetMessageId)) throw new Error("Observed messages do not contain a new batch");
-  const { memoryText, refMap } = renderMemoryAndRefs(state, intent.proposer, target.sections, { overdueTodoLimit });
+  const stateAtTarget = projectStateAtMessage(state, targetMessageId);
+  const { memoryText, refMap } = renderMemoryAndRefs(stateAtTarget, intent.proposer, target.sections, { overdueTodoLimit });
   const publicMessages = messages.map((message) => ({
     id: message.id,
     role: message.role,
@@ -196,6 +229,7 @@ module.exports = {
   SECTION_LABELS,
   sectionPath,
   visibleReadOnlySections,
+  projectStateAtMessage,
   renderMemoryAndRefs,
   buildProposerTaskArtifact,
   expandProposerTaskArtifact,

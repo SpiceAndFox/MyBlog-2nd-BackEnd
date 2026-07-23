@@ -76,10 +76,11 @@ function buildProposerUserPayload(envelope) {
 }
 
 function buildSpecialistPayload(userPayload, specialist) {
+  const payload = structuredClone(userPayload);
   return {
-    ...userPayload,
+    ...payload,
     task: {
-      ...userPayload.task,
+      ...payload.task,
       proposer: specialist.proposer,
       targetSections: [specialist.section],
     },
@@ -87,12 +88,13 @@ function buildSpecialistPayload(userPayload, specialist) {
 }
 
 function buildSpecialistArtifact(artifact, specialist) {
+  const specialistArtifact = structuredClone(artifact);
   return {
-    ...artifact,
+    ...specialistArtifact,
     publicInput: {
-      ...artifact.publicInput,
+      ...specialistArtifact.publicInput,
       task: {
-        ...artifact.publicInput.task,
+        ...specialistArtifact.publicInput.task,
         proposer: specialist.proposer,
         targetSections: [specialist.section],
       },
@@ -144,9 +146,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         const { task } = envelope;
         const userPayload = buildProposerUserPayload(envelope);
         if (task.proposer === "profileRelationshipProposer") {
-          const responses = [];
-          const sectionResults = {};
-          for (const specialist of PROFILE_SPECIALISTS) {
+          const settledRuns = await Promise.allSettled(PROFILE_SPECIALISTS.map(async (specialist) => {
             const specialistPayload = buildSpecialistPayload(userPayload, specialist);
             const specialistArtifact = buildSpecialistArtifact(envelope.artifact, specialist);
             const specialistResponse = await invokeStructured({
@@ -159,7 +159,14 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
                 specialist.section,
               ),
             });
-            responses.push(specialistResponse);
+            return { specialist, specialistArtifact, specialistResponse };
+          }));
+          const rejected = settledRuns.find((run) => run.status === "rejected");
+          if (rejected) throw rejected.reason;
+          const specialistRuns = settledRuns.map((run) => run.value);
+          const responses = specialistRuns.map((run) => run.specialistResponse);
+          const sectionResults = {};
+          for (const { specialist, specialistArtifact, specialistResponse } of specialistRuns) {
             if (specialistResponse?.refusal || specialistResponse?.safetyBlocked || isSafetySignal(specialistResponse?.finishReason)) {
               return { status: "error", reason: "safety_policy_blocked", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }

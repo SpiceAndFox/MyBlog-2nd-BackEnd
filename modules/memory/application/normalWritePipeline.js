@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const {
   COMPILE_ERROR_REASONS,
   SCHEMA_VERSION,
+  TARGET_KEYS,
   validateSemanticResult,
   validateCompiledProposal,
 } = require("../contracts");
@@ -396,7 +397,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
-  async function handleUnableToDecide(envelope) {
+  async function handleUnableToDecide(envelope, { deferCommit = false } = {}) {
     let persistedTask = await repositories.runtime.getTask(envelope.task.taskId);
     let expansionAttempt = numberValue(persistedTask, "context_expansion_attempt", "contextExpansionAttempt");
     let stage = rowValue(persistedTask, "stage", "stage");
@@ -406,6 +407,29 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       stage = rowValue(persistedTask, "stage", "stage");
     }
     if (stage === "context_expanding") return completeContextExpansion(envelope);
+    if (deferCommit) {
+      return repositories.withTransaction(async (client) => {
+        const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+        if (!task) throw new Error("Memory task not found for deferred unable_to_decide");
+        if (numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") < 1
+          || rowValue(task, "stage", "stage") !== "unable_result_persisted") {
+          throw new Error("Deferred cursor-only unable result requires a persisted second unable result");
+        }
+        const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
+        const cursor = state.meta.targetCursors[envelope.task.targetKey] ?? 0;
+        if (state.meta.sourceGeneration !== envelope.task.sourceGeneration || cursor !== envelope.task.cursorBefore) {
+          return {
+            status: "stale",
+            reason: state.meta.sourceGeneration !== envelope.task.sourceGeneration ? "generation_mismatch" : "cursor_mismatch",
+            taskId: envelope.task.taskId,
+          };
+        }
+        if (state.meta.revision !== envelope.task.baseRevision) {
+          return { status: "stale", reason: "revision_mismatch", taskId: envelope.task.taskId };
+        }
+        return { status: "prepared", kind: "cursor_only", envelope };
+      });
+    }
     return repositories.withTransaction(async (client) => {
       const groupId = phaseId(envelope.task.taskId, "unable_cursor_commit");
       const existing = await repositories.audit.getEventGroup(groupId, { client });
@@ -669,13 +693,274 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     }
   }
 
-  async function processEnvelope(envelope) {
+  async function commitPreparedWave(preparedEntries) {
+    if (!Array.isArray(preparedEntries) || preparedEntries.length === 0) {
+      throw new Error("A prepared Memory wave must contain at least one task");
+    }
+    const entries = preparedEntries.map((entry) => {
+      if (entry?.status !== "prepared" || !isSemanticTaskEnvelope(entry.envelope)) {
+        throw new Error("Memory wave contains an invalid prepared task");
+      }
+      return entry;
+    }).sort((left, right) => (
+      TARGET_KEYS.indexOf(left.envelope.task.targetKey) - TARGET_KEYS.indexOf(right.envelope.task.targetKey)
+    ));
+    const firstTask = entries[0].envelope.task;
+    const identity = `${firstTask.userId}:${firstTask.presetId}:${firstTask.sourceGeneration}:${firstTask.baseRevision}`;
+    if (new Set(entries.map((entry) => entry.envelope.task.targetKey)).size !== entries.length) {
+      throw new Error("A Memory wave cannot contain the same target twice");
+    }
+    if (entries.some((entry) => {
+      const task = entry.envelope.task;
+      return `${task.userId}:${task.presetId}:${task.sourceGeneration}:${task.baseRevision}` !== identity;
+    })) {
+      throw new Error("Prepared Memory wave tasks do not share one frozen baseline");
+    }
+
+    let result;
+    try {
+      result = await repositories.withTransaction(async (client) => {
+      const state = await repositories.state.getState(firstTask.userId, firstTask.presetId, { client, forUpdate: true });
+      if (!state || state.meta.sourceGeneration !== firstTask.sourceGeneration) {
+        return { status: "stale", reason: "generation_mismatch" };
+      }
+      if (state.meta.revision !== firstTask.baseRevision) {
+        return { status: "stale", reason: "revision_mismatch" };
+      }
+
+      let workingState = structuredClone(state);
+      const plans = [];
+      for (const entry of entries) {
+        const { envelope } = entry;
+        const task = envelope.task;
+        if ((workingState.meta.targetCursors[task.targetKey] ?? 0) !== task.cursorBefore) {
+          return { status: "stale", reason: "cursor_mismatch", targetKey: task.targetKey };
+        }
+        const taskRowValue = await repositories.runtime.getTaskForUpdate(task.taskId, { client });
+        if (!taskRowValue) throw new Error(`Prepared Memory wave task ${task.taskId} disappeared`);
+        if (TERMINAL_TASK_STATUSES.has(rowValue(taskRowValue, "status", "status"))) {
+          return { status: "stale", reason: "task_terminal", targetKey: task.targetKey };
+        }
+        const groupId = phaseId(task.taskId, entry.kind === "cursor_only" ? "unable_cursor_commit" : "normal_commit");
+        if (await repositories.audit.getEventGroup(groupId, { client })) {
+          return { status: "stale", reason: "wave_partially_committed", targetKey: task.targetKey };
+        }
+        let reduction;
+        if (entry.kind === "cursor_only") {
+          const nextState = structuredClone(workingState);
+          nextState.meta.revision += 1;
+          nextState.meta.targetCursors[task.targetKey] = task.targetMessageId;
+          reduction = { outcome: "committable", state: nextState, snapshot: structuredClone(nextState), events: [] };
+        } else {
+          const validation = validateCompiledProposal(entry.output, task);
+          if (!validation.ok) throw new Error("Prepared Memory wave contains an invalid compiled proposal");
+          reduction = reduceCompiledProposal({
+            state: workingState,
+            task,
+            proposal: entry.output,
+            now: task.now,
+            config,
+            idFactory,
+          });
+          if (reduction.outcome === "deferred") {
+            return {
+              status: "capacity_deferred",
+              targetKey: task.targetKey,
+              taskId: task.taskId,
+              capacityViolation: reduction.capacityViolation,
+            };
+          }
+        }
+        plans.push({ entry, taskRowValue, groupId, reduction });
+        workingState = reduction.state;
+      }
+
+      for (const plan of plans) {
+        const { entry, taskRowValue, groupId, reduction } = plan;
+        const { envelope } = entry;
+        const task = envelope.task;
+        const baseRevision = reduction.state.meta.revision - 1;
+        const stagePayload = structuredClone(rowValue(taskRowValue, "stage_payload", "stagePayload") || {});
+        if (entry.output) stagePayload.compiledProposal = structuredClone(entry.output);
+        if (entry.kind === "cursor_only") {
+          const attempt = numberValue(taskRowValue, "attempt", "attempt") + 1;
+          await appendOps(envelope, "unable_to_decide", attempt, { contextExpansionAttempt: 1, terminal: true, wave: true }, client);
+          await repositories.runtime.updateTask(task.taskId, {
+            status: "succeeded", stage: "unable_cursor_committed", stage_payload: stagePayload,
+            attempt, result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null,
+          }, { client });
+        } else {
+          await repositories.runtime.updateTask(task.taskId, {
+            status: "succeeded", stage: "committed", stage_payload: stagePayload,
+            result_revision: reduction.state.meta.revision, not_before: null, last_error_reason: null,
+          }, { client });
+        }
+        await repositories.audit.insertEventGroup({
+          event_group_id: groupId,
+          user_id: task.userId,
+          preset_id: task.presetId,
+          task_id: task.taskId,
+          target_key: task.targetKey,
+          source_generation: task.sourceGeneration,
+          schema_version: task.schemaVersion,
+          base_revision: baseRevision,
+          result_revision: reduction.state.meta.revision,
+          cursor_before: task.cursorBefore,
+          cursor_after: task.targetMessageId,
+          group_kind: "proposal",
+        }, { client });
+        if (reduction.events.length) {
+          await repositories.audit.insertEvents(
+            reduction.events.map((event, index) => mapEventToRow(event, envelope, groupId, index)),
+            { client },
+          );
+        }
+        await repositories.audit.insertSnapshot(task.userId, task.presetId, {
+          sourceGeneration: reduction.state.meta.sourceGeneration,
+          revision: reduction.state.meta.revision,
+          schemaVersion: task.schemaVersion,
+          state: reduction.snapshot,
+        }, { client });
+      }
+      await repositories.state.writeState(firstTask.userId, firstTask.presetId, workingState, { client });
+      for (const plan of plans) await recordSuccessfulTarget(repositories, plan.entry.envelope, client);
+      return {
+        status: "committed",
+        revision: workingState.meta.revision,
+        results: plans.map((plan) => ({
+          status: "committed",
+          taskId: plan.entry.envelope.task.taskId,
+          targetKey: plan.entry.envelope.task.targetKey,
+          revision: plan.reduction.state.meta.revision,
+          cursorOnly: plan.entry.kind === "cursor_only",
+          events: plan.reduction.events,
+        })),
+      };
+      });
+    } catch (error) {
+      if (!error?.commitOutcomeUnknown) throw error;
+      const existingGroups = await Promise.all(entries.map((entry) => repositories.audit.getEventGroup(
+        phaseId(entry.envelope.task.taskId, entry.kind === "cursor_only" ? "unable_cursor_commit" : "normal_commit"),
+      )));
+      const committedGroups = existingGroups.filter(Boolean);
+      if (committedGroups.length === entries.length) {
+        result = {
+          status: "committed",
+          revision: Math.max(...committedGroups.map((group) => Number(rowValue(group, "result_revision", "resultRevision")))),
+          reconciledCommitOutcome: true,
+          results: entries.map((entry, index) => ({
+            status: "committed",
+            taskId: entry.envelope.task.taskId,
+            targetKey: entry.envelope.task.targetKey,
+            revision: Number(rowValue(existingGroups[index], "result_revision", "resultRevision")),
+            cursorOnly: entry.kind === "cursor_only",
+            duplicate: true,
+            reconciledCommitOutcome: true,
+          })),
+        };
+      } else if (committedGroups.length === 0) {
+        return commitPreparedWave(entries);
+      } else {
+        const invariant = new Error("Prepared Memory wave has a partial durable commit");
+        invariant.code = "MEMORY_WAVE_PARTIAL_COMMIT";
+        invariant.cause = error;
+        throw invariant;
+      }
+    }
+    if (result.status === "committed") {
+      for (const entry of entries) {
+        metrics?.increment("memory_task_outcomes_total", {
+          targetKey: entry.envelope.task.targetKey,
+          status: "committed",
+          mode: entry.envelope.task.mode,
+        });
+      }
+    }
+    return result;
+  }
+
+  async function deferPreparedWaveCapacity(preparedEntry) {
+    if (preparedEntry?.status !== "prepared" || preparedEntry.kind !== "proposal"
+      || !isSemanticTaskEnvelope(preparedEntry.envelope)) {
+      throw new Error("Capacity preparation requires one prepared proposal wave member");
+    }
+    const { envelope, output } = preparedEntry;
+    return repositories.withTransaction(async (client) => {
+      const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
+      if (!state || state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
+      if (state.meta.revision !== envelope.task.baseRevision) return { status: "stale", reason: "revision_mismatch" };
+      if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== envelope.task.cursorBefore) return { status: "stale", reason: "cursor_mismatch" };
+      const reduction = reduceCompiledProposal({
+        state,
+        task: envelope.task,
+        proposal: output,
+        now: envelope.task.now,
+        config,
+        idFactory,
+      });
+      if (reduction.outcome !== "deferred") return { status: "capacity_resolved" };
+      return capacity.deferNormal({ parentEnvelope: envelope, state, proposal: output, reduction, client });
+    });
+  }
+
+  async function resolvePreparedWaveCapacity(parentEnvelope) {
+    const parent = await repositories.runtime.getTask(parentEnvelope.task.taskId);
+    const payload = rowValue(parent, "stage_payload", "stagePayload") || {};
+    if (!payload.maintenanceTaskId) throw new Error("Capacity-blocked rebuild task has no maintenance child");
+    const child = await repositories.runtime.getTask(payload.maintenanceTaskId);
+    const childEnvelope = rowValue(child, "task_payload", "taskPayload");
+    if (!childEnvelope?.task) throw new Error("Capacity maintenance child has no immutable payload");
+    return capacity.processMaintenanceEnvelope(childEnvelope, { advanceParentAfterCompaction: false });
+  }
+
+  async function cancelPreparedWave(envelopes, reason = "wave_baseline_changed") {
+    if (!Array.isArray(envelopes) || !envelopes.length) return [];
+    return repositories.withTransaction(async (client) => {
+      const cancelled = [];
+      for (const envelope of envelopes) {
+        const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+        if (task && !TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) {
+          await repositories.runtime.updateTask(envelope.task.taskId, {
+            status: "cancelled",
+            stage: "stale",
+            not_before: null,
+            last_error_reason: reason,
+          }, { client });
+          cancelled.push(envelope.task.taskId);
+        }
+        const target = await repositories.runtime.getTargetStatus(
+          envelope.task.userId,
+          envelope.task.presetId,
+          envelope.task.targetKey,
+          { client, forUpdate: true },
+        );
+        if (Number(rowValue(target, "source_generation", "sourceGeneration")) === envelope.task.sourceGeneration) {
+          await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
+            targetKey: envelope.task.targetKey,
+            sourceGeneration: envelope.task.sourceGeneration,
+            rebuildBoundaryMessageId: Number(rowValue(target, "rebuild_boundary_message_id", "rebuildBoundaryMessageId")),
+            status: "rebuilding",
+            consecutiveErrors: 0,
+            lastErrorReason: null,
+            lastTaskId: envelope.task.taskId,
+            nextRetryAt: null,
+          }, { client });
+        }
+      }
+      return cancelled;
+    });
+  }
+
+  async function processEnvelope(envelope, { deferCommit = false } = {}) {
     if (!isSemanticTaskEnvelope(envelope)) {
       const error = new Error("Memory 2.01 cannot execute a legacy task payload");
       error.code = "MEMORY_V201_CUTOVER_REQUIRED";
       throw error;
     }
-    if (envelope.task.mode === "maintenance") return capacity.processMaintenanceEnvelope(envelope);
+    if (envelope.task.mode === "maintenance") {
+      if (deferCommit) throw new Error("Maintenance tasks cannot be prepared as a normal Memory wave member");
+      return capacity.processMaintenanceEnvelope(envelope);
+    }
     const persistedTask = repositories.runtime.getTask ? await repositories.runtime.getTask(envelope.task.taskId) : null;
     if (persistedTask && String(rowValue(persistedTask, "schema_version", "schemaVersion")) !== SCHEMA_VERSION) {
       const error = new Error("Memory durable task schema is not 2.01");
@@ -686,7 +971,10 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const status = rowValue(persistedTask, "status", "status");
       return { status: status === "succeeded" ? "committed" : status, taskId: envelope.task.taskId, revision: Number(rowValue(persistedTask, "result_revision", "resultRevision")) || null, duplicate: true };
     }
-    if (["capacity_blocked", "replaying_original_proposal"].includes(rowValue(persistedTask, "stage", "stage"))) return capacity.resumeParent(envelope);
+    if (["capacity_blocked", "replaying_original_proposal"].includes(rowValue(persistedTask, "stage", "stage"))) {
+      if (deferCommit) return { status: "incomplete", reason: "capacity_recovery_required", taskId: envelope.task.taskId };
+      return capacity.resumeParent(envelope);
+    }
     const group = await repositories.audit.getEventGroup(phaseId(envelope.task.taskId))
       ?? await repositories.audit.getEventGroup(phaseId(envelope.task.taskId, "unable_cursor_commit"));
     if (group) return { status: "committed", taskId: envelope.task.taskId, revision: Number(group.result_revision), duplicate: true };
@@ -695,8 +983,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     const semanticStages = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "transaction_failed", "commit_outcome_unknown"];
     const durableSemanticResult = semanticStages.includes(stage) ? durablePayload.semanticResult : null;
     if (["unable_result_persisted", "context_expanding"].includes(stage)) {
-      const unable = await handleUnableToDecide(envelope);
+      const unable = await handleUnableToDecide(envelope, { deferCommit });
       if (unable.status === "successor_required") {
+        if (deferCommit) return { status: "stale", reason: "revision_mismatch", taskId: envelope.task.taskId };
         const successor = await createSuccessor(envelope);
         return processEnvelope(successor);
       }
@@ -712,8 +1001,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     const attemptEnvelope = await envelopeForInputVariant(envelope, persistedTask, inputVariant);
     if (durableSemanticResult && containsUnableToDecide(durableSemanticResult)) {
       await persistUnableResultWithRecovery(attemptEnvelope, durableSemanticResult);
-      const unable = await handleUnableToDecide(attemptEnvelope);
+      const unable = await handleUnableToDecide(attemptEnvelope, { deferCommit });
       if (unable.status === "successor_required") {
+        if (deferCommit) return { status: "stale", reason: "revision_mismatch", taskId: envelope.task.taskId };
         const successor = await createSuccessor(attemptEnvelope);
         return processEnvelope(successor);
       }
@@ -741,8 +1031,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       semanticResult = adapterResult.output;
       if (containsUnableToDecide(semanticResult)) {
         await persistUnableResultWithRecovery(attemptEnvelope, semanticResult);
-        const unable = await handleUnableToDecide(attemptEnvelope);
+        const unable = await handleUnableToDecide(attemptEnvelope, { deferCommit });
         if (unable.status === "successor_required") {
+          if (deferCommit) return { status: "stale", reason: "revision_mismatch", taskId: envelope.task.taskId };
           const successor = await createSuccessor(attemptEnvelope);
           return processEnvelope(successor);
         }
@@ -759,6 +1050,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         compiled = await recordCompileFailure(attemptEnvelope, error instanceof SemanticCompileError ? error : new SemanticCompileError("compile_invariant_failed", { message: String(error?.message || error).slice(0, 500) }));
       }
       if (compiled.status === "successor_required") {
+        if (deferCommit) return { status: "stale", reason: "revision_mismatch", taskId: envelope.task.taskId };
         const successor = await createSuccessor(attemptEnvelope);
         return processEnvelope(successor);
       }
@@ -766,6 +1058,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (compiled.status !== "compiled") return compiled;
       output = compiled.proposal;
     }
+    if (deferCommit) return { status: "prepared", kind: "proposal", envelope: attemptEnvelope, output };
     let result = await commitWithRecovery(attemptEnvelope, output);
     if (result.status === "successor_required") {
       const successor = await createSuccessor(attemptEnvelope);
@@ -783,13 +1076,33 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
   }
 
   async function processIntent(userId, presetId, intent) { return processEnvelope(await createTask(userId, presetId, intent)); }
+  async function prepareEnvelope(envelope) { return processEnvelope(envelope, { deferCommit: true }); }
   async function processScope(userId, presetId) {
     const observation = await observer.observe(userId, presetId);
     const results = [];
     for (const intent of observation.eligibleTasks) results.push(await processIntent(userId, presetId, intent));
     return results;
   }
-  return Object.freeze({ processScope, processIntent, processEnvelope, createTask, createSuccessor, commit, commitWithRecovery, persistSemanticResult, persistSemanticResultWithRecovery, persistUnableResult, persistUnableResultWithRecovery, recordAdapterError, capacity });
+  return Object.freeze({
+    processScope,
+    processIntent,
+    processEnvelope,
+    prepareEnvelope,
+    commitPreparedWave,
+    deferPreparedWaveCapacity,
+    resolvePreparedWaveCapacity,
+    cancelPreparedWave,
+    createTask,
+    createSuccessor,
+    commit,
+    commitWithRecovery,
+    persistSemanticResult,
+    persistSemanticResultWithRecovery,
+    persistUnableResult,
+    persistUnableResultWithRecovery,
+    recordAdapterError,
+    capacity,
+  });
 }
 
 module.exports = { createNormalWritePipeline, phaseId, taskRow, mapEvent: mapEventToRow };
