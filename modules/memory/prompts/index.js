@@ -6,7 +6,6 @@ const FILES = Object.freeze({
   todoProposer: "todo-proposer.md",
   agreementProposer: "agreement-proposer.md",
   episodeProposer: "episode-proposer.md",
-  profileRelationshipProposer: "profile-relationship-proposer.md",
   userProfileProposer: "user-profile-proposer.md",
   assistantProfileProposer: "assistant-profile-proposer.md",
   relationshipProposer: "relationship-proposer.md",

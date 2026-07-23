@@ -4,7 +4,7 @@
 
 ## 1. Prompt 管理
 
-运行时 prompt 继续位于 `modules/memory/prompts/*.md`，由统一 index 按 Proposer 加载：
+实际发送给模型的 prompt 位于 `modules/memory/prompts/*.md`，由统一 index 按 Proposer 加载：
 
 | Proposer | 文件 | target sections |
 | --- | --- | --- |
@@ -12,12 +12,13 @@
 | `todoProposer` | `todo-proposer.md` | `todos` |
 | `agreementProposer` | `agreement-proposer.md` | `standingAgreements` |
 | `episodeProposer` | `episode-proposer.md` | `recentEpisodes`, `milestones` |
-| `profileRelationshipProposer` | `profile-relationship-proposer.md` | 持久化 task/联合结果契约 |
 | `userProfileProposer` | `user-profile-proposer.md` | `userProfile`（task 内专家） |
 | `assistantProfileProposer` | `assistant-profile-proposer.md` | `assistantProfile`（task 内专家） |
 | `relationshipProposer` | `relationship-proposer.md` | `relationship`（task 内专家） |
 | `worldFactProposer` | `world-fact-proposer.md` | `worldFacts` |
 | `compactionProposer` | `compaction-proposer.md` | 单个 maintenance section |
+
+`profileRelationshipProposer` 只作为持久化 task、cursor、联合 schema 与提交身份存在，不注册或加载联合 prompt。Provider Adapter 将该 task 展开为表中的三个专用专家调用。
 
 Prompt 不写死在 service、Compiler 或 provider adapter 中。Prompt、Semantic Schema 和 Harness fixture 必须同步变化。
 
@@ -112,7 +113,7 @@ facet/canonicalKey/factBasis
 `profileRelationshipProposer` 是调度、cursor 与提交身份，不再用一次模型调用同时裁决三个 section。Provider Adapter 对同一 immutable artifact 展开三个专用调用；每个 prompt 与 structured schema 只拥有一个 section，三个结果通过本地 ref/source 契约后合并为原 proposer 的联合结果，再进入 Compiler/Reducer。三个专家均看到完整 observed window，不切块、不只看候选附近消息；模型覆盖配置默认继承 `profileRelationshipProposer`，也允许显式单独覆盖。
 
 - 两个 Profile 与 relationship 保存跨场景可复用、会改善未来回应或维持角色/关系连续的内容；不以条目数量为目标，也不把“遗忘后必须造成严重错误”作为准入门槛；
-- Proposer 在内部依次完成覆盖扫描、长期性分级、基线比较和完整性检查，但只输出 Schema 约束的终局，不输出分析过程；
+- 每个专家以候选准入条件和动作选择规则约束生成，只输出 Schema 约束的终局，不输出分析过程；
 - 覆盖维度是识别用 ontology，不是持久化字段：User 包括身份背景、项目能力、目标价值、兴趣偏好、边界、沟通方式和可观察互动倾向；Assistant 包括双方建立的身份、人格、价值、限制和稳定行为；Relationship 包括当前关系、称呼、信任亲密度、角色/权力结构、互动模式和共享边界；
 - item 只输出 text 与 sources，不持久化 facet/key/factBasis；移除 typed metadata 不等于移除语义扫描维度；
 - 明确且未来可复用的事实不要求出现“永远/以后/记住”；当前偏好或自我描述使用保守范围表达；多个独立片段才可归纳为可观察模式，且不得推断心理动机、诊断或敏感属性；

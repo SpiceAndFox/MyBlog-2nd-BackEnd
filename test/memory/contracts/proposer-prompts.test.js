@@ -7,7 +7,6 @@ const NORMAL_PROPOSERS = [
   "todoProposer",
   "agreementProposer",
   "episodeProposer",
-  "profileRelationshipProposer",
   "userProfileProposer",
   "assistantProfileProposer",
   "relationshipProposer",
@@ -18,6 +17,7 @@ const SEMANTIC_PROPOSERS = NORMAL_PROPOSERS;
 
 test("all registered Proposer prompts exist and load", async () => {
   assert.ok(Object.keys(FILES).length > 0);
+  assert.equal(FILES.profileRelationshipProposer, undefined, "the aggregate profile target must not register an unused combined prompt");
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
     assert.ok(prompt.trim().length > 0, `${proposer} prompt must not be empty`);
@@ -61,13 +61,13 @@ test("each normal Proposer treats payload text as data and documents its source 
   }
 });
 
-test("profile and agreement prompts keep writable refs out of support sources", async () => {
-  for (const proposer of ["profileRelationshipProposer", "agreementProposer"]) {
+test("profile specialists and agreement prompt keep writable refs out of support sources", async () => {
+  for (const proposer of ["userProfileProposer", "assistantProfileProposer", "relationshipProposer", "agreementProposer"]) {
     const prompt = await loadProposerPrompt(proposer);
     assert.match(prompt, /可修改.*绝不能放入 `supportRefs`/s);
     assert.match(prompt, /`add` 不引用可修改条目/);
-    assert.match(prompt, /`ref` 必须逐字复制实际显示的可修改短引用/);
-    assert.match(prompt, /没有可修改.*不能输出/s);
+    assert.match(prompt, /`ref` (?:必须|只能)逐字复制.*可修改/s);
+    assert.match(prompt, /没有可修改.*不能(?:使用|输出)/s);
   }
 });
 
@@ -77,6 +77,11 @@ test("profile specialists own one semantic section without an example bank", asy
     assistantProfileProposer: "assistantProfile",
     relationshipProposer: "relationship",
   };
+  const headingsByProposer = {
+    userProfileProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
+    assistantProfileProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
+    relationshipProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
+  };
   for (const [proposer, section] of Object.entries(specialists)) {
     const prompt = await loadProposerPrompt(proposer);
     assert.match(prompt, /只维护/);
@@ -84,15 +89,31 @@ test("profile specialists own one semantic section without an example bank", asy
     assert.match(prompt, new RegExp(`sectionResults.*只包含 .*${section}`, "s"));
     assert.match(prompt, /可修改引用绝不能放入 `supportRefs`/);
     assert.match(prompt, /没有可修改条目时不能使用/);
-    for (const heading of ["输出契约", "静默工作流", "内容范围", "提交前检查"]) {
+    for (const heading of headingsByProposer[proposer]) {
       assert.match(prompt, new RegExp(`## ${heading}`), `${proposer} must include ${heading}`);
     }
     assert.doesNotMatch(prompt, /## 判断示例|```/);
     assert.ok(prompt.length < 3200, `${proposer} should stay bounded, got ${prompt.length} characters`);
   }
-  assert.match(await loadProposerPrompt("userProfileProposer"), /回复语言、语气、长度、结构、主动性、追问和幽默/);
-  assert.match(await loadProposerPrompt("assistantProfileProposer"), /用户希望怎样被回应通常是 `userProfile` 或 standingAgreements/);
-  assert.match(await loadProposerPrompt("relationshipProposer"), /过去阶段—关键转折—当前模式/);
+  const userPrompt = await loadProposerPrompt("userProfileProposer");
+  assert.match(userPrompt, /只有同时满足以下条件才生成候选/);
+  assert.match(userPrompt, /简短、原子化、可独立理解的短句/);
+  assert.match(userPrompt, /回复语言、语气、长度、结构、主动性、追问、幽默/);
+  assert.match(userPrompt, /单条明确自述或直接要求可以准入/);
+  assert.match(userPrompt, /替代真相、明确否认或新的长期边界.*不能只 `forget`/s);
+  assert.doesNotMatch(userPrompt, /assistantProfile|standingAgreements|relationship|## 提交前检查/);
+  const assistantPrompt = await loadProposerPrompt("assistantProfileProposer");
+  assert.match(assistantPrompt, /只有同时满足以下条件才生成候选/);
+  assert.match(assistantPrompt, /简短、原子化、可独立理解的短句/);
+  assert.match(assistantPrompt, /用户希望得到的回复方式.*不是 Assistant 自身档案/s);
+  assert.doesNotMatch(assistantPrompt, /userProfile|standingAgreements|relationship|## 提交前检查/);
+  const relationshipPrompt = await loadProposerPrompt("relationshipProposer");
+  assert.match(relationshipPrompt, /只有同时满足以下条件才生成候选/);
+  assert.match(relationshipPrompt, /简短、原子化、可独立理解的短句/);
+  assert.match(relationshipPrompt, /一次明确建立、否认、结束或重定义可以准入/);
+  assert.match(relationshipPrompt, /过去阶段—关键转折—当前模式/);
+  assert.match(relationshipPrompt, /玩笑、旧称呼、回忆或短暂重现不会自动恢复旧关系/);
+  assert.doesNotMatch(relationshipPrompt, /userProfile|assistantProfile|standingAgreements|## 提交前检查/);
 });
 
 test("todo prompt covers overdue visibility and rescheduling", async () => {
@@ -114,11 +135,19 @@ test("todo prompt covers overdue visibility and rescheduling", async () => {
 
 test("agreement prompt distinguishes durable commitments and cancels context-dependent rules", async () => {
   const prompt = await loadProposerPrompt("agreementProposer");
+  for (const heading of ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"]) {
+    assert.match(prompt, new RegExp(`## ${heading}`), `agreementProposer must include ${heading}`);
+  }
+  assert.match(prompt, /只有同时满足以下条件才生成候选/);
+  assert.match(prompt, /简短、原子化、可独立理解的规则短句/);
   assert.match(prompt, /明确承诺语义.*长期承诺|长期承诺.*明确承诺语义/s);
   assert.match(prompt, /单纯抒情|情绪化宣誓/);
   assert.match(prompt, /结束某个关系、角色、角色扮演或互动模式.*扫描全部可修改约定.*cancel/s);
   assert.match(prompt, /只取消依赖关系明确.*不波及.*独立成立/s);
   assert.match(prompt, /覆盖所有明确依赖.*不能在找到第一个 cancel 后停止/s);
+  assert.match(prompt, /已终止的约定不写成带时间痕迹.*使用 `cancel`/s);
+  assert.match(prompt, /“我喜欢简洁回答”.*“以后请先给结论”/s);
+  assert.doesNotMatch(prompt, /userProfile|assistantProfile|relationship|Episode|Milestone|RAG|提交前/);
 });
 
 test("episode prompt clusters coherent interaction arcs instead of producing a turn log", async () => {
@@ -131,35 +160,6 @@ test("episode prompt clusters coherent interaction arcs instead of producing a t
   assert.match(prompt, /不默认双写/);
   assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
   assert.match(prompt, /不要只给旧 milestone 追加免责声明.*correct.*当前意义.*forget/s);
-});
-
-test("profile prompt performs compact coverage-first semantic calibration", async () => {
-  const prompt = await loadProposerPrompt("profileRelationshipProposer");
-  assert.match(prompt, /静默语义扫描/);
-  assert.match(prompt, /分别检查三个 section.*全部可见消息.*任何一个 section.*不能替代.*不只看最后一条.*记住\/以后/s);
-  assert.match(prompt, /身份与称呼.*背景与所在地.*工作\/项目\/能力.*长期目标与价值.*沟通语言\/语气\/长度\/格式\/主动性\/追问\/幽默偏好/s);
-  assert.match(prompt, /用户希望怎样被回应通常属于 userProfile 或 standingAgreements/);
-  assert.match(prompt, /不要求包含.*永远、以后、记住/s);
-  assert.match(prompt, /用户对未来回复方式的直接要求、反复纠正和明确身份事实优先于.*角色历史/s);
-  assert.match(prompt, /当前偏好或自我描述.*不夸大的范围和条件/s);
-  assert.match(prompt, /多个独立片段.*可观察的互动倾向.*不推断心理动机、诊断或敏感属性/s);
-  assert.match(prompt, /明确说明\/否认.*优先决定当前含义/s);
-  assert.match(prompt, /玩笑、称呼、回忆或短暂重现.*不会自动恢复旧状态/s);
-  assert.match(prompt, /结束某个身份、关系、角色扮演或互动模式.*检查依赖.*条目/s);
-  assert.match(prompt, /过去阶段、伪装\/误解、真相揭示或关系转变.*解释当前状态.*共同经历连续性.*避免未来误读/s);
-  assert.match(prompt, /明确区分.*当时\/曾经.*当前/s);
-  assert.match(prompt, /过去阶段.*当前状态.*一个演化事实/s);
-  assert.match(prompt, /确曾成立.*关系身份\/结构.*不得仅因已结束而 forget.*必须 update\/correct.*带时态的演化事实/s);
-  assert.match(prompt, /不要保留未标明时态的自我抵消描述/s);
-  assert.match(prompt, /不把互不相关的事实塞进同一 text/);
-  assert.match(prompt, /已有条目表达相同事实或已包含候选时禁止 add/);
-  assert.match(prompt, /项目或测试.*抽象掉本轮阶段、操作步骤和触发频率/s);
-  assert.match(prompt, /虚构身世、能力或职位不能写成 Assistant (?:的)?现实履历/);
-  assert.match(prompt, /用户已拒绝或要求改掉的 Assistant 行为不是当前人格/);
-  assert.match(prompt, /历史演化只保留过去阶段、转折与当前模式.*不列场景名、任务清单、协议条款、消息编号或系统诊断/s);
-  assert.match(prompt, /不(?:要)?生成.*facet.*canonicalKey.*factBasis/s);
-  assert.doesNotMatch(prompt, /## 判断示例|```/, "semantic coverage must not grow through an embedded example bank");
-  assert.ok(prompt.length < 3000, `profile prompt should stay compact, got ${prompt.length} characters`);
 });
 
 test("current state prompt rejects clock inference and figurative scene reactivation", async () => {
