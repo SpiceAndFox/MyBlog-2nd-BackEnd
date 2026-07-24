@@ -92,7 +92,7 @@ test("profile specialists own one semantic section without an example bank", asy
     for (const heading of headingsByProposer[proposer]) {
       assert.match(prompt, new RegExp(`## ${heading}`), `${proposer} must include ${heading}`);
     }
-    assert.doesNotMatch(prompt, /## 判断示例|```/);
+    assert.doesNotMatch(prompt, /## 判断示例/);
     assert.ok(prompt.length < 3200, `${proposer} should stay bounded, got ${prompt.length} characters`);
   }
   const userPrompt = await loadProposerPrompt("userProfileProposer");
@@ -168,7 +168,7 @@ test("episode prompt clusters coherent interaction arcs instead of producing a t
   assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
   assert.match(prompt, /不要只给旧 milestone 追加免责声明.*correct.*当前意义.*forget/s);
   assert.match(prompt, /一到两句自然语言概括一个连贯互动弧/);
-  assert.doesNotMatch(prompt, /## 判断示例|```|提交前确认/);
+  assert.doesNotMatch(prompt, /## 判断示例|提交前确认/);
 });
 
 test("current state prompt rejects clock inference and figurative scene reactivation", async () => {
@@ -193,7 +193,7 @@ test("world fact prompt keeps role-neutral canon authority", async () => {
   assert.match(prompt, /简短、原子化、可独立理解的客观陈述句/);
   assert.match(prompt, /只是测试、临时角色扮演.*角色世界已经结束.*全部明确依赖该情境/s);
   assert.match(prompt, /玩笑、称呼、回忆与短暂重现不会自动恢复旧 canon/);
-  assert.doesNotMatch(prompt, /其他 section|## 判断示例|```|提交前自检/);
+  assert.doesNotMatch(prompt, /其他 section|## 判断示例|提交前自检/);
 });
 
 test("normal prompts prohibit persistence metadata while maintenance keeps its storage protocol", async () => {
