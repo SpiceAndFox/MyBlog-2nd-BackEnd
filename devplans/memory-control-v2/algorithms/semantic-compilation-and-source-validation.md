@@ -46,7 +46,7 @@ Stale/successor 优先于 compile failure，避免把合法并发变化错误记
 - compaction merge 不带 direct/support sources；
 - relative Todo date 必须有 direct anchorMessageId。
 
-Provider 输出边界 schema error 可使用已有一次 repair；耗尽后为 `semantic_schema_invalid`。
+Provider 输出边界 schema error 可使用 repair（次数由 `CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX` 配置）；耗尽后为 `semantic_schema_invalid`。
 
 ## 4. Target Ref Resolution
 

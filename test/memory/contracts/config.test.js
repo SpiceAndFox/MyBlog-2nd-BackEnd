@@ -112,23 +112,21 @@ test("provider config supports validated per-proposer model overrides with a def
   assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
 });
 
-test("DeepSeek provider config requires thinking to be explicitly disabled", () => {
+test("DeepSeek provider config passes thinking mode through", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "deepseek-strict-tools";
   env.CHAT_MEMORY_V2_PROVIDER_BASE_URL = "https://api.deepseek.com/beta";
   assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_THINKING_MODE/);
   env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "disabled";
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "disabled");
-  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "sometimes";
-  assert.throws(() => loadMemoryProviderConfig(env), /must be disabled/);
-  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "enabled";
-  assert.throws(() => loadMemoryProviderConfig(env), /must be disabled/);
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "ENABLED";
+  assert.equal(loadMemoryProviderConfig(env).thinkingMode, "enabled");
 });
 
-test("schema-invalid retry is strictly bounded to at most one", () => {
+test("schema-invalid retry budget is configurable", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX = "2";
-  assert.throws(() => loadMemoryV2Config(env), /must be 0 or 1/);
+  assert.equal(loadMemoryV2Config(env).providerRecovery.schemaInvalidRetryMax, 2);
 });
 
 test("v2-off is rejected as a production or rollback mode", () => {

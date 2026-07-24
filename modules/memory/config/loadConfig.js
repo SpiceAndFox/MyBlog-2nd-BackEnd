@@ -42,7 +42,6 @@ function loadMemoryV2Config(env = {}) {
   }
   const retryMax = requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_RETRY_MAX");
   const schemaInvalidRetryMax = requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX");
-  if (schemaInvalidRetryMax > 1) throw new Error("CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX must be 0 or 1");
   const haltAfterConsecutiveErrors = requiredInt(env, "CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS", { min: 1 });
   if (retryMax >= haltAfterConsecutiveErrors) throw new Error("CHAT_MEMORY_V2_PROVIDER_RETRY_MAX must be less than CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS");
   const hygieneHighWatermarkPercent = requiredInt(env, "CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT", { min: 1 });

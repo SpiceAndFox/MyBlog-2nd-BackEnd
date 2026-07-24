@@ -312,7 +312,7 @@ supportRef
 
 ### 6.1 失败分类
 
-- `semantic_schema_invalid`：Semantic IR 不符合领域 schema；属于 Provider 输出边界错误，可使用现有一次 schema repair。
+- `semantic_schema_invalid`：Semantic IR 不符合领域 schema；属于 Provider 输出边界错误，可使用 schema repair（次数由 `CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX` 配置）。
 - `ref_resolution_failed`：目标或 support ref 无法解析；确定性失败，不盲重试。
 - `source_validation_failed`：source 不存在、scope/hash/metadata 不一致；确定性失败。
 - `date_anchor_invalid`：relative/dayOfMonth date 缺少合法直接 anchor，或日期无法确定性解析；确定性失败。

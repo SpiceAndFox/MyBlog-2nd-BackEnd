@@ -83,11 +83,7 @@ function loadMemoryProviderConfig(env = {}) {
     maxOutputTokens: optionalInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS", 8192, { min: 1 }),
   };
   if (adapter === "deepseek-strict-tools") {
-    const thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
-    if (thinkingMode !== "disabled") {
-      throw new Error("Env CHAT_MEMORY_V2_PROVIDER_THINKING_MODE must be disabled for Memory proposers");
-    }
-    config.thinkingMode = thinkingMode;
+    config.thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
   }
   return Object.freeze(config);
 }
