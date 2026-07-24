@@ -11,7 +11,7 @@ function parseArgs(argv) {
       throw new Error(`Invalid argument: ${argument}`);
     }
     const key = argument.slice(2);
-    if (!["userId", "presetId"].includes(key)) throw new Error(`Unknown argument: ${argument}`);
+    if (!["userId", "presetId", "mode"].includes(key)) throw new Error(`Unknown argument: ${argument}`);
     if (Object.prototype.hasOwnProperty.call(values, key)) throw new Error(`Duplicate argument: ${argument}`);
     values[key] = String(argv[index + 1]);
     index += 1;
@@ -26,16 +26,21 @@ function resolveOptions(values) {
   if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) {
     throw new Error("--userId must be a positive integer and --presetId cannot be empty");
   }
-  return { help: false, userId, presetId };
+  const mode = String(values.mode ?? "fresh").trim();
+  if (!["fresh", "resume"].includes(mode)) throw new Error("--mode must be fresh or resume");
+  return { help: false, userId, presetId, mode };
 }
 
 function printUsage(stream = process.stdout) {
   stream.write([
     "Usage:",
-    "  npm run rebuild:memory-v2 -- --userId <id> --presetId <id>",
+    "  npm run rebuild:memory-v2 -- --userId <id> --presetId <id> [--mode fresh|resume]",
     "",
     "Rebuilds only the selected Memory v2 scope, waits for all targets and its RAG projection, then verifies the result.",
     "This command writes Memory authority/projection data and invokes the configured Memory provider.",
+    "",
+    "--mode fresh（默认）开启新 generation，从头处理全部消息。",
+    "--mode resume 在存在可恢复的 generation 时接着上次进度，否则回退为从头开始。",
     "",
   ].join("\n"));
 }
@@ -55,7 +60,7 @@ function createScopedMigration({ database, config, logger, chatLlm, chatRagProje
   });
 }
 
-async function rebuildScope({ db, migration, userId, presetId }) {
+async function rebuildScope({ db, migration, userId, presetId, mode = "fresh" }) {
   const { rows } = await db.query(`
     SELECT 1
     FROM chat_prompt_presets
@@ -66,7 +71,7 @@ async function rebuildScope({ db, migration, userId, presetId }) {
   const scope = { userId, presetId };
   const inventory = await migration.inventory([scope]);
   if (inventory.length !== 1) throw new Error(`Memory scope inventory failed: userId=${userId}, presetId=${presetId}`);
-  const result = await migration.rebuildScope(scope, inventory[0], { forceNewGeneration: true });
+  const result = await migration.rebuildScope(scope, inventory[0], { forceNewGeneration: mode !== "resume" });
   return { status: "completed", ...result };
 }
 

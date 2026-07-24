@@ -11,7 +11,15 @@ test("scoped Memory v2 rebuild CLI requires exactly one user and preset scope", 
     help: false,
     userId: 1,
     presetId: "Alice",
+    mode: "fresh",
   });
+  assert.deepEqual(resolveOptions(parseArgs(["--userId", "1", "--presetId", "Alice", "--mode", "resume"])), {
+    help: false,
+    userId: 1,
+    presetId: "Alice",
+    mode: "resume",
+  });
+  assert.throws(() => resolveOptions(parseArgs(["--userId", "1", "--presetId", "Alice", "--mode", "sideways"])), /--mode must be fresh or resume/);
   assert.throws(() => resolveOptions(parseArgs(["--userId", "1"])), /presetId cannot be empty/);
   assert.throws(() => resolveOptions(parseArgs(["--userId", "0", "--presetId", "Alice"])), /positive integer/);
   assert.throws(() => parseArgs(["--user", "1", "--presetId", "Alice"]), /Unknown argument/);
@@ -67,4 +75,16 @@ test("scoped rebuild refuses a missing or deleted preset before inventory", asyn
     presetId: "missing",
   }), /Active preset not found/);
   assert.equal(inventoryCalled, false);
+});
+
+test("scoped rebuild mode resume asks the migration to continue the previous generation", async () => {
+  const calls = [];
+  const history = { userId: 1, presetId: "Alice", messageCount: 42, boundaryMessageId: 1155 };
+  const db = { async query() { return { rows: [{ exists: 1 }] }; } };
+  const migration = {
+    async inventory() { return [history]; },
+    async rebuildScope(scope, selectedHistory, options) { calls.push(options); return { ...scope }; },
+  };
+  await rebuildScope({ db, migration, userId: 1, presetId: "Alice", mode: "resume" });
+  assert.deepEqual(calls, [{ forceNewGeneration: false }]);
 });

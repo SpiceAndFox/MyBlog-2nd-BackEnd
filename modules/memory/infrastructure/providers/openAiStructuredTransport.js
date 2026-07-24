@@ -8,7 +8,7 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
-function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {}, extraBody = {}, compileSchema = (schema) => schema } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
@@ -33,7 +33,8 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
             { role: "system", content: systemPrompt },
             { role: "user", content: JSON.stringify(userPayload) },
           ],
-          response_format: { type: "json_schema", json_schema: responseSchema },
+          response_format: { type: "json_schema", json_schema: compileSchema(responseSchema) },
+          ...(typeof extraBody === "function" ? extraBody({ proposer, model: requestedModel }) : extraBody),
         }),
         signal: controller.signal,
       });

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadMemoryV2Config } = require("../../../modules/memory/config/loadConfig");
-const { loadMemoryProviderConfig, resolveMemoryProviderModel } = require("../../../modules/memory/config/loadProviderConfig");
+const { loadMemoryProviderConfig, resolveMemoryProviderModel, resolveMemoryProviderReasoningEffort } = require("../../../modules/memory/config/loadProviderConfig");
 
 test("v2 config is inert while feature is disabled", () => assert.deepEqual(loadMemoryV2Config({}), { enabled: false }));
 test("v2 config fails explicitly when enabled configuration is incomplete", () => {
@@ -65,8 +65,8 @@ test("v2 config requires an explicit structured-output adapter", () => {
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "prompt-and-parse";
   assert.throws(() => loadMemoryV2Config(env), /PROVIDER_ADAPTER must be one of/);
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "openai-json-schema";
-  env.CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS = "999999";
-  assert.throws(() => loadMemoryV2Config(env), /1000000/);
+  env.CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS = "99999";
+  assert.throws(() => loadMemoryV2Config(env), /100000/);
 });
 
 test("provider config is independently loadable and never falls back to chat provider env", () => {
@@ -110,6 +110,70 @@ test("provider config supports validated per-proposer model overrides with a def
   assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
   env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: 42 });
   assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
+});
+
+test("provider config accepts the OpenCode Go adapter without thinking mode env", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "none";
+  const provider = loadMemoryProviderConfig(env);
+  assert.equal(provider.adapter, "opencode-go-json-schema");
+  assert.equal(provider.reasoningEffort, "none");
+  assert.equal(provider.thinkingMode, undefined);
+});
+
+test("OpenCode Go provider config requires an explicit reasoning effort", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
+  assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_REASONING_EFFORT must be one of/);
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "turbo";
+  assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_REASONING_EFFORT must be one of/);
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "NONE";
+  assert.equal(loadMemoryProviderConfig(env).reasoningEffort, "none");
+});
+
+test("provider config supports per-proposer model and reasoning effort overrides", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "none";
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({
+    profileRelationshipProposer: { model: "deepseek-v4-pro", reasoningEffort: "high" },
+    todoProposer: { reasoningEffort: "low" },
+    episodeProposer: "hy3",
+  });
+  const provider = loadMemoryProviderConfig(env);
+  assert.deepEqual(provider.proposerModels, {
+    profileRelationshipProposer: { model: "deepseek-v4-pro", reasoningEffort: "high" },
+    todoProposer: { reasoningEffort: "low" },
+    episodeProposer: "hy3",
+  });
+  assert.equal(resolveMemoryProviderModel(provider, "episodeProposer"), "hy3");
+  assert.equal(resolveMemoryProviderModel(provider, "todoProposer"), "structured-model");
+  assert.equal(resolveMemoryProviderModel(provider, "relationshipProposer"), "deepseek-v4-pro");
+  assert.equal(resolveMemoryProviderReasoningEffort(provider, "todoProposer"), "low");
+  assert.equal(resolveMemoryProviderReasoningEffort(provider, "episodeProposer"), "none");
+  assert.equal(resolveMemoryProviderReasoningEffort(provider, "relationshipProposer"), "high");
+  assert.equal(resolveMemoryProviderReasoningEffort(provider, "userProfileProposer"), "high");
+});
+
+test("per-proposer override validation rejects malformed entries", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "none";
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: { model: "hy3", bogus: 1 } });
+  assert.throws(() => loadMemoryProviderConfig(env), /unsupported key/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: { reasoningEffort: "turbo" } });
+  assert.throws(() => loadMemoryProviderConfig(env), /must be one of/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: { model: "  " } });
+  assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: {} });
+  assert.throws(() => loadMemoryProviderConfig(env), /must override/);
+});
+
+test("reasoning effort overrides require the OpenCode Go adapter", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ todoProposer: { reasoningEffort: "none" } });
+  assert.throws(() => loadMemoryProviderConfig(env), /requires the opencode-go-json-schema adapter/);
 });
 
 test("DeepSeek provider config passes thinking mode through", () => {

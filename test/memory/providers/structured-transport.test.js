@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { parseToolArguments } = require("../../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
+const { compileOpencodeGoSchema } = require("../../../modules/memory/infrastructure/providers/opencodeGoSchemaCompiler");
 const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
 
 test("DeepSeek tool argument parser only repairs excess trailing closing braces", () => {
@@ -111,4 +112,106 @@ test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {
   assert.throws(() => createStructuredTransport({
     adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,
   }), /api\.deepseek\.com\/beta/);
+});
+
+test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables reasoning", async () => {
+  let request;
+  const invoke = createStructuredTransport({
+    adapter: "opencode-go-json-schema",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "hy3",
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return {
+        ok: true,
+        json: async () => ({
+          model: "hy3",
+          choices: [{ finish_reason: "stop", message: { content: '{"ok":true}' } }],
+        }),
+      };
+    },
+  });
+  const result = await invoke({
+    proposer: "todoProposer",
+    systemPrompt: "prompt",
+    userPayload: { value: 1 },
+    responseSchema: {
+      name: "probe",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ids"],
+        properties: { ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "integer" } } },
+      },
+    },
+  });
+  assert.equal(request.url, "https://opencode.test/v1/chat/completions");
+  assert.equal(request.body.reasoning_effort, "none");
+  assert.equal(request.body.max_tokens, 1024);
+  const jsonSchema = request.body.response_format.json_schema;
+  assert.equal(jsonSchema.strict, true);
+  assert.deepEqual(jsonSchema.schema.properties.ids, {
+    type: "array",
+    minItems: 1,
+    description: "Array items must be unique.",
+    items: { type: "integer" },
+  });
+  assert.deepEqual(result.output, { ok: true });
+  assert.equal(result.model, "hy3");
+});
+
+test("OpenCode Go schema compiler strips nested uniqueItems without touching supported keywords", () => {
+  const compiled = compileOpencodeGoSchema({
+    type: "object",
+    properties: {
+      changes: {
+        oneOf: [
+          { type: "object", properties: { refs: { type: "array", uniqueItems: true, minItems: 2, items: { type: "string", minLength: 1 } } } },
+          { type: "object", properties: { tags: { type: "array", uniqueItems: false, items: { type: "string" } } } },
+        ],
+      },
+    },
+  });
+  const [refsBranch, tagsBranch] = compiled.properties.changes.oneOf;
+  assert.deepEqual(refsBranch.properties.refs, {
+    type: "array",
+    minItems: 2,
+    description: "Array items must be unique.",
+    items: { type: "string", minLength: 1 },
+  });
+  assert.deepEqual(tagsBranch.properties.tags, { type: "array", items: { type: "string" } });
+});
+
+test("OpenCode Go adapter routes model and reasoning effort by proposer with profile inheritance", async () => {
+  const requests = [];
+  const invoke = createStructuredTransport({
+    adapter: "opencode-go-json-schema",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "hy3",
+    reasoningEffort: "none",
+    proposerModels: {
+      profileRelationshipProposer: { model: "deepseek-v4-pro", reasoningEffort: "high" },
+      todoProposer: { reasoningEffort: "low" },
+    },
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+  }, {
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      requests.push([request.model, request.reasoning_effort]);
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: "stop", message: { content: "{}" } }] }) };
+    },
+  });
+  const request = { systemPrompt: "prompt", userPayload: {}, responseSchema: { name: "x", schema: {} } };
+  await invoke({ ...request, proposer: "todoProposer" });
+  await invoke({ ...request, proposer: "relationshipProposer" });
+  await invoke({ ...request, proposer: "episodeProposer" });
+  assert.deepEqual(requests, [["hy3", "low"], ["deepseek-v4-pro", "high"], ["hy3", "none"]]);
 });
