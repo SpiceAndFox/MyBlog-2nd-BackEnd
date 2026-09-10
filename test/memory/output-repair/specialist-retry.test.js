@@ -48,7 +48,8 @@ test("Profile repair retries only the failed specialist and merges cached valid 
     "assistantProfile",
     "relationship",
   ]);
-  assert.match(calls[3].systemPrompt, new RegExp(`Unicode 字符数不得超过 ${envelope.task.writeLimits.relationship.maxItemChars}`));
+  assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
+  assert.match(calls[3].repairContext.userMessage, new RegExp(`Unicode 字符数不得超过 ${envelope.task.writeLimits.relationship.maxItemChars}`));
   assert.equal(
     calls[3].responseSchema.schema.properties.changes.items.properties.section.enum[0],
     "relationship",
@@ -57,7 +58,7 @@ test("Profile repair retries only the failed specialist and merges cached valid 
     calls[3].responseSchema.schema.properties.sectionStatuses.required,
     ["relationship"],
   );
-  assert.doesNotMatch(calls[3].systemPrompt, /"userProfile"|"assistantProfile"/);
+  assert.doesNotMatch(calls[3].repairContext.userMessage, /"userProfile"|"assistantProfile"/);
 });
 
 test("Profile interrupted JSON repair tells only the failed specialist to shorten sources", async () => {
@@ -104,7 +105,8 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
   assert.equal(first.reason, "output_schema_invalid");
   assert.equal(first.detail.specialist, "relationshipProposer");
   assert.equal(first.detail.transportError, "content_incomplete_json");
-  assert.equal(first.rejectedOutput, truncated);
+  assert.equal(first.rejectedOutput.specialistOutputs.relationshipProposer.output, truncated);
+  assert.equal(first.rejectedOutputKind, "specialist_bundle");
 
   const feedback = createRepairFeedback(first.detail, 1, envelope.task);
   const second = await adapter.propose(envelope, {
@@ -118,7 +120,7 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
   assert.equal(calls[3].proposer, "relationshipProposer");
   assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
   assert.equal(Object.hasOwn(calls[3].repairContext, "assistantOutput"), false);
-  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V8\]/);
+  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V9\]/);
   assert.match(calls[3].repairContext.userMessage, /JSON 完成前中止/);
   assert.match(calls[3].repairContext.userMessage, /sources 仅保留.*最少来源/);
   assert.match(calls[3].repairContext.userMessage, /section 才使用 noop/);

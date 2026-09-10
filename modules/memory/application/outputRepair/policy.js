@@ -1,6 +1,6 @@
 const { VALIDATION_ISSUE_CODES } = require("../../contracts/validationIssueCodes");
 
-const OUTPUT_REPAIR_POLICY_VERSION = 8;
+const OUTPUT_REPAIR_POLICY_VERSION = 9;
 const REJECTED_OUTPUT_MAX_BYTES = 256 * 1024;
 
 const ISSUE_CODES = VALIDATION_ISSUE_CODES;

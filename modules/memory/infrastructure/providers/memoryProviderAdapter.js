@@ -11,6 +11,7 @@ const { validateProviderWireOutput } = require("./validateProviderWireOutput");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 const {
   ISSUE_CODES,
+  createRepairFeedback,
   normalizeSemanticOutput,
   renderRepairInstruction,
   renderRepairMessage,
@@ -24,6 +25,7 @@ const {
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
+const { profileInputHash, profileRepairBundle, profileOutputsForRetry, specialistRepairFeedback } = require("./profileRepairState");
 
 function completedProtocol(metadata, response) {
   return { ...metadata, outputChannel: response?.outputChannel ?? "adapter",
@@ -193,48 +195,34 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   const profileRepairCache = new WeakMap();
 
-  function rememberProfileSections(envelope, sectionResults, specialistOutputs) {
-    profileRepairCache.set(envelope, { sectionResults: structuredClone(sectionResults),
-      specialistOutputs: structuredClone(specialistOutputs) });
-  }
-
   return Object.freeze({
     async propose(envelope, { repairFeedback = null, rejectedOutput } = {}) {
       let response;
       let responseSchema;
       let protocolMetadata;
       let specialistOutputs;
+      let specialistInputHash;
       try {
         const envelopeResult = validateSemanticEnvelope(envelope);
         if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
         const { task } = envelope;
         const userPayload = buildProposerUserPayload(envelope);
         if (task.proposer === "profileRelationshipProposer") {
-          const businessRepair = repairFeedback?.validationLayer === "business";
-          const businessOutputs = businessRepair ? rejectedOutput?.specialistOutputs : null;
-          const retrySpecialist = PROFILE_SPECIALISTS.find((entry) => entry.proposer === repairFeedback?.specialist) || null;
-          const cached = retrySpecialist ? profileRepairCache.get(envelope) : null;
-          const cacheComplete = cached && PROFILE_SPECIALISTS
-            .filter((entry) => entry.proposer !== retrySpecialist.proposer)
-            .every((entry) => Object.prototype.hasOwnProperty.call(cached.sectionResults, entry.section));
-          const selectedSpecialists = cacheComplete ? [retrySpecialist] : PROFILE_SPECIALISTS;
-          const settledRuns = await Promise.allSettled(selectedSpecialists.map(async (specialist) => {
+          specialistInputHash = profileInputHash(envelope);
+          const hasBundle = Boolean(rejectedOutput?.specialistOutputs);
+          // Durable state is authoritative. The cache only supports callers of
+          // the older single-specialist API that do not replay a full bundle.
+          const savedOutputs = profileOutputsForRetry(hasBundle ? rejectedOutput
+            : repairFeedback ? profileRepairCache.get(envelope) : null, specialistInputHash);
+          const settledRuns = await Promise.allSettled(PROFILE_SPECIALISTS.map(async (specialist) => {
             const specialistPayload = buildSpecialistPayload(userPayload, specialist);
             const specialistArtifact = buildSpecialistArtifact(envelope.artifact, specialist);
-            const businessErrors = businessRepair ? repairFeedback.errors.filter(issue =>
-              issue.meta?.specialist === specialist.proposer || issue.meta?.section === specialist.section) : [];
-            const specialistFeedback = businessRepair
-              ? businessErrors.length ? { ...repairFeedback, errors: businessErrors, specialist: specialist.proposer } : null
-              : !repairFeedback
-              ? null
-              : !retrySpecialist || retrySpecialist.proposer === specialist.proposer
-                ? repairFeedback
-                : null;
+            const stored = savedOutputs?.[specialist.proposer];
+            const specialistFeedback = stored?.repairFeedback || specialistRepairFeedback(repairFeedback, specialist);
             const schema = bindSpecialistSchema(
               buildOutputSchema(specialist.proposer, [specialist.section]), specialistArtifact, specialist.section,
             );
-            const stored = businessOutputs?.[specialist.proposer];
-            if (businessRepair && !specialistFeedback && stored?.output !== undefined) {
+            if (!specialistFeedback && stored?.output !== undefined) {
               // Durable reuse is conditional on this invocation's bound contract.
               const wire = validateProviderWireOutput(schema, stored.output);
               if (wire.ok && validateSemanticResult(flatWireToSemanticOutput(wire.output, specialistPayload.task), specialistArtifact).ok) {
@@ -246,7 +234,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               await promptLoader(specialist.proposer),
               specialistFeedback,
               specialistPayload.task,
-              specialistFeedback ? (businessRepair ? stored?.output : rejectedOutput) : undefined,
+              specialistFeedback ? (hasBundle ? stored?.output : rejectedOutput ?? stored?.output) : undefined,
             );
             const specialistResponse = await invokeStructured({
               proposer: specialist.proposer,
@@ -262,9 +250,27 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           if (rejected) throw rejected.reason;
           const specialistRuns = settledRuns.map((run) => run.value);
           const responses = specialistRuns.filter(run => !run.reused).map((run) => run.specialistResponse);
-          const sectionResults = structuredClone(cacheComplete ? cached.sectionResults : {});
-          specialistOutputs = structuredClone(cacheComplete ? cached.specialistOutputs : {});
+          const sectionResults = {};
+          specialistOutputs = {};
           let invalidRun = null;
+          function rememberFailure(run) {
+            const { specialist, specialistArtifact, specialistResponse, protocol } = run;
+            const detail = {
+              boundary: "output", validationLayer: run.validationLayer, specialist: specialist.proposer,
+              errors: flatWireRepairErrors(run.specialistValidation.errors, specialistResponse?.output, specialistArtifact.publicInput.task),
+              shape: summarizeOutputShape(run.normalizedOutput),
+              ...(specialistResponse?.transportError ? { transportError: specialistResponse.transportError } : {}),
+              ...(specialistResponse?.transportRecovery ? { transportRecovery: specialistResponse.transportRecovery } : {}),
+              ...(specialistResponse?.finishReason ? { finishReason: specialistResponse.finishReason } : {}),
+            };
+            const output = rejectedProviderOutput(specialistResponse);
+            specialistOutputs[specialist.proposer] = {
+              output, outputKind: output === undefined ? "unavailable" : "provider_wire",
+              ...(protocol ? { protocol } : {}),
+              repairFeedback: createRepairFeedback(detail, repairFeedback?.attempt || 0, specialistArtifact.publicInput.task),
+            };
+            invalidRun ??= { ...run, detail };
+          }
           for (const { specialist, specialistArtifact, specialistResponse, protocol, outputKind } of specialistRuns) {
             if (specialistResponse?.refusal || specialistResponse?.safetyBlocked || isSafetySignal(specialistResponse?.finishReason)) {
               profileRepairCache.delete(envelope);
@@ -275,14 +281,15 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               return { status: "error", reason: "max_output_truncated", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }
             if (Array.isArray(specialistResponse?.outputSchemaErrors) && specialistResponse.outputSchemaErrors.length) {
-              invalidRun ??= {
+              rememberFailure({
                 specialist,
                 specialistArtifact,
                 specialistResponse,
+                protocol,
                 specialistValidation: { errors: specialistResponse.outputSchemaErrors },
                 normalizedOutput: specialistResponse.output,
                 validationLayer: "wire_schema",
-              };
+              });
               continue;
             }
             const decodedOutput = flatWireToSemanticOutput(
@@ -292,14 +299,15 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             const normalized = normalizeSemanticOutput(decodedOutput);
             const specialistValidation = validateSemanticResult(normalized.output, specialistArtifact);
             if (!specialistValidation.ok) {
-              invalidRun ??= {
+              rememberFailure({
                 specialist,
                 specialistArtifact,
                 specialistResponse,
+                protocol,
                 specialistValidation,
                 normalizedOutput: normalized.output,
                 validationLayer: specialistResponse?.transportError ? "transport" : "semantic",
-              };
+              });
               continue;
             }
             sectionResults[specialist.section] = normalized.output.sectionResults[specialist.section];
@@ -307,26 +315,14 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               outputKind: outputKind || "provider_wire", ...(protocol ? { protocol } : {}) };
           }
           if (invalidRun) {
-            if (cacheComplete) profileRepairCache.delete(envelope);
-            else rememberProfileSections(envelope, sectionResults, specialistOutputs);
+            const bundle = profileRepairBundle(specialistOutputs, specialistInputHash);
+            profileRepairCache.set(envelope, structuredClone(bundle));
             return {
               status: "error",
               reason: "output_schema_invalid",
-              detail: {
-                boundary: "output",
-                validationLayer: invalidRun.validationLayer,
-                specialist: invalidRun.specialist.proposer,
-                errors: flatWireRepairErrors(
-                  invalidRun.specialistValidation.errors,
-                  invalidRun.specialistResponse?.output,
-                  invalidRun.specialistArtifact?.publicInput?.task,
-                ),
-                shape: summarizeOutputShape(invalidRun.normalizedOutput),
-                ...(invalidRun.specialistResponse?.transportError ? { transportError: invalidRun.specialistResponse.transportError } : {}),
-                ...(invalidRun.specialistResponse?.transportRecovery ? { transportRecovery: invalidRun.specialistResponse.transportRecovery } : {}),
-                ...(invalidRun.specialistResponse?.finishReason ? { finishReason: invalidRun.specialistResponse.finishReason } : {}),
-              },
-              rejectedOutput: rejectedProviderOutput(invalidRun.specialistResponse),
+              detail: invalidRun.detail,
+              rejectedOutput: bundle,
+              rejectedOutputKind: "specialist_bundle",
               usage: mergeUsage(responses),
               model: invalidRun.specialistResponse?.model ?? null,
               callCount: responses.length,
@@ -440,7 +436,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         status: "ok",
         output,
         ...(responseSchema ? { wireOutput: structuredClone(response.output) } : {}),
-        ...(specialistOutputs ? { specialistOutputs } : {}),
+        ...(specialistOutputs ? { specialistOutputs, specialistInputHash } : {}),
         ...(protocol ? { protocol } : {}),
         ...(normalized.applied.length ? { normalizations: normalized.applied } : {}),
         usage: response?.usage ?? null,

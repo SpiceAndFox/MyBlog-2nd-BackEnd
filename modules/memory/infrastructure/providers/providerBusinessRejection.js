@@ -3,6 +3,8 @@ const { validateSemanticResult } = require("../../contracts/semantic");
 const { semanticToTodoV2, todoV2RepairErrors } = require("./todoWireProtocolV2");
 const { semanticOutputToFlatWire, flatWireRepairErrors } = require("./flatWireProtocol");
 const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
+const { createRepairFeedback } = require("../../application/outputRepair");
+const { profileRepairBundle } = require("./profileRepairState");
 
 // Business preflight runs on Semantic IR. Retry feedback must refer to the
 // provider's original wire shape, while retaining transport/protocol metadata.
@@ -49,12 +51,15 @@ function profileBusinessRejection(result, validation, task) {
     specialistOutputs[specialist.proposer] = {
       output: mapped.rejectedOutput, outputKind: original?.outputKind || mapped.rejectedOutputKind,
       ...(original?.protocol ? { protocol: original.protocol } : {}),
+      ...(mapped.errors.length ? { repairFeedback: createRepairFeedback({
+        validationLayer: validation.validationLayer || "business", specialist: specialist.proposer, errors: mapped.errors,
+      }, 0, specialistTask) } : {}),
     };
     errors.push(...mapped.errors.map(issue => ({ ...issue,
       meta: { ...issue.meta, section: specialist.section, specialist: specialist.proposer },
     })));
   }
-  return { errors, rejectedOutput: { specialistOutputs }, rejectedOutputKind: "specialist_bundle" };
+  return { errors, rejectedOutput: profileRepairBundle(specialistOutputs, result.specialistInputHash), rejectedOutputKind: "specialist_bundle" };
 }
 
 module.exports = { providerBusinessRejection };
