@@ -1,10 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const {
-  createChatLlmCatalog,
-  createChatLlmRuntime,
-  createProductionModelPolicy,
-} = require("../../modules/chat");
+const { createChatLlmCatalog, createChatLlmRuntime, createProductionModelPolicy } = require("../../modules/chat");
 
 function environment(suffix) {
   return {
@@ -38,14 +34,14 @@ test("Chat LLM catalogs keep Provider credentials and attribution instance-local
     "X-OpenRouter-Title": "Blog second",
   });
   assert.equal(Object.isFrozen(first), true);
-  assert.equal(first.models.isSupportedModel("deepseek", "deepseek-v4-flash"), true);
+  assert.equal(first.models.isSupportedModel("deepseek", "deepseek-flash"), true);
 });
 
 test("production model policies are bound instances rather than configured globals", () => {
   const first = createProductionModelPolicy({
     NODE_ENV: "production",
     CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: JSON.stringify({
-      chat: { deepseek: ["deepseek-v4-flash"] },
+      chat: { deepseek: ["deepseek-flash"] },
       memory: ["memory-first"],
     }),
   });
@@ -57,7 +53,7 @@ test("production model policies are bound instances rather than configured globa
     }),
   });
 
-  assert.equal(first.isChatModelAllowed("deepseek", "deepseek-v4-flash"), true);
+  assert.equal(first.isChatModelAllowed("deepseek", "deepseek-flash"), true);
   assert.equal(first.isChatModelAllowed("deepseek", "deepseek-v4-pro"), false);
   assert.equal(second.isChatModelAllowed("deepseek", "deepseek-v4-pro"), true);
   assert.equal(first.isMemoryModelAllowed("memory-first"), true);
@@ -67,9 +63,15 @@ test("production model policies are bound instances rather than configured globa
 test("Chat completion gateway dispatches through injected protocol adapters", async () => {
   const catalog = createChatLlmCatalog({ environment: environment("dispatch") });
   const adapter = (name) => ({
-    async createChatCompletion() { return { content: name }; },
-    async createChatCompletionStreamResponse() { return { name }; },
-    async *streamChatCompletionDeltas() { yield name; },
+    async createChatCompletion() {
+      return { content: name };
+    },
+    async createChatCompletionStreamResponse() {
+      return { name };
+    },
+    async *streamChatCompletionDeltas() {
+      yield name;
+    },
   });
   const runtime = createChatLlmRuntime({
     catalog,

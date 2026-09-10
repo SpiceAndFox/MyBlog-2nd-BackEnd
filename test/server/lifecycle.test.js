@@ -10,16 +10,16 @@ const {
   createServerLifecycle,
   installProcessHandlers,
 } = require("../../app/composition/serverLifecycle");
-const {
-  loadProductionModelPolicy,
-  isChatModelAllowed,
-  isMemoryModelAllowed,
-} = require("../../modules/chat");
+const { loadProductionModelPolicy, isChatModelAllowed, isMemoryModelAllowed } = require("../../modules/chat");
 
 function logger(events = []) {
   return {
-    info(message, detail) { events.push(["info", message, detail]); },
-    error(message, detail) { events.push(["error", message, detail]); },
+    info(message, detail) {
+      events.push(["info", message, detail]);
+    },
+    error(message, detail) {
+      events.push(["error", message, detail]);
+    },
   };
 }
 
@@ -67,7 +67,9 @@ test("health endpoints keep business traffic closed until readiness is establish
 test("server becomes ready before optional Memory recovery and drains workers before closing the database", async () => {
   const events = [];
   let releaseRecovery;
-  const recoveryGate = new Promise((resolve) => { releaseRecovery = resolve; });
+  const recoveryGate = new Promise((resolve) => {
+    releaseRecovery = resolve;
+  });
   const app = express();
   const health = createHealthState();
   installHealthEndpoints(app, health);
@@ -78,37 +80,53 @@ test("server becomes ready before optional Memory recovery and drains workers be
       await recoveryGate;
       return { issues: [] };
     },
-    startTaskPolling() { events.push("tasks:start"); },
-    startProjectionPolling() { events.push("projections:start"); },
-    stopTaskPolling() { events.push("tasks:stop"); },
-    stopProjectionPolling() { events.push("projections:stop"); },
-    async shutdown() { events.push("memory:shutdown"); },
+    startTaskPolling() {
+      events.push("tasks:start");
+    },
+    startProjectionPolling() {
+      events.push("projections:start");
+    },
+    stopTaskPolling() {
+      events.push("tasks:stop");
+    },
+    stopProjectionPolling() {
+      events.push("projections:stop");
+    },
+    async shutdown() {
+      events.push("memory:shutdown");
+    },
   };
   const lifecycle = createServerLifecycle({
     app,
     memoryRuntime,
-    database: { async end() { events.push("database:end"); } },
+    database: {
+      async end() {
+        events.push("database:end");
+      },
+    },
     logger: logger(),
     health,
     port: 0,
     shutdownTimeoutMs: 2_000,
     startCleanup() {
       events.push("cleanup:start");
-      return async () => { events.push("cleanup:stop"); };
+      return async () => {
+        events.push("cleanup:stop");
+      };
     },
-    cancelInFlight() { events.push("requests:cancel"); return 2; },
-    async waitForInFlight() { events.push("requests:idle"); },
+    cancelInFlight() {
+      events.push("requests:cancel");
+      return 2;
+    },
+    async waitForInFlight() {
+      events.push("requests:idle");
+    },
   });
 
   const starting = lifecycle.start();
   const server = await starting;
   assert.equal(health.status, "ready");
-  assert.deepEqual(events.slice(0, 4), [
-    "tasks:start",
-    "projections:start",
-    "memory:recover",
-    "cleanup:start",
-  ]);
+  assert.deepEqual(events.slice(0, 4), ["tasks:start", "projections:start", "memory:recover", "cleanup:start"]);
   assert.ok(server.listening);
   releaseRecovery();
   await recoveryGate;
@@ -129,27 +147,55 @@ test("production startup fails closed unless v2, single replica, and raw-log set
     LOG_DEBUG_FULL_ENABLED: "false",
     LOG_DEBUG_GIST_ENABLED: "false",
     CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: JSON.stringify({
-      chat: { deepseek: ["deepseek-v4-flash"] },
-      memory: ["deepseek-v4-flash"],
+      chat: { deepseek: ["deepseek-flash"] },
+      memory: ["deepseek-flash"],
     }),
   };
   const models = {
-    memoryModel: "deepseek-v4-flash",
+    memoryModel: "deepseek-flash",
     defaultChatProviderId: "deepseek",
-    defaultChatModelId: "deepseek-v4-flash",
+    defaultChatModelId: "deepseek-flash",
   };
   assert.doesNotThrow(() => validateProductionStartup({ env: valid, memoryEnabled: true, ...models }));
-  assert.throws(() => validateProductionStartup({ env: { ...valid, CHAT_MEMORY_V2_ENABLED: "false" }, memoryEnabled: false, ...models }), /v2-off/);
-  assert.throws(() => validateProductionStartup({ env: { ...valid, APP_REPLICA_COUNT: "2" }, memoryEnabled: true, ...models }), /APP_REPLICA_COUNT=1/);
-  assert.throws(() => validateProductionStartup({ env: { ...valid, LOG_DEBUG_FULL_ENABLED: "true" }, memoryEnabled: true, ...models }), /LOG_DEBUG_FULL_ENABLED=false/);
-  assert.throws(() => validateProductionStartup({ env: { ...valid, LOG_DEBUG_GIST_ENABLED: "" }, memoryEnabled: true, ...models }), /LOG_DEBUG_GIST_ENABLED=false/);
-  assert.throws(() => validateProductionStartup({ env: valid, memoryEnabled: true, ...models, memoryModel: "unverified" }), /Memory model is not/);
-  assert.throws(() => validateProductionStartup({ env: valid, memoryEnabled: true, ...models, defaultChatModelId: "unverified" }), /default chat model is not/);
-  assert.throws(() => validateProductionStartup({
-    env: { ...valid, CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: "{}" },
-    memoryEnabled: true,
-    ...models,
-  }), /ALLOWLIST|allowlist/);
+  assert.throws(
+    () =>
+      validateProductionStartup({
+        env: { ...valid, CHAT_MEMORY_V2_ENABLED: "false" },
+        memoryEnabled: false,
+        ...models,
+      }),
+    /v2-off/,
+  );
+  assert.throws(
+    () => validateProductionStartup({ env: { ...valid, APP_REPLICA_COUNT: "2" }, memoryEnabled: true, ...models }),
+    /APP_REPLICA_COUNT=1/,
+  );
+  assert.throws(
+    () =>
+      validateProductionStartup({ env: { ...valid, LOG_DEBUG_FULL_ENABLED: "true" }, memoryEnabled: true, ...models }),
+    /LOG_DEBUG_FULL_ENABLED=false/,
+  );
+  assert.throws(
+    () => validateProductionStartup({ env: { ...valid, LOG_DEBUG_GIST_ENABLED: "" }, memoryEnabled: true, ...models }),
+    /LOG_DEBUG_GIST_ENABLED=false/,
+  );
+  assert.throws(
+    () => validateProductionStartup({ env: valid, memoryEnabled: true, ...models, memoryModel: "unverified" }),
+    /Memory model is not/,
+  );
+  assert.throws(
+    () => validateProductionStartup({ env: valid, memoryEnabled: true, ...models, defaultChatModelId: "unverified" }),
+    /default chat model is not/,
+  );
+  assert.throws(
+    () =>
+      validateProductionStartup({
+        env: { ...valid, CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: "{}" },
+        memoryEnabled: true,
+        ...models,
+      }),
+    /ALLOWLIST|allowlist/,
+  );
 });
 
 test("shutdown timeout has bounded and validated deployment configuration", () => {
@@ -163,17 +209,17 @@ test("production context model policy is explicit and enforced for chat and Memo
   const env = {
     NODE_ENV: "production",
     CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: JSON.stringify({
-      chat: { deepseek: ["deepseek-v4-flash", "deepseek-v4-flash"] },
-      memory: ["deepseek-v4-flash"],
+      chat: { deepseek: ["deepseek-flash", "deepseek-flash"] },
+      memory: ["deepseek-flash"],
     }),
   };
   assert.deepEqual(loadProductionModelPolicy(env), {
-    chat: { deepseek: ["deepseek-v4-flash"] },
-    memory: ["deepseek-v4-flash"],
+    chat: { deepseek: ["deepseek-flash"] },
+    memory: ["deepseek-flash"],
   });
-  assert.equal(isChatModelAllowed("deepseek", "deepseek-v4-flash", env), true);
+  assert.equal(isChatModelAllowed("deepseek", "deepseek-flash", env), true);
   assert.equal(isChatModelAllowed("deepseek", "unverified", env), false);
-  assert.equal(isMemoryModelAllowed("deepseek-v4-flash", env), true);
+  assert.equal(isMemoryModelAllowed("deepseek-flash", env), true);
   assert.equal(isMemoryModelAllowed("unverified", env), false);
   assert.equal(isChatModelAllowed("anything", "anything", { NODE_ENV: "test" }), true);
 });
@@ -183,7 +229,10 @@ test("fatal process events trigger shutdown and retain a non-zero exit status", 
   processRef.exitCode = 0;
   const events = [];
   const lifecycle = {
-    async shutdown(reason, options) { events.push([reason, options]); return { graceful: true }; },
+    async shutdown(reason, options) {
+      events.push([reason, options]);
+      return { graceful: true };
+    },
   };
   const uninstall = installProcessHandlers({ lifecycle, logger: logger(), processRef });
   try {

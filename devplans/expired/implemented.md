@@ -63,7 +63,7 @@
 - 实现 Memory Provider Adapter、mock Adapter 与 OpenAI-compatible native structured-output transport，区分调用失败、安全拒绝、最大输出截断和 schema invalid。
 - 实现 durable normal task 的稳定 dedupe key，以及 state/event group/events/snapshot/cursor/task/target status/tombstone 的单事务成功提交；重复 phase delivery 返回既有 revision。
 - 增加阶段 3 pipeline fixture，以及 Observer/envelope、prompt、Adapter、原子提交和重复 delivery 测试。
-- 本机 `deepseek-v4-flash` smoke 已尝试；当时使用的正式端点明确返回 `This response_format type is unavailable now`，不支持原生 `json_schema`，因此未降级为裸 JSON 解析。该历史限制后续已由官方 Beta `deepseek-strict-tools` adapter 解决，最新结果见本文“Memory Provider adapter 与配置解耦”。
+- 本机 `deepseek-flash` smoke 已尝试；当时使用的正式端点明确返回 `This response_format type is unavailable now`，不支持原生 `json_schema`，因此未降级为裸 JSON 解析。该历史限制后续已由官方 Beta `deepseek-strict-tools` adapter 解决，最新结果见本文“Memory Provider adapter 与配置解耦”。
 
 ## 2026-07-13：Memory Control v2 阶段 4
 
@@ -127,7 +127,7 @@
 - DeepSeek Memory 请求显式发送独立 `thinking.type=disabled`，不继承主聊天思考设置；配置允许显式启用以便实验，但高频生产默认关闭。
 - preflight 从简单布尔 schema 扩展为六个 Normal Proposer 与 Compaction 完整 schema 的顺序 golden 探测，并移除脚本对单一模型 ID 的硬编码。
 - Provider 输出边界 `output_schema_invalid` 首次将计数持久化到 durable task 并立即重试一次；输入边界错误不重试，第二次输出错误 halt，恢复扫描不会重新获得次数。
-- 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-v4-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
+- 独立 `CHAT_MEMORY_V2_PROVIDER_*` 已使用官方 DeepSeek Beta strict-tools 端点与 `deepseek-flash` 完成真实 preflight；六个 Normal Proposer 与 Compaction 的完整 schema 均以强制 tool call 通过。实测修复了 enum 缺少显式 primitive `type` 以及嵌套 `anyOf` 分支缺少直接 `type` 的 DeepSeek schema 兼容问题，并增加编译器回归测试。
 
 ## 2026-07-13：Memory Control v2 阶段 8 代码退役与运行时切换
 

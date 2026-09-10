@@ -91,7 +91,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     } catch (error) {
       if (error.code === "MEMORY_WRITE_GUARD_INVALID") {
         metrics?.increment("memory_write_rejections_total", { targetKey: envelope.task.targetKey, reason: error.reason });
-        return { ok: false, errors: error.validationErrors };
+        return { ok: false, errors: error.validationErrors, validationLayer: "business" };
       }
       // Source/database failures belong to compilation/recovery, not LLM repair.
       if (!(error instanceof SemanticCompileError)) throw error;

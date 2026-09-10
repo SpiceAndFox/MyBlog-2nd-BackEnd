@@ -6,6 +6,7 @@ const {
   repairAttemptCount,
   summarizeOutputShape,
 } = require("./outputRepair");
+const { providerBusinessRejection } = require("../infrastructure/providers/providerBusinessRejection");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set([
@@ -342,15 +343,19 @@ function createNormalProviderRecovery({
       if (result.status !== "error") {
         const validation = await validateProviderOutput(result.output, envelope);
         if (!validation.ok) {
+          const feedback = providerBusinessRejection(result, validation, envelope.task);
           result = {
+            ...result,
             status: "error",
             reason: "output_schema_invalid",
             detail: {
               boundary: "output",
-              errors: validation.errors,
-              shape: summarizeOutputShape(result.output),
+              validationLayer: validation.validationLayer ?? "semantic",
+              errors: feedback.errors,
+              shape: summarizeOutputShape(feedback.rejectedOutput),
             },
-            rejectedOutput: result.output,
+            rejectedOutput: feedback.rejectedOutput,
+            rejectedOutputKind: feedback.rejectedOutputKind,
           };
         }
       }

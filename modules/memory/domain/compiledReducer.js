@@ -10,7 +10,8 @@ const { allocateMemoryItemId } = require("./itemIds");
 const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
 const { sectionLimits, codePointLength, EPISODE_APPEND_SEPARATOR } = require("../contracts/sectionPolicy");
-const { rejectWrite, assertItemLimits } = require("./writeGuards");
+const { rejectWrite, assertItemLimits, locateWriteError } = require("./writeGuards");
+const { applyTodoRevision } = require("./todoRevision");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target])),
@@ -45,20 +46,6 @@ function conflictKeys(section, patch) {
 function exactDuplicate(items, text, excludeItemId = null) {
   const normalized = normalizeItemText(text);
   return normalized && items.some((item) => item.id !== excludeItemId && normalizeItemText(item.text) === normalized);
-}
-
-function updateTodo(item, value, nowMs) {
-  if (item.status === "overdue") {
-    if (value.dueChange.mode !== "set" || new Date(value.dueChange.dueAt).getTime() <= nowMs) return { ok: false };
-    if ((value.actor !== undefined && value.actor !== item.actor) || (value.requester !== undefined && value.requester !== item.requester)) return { ok: false };
-    item.status = "active";
-    item.becameOverdueAt = null;
-  }
-  if (value.actor !== undefined) item.actor = value.actor;
-  if (value.requester !== undefined) item.requester = value.requester;
-  if (value.dueChange.mode === "clear") item.dueAt = null;
-  if (value.dueChange.mode === "set") item.dueAt = value.dueChange.dueAt;
-  return { ok: true };
 }
 
 function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, task }) {
@@ -132,14 +119,14 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
   }
   if (!["appendItem", "reviseItem", "correctItem"].includes(patch.op)) return { rejectReason: "schema_invalid" };
   if (section === "todos") {
-    const wasOverdue = item.status === "overdue";
-    const todo = updateTodo(item, patch.value, nowMs);
-    if (!todo.ok) return { rejectReason: "invalid_state_transition" };
-    if (wasOverdue) cleanupEvents.push({
+    const todo = applyTodoRevision(item, patch, nowMs, task);
+    if (todo.noop) return { noopReason: "unchanged_todo" };
+    if (todo.revived) cleanupEvents.push({
       eventKind: "system_cleanup", section: "todos", targetKey: "todos", decision: "system_cleanup",
       cleanupKind: "todo_revived_from_overdue",
       normalizedOperation: { cleanupKind: "todo_revived_from_overdue", itemId: item.id, dueAt: item.dueAt },
     });
+    return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
   }
   if (patch.op === "appendItem") {
     const limits = sectionLimits(section, task);
@@ -200,36 +187,44 @@ function reduceCompiledProposal({
       events.push({ ...eventBase(section, {}, "noop", null), op: null, patchSummary: null });
       continue;
     }
-    for (const patch of result.patches) {
-      const patchId = idFactory();
-      const base = eventBase(section, patch, "accepted", patchId);
-      if (patch.op === "mergeItems" && patch.itemIds.some((itemId) => protectedIds.has(itemId))) {
-        events.push({ ...base, decision: "rejected", rejectReason: "item_protected_by_pending_proposal" });
-        continue;
+    for (const [changeIndex, patch] of result.patches.entries()) {
+      try {
+        const patchId = idFactory();
+        const base = eventBase(section, patch, "accepted", patchId);
+        if (patch.op === "mergeItems" && patch.itemIds.some((itemId) => protectedIds.has(itemId))) {
+          events.push({ ...base, decision: "rejected", rejectReason: "item_protected_by_pending_proposal" });
+          continue;
+        }
+        const keys = conflictKeys(section, patch);
+        if (keys.some((key) => seen.has(key))) {
+          reject(base, "invalid_state_transition");
+          continue;
+        }
+        if (["addItem", "reviseItem", "correctItem"].includes(patch.op) && patch.value.text !== undefined
+          && exactDuplicate(sectionItems(working, section), patch.value.text, patch.itemId || null)) {
+          reject(base, "duplicate_item");
+          continue;
+        }
+        const previousScene = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
+        const applied = applyPatch(working, section, patch, { idFactory, nowMs, cleanupEvents, task });
+        if (applied.rejectReason) {
+          reject(base, applied.rejectReason);
+          continue;
+        }
+        if (section === "scene" && measureSection(working, "scene").renderedChars > config.scene.maxRenderedChars) {
+          working.current.scene[patch.path] = previousScene;
+          reject(base, "capacity_exceeded");
+          continue;
+        }
+        keys.forEach((key) => seen.add(key));
+        if (applied.noopReason) {
+          events.push({ ...base, decision: "noop", patchSummary: { ...base.patchSummary, noopReason: applied.noopReason } });
+          continue;
+        }
+        events.push({ ...base, resultItemId: applied.resultItemId || null, normalizedOperation: applied.normalizedOperation });
+      } catch (error) {
+        throw locateWriteError(error, section, changeIndex);
       }
-      const keys = conflictKeys(section, patch);
-      if (keys.some((key) => seen.has(key))) {
-        reject(base, "invalid_state_transition");
-        continue;
-      }
-      if (["addItem", "reviseItem", "correctItem"].includes(patch.op) && patch.value.text !== undefined
-        && exactDuplicate(sectionItems(working, section), patch.value.text, patch.itemId || null)) {
-        reject(base, "duplicate_item");
-        continue;
-      }
-      const previousScene = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
-      const applied = applyPatch(working, section, patch, { idFactory, nowMs, cleanupEvents, task });
-      if (applied.rejectReason) {
-        reject(base, applied.rejectReason);
-        continue;
-      }
-      if (section === "scene" && measureSection(working, "scene").renderedChars > config.scene.maxRenderedChars) {
-        working.current.scene[patch.path] = previousScene;
-        reject(base, "capacity_exceeded");
-        continue;
-      }
-      keys.forEach((key) => seen.add(key));
-      events.push({ ...base, resultItemId: applied.resultItemId || null, normalizedOperation: applied.normalizedOperation });
     }
   }
 

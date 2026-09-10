@@ -420,6 +420,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       return {
         status: "ok",
         output,
+        ...(responseSchema ? { wireOutput: structuredClone(response.output) } : {}),
         ...(protocol ? { protocol } : {}),
         ...(normalized.applied.length ? { normalizations: normalized.applied } : {}),
         usage: response?.usage ?? null,

@@ -9,12 +9,16 @@ const reasoningEffortOptions = [
 ];
 
 function normalizeThinkingMode(settings) {
-  const raw = String(settings?.thinkingMode || "").trim().toLowerCase();
+  const raw = String(settings?.thinkingMode || "")
+    .trim()
+    .toLowerCase();
   return raw === "enabled" ? "enabled" : "disabled";
 }
 
 function normalizeReasoningEffort(settings) {
-  const raw = String(settings?.reasoningEffort || "").trim().toLowerCase();
+  const raw = String(settings?.reasoningEffort || "")
+    .trim()
+    .toLowerCase();
   return raw === "max" ? "max" : "high";
 }
 
@@ -88,7 +92,7 @@ module.exports = {
     },
   ],
   models: [
-    { id: "deepseek-v4-flash", name: "deepseek-v4-flash" },
+    { id: "deepseek-flash", name: "deepseek-flash" },
     { id: "deepseek-v4-pro", name: "deepseek-v4-pro" },
   ],
   parameterPolicy: {

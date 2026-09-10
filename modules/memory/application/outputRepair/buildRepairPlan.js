@@ -54,6 +54,10 @@ function buildRepairPlan({ errors, specialist = null, task = null } = {}) {
   ].includes(code))) directives.push("SELECT_ONLY_SCHEMA_ENUM_SOURCES");
   if (codes.includes(ISSUE_CODES.SOURCE_MISSING)) directives.push("SUPPLY_ONE_VISIBLE_SOURCE_OR_REMOVE_CHANGE");
   if (codes.includes(ISSUE_CODES.TEXT_LENGTH_EXCEEDED)) directives.push("REWRITE_ATOMIC_TEXT_WITHIN_LIMIT");
+  if (codes.includes(ISSUE_CODES.SOURCE_LIMIT_EXCEEDED)) directives.push("SELECT_SUFFICIENT_SOURCES_WITHIN_LIMIT");
+  if (codes.includes(ISSUE_CODES.DUPLICATE_ITEM)) directives.push("RESOLVE_EXISTING_ITEM_DUPLICATE");
+  if (codes.includes(ISSUE_CODES.TODO_OVERDUE_REQUIRES_FUTURE_DUE)) directives.push("RESOLVE_OVERDUE_DUE_CONFLICT");
+  if (codes.includes(ISSUE_CODES.TODO_OVERDUE_PARTICIPANT_CHANGE)) directives.push("PRESERVE_OVERDUE_PARTICIPANTS");
   if (codes.includes(ISSUE_CODES.CHANGES_EMPTY)) directives.push("USE_NOOP_FOR_ZERO_CHANGES");
   return {
     policyVersion: OUTPUT_REPAIR_POLICY_VERSION,

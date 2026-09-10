@@ -5,12 +5,23 @@ const { loadProposerPrompt } = require("../../../modules/memory/prompts");
 const { validateSemanticResult } = require("../../../modules/memory/contracts/semantic");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
 const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
-const { compileDeepSeekSchema, compileDeepSeekToolParameters } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const {
+  compileDeepSeekSchema,
+  compileDeepSeekToolParameters,
+} = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
 const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
-const { validateLocalJsonSchema } = require("../../../modules/memory/infrastructure/providers/localJsonSchemaValidator");
+const {
+  validateLocalJsonSchema,
+} = require("../../../modules/memory/infrastructure/providers/localJsonSchemaValidator");
 const { buildDeepSeekHttpRequest } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
 
-const TASK = { tickId: 0, proposer: "todoProposer", targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
+const TASK = {
+  tickId: 0,
+  proposer: "todoProposer",
+  targetKey: "todos",
+  targetSections: ["todos"],
+  writeLimits: testWriteLimits(),
+};
 const BASE = { section: "todos", sources: ["message:101"] };
 const ADD = { ...BASE, action: "add", text: "归还图书", actor: "user", requester: "user" };
 const EDIT = { ...BASE, action: "revise", target: "T1", dueMode: "keep" };
@@ -66,7 +77,11 @@ test("DeepSeek Todo accepts every supported action/date and partial edit field c
   for (const action of ["revise", "correct"]) {
     for (const date of [{ dueMode: "keep" }, { dueMode: "clear" }, ...DATES]) {
       for (let mask = 0; mask < 8; mask += 1) {
-        cases.push({ ...BASE, action, target: "T1", ...date,
+        cases.push({
+          ...BASE,
+          action,
+          target: "T1",
+          ...date,
           ...(mask & 1 ? { text: "归还图书" } : {}),
           ...(mask & 2 ? { actor: "both" } : {}),
           ...(mask & 4 ? { requester: "assistant" } : {}),
@@ -127,23 +142,39 @@ test("DeepSeek Todo HTTP requests retain bound selectors and exclude unavailable
       for (const messages of [true, false]) {
         const responseSchema = boundSchema({ writable, messages });
         const snapshot = structuredClone(responseSchema);
-        const { body, endpoint } = buildDeepSeekHttpRequest({
-          baseUrl: "https://api.deepseek.com/beta", model: "deepseek-v4-flash",
-          thinkingMode, reasoningEffort: "low", maxOutputTokens: 4096,
-        }, { proposer: TASK.proposer, systemPrompt: "Return the Todo result", userPayload: {}, responseSchema });
+        const { body, endpoint } = buildDeepSeekHttpRequest(
+          {
+            baseUrl: "https://api.deepseek.com/beta",
+            model: "deepseek-flash",
+            thinkingMode,
+            reasoningEffort: "low",
+            maxOutputTokens: 4096,
+          },
+          { proposer: TASK.proposer, systemPrompt: "Return the Todo result", userPayload: {}, responseSchema },
+        );
         assert.equal(endpoint, "https://api.deepseek.com/beta/chat/completions");
         assert.equal(body.tools[0].function.strict, true);
         const compiled = body.tools[0].function.parameters;
         assert.deepEqual(responseSchema, snapshot);
         for (const branch of compiled.properties.changes.items.anyOf) {
           const properties = branch.properties;
-          assert.deepEqual(properties.sources.items.enum, messages ? ["message:101", "memory:T1-E1"] : ["memory:T1-E1"]);
+          assert.deepEqual(
+            properties.sources.items.enum,
+            messages ? ["message:101", "memory:T1-E1"] : ["memory:T1-E1"],
+          );
           if (properties.target) assert.deepEqual(properties.target.enum, ["T1"]);
           if (!writable) assert.deepEqual(properties.action.enum, ["add"]);
           if (properties.anchorSource) assert.deepEqual(properties.anchorSource.enum, ["message:101"]);
           if (!messages) assert.equal(properties.anchorSource, undefined);
-          if (properties.text) assert.match(properties.text.description, new RegExp(`at most ${TASK.writeLimits.todos.maxItemChars} Unicode characters`));
-          assert.match(properties.sources.description, new RegExp(`at most ${TASK.writeLimits.todos.maxSourceRefs} items`));
+          if (properties.text)
+            assert.match(
+              properties.text.description,
+              new RegExp(`at most ${TASK.writeLimits.todos.maxItemChars} Unicode characters`),
+            );
+          assert.match(
+            properties.sources.description,
+            new RegExp(`at most ${TASK.writeLimits.todos.maxSourceRefs} items`),
+          );
         }
         const candidate = { ...ADD, sources: [messages ? "message:101" : "memory:T1-E1"] };
         assert.equal(validateLocalJsonSchema(compiled, output(candidate)).ok, true);
@@ -151,7 +182,10 @@ test("DeepSeek Todo HTTP requests retain bound selectors and exclude unavailable
         assert.equal(validateLocalJsonSchema(compiled, output({ ...EDIT, target: "T999" })).ok, false);
         assert.equal(validateLocalJsonSchema(compiled, output(EDIT)).ok, writable && messages);
         assert.equal(validateLocalJsonSchema(compiled, output({ ...ADD, ...DATES[1] })).ok, messages);
-        assert.equal(validateLocalJsonSchema(compiled, output({ ...ADD, ...DATES[1], anchorSource: "message:999" })).ok, false);
+        assert.equal(
+          validateLocalJsonSchema(compiled, output({ ...ADD, ...DATES[1], anchorSource: "message:999" })).ok,
+          false,
+        );
       }
     }
   }
@@ -162,11 +196,18 @@ test("DeepSeek Todo keeps the protected prompt examples compatible", async () =>
   const examples = [...prompt.matchAll(/```json\s*([\s\S]*?)\s*```/g)].map((match) => JSON.parse(match[1]));
   assert.ok(examples.length >= 2);
   const compiled = compileDeepSeekToolParameters(boundSchema());
-  for (const example of examples) assert.deepEqual(validateLocalJsonSchema(compiled, example), { ok: true, errors: [] });
+  for (const example of examples)
+    assert.deepEqual(validateLocalJsonSchema(compiled, example), { ok: true, errors: [] });
 });
 
 test("DeepSeek Todo specialization leaves other flat proposer schemas unchanged", () => {
-  for (const proposer of ["currentStateProposer", "episodeProposer", "userProfileProposer", "agreementProposer", "worldFactProposer"]) {
+  for (const proposer of [
+    "currentStateProposer",
+    "episodeProposer",
+    "userProfileProposer",
+    "agreementProposer",
+    "worldFactProposer",
+  ]) {
     const source = buildOutputSchema(proposer);
     assert.deepEqual(compileDeepSeekToolParameters(source), compileDeepSeekSchema(source.schema));
   }

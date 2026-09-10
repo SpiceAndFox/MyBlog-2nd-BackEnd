@@ -3,6 +3,7 @@ const { classifyIssues } = require("./classifyIssues");
 const { ISSUE_CODES } = require("./policy");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
 const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { renderBusinessRepair } = require("./renderBusinessRepair");
 
 function lengthLimits(issues) {
   return [...new Set(issues
@@ -30,7 +31,7 @@ function renderRepairMessage(feedback = {}, task = null) {
     specialist: safeFeedback.specialist,
     task,
   });
-  const targets = [];
+  const targets = renderBusinessRepair(issues, { todoV2 });
   if (todoV2) targets.push("根对象只包含 results.todos。noop/unable_to_decide 只含 status；changes 必须给出完整 changes 数组。revise/correct 的 text、actor、requester 各自使用 {mode:keep} 或 {mode:set,value:...}，日期使用 due 对象。target、sources、due.anchorSource 只选本次 schema 中的枚举值。");
   if (plan.directives.includes("RETURN_VALID_JSON_TOOL_ARGUMENTS")) {
     targets.push("上一条输出不是合法 JSON。请重新序列化整个 tool arguments 对象，确保所有字段名和字符串使用成对双引号，并正确使用逗号、冒号与转义字符。");

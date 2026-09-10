@@ -110,6 +110,7 @@ function appendRejectedOutputAttempt(stagePayload, adapterResult, attempt, maxEn
   if (!captured) return next;
   const entry = {
     attempt,
+    ...(adapterResult?.rejectedOutputKind ? { outputKind: adapterResult.rejectedOutputKind } : {}),
     ...(adapterResult?.protocol ? { protocol: structuredClone(adapterResult.protocol) } : {}),
     ...(adapterResult?.detail?.specialist ? { specialist: adapterResult.detail.specialist } : {}),
     ...captured,

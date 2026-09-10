@@ -6,7 +6,9 @@ const {
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
 } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
-const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
+const {
+  createStructuredTransport,
+} = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { buildLibrarianEnvelope } = require("../../../modules/memory/application/librarianRenderer");
 const { envelope, profileEnvelope } = require("../support/provider-envelopes");
@@ -17,10 +19,12 @@ test("Provider Adapter accepts valid native structured output", async () => {
     promptLoader: async () => "prompt",
     invokeStructured: async (value) => {
       request = value;
-      return { output: {
-        sectionStatuses: { recentEpisodes: "noop", milestones: "noop" },
-        changes: [],
-      } };
+      return {
+        output: {
+          sectionStatuses: { recentEpisodes: "noop", milestones: "noop" },
+          changes: [],
+        },
+      };
     },
   });
   const result = await adapter.propose(envelope());
@@ -30,26 +34,31 @@ test("Provider Adapter accepts valid native structured output", async () => {
 
 test("JSON object transport validates the parsed output locally", async () => {
   let httpRequest;
-  const invokeStructured = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled",
-    adapter: "opencode-go-json-object",
-    baseUrl: "https://opencode.test/v1/",
-    apiKey: "test-key",
-    model: "mimo-v2.5-pro",
-    reasoningEffort: "low",
-    timeoutMs: 1000,
-    maxInputTokens: 250_000,
-    maxOutputTokens: 1024,
-  }, {
-    fetchImpl: async (_url, options) => {
-      httpRequest = JSON.parse(options.body);
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ finish_reason: "stop", message: { content: '{"unexpected":true}' } }],
-        }),
-      };
+  const invokeStructured = createStructuredTransport(
+    {
+      maxOutputTokens: 1024,
+      thinkingMode: "disabled",
+      adapter: "opencode-go-json-object",
+      baseUrl: "https://opencode.test/v1/",
+      apiKey: "test-key",
+      model: "mimo-v2.5-pro",
+      reasoningEffort: "low",
+      timeoutMs: 1000,
+      maxInputTokens: 250_000,
+      maxOutputTokens: 1024,
     },
-  });
+    {
+      fetchImpl: async (_url, options) => {
+        httpRequest = JSON.parse(options.body);
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [{ finish_reason: "stop", message: { content: '{"unexpected":true}' } }],
+          }),
+        };
+      },
+    },
+  );
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "prompt",
     invokeStructured,
@@ -63,34 +72,41 @@ test("JSON object transport validates the parsed output locally", async () => {
 });
 
 test("JSON object transport rejects malformed flat wire entries before Semantic conversion", async () => {
-  const invokeStructured = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled",
-    adapter: "opencode-go-json-object",
-    baseUrl: "https://opencode.test/v1/",
-    apiKey: "test-key",
-    model: "mimo-v2.5-pro",
-    reasoningEffort: "low",
-    timeoutMs: 1000,
-    maxInputTokens: 250_000,
-    maxOutputTokens: 1024,
-  }, {
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({
-        choices: [{
-          finish_reason: "stop",
-          message: {
-            content: JSON.stringify({
-              sectionStatuses: {
-                recentEpisodes: "noop",
-                milestones: "noop",
+  const invokeStructured = createStructuredTransport(
+    {
+      maxOutputTokens: 1024,
+      thinkingMode: "disabled",
+      adapter: "opencode-go-json-object",
+      baseUrl: "https://opencode.test/v1/",
+      apiKey: "test-key",
+      model: "mimo-v2.5-pro",
+      reasoningEffort: "low",
+      timeoutMs: 1000,
+      maxInputTokens: 250_000,
+      maxOutputTokens: 1024,
+    },
+    {
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: {
+                content: JSON.stringify({
+                  sectionStatuses: {
+                    recentEpisodes: "noop",
+                    milestones: "noop",
+                  },
+                  changes: [null],
+                }),
               },
-              changes: [null],
-            }),
-          },
-        }],
+            },
+          ],
+        }),
       }),
-    }),
-  });
+    },
+  );
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "prompt",
     invokeStructured,
@@ -99,10 +115,12 @@ test("JSON object transport rejects malformed flat wire entries before Semantic 
   const result = await adapter.propose(envelope());
   assert.equal(result.reason, "output_schema_invalid");
   assert.equal(result.detail.boundary, "output");
-  assert.deepEqual(result.detail.errors, [{
-    path: "$.changes[0]",
-    message: "must be object; received null",
-  }]);
+  assert.deepEqual(result.detail.errors, [
+    {
+      path: "$.changes[0]",
+      message: "must be object; received null",
+    },
+  ]);
   assert.deepEqual(JSON.parse(result.rejectedOutput), {
     sectionStatuses: {
       recentEpisodes: "noop",
@@ -133,14 +151,17 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
       return {
         output: {
           sectionStatuses: { [section]: "changes" },
-          changes: [{
-            section,
-            action: "add",
-            text: `${section} fact`,
-            sources: ["message:1"],
-          }],
+          changes: [
+            {
+              section,
+              action: "add",
+              text: `${section} fact`,
+              sources: ["message:1"],
+            },
+          ],
         },
-        usage: { input_tokens: 10, output_tokens: 2 }, model: "test-model",
+        usage: { input_tokens: 10, output_tokens: 2 },
+        model: "test-model",
       };
     },
   });
@@ -150,12 +171,17 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
   assert.equal(maxActive, 3);
   assert.deepEqual(result.usage, { input_tokens: 30, output_tokens: 6 });
   assert.equal(requests.length, 3);
-  assert.deepEqual(requests.map((request) => request.proposer), Object.keys(sections));
+  assert.deepEqual(
+    requests.map((request) => request.proposer),
+    Object.keys(sections),
+  );
   assert.deepEqual(Object.keys(result.output.sectionResults), ["userProfile", "assistantProfile", "relationship"]);
   assert.ok(requests.every((request) => request.userPayload.memoryText === requests[0].userPayload.memoryText));
-  assert.ok(requests.every((request) => (
-    JSON.stringify(request.userPayload.messages) === JSON.stringify(requests[0].userPayload.messages)
-  )));
+  assert.ok(
+    requests.every(
+      (request) => JSON.stringify(request.userPayload.messages) === JSON.stringify(requests[0].userPayload.messages),
+    ),
+  );
   for (const request of requests) {
     const section = sections[request.proposer];
     assert.equal(request.userPayload.messages.length, 64);
@@ -167,10 +193,26 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
 
 test("Profile specialist schemas bind writable refs and evidence ids to the rendered namespace", async () => {
   const state = createInitialMemoryState();
-  state.longTerm.userProfile.push({ id: "profile:1", text: "旧 User 档案", sourceRefs: [], createdAtMessageId: 1, updatedAtMessageId: 1 });
-  state.longTerm.relationship.push({ id: "relationship:1", text: "旧关系", sourceRefs: [], createdAtMessageId: 1, updatedAtMessageId: 1 });
+  state.longTerm.userProfile.push({
+    id: "profile:1",
+    text: "旧 User 档案",
+    sourceRefs: [],
+    createdAtMessageId: 1,
+    updatedAtMessageId: 1,
+  });
+  state.longTerm.relationship.push({
+    id: "relationship:1",
+    text: "旧关系",
+    sourceRefs: [],
+    createdAtMessageId: 1,
+    updatedAtMessageId: 1,
+  });
   const requests = [];
-  const sections = { userProfileProposer: "userProfile", assistantProfileProposer: "assistantProfile", relationshipProposer: "relationship" };
+  const sections = {
+    userProfileProposer: "userProfile",
+    assistantProfileProposer: "assistantProfile",
+    relationshipProposer: "relationship",
+  };
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "prompt",
     invokeStructured: async (request) => {
@@ -180,8 +222,8 @@ test("Profile specialist schemas bind writable refs and evidence ids to the rend
     },
   });
   assert.equal((await adapter.propose(profileEnvelope({ state }))).status, "ok");
-  const propertiesFor = (proposer) => requests.find((request) => request.proposer === proposer)
-    .responseSchema.schema.properties.changes.items.properties;
+  const propertiesFor = (proposer) =>
+    requests.find((request) => request.proposer === proposer).responseSchema.schema.properties.changes.items.properties;
   assert.deepEqual(propertiesFor("userProfileProposer").target.enum, ["UP1"]);
   assert.deepEqual(propertiesFor("relationshipProposer").target.enum, ["R1"]);
   assert.equal(Object.hasOwn(propertiesFor("assistantProfileProposer"), "target"), false);
@@ -199,10 +241,18 @@ test("Provider Adapter distinguishes truncation, refusal, call and schema errors
     [{ output: { tickId: 7 } }, "output_schema_invalid"],
   ];
   for (const [response, reason] of cases) {
-    const adapter = createMemoryProviderAdapter({ promptLoader: async () => "prompt", invokeStructured: async () => response });
+    const adapter = createMemoryProviderAdapter({
+      promptLoader: async () => "prompt",
+      invokeStructured: async () => response,
+    });
     assert.equal((await adapter.propose(envelope())).reason, reason);
   }
-  const adapter = createMemoryProviderAdapter({ promptLoader: async () => "prompt", invokeStructured: async () => { throw new Error("offline"); } });
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "prompt",
+    invokeStructured: async () => {
+      throw new Error("offline");
+    },
+  });
   assert.equal((await adapter.propose(envelope())).reason, "llm_call_failed");
 });
 
@@ -215,11 +265,11 @@ test("Provider Adapter preserves token usage for unsuccessful structured respons
   const usage = { prompt_tokens: 100, completion_tokens: 20 };
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "prompt",
-    invokeStructured: async () => ({ finishReason: "length", model: "deepseek-v4-flash", usage }),
+    invokeStructured: async () => ({ finishReason: "length", model: "deepseek-flash", usage }),
   });
   const result = await adapter.propose(envelope());
   assert.equal(result.reason, "max_output_truncated");
-  assert.equal(result.model, "deepseek-v4-flash");
+  assert.equal(result.model, "deepseek-flash");
   assert.deepEqual(result.usage, usage);
 });
 
@@ -233,18 +283,27 @@ test("Provider Adapter replays rejected output and feedback as a multi-turn repa
     promptLoader: async () => "base prompt",
     invokeStructured: async (value) => {
       request = value;
-      return { output: { tickId: 7, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } } } };
+      return {
+        output: {
+          tickId: 7,
+          proposer: "episodeProposer",
+          sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } },
+        },
+      };
     },
   });
   const result = await adapter.propose(envelope(), {
-    repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.changes[0].dueAt", message: "days must be non-negative" }] },
+    repairFeedback: {
+      attempt: 1,
+      errors: [{ path: "$.sectionResults.todos.changes[0].dueAt", message: "days must be non-negative" }],
+    },
     rejectedOutput,
   });
   assert.equal(result.status, "ok");
   assert.equal(request.systemPrompt, "base prompt");
   assert.doesNotMatch(request.systemPrompt, /SCHEMA_REPAIR/);
   assert.deepEqual(request.repairContext.assistantOutput, rejectedOutput);
-  assert.match(request.repairContext.userMessage, /\[SCHEMA_REPAIR_V6\]/);
+  assert.match(request.repairContext.userMessage, /\[SCHEMA_REPAIR_V7\]/);
   assert.match(request.repairContext.userMessage, /dueAt.*days must be non-negative/s);
   assert.deepEqual(request.userPayload, buildProposerUserPayload(envelope()));
   assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "taskId"), false);
@@ -259,13 +318,19 @@ test("Provider Adapter keeps the legacy combined-prompt fallback for old repair 
     promptLoader: async () => "base prompt",
     invokeStructured: async (value) => {
       request = value;
-      return { output: { tickId: 7, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } } } };
+      return {
+        output: {
+          tickId: 7,
+          proposer: "episodeProposer",
+          sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } },
+        },
+      };
     },
   });
   await adapter.propose(envelope(), {
     repairFeedback: { attempt: 1, errors: [{ path: "$", message: "invalid" }] },
   });
-  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V6\]/);
+  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V7\]/);
   assert.equal(request.repairContext, null);
 });
 
@@ -283,7 +348,8 @@ test("schema repair adds concise positive enum guidance only for selector errors
 });
 
 test("Provider Adapter accepts the Librarian message-free global maintenance contract", async () => {
-  const librarianEnvelope = buildLibrarianEnvelope({ config: createMemoryTestConfig(),
+  const librarianEnvelope = buildLibrarianEnvelope({
+    config: createMemoryTestConfig(),
     userId: 1,
     presetId: "default",
     state: createInitialMemoryState(),

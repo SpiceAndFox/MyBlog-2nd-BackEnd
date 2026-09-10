@@ -32,9 +32,9 @@
 实际生产 builder 与 compiler，同一组 10 个可修改目标、20 条消息、10 条 Memory 来源，使用 `.env.example` 的 Todo 写入限制：
 
 | 实际发送的 DeepSeek parameters | UTF-8 字节数 |
-| --- | ---: |
-| v1，已有 28 分支优化 | 45,453 |
-| Todo v2，不使用引用 | 10,627 |
+| ------------------------------ | -----------: |
+| v1，已有 28 分支优化           |       45,453 |
+| Todo v2，不使用引用            |       10,627 |
 
 该样本缩小 **76.6%**。完整本地 v2 schema 为 10,265 字节；发送版本包含约束说明，二者不应混用。该数字只衡量 schema，不代表整个请求或账单节省比例。显式 keep/set 会增加部分修改输出的长度。
 
@@ -45,14 +45,14 @@
 - pipeline 测试覆盖新任务协议持久化、schema 修复、归一化审计、旧任务恢复、unable_to_decide 的上下文扩展与绑定 hash 更新。
 - `node --use-env-proxy scripts/probe-memory-v2-provider.js --todo-v2-only`：使用当前 DeepSeek 配置和新完整 prompt，以合成内容请求精确输出。4/4 通过，均返回 tool_arguments；没有读取业务数据或写入数据库。
 
-| API 探测 | prompt tokens | completion tokens |
-| --- | ---: | ---: |
-| noop | 4,369 | 62 |
-| add-relative | 4,418 | 132 |
-| revise-keep | 4,424 | 194 |
-| complete | 4,390 | 94 |
+| API 探测     | prompt tokens | completion tokens |
+| ------------ | ------------: | ----------------: |
+| noop         |         4,369 |                62 |
+| add-relative |         4,418 |               132 |
+| revise-keep  |         4,424 |               194 |
+| complete     |         4,390 |                94 |
 
-请求模型为 `deepseek-v4-flash`，响应 model 为 `deepseek-flash`，thinking=enabled。这些探测验证协议可以被当前 API 接受并返回预期分支；没有做真实业务样本的成对质量评估，不能由这 4 次调用推断首次合法率、事实提取质量、延迟或费用的统计收益。
+请求模型为 `deepseek-flash`，响应 model 为 `deepseek-flash`，thinking=enabled。这些探测验证协议可以被当前 API 接受并返回预期分支；没有做真实业务样本的成对质量评估，不能由这 4 次调用推断首次合法率、事实提取质量、延迟或费用的统计收益。
 
 ## 保留边界
 

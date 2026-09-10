@@ -10,20 +10,24 @@ test("migration telemetry counts actual retries, maintenance calls, and tokens",
   let clock = 0;
   const outputs = [
     {
-      status: "error", reason: "output_schema_invalid", model: "deepseek-v4-flash",
+      status: "error",
+      reason: "output_schema_invalid",
+      model: "deepseek-flash",
       usage: { prompt_tokens: 100, prompt_cache_hit_tokens: 10, completion_tokens: 20, total_tokens: 120 },
     },
     {
-      status: "ok", model: "deepseek-v4-flash",
+      status: "ok",
+      model: "deepseek-flash",
       usage: { input_tokens: 50, output_tokens: 5 },
     },
     {
-      status: "ok", model: "deepseek-v4-flash",
+      status: "ok",
+      model: "deepseek-flash",
       usage: { input_tokens: 40, output_tokens: 4 },
     },
   ];
   const telemetry = createMigrationProviderTelemetry({
-    expectedModel: "deepseek-v4-flash",
+    expectedModel: "deepseek-flash",
     monotonicNow: () => (clock += 5),
   });
   const durableAttempts = [0, 1, 0];
@@ -52,8 +56,12 @@ test("migration telemetry counts actual retries, maintenance calls, and tokens",
 });
 
 test("migration telemetry makes missing token coverage explicit after a thrown call", async () => {
-  const telemetry = createMigrationProviderTelemetry({ expectedModel: "deepseek-v4-flash" });
-  const adapter = telemetry.wrapAdapter({ propose: async () => { throw new Error("network down"); } });
+  const telemetry = createMigrationProviderTelemetry({ expectedModel: "deepseek-flash" });
+  const adapter = telemetry.wrapAdapter({
+    propose: async () => {
+      throw new Error("network down");
+    },
+  });
   await assert.rejects(() => adapter.propose(envelope()), /network down/);
   const report = telemetry.snapshot();
   assert.equal(report.callCount, 1);
@@ -63,12 +71,12 @@ test("migration telemetry makes missing token coverage explicit after a thrown c
 });
 
 test("migration telemetry preserves schema repair options", async () => {
-  const telemetry = createMigrationProviderTelemetry({ expectedModel: "deepseek-v4-flash" });
+  const telemetry = createMigrationProviderTelemetry({ expectedModel: "deepseek-flash" });
   let received;
   const adapter = telemetry.wrapAdapter({
     async propose(_envelope, options) {
       received = options;
-      return { status: "ok", model: "deepseek-v4-flash", usage: { input_tokens: 1, output_tokens: 1 } };
+      return { status: "ok", model: "deepseek-flash", usage: { input_tokens: 1, output_tokens: 1 } };
     },
   });
   const repairFeedback = { attempt: 1, errors: [{ path: "$.dueAt", message: "invalid" }] };
@@ -78,7 +86,8 @@ test("migration telemetry preserves schema repair options", async () => {
 
 test("migration telemetry resolves the expected model from each proposer when the provider omits it", async () => {
   const telemetry = createMigrationProviderTelemetry({
-    expectedModel: (value) => value.task.proposer === "profileRelationshipProposer" ? "profile-model" : "default-model",
+    expectedModel: (value) =>
+      value.task.proposer === "profileRelationshipProposer" ? "profile-model" : "default-model",
   });
   const adapter = telemetry.wrapAdapter({
     propose: async () => ({ status: "error", reason: "llm_call_failed" }),

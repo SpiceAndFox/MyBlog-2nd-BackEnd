@@ -28,7 +28,7 @@ const MODELS = [
     blocksSamplingWhenThinking: true,
   },
   {
-    id: "deepseek-v4-flash",
+    id: "deepseek-flash",
     name: "DeepSeek V4 Flash",
     supportsThinking: true,
     reasoningEfforts: ["max", "high"],

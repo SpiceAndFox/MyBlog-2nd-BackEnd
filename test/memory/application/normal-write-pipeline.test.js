@@ -123,6 +123,66 @@ test("persisted Todo tasks without a protocol marker resume using the legacy sch
   assert.equal(row.stage_payload.providerProtocol.outputProtocol, "legacy-v1");
 });
 
+test("Todo business rejection retries with original v2 output and exact date conflict before evidence-only commit", async () => {
+  const store = fakes();
+  const messages = [
+    { ...message, id: 1, createdAt: "2026-01-01T12:00:00.000Z" },
+    { ...message, id: 2, createdAt: "2026-01-02T12:00:00.000Z", content: "只是再次确认原计划，没有改期", contentHash: sha256("只是再次确认原计划，没有改期") },
+  ];
+  store.repositories.source.getObservedWindow = async () => messages;
+  store.repositories.source.getByIds = async (_u, _p, ids) => messages.filter(m => ids.includes(m.id)).map(m => ({ ...m, userId: 1, presetId: "default" }));
+  const dueAt = "2026-01-03T00:00:00.000Z";
+  store.inspect.state.meta.targetCursors.todos = 1;
+  store.inspect.state.working.todos.push({ id: "todo:old", text: "归还书", actor: "user", requester: "user",
+    status: "overdue", dueAt, becameOverdueAt: dueAt, sourceRefs: [{ messageId: 1, contentHash: message.contentHash }],
+    createdAtMessageId: 1, updatedAtMessageId: 1 });
+  const candidate = { results: { todos: { status: "changes", changes: [{ action: "revise", target: "T1", sources: ["message:1", "message:2"],
+    text: { mode: "keep" }, actor: { mode: "keep" }, requester: { mode: "keep" },
+    due: { mode: "relativeDays", offset: 1, anchorSource: "message:2" },
+  }] } } };
+  const repaired = structuredClone(candidate);
+  repaired.results.todos.changes[0].due = { mode: "keep" };
+  const requests = [];
+  const providerAdapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async request => {
+    requests.push(request);
+    if (requests.length === 2) {
+      assert.deepEqual(request.repairContext.assistantOutput, candidate);
+      const instruction = request.repairContext.userMessage;
+      for (const value of ["$.results.todos.changes[0].due", "T1", dueAt, "2026-01-04T00:00:00.000Z", "2026-09-10T00:00:00.000Z"]) assert.ok(instruction.includes(value), value);
+      assert.match(instruction, /不得为了通过校验编造未来日期/);
+      assert.match(instruction, /若只补充证据/);
+      assert.doesNotMatch(instruction, /sectionResults|dueChange|todo:old/);
+    }
+    return { output: requests.length === 1 ? candidate : repaired, model: "test", outputChannel: "tool_arguments",
+      usage: { prompt_tokens: 100, completion_tokens: 30 }, transportRecovery: "test-recovery" };
+  } });
+  const pipeline = createNormalWritePipeline({ observer: {}, config, repositories: store.repositories, providerAdapter,
+    now: () => new Date("2026-09-10T00:00:00.000Z") });
+  const result = await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1 });
+  assert.equal(result.status, "committed");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].systemPrompt, await loadProposerPrompt("todoProposer", { outputProtocol: "todo-v2" }));
+  assert.equal(requests[0].systemPrompt, requests[1].systemPrompt, "business repair adds no persistent prompt rules");
+  const row = [...store.inspect.tasks.values()][0];
+  const rejected = row.stage_payload.schemaRejectedOutputs[0];
+  assert.equal(rejected.outputKind, "provider_wire");
+  assert.deepEqual(rejected.output, candidate);
+  assert.equal(rejected.protocol.rawSchemaValid, true);
+  assert.equal(rejected.protocol.transportRecovery, "test-recovery");
+  assert.equal(rejected.protocol.schemaHash, row.stage_payload.providerProtocol.schemaHash);
+  const issue = row.stage_payload.schemaRepairFeedback.errors[0];
+  assert.equal(issue.code, "TODO_OVERDUE_REQUIRES_FUTURE_DUE");
+  assert.equal(issue.path, "$.results.todos.changes[0].due");
+  assert.equal(issue.meta.target, "T1");
+  assert.equal(issue.meta.currentDueAt, dueAt);
+  const todo = store.inspect.state.working.todos[0];
+  assert.equal(todo.status, "overdue");
+  assert.equal(todo.dueAt, dueAt);
+  assert.equal(todo.becameOverdueAt, dueAt);
+  assert.deepEqual(todo.sourceRefs.map(ref => ref.messageId), [1, 2]);
+  assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
+});
+
 test("an open provider circuit durably sleeps work instead of polling the same task", async () => {
   const store = fakes();
   const intent = {

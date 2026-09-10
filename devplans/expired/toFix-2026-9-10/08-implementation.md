@@ -28,25 +28,25 @@ The user explicitly approved adding only `"supportRefs":["UP1-E1"]` to the prote
 
 ## 实现与验收对应关系
 
-| 计划 | 实现 | 验证 |
-| --- | --- | --- |
-| P0 写入动作 | 共用 section policy；普通文本 update 改为 revise/correct，recentEpisodes 使用 append；scene correct 保留独立审计动作 | action 矩阵、Unicode 边界、完整结果长度、来源上限 |
-| P0 有界失败 | reducer 固定拼接 ` → `；不截断文本或来源；普通 proposal 机械失败整体拒绝；写入前预演复用持久化 schema repair | 拼接越界、repair 耗尽、重启不重置额度、不推进 cursor |
-| P1 当前证据 | revise/correct 替换来源；append 合并旧来源与新片段来源；compaction 显式选择被合并项的证据 | 119 次连续改写来源不累积；合并证据权限、来源上限 |
-| P1 生命周期 | 创建/修改时间使用任务消息边界，不由来源最大 ID 反推 | normal、scene、Librarian 事件回放恢复相同 state |
-| P1 legacy 调度 | complete_turn / message_batch；按有序消息 ID 划分批次；checkpoint 持久化调度边界，共用 barrier | 无 turn、混合历史、稀疏 ID、配置变化后的重启、periodic/final 去重 |
-| P2 Librarian | 单轮 move/revise/correct/split/merge/remove；split 可留在同栏；remove 仅支持有 keeper 的 duplicate | 来源、身份、时间与回放；其他移除原因拒绝，reports 不修改 state |
-| P2 证据输入 | task 创建时固定摘录；最多 48 个引用、每条 800 字、总计不超过 12,000 字 | 原文缺失、hash/scope 不匹配和预算不足的别名不可选择；不截断权威来源 |
-| 事务与恢复 | 复用 task/revision/transaction 生命周期；提交时重新验证来源；Librarian 编译和 reducer 错误进入有界 repair | state/snapshot/group/events/checkpoint/task 六个写入边界故障回滚；恢复重用结果，不重复调用或提交 |
-| 诊断 | inspect 输出字符数、来源数；shadow/eval 输出 action、拒绝原因、结果尺寸和逐栏 before/after；写入拒绝指标 | 全量离线回归与合成 API 评估 |
+| 计划           | 实现                                                                                                                 | 验证                                                                                             |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| P0 写入动作    | 共用 section policy；普通文本 update 改为 revise/correct，recentEpisodes 使用 append；scene correct 保留独立审计动作 | action 矩阵、Unicode 边界、完整结果长度、来源上限                                                |
+| P0 有界失败    | reducer 固定拼接 `→`；不截断文本或来源；普通 proposal 机械失败整体拒绝；写入前预演复用持久化 schema repair           | 拼接越界、repair 耗尽、重启不重置额度、不推进 cursor                                             |
+| P1 当前证据    | revise/correct 替换来源；append 合并旧来源与新片段来源；compaction 显式选择被合并项的证据                            | 119 次连续改写来源不累积；合并证据权限、来源上限                                                 |
+| P1 生命周期    | 创建/修改时间使用任务消息边界，不由来源最大 ID 反推                                                                  | normal、scene、Librarian 事件回放恢复相同 state                                                  |
+| P1 legacy 调度 | complete_turn / message_batch；按有序消息 ID 划分批次；checkpoint 持久化调度边界，共用 barrier                       | 无 turn、混合历史、稀疏 ID、配置变化后的重启、periodic/final 去重                                |
+| P2 Librarian   | 单轮 move/revise/correct/split/merge/remove；split 可留在同栏；remove 仅支持有 keeper 的 duplicate                   | 来源、身份、时间与回放；其他移除原因拒绝，reports 不修改 state                                   |
+| P2 证据输入    | task 创建时固定摘录；最多 48 个引用、每条 800 字、总计不超过 12,000 字                                               | 原文缺失、hash/scope 不匹配和预算不足的别名不可选择；不截断权威来源                              |
+| 事务与恢复     | 复用 task/revision/transaction 生命周期；提交时重新验证来源；Librarian 编译和 reducer 错误进入有界 repair            | state/snapshot/group/events/checkpoint/task 六个写入边界故障回滚；恢复重用结果，不重复调用或提交 |
+| 诊断           | inspect 输出字符数、来源数；shadow/eval 输出 action、拒绝原因、结果尺寸和逐栏 before/after；写入拒绝指标             | 全量离线回归与合成 API 评估                                                                      |
 
 配置默认值集中在 `modules/memory/contracts/sectionPolicy.js`，创建 task 时捕获，重试沿用原值：
 
-| Section | 单项字符 | 来源数量 | append 增量 |
-| --- | ---: | ---: | ---: |
-| scene / todos / standingAgreements / milestones / worldFacts / relationship | 300 | 16 | 不支持 |
-| userProfile / assistantProfile | 200 | 16 | 不支持 |
-| recentEpisodes | 600 | 32 | 160 |
+| Section                                                                     | 单项字符 | 来源数量 | append 增量 |
+| --------------------------------------------------------------------------- | -------: | -------: | ----------: |
+| scene / todos / standingAgreements / milestones / worldFacts / relationship |      300 |       16 |      不支持 |
+| userProfile / assistantProfile                                              |      200 |       16 |      不支持 |
+| recentEpisodes                                                              |      600 |       32 |         160 |
 
 这些是写入上限，不是模型一定能无损压缩到该长度的承诺。无法可靠压缩时允许 unable_to_compact，保留现有 halted/manual-resume 流程。容量维护继续保护被 pending proposal 引用的 item。
 
@@ -67,7 +67,7 @@ API 参考：[DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_m
 - 受保护 JSON 示例逐块对照 HEAD：只有已明确批准的 compaction 常规示例增加 supportRefs；其他示例原样保留。
 - `git diff --check` 通过。
 
-最终 `npm run eval:memory-v2-integrity`：deepseek-v4-flash，thinking enabled / low，**10/10** 通过机械约束和对应定向质量断言：
+最终 `npm run eval:memory-v2-integrity`：deepseek-flash，thinking enabled / low，**10/10** 通过机械约束和对应定向质量断言：
 
 1. 开启 thinking 的修复请求。
 2. 情绪互动不写入 worldFacts。
