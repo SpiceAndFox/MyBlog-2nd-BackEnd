@@ -330,7 +330,7 @@ function createNormalProviderRecovery({
         );
       }
       if (result.status !== "error") {
-        const validation = validateProviderOutput(result.output, envelope);
+        const validation = await validateProviderOutput(result.output, envelope);
         if (!validation.ok) {
           result = {
             status: "error",

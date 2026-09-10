@@ -144,7 +144,7 @@ async function inspectMemory({ db, memory, userId, presetId, sections }) {
   if (rows[0].memory_state === null) throw new Error(`Memory state is not initialized: userId=${userId}, presetId=${presetId}`);
 
   const state = memory.contracts.assertMemoryState(rows[0].memory_state);
-  return renderMemorySections({
+  const rendered = renderMemorySections({
     state,
     targetStatuses: rows[0].target_statuses,
     diagnostics: rows[0].diagnostics,
@@ -153,6 +153,8 @@ async function inspectMemory({ db, memory, userId, presetId, sections }) {
     renderTodo: memory.domain.renderTodo,
     renderScene: memory.domain.renderScene,
   });
+  const stats = memory.domain.summarizeMemoryItems(state).filter(item => sections.includes(item.section));
+  return rendered + "\n\n[写入尺寸诊断]\n" + stats.map(item => `${item.section}/${item.itemId || item.field}: chars=${item.chars}, sources=${item.sourceCount}`).join("\n");
 }
 
 async function main(argv = process.argv.slice(2), dependencies = {}) {

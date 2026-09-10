@@ -12,17 +12,7 @@ const FLAT_WIRE_SOURCE_PREFIXES = Object.freeze({
   message: "message:",
   memory: "memory:",
 });
-const SECTION_ACTIONS = Object.freeze({
-  scene: Object.freeze(["set", "correct", "clear", "forget"]),
-  todos: Object.freeze(["add", "update", "correct", "forget", "complete", "cancel", "expire"]),
-  standingAgreements: Object.freeze(["add", "update", "correct", "forget", "cancel"]),
-  recentEpisodes: Object.freeze(["add", "update", "correct", "forget"]),
-  milestones: Object.freeze(["add", "update", "correct", "forget"]),
-  worldFacts: Object.freeze(["add", "update", "correct", "forget"]),
-  userProfile: Object.freeze(["add", "update", "correct", "forget"]),
-  assistantProfile: Object.freeze(["add", "update", "correct", "forget"]),
-  relationship: Object.freeze(["add", "update", "correct", "forget"]),
-});
+const { SECTION_ACTIONS, sectionLimits } = require("../../contracts/sectionPolicy");
 const BASE_CHANGE_FIELDS = Object.freeze(["section", "action", "target", "text", "sources"]);
 const TODO_CHANGE_FIELDS = Object.freeze([
   ...BASE_CHANGE_FIELDS,
@@ -78,7 +68,7 @@ function buildFlatWireOutputSchema(proposer, targetSections) {
       ...(sections.every((section) => PROFILE_TEXT_MAX_CHARS[section])
         ? { maxLength: Math.max(...sections.map((section) => PROFILE_TEXT_MAX_CHARS[section])) }
         : {}),
-      description: "Atomic replacement text. Omit for terminal actions.",
+      description: "Full result text, except append: only the new fragment. Omit for terminal actions.",
     },
     sources: {
       type: "array",
@@ -160,6 +150,8 @@ function bindFlatWireOutputSchema(schema, artifact, sections) {
   const readOnlyRefs = Object.keys(artifact?.refMap?.readOnly || {}).sort();
   const properties = bound.schema?.properties?.changes?.items?.properties;
   if (!properties) return bound;
+  properties.text.maxLength = Math.max(...selected.map((section) => sectionLimits(section, artifact?.publicInput?.task).maxItemChars));
+  properties.sources.maxItems = Math.max(...selected.map((section) => sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs));
   if (writableRefs.length) properties.target = { ...properties.target, enum: writableRefs };
   else {
     delete properties.target;

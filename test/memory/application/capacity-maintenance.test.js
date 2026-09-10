@@ -28,7 +28,7 @@ function compiledNormalOutput(envelope) {
   return { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "addItem", value: { text: "归还杂志", actor: "user", requester: "user", dueAt: null }, sourceRefs: [{ messageId: 3, contentHash: message.contentHash }] }] } } };
 }
 function compactionOutput(envelope) {
-  return { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "merge", refs: ["T1", "T2"], text: "归还借阅物" }] } } };
+  return { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "changes", changes: [{ action: "merge", refs: ["T1", "T2"], text: "归还借阅物", supportRefs: ["T1-E1", "T2-E1"] }] } } };
 }
 
 function store() {
@@ -226,7 +226,7 @@ test("compaction reducer rejects pending item intersections without changing sta
   const state = createInitialMemoryState();
   state.working.todos.push(todo("todo:1", "A", 1), todo("todo:2", "B", 2));
   const task = { tickId: 1, userId: 1, presetId: "default", schemaVersion: "2.01", targetKey: "todos", targetMessageId: 3, targetSections: ["todos"], proposer: "compactionProposer", mode: "maintenance", now: "2026-07-13T00:00:00Z" };
-  const proposal = { tickId: 1, proposer: "compactionProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "mergeItems", itemIds: ["todo:1", "todo:2"], value: { text: "AB" } }] } } };
+  const proposal = { tickId: 1, proposer: "compactionProposer", sectionResults: { todos: { status: "patches", patches: [{ op: "mergeItems", itemIds: ["todo:1", "todo:2"], value: { text: "AB" }, sourceRefs: state.working.todos.flatMap((item) => item.sourceRefs) }] } } };
   const reduction = reduceCompiledProposal({ state, task, proposal, config, protectedItemIds: ["todo:1"], idFactory: () => "patch" });
   assert.equal(reduction.events[0].decision, "rejected");
   assert.equal(reduction.events[0].rejectReason, "item_protected_by_pending_proposal");

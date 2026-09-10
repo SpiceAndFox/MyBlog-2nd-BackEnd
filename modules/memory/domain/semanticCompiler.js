@@ -43,7 +43,7 @@ function resolveSupportRef(artifact, state, ref) {
   const authoritative = resolveStateEntry(state, entry);
   if (!authoritative) fail("ref_resolution_failed", { selector: "supportRef", ref, reason: "support_missing" });
   const actualRefs = normalizeSourceRefs(authoritative.sourceRefs);
-  if (!actualRefs.length || !isDeepStrictEqual(actualRefs, entry.sourceRefs)) {
+  if (!actualRefs.length || !entry.sourceRefs.every((ref) => actualRefs.some((actual) => isDeepStrictEqual(actual, ref)))) {
     fail("ref_resolution_failed", { selector: "supportRef", ref, reason: "support_changed" });
   }
   return entry;
@@ -68,9 +68,7 @@ function collectSourceSelectors(artifact, state, semanticResult) {
     for (const change of result.changes) {
       if (change.action === "merge") {
         for (const ref of change.refs) resolveWritableRef(artifact, state, section, ref);
-        continue;
-      }
-      if (change.action !== "add") resolveWritableRef(artifact, state, section, change.ref);
+      } else if (change.action !== "add") resolveWritableRef(artifact, state, section, change.ref);
       for (const id of change.evidenceMessageIds || []) directIds.add(id);
       for (const ref of change.supportRefs || []) supportRefs.set(ref, resolveSupportRef(artifact, state, ref));
     }
@@ -164,13 +162,19 @@ function compileTodoValue(change, messageById, task) {
 function compileChange({ change, section, artifact, state, messageById, task }) {
   if (change.action === "merge") {
     const entries = change.refs.map((ref) => resolveWritableRef(artifact, state, section, ref));
-    return { op: "mergeItems", itemIds: entries.map((entry) => entry.itemId), value: { text: change.text } };
+    for (const ref of change.supportRefs) {
+      const support = artifact.refMap.readOnly[ref];
+      if (!entries.some((entry) => entry.section === support?.section && entry.itemId === support.itemId)) {
+        fail("ref_resolution_failed", { selector: "supportRef", ref, reason: "not_a_merge_source" });
+      }
+    }
+    return { op: "mergeItems", itemIds: entries.map((entry) => entry.itemId), value: { text: change.text }, sourceRefs: sourcesForChange(change, artifact, messageById) };
   }
   const sourceRefs = sourcesForChange(change, artifact, messageById);
   if (section === "scene") {
     const target = resolveWritableRef(artifact, state, section, change.ref);
     if (["clear", "forget"].includes(change.action)) return { op: "clearField", path: target.path, sourceRefs };
-    return { op: "setField", path: target.path, value: change.text, sourceRefs };
+    return { op: change.action === "correct" ? "correctField" : "setField", path: target.path, value: change.text, sourceRefs };
   }
   let target = null;
   if (change.action !== "add") target = resolveWritableRef(artifact, state, section, change.ref);
@@ -178,9 +182,9 @@ function compileChange({ change, section, artifact, state, messageById, task }) 
     const value = section === "todos" ? compileTodoValue(change, messageById, task) : { text: change.text };
     return { op: "addItem", value, sourceRefs };
   }
-  if (["update", "correct"].includes(change.action)) {
+  if (["append", "revise", "correct"].includes(change.action)) {
     const value = section === "todos" ? compileTodoValue(change, messageById, task) : { text: change.text };
-    return { op: "updateItem", itemId: target.itemId, value, sourceRefs };
+    return { op: `${change.action}Item`, itemId: target.itemId, value, sourceRefs };
   }
   const terminalOps = {
     forget: "forgetItem",

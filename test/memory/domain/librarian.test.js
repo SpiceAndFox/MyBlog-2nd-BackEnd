@@ -38,7 +38,7 @@ function fixture() {
     presetId: "default",
     state,
     boundaryMessageId: 4,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "periodic",
     now: "2026-07-26T00:00:00.000Z",
     userTimeZone: "Asia/Shanghai",
@@ -53,7 +53,7 @@ test("Librarian Renderer exposes every allowed section as writable without persi
   assert.deepEqual(envelope.artifact.publicInput.messages, []);
   assert.equal(envelope.artifact.publicInput.memoryText.includes("agreement:1"), false);
   assert.equal(envelope.artifact.publicInput.memoryText.includes("sha256:"), false);
-  assert.equal(Object.keys(envelope.artifact.refMap.readOnly).length, 0);
+  assert.equal(Object.keys(envelope.artifact.refMap.readOnly).length, 5);
   assert.equal(Object.keys(envelope.artifact.refMap.writable).length, 5);
   for (const ref of ["A1", "W1", "UP1", "AP1", "R1"]) {
     assert.match(envelope.artifact.publicInput.memoryText, new RegExp(`${ref} \\|`));
@@ -71,7 +71,7 @@ test("Librarian validates conflicts before compilation", () => {
     status: "changes",
     operations: [
       { action: "move", ref: "W1", toSection: "userProfile" },
-      { action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
+      { action: "merge", refs: ["W1", "UP1"], supportRefs: ["UP1-E1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
     ],
   };
   const validation = validateLibrarianSemanticResult(result, envelope.artifact);
@@ -87,7 +87,7 @@ test("Librarian validates target-specific text limits before compilation", () =>
     status: "changes",
     operations: [{
       action: "merge",
-      refs: ["W1", "UP1"],
+      refs: ["W1", "UP1"], supportRefs: ["UP1-E1"],
       toSection: "userProfile",
       text: "长".repeat(201),
     }],
@@ -107,7 +107,7 @@ test("Librarian merge is cross-section, provenance preserving, and revision atom
     proposer: "librarianProposer",
     status: "changes",
     operations: [
-      { action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
+      { action: "merge", refs: ["W1", "UP1"], supportRefs: ["UP1-E1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
     ],
   };
   const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
@@ -124,18 +124,18 @@ test("Librarian merge is cross-section, provenance preserving, and revision atom
   assert.equal(reduction.state.longTerm.worldFacts.length, 0);
   assert.equal(reduction.state.longTerm.userProfile.length, 1);
   assert.equal(reduction.state.longTerm.userProfile[0].id, "userProfile:merged");
-  assert.deepEqual(reduction.state.longTerm.userProfile[0].sourceRefs.map((ref) => ref.messageId), [2, 3]);
+  assert.deepEqual(reduction.state.longTerm.userProfile[0].sourceRefs.map((ref) => ref.messageId), [3]);
   assert.equal(reduction.events[0].normalizedOperation.sources.length, 2);
 });
 
-test("Librarian dropDuplicate preserves keeper identity/text/creation while merging evidence", () => {
+test("Librarian dropDuplicate preserves keeper identity/text/creation and evidence unchanged", () => {
   const { state, envelope } = fixture();
   const semanticResult = {
     tickId: 7,
     proposer: "librarianProposer",
     status: "changes",
     operations: [
-      { action: "dropDuplicate", keeperRef: "UP1", duplicateRefs: ["W1"] },
+      { action: "remove", ref: "W1", keeperRef: "UP1", reason: "duplicate" },
     ],
   };
   const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
@@ -145,7 +145,7 @@ test("Librarian dropDuplicate preserves keeper identity/text/creation while merg
   assert.equal(keeper.text, "用户偏好简洁回答。");
   assert.equal(keeper.createdAtMessageId, 3);
   assert.equal(keeper.updatedAtMessageId, 3);
-  assert.deepEqual(keeper.sourceRefs.map((ref) => ref.messageId), [2, 3]);
+  assert.deepEqual(keeper.sourceRefs.map((ref) => ref.messageId), [3]);
 });
 
 test("Librarian rejects the whole proposal when a target section exceeds capacity", () => {
@@ -194,4 +194,72 @@ test("Librarian normalized events deterministically replay a cross-section revis
   };
   const events = reduction.events.map((event, index) => mapEventToRow(event, envelope, "group-1", index));
   assert.deepEqual(replayEventGroups(state, [group], events, { userId: 1, presetId: "default" }), reduction.state);
+});
+
+function runOperation(f, operations) {
+  const semanticResult = { tickId: f.envelope.task.tickId, proposer: "librarianProposer", status: "changes", operations };
+  const proposal = compileLibrarianProposal({ artifact: f.envelope.artifact, semanticResult, baseState: f.state });
+  return reduceLibrarianProposal({ state: f.state, task: f.envelope.task, proposal, config: createMemoryTestConfig(), idFactory: sequence("one", "two", "three") });
+}
+function verifyReplay(f, reduction) {
+  const group = { event_group_id: "group", user_id: 1, preset_id: "default", task_id: "librarian-task", target_key: "librarian", source_generation: 0, schema_version: "2.01", base_revision: 4, result_revision: 5, cursor_before: null, cursor_after: null, group_kind: "maintenance" };
+  assert.deepEqual(replayEventGroups(f.state, [group], reduction.events.map((event, i) => mapEventToRow(event, f.envelope, "group", i)), { userId: 1, presetId: "default" }), reduction.state);
+}
+for (const action of ["revise", "correct"]) {
+  test("Librarian " + action + " replaces evidence and replays without changing identity", () => {
+    const f = fixture();
+    const reduction = runOperation(f, [{ action, ref: "W1", text: "用户当前偏好短回答。", supportRefs: ["UP1-E1"] }]);
+    const item = reduction.state.longTerm.worldFacts[0];
+    assert.deepEqual(item.sourceRefs, f.state.longTerm.userProfile[0].sourceRefs);
+    assert.equal(item.createdAtMessageId, 2);
+    assert.equal(item.updatedAtMessageId, 4);
+    assert.equal(item.id, "worldFact:1");
+    verifyReplay(f, reduction);
+  });
+}
+test("same-section split selects evidence independently and records new creation boundaries", () => {
+  const f = fixture();
+  const original = f.state.longTerm.userProfile[0];
+  original.text = "用户在杭州工作；用户喜欢绘画。";
+  original.sourceRefs = [original.sourceRefs[0], { messageId: 4, contentHash: sha256("painting") }];
+  original.updatedAtMessageId = 4;
+  f.envelope = buildLibrarianEnvelope({ ...f.envelope.task, state: f.state });
+  const reduction = runOperation(f, [{ action: "split", ref: "UP1", parts: [
+    { toSection: "userProfile", text: "用户在杭州工作。", supportRefs: ["UP1-E1"] },
+    { toSection: "userProfile", text: "用户喜欢绘画。", supportRefs: ["UP1-E2"] },
+  ] }]);
+  assert.deepEqual(reduction.state.longTerm.userProfile.map(item => item.sourceRefs.map(ref => ref.messageId)), [[3], [4]]);
+  assert.ok(reduction.state.longTerm.userProfile.every(item => item.createdAtMessageId === 4 && item.updatedAtMessageId === 4));
+  assert.equal(f.state.longTerm.userProfile.length, 1);
+  verifyReplay(f, reduction);
+});
+test("merge and duplicate removal replay with bounded explicit evidence", () => {
+  for (const operation of [
+    { action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "用户偏好简洁回答。", supportRefs: ["UP1-E1"] },
+    { action: "remove", ref: "W1", keeperRef: "UP1", reason: "duplicate" },
+  ]) {
+    const f = fixture(); const reduction = runOperation(f, [operation]);
+    assert.equal(reduction.state.longTerm.userProfile[0].sourceRefs.length, 1);
+    if (operation.action === "remove") assert.deepEqual(reduction.state.longTerm.userProfile[0], f.state.longTerm.userProfile[0]);
+    verifyReplay(f, reduction);
+  }
+});
+test("Librarian rejects foreign evidence, unsupported removal and overlong move atomically", () => {
+  const f = fixture(); const before = structuredClone(f.state);
+  assert.throws(() => runOperation(f, [{ action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "合并", supportRefs: ["AP1-E1"] }]), /evidence_owner_invalid/);
+  assert.throws(() => runOperation(f, [{ action: "remove", ref: "W1", keeperRef: "UP1", reason: "unsupported_section" }]), /semantic_schema_invalid/);
+  f.state.longTerm.worldFacts[0].text = "长".repeat(201);
+  const invalidBefore = structuredClone(f.state);
+  assert.throws(() => runOperation(f, [{ action: "move", ref: "W1", toSection: "userProfile" }]), /text_length_exceeded/);
+  assert.deepEqual(f.state, invalidBefore);
+  f.state.longTerm.worldFacts[0].text = before.longTerm.worldFacts[0].text;
+  assert.deepEqual(f.state, before);
+});
+test("Librarian reports do not mutate memory and stale revision cannot commit", () => {
+  const f = fixture();
+  const semanticResult = { tickId: 7, proposer: "librarianProposer", status: "noop", operations: [], reports: [{ ref: "W1", reason: "unsupported_section" }] };
+  const proposal = compileLibrarianProposal({ artifact: f.envelope.artifact, semanticResult, baseState: f.state });
+  assert.deepEqual(reduceLibrarianProposal({ state: f.state, task: f.envelope.task, proposal, config: createMemoryTestConfig() }).state, f.state);
+  f.state.meta.revision++;
+  assert.throws(() => runOperation(f, [{ action: "move", ref: "W1", toSection: "userProfile" }]), /revision_mismatch/);
 });

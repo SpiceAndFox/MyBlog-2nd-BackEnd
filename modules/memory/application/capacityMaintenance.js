@@ -3,6 +3,7 @@ const { validateSemanticResult } = require("../contracts");
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
 const { compileSemanticResult, revalidateCompiledProposal } = require("./semanticCompiler");
 const { buildMaintenanceEnvelope, maintenanceDedupeKey } = require("./envelope");
+const { hydrateEvidenceInput } = require("./evidenceInput");
 const { mapEventToRow } = require("./eventMapper");
 const { isDeepStrictEqual } = require("node:util");
 const { buildDeterministicExactMergeOutput, sectionItems } = require("../domain/itemDeduplication");
@@ -76,6 +77,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
 
   async function createChild(parentEnvelope, state, violation, resumeEpoch, client) {
     const envelope = buildMaintenanceEnvelope({ parentEnvelope, state, section: violation.section, violation, resumeEpoch, config });
+    await hydrateEvidenceInput(envelope, repositories.source, { client });
     const row = await repositories.runtime.createTask(maintenanceTaskRow(envelope), { client });
     return rowValue(row, "task_payload", "taskPayload") || envelope;
   }
@@ -322,6 +324,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       if (TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) return { status: rowValue(task, "stage", "stage"), duplicate: true };
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
+      if (state.meta.revision !== envelope.task.baseRevision) return { status: "stale", reason: "revision_mismatch" };
       const parentEnvelope = rowValue(parent, "task_payload", "taskPayload");
       if (hygiene) {
         if (state.meta.revision !== envelope.task.baseRevision) return { status: "stale", reason: "revision_mismatch" };
@@ -331,6 +334,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       payload.compiledProposal = structuredClone(output);
       await repositories.runtime.updateTask(envelope.task.taskId, { status: "running", stage: "compacting", stage_payload: payload }, { client });
+      await revalidateCompiledProposal({ proposal: output, task: envelope.task, baseState: state, sourceReader: repositories.source, userId: envelope.task.userId, presetId: envelope.task.presetId, client });
       const reduction = reduceCompiledProposal({
         state,
         task: envelope.task,

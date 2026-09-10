@@ -9,7 +9,9 @@ const { isDeepStrictEqual } = require("node:util");
 const {
   nextLibrarianPeriodicOrdinal,
   furthestLibrarianBarrierCursor,
-  findAlignedLibrarianTurn,
+  findAlignedLibrarianBoundary,
+  buildRebuildLibrarianSchedule,
+  validateRebuildLibrarianSchedule,
 } = require("../domain/librarianSchedule");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
@@ -456,14 +458,28 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
 
   async function forceDrainTo(userId, presetId, options) {
     const { sourceGeneration, boundaryMessageId } = options;
-    const turns = await repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId);
     const checkpoint = await repositories.runtime.getLibrarianCheckpoint(userId, presetId, sourceGeneration);
-    let completed = Number(rowValue(checkpoint, "completed_turn_ordinal", "completedTurnOrdinal") ?? 0);
+    let schedule = rowValue(checkpoint, "rebuild_schedule", "rebuildSchedule");
+    if (!schedule) {
+      const [messages, turns] = await Promise.all([
+        repositories.source.listSchedulingMessages(userId, presetId, boundaryMessageId),
+        repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId),
+      ]);
+      schedule = await repositories.runtime.initializeLibrarianRebuildSchedule(userId, presetId, sourceGeneration,
+        buildRebuildLibrarianSchedule({ messages, turns, sourceBoundary: boundaryMessageId,
+          lagThreshold: config.librarian.lagThreshold, messageBatchSize: config.librarian.messageBatchSize }));
+    }
+    validateRebuildLibrarianSchedule(schedule, boundaryMessageId);
+    const turns = schedule.boundaries;
+    const checkpointKind = rowValue(checkpoint, "watermark_kind", "watermarkKind") ?? "complete_turn";
+    let completed = checkpointKind === schedule.watermarkKind
+      ? Number(rowValue(checkpoint, "completed_ordinal", "completedOrdinal") ?? 0)
+      : turns.filter((entry) => entry.boundaryMessageId <= Number(rowValue(checkpoint, "boundary_message_id", "boundaryMessageId") ?? 0)).length;
     const results = [];
     const alignPeriodicBoundary = async (desiredOrdinal) => {
       const state = await repositories.state.getState(userId, presetId);
       if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale" };
-      const aligned = findAlignedLibrarianTurn(turns, {
+      const aligned = findAlignedLibrarianBoundary(turns, {
         minimumOrdinal: desiredOrdinal,
         minimumBoundaryMessageId: furthestLibrarianBarrierCursor(state),
       });
@@ -471,14 +487,14 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     };
     let nextOrdinal = nextLibrarianPeriodicOrdinal(
       completed,
-      config.librarian.lagThreshold,
+      schedule.interval,
     );
     while (nextOrdinal <= turns.length) {
       const aligned = await alignPeriodicBoundary(nextOrdinal);
       if (aligned.status === "stale") return { status: "stale", sourceGeneration, results };
       if (aligned.status === "awaiting_complete_turn") break;
       const periodicBoundary = aligned.boundaryMessageId;
-      const periodicOrdinal = aligned.turnOrdinal;
+      const periodicOrdinal = aligned.watermarkOrdinal;
       const drained = await forceDrainTargetsTo(userId, presetId, {
         ...options,
         boundaryMessageId: periodicBoundary,
@@ -490,7 +506,8 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       const maintained = await librarian.runAt(userId, presetId, {
         sourceGeneration,
         boundaryMessageId: periodicBoundary,
-        turnOrdinal: periodicOrdinal,
+        watermarkOrdinal: periodicOrdinal,
+        watermarkKind: schedule.watermarkKind,
         triggerType: "rebuild",
         skipBarrier: true,
       });
@@ -508,7 +525,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       completed = periodicOrdinal;
       nextOrdinal = nextLibrarianPeriodicOrdinal(
         completed,
-        config.librarian.lagThreshold,
+        schedule.interval,
       );
     }
     const drained = await forceDrainTargetsTo(userId, presetId, {
@@ -521,6 +538,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     const final = await librarian.runFinal(userId, presetId, boundaryMessageId, {
       triggerType: "rebuild_final",
       skipBarrier: true,
+      schedule,
     });
     results.push(...(final.results || []));
     if (final.status !== "completed") {

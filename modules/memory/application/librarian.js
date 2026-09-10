@@ -8,7 +8,7 @@ const {
 const {
   nextLibrarianPeriodicOrdinal,
   furthestLibrarianBarrierCursor,
-  findAlignedLibrarianTurn,
+  findAlignedLibrarianBoundary,
 } = require("../domain/librarianSchedule");
 
 const MAX_REVISION_REBASE_ATTEMPTS = 4;
@@ -74,7 +74,8 @@ function createMemoryLibrarian({
   async function runAt(userId, presetId, {
     sourceGeneration,
     boundaryMessageId,
-    turnOrdinal,
+    watermarkOrdinal,
+    watermarkKind = "complete_turn",
     triggerType,
     skipBarrier = false,
   } = {}) {
@@ -87,7 +88,8 @@ function createMemoryLibrarian({
       }
       const envelope = await taskExecutor.createTask(userId, presetId, {
         boundaryMessageId,
-        turnOrdinal,
+        watermarkOrdinal,
+        watermarkKind,
         triggerType,
       });
       const result = await taskExecutor.processEnvelope(envelope);
@@ -112,9 +114,13 @@ function createMemoryLibrarian({
     );
     let completedOrdinal = Number(rowValue(
       checkpoint,
-      "completed_turn_ordinal",
-      "completedTurnOrdinal",
+      "completed_ordinal",
+      "completedOrdinal",
     ) ?? 0);
+    if ((rowValue(checkpoint, "watermark_kind", "watermarkKind") ?? "complete_turn") !== "complete_turn") {
+      const completedBoundary = Number(rowValue(checkpoint, "boundary_message_id", "boundaryMessageId") ?? 0);
+      completedOrdinal = turns.filter((entry) => entry.boundaryMessageId <= completedBoundary).length;
+    }
     const results = [];
     let nextOrdinal = nextLibrarianPeriodicOrdinal(
       completedOrdinal,
@@ -125,7 +131,7 @@ function createMemoryLibrarian({
       if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) {
         return { status: "stale", reason: "generation_mismatch", results };
       }
-      const aligned = findAlignedLibrarianTurn(turns, {
+      const aligned = findAlignedLibrarianBoundary(turns, {
         minimumOrdinal: nextOrdinal,
         minimumBoundaryMessageId: furthestLibrarianBarrierCursor(current),
       });
@@ -140,7 +146,7 @@ function createMemoryLibrarian({
       const result = await runAt(userId, presetId, {
         sourceGeneration: state.meta.sourceGeneration,
         boundaryMessageId: aligned.boundaryMessageId,
-        turnOrdinal: aligned.turnOrdinal,
+        watermarkOrdinal: aligned.watermarkOrdinal,
         triggerType,
         skipBarrier,
       });
@@ -148,7 +154,7 @@ function createMemoryLibrarian({
       if (!TERMINAL_RUN_STATUSES.has(result.status)) {
         return { status: "incomplete", reason: "librarian_not_terminal", results };
       }
-      completedOrdinal = aligned.turnOrdinal;
+      completedOrdinal = aligned.watermarkOrdinal;
       nextOrdinal = nextLibrarianPeriodicOrdinal(
         completedOrdinal,
         config.librarian.lagThreshold,
@@ -160,10 +166,12 @@ function createMemoryLibrarian({
   async function runFinal(userId, presetId, boundaryMessageId, {
     triggerType = "rebuild_final",
     skipBarrier = false,
+    schedule = null,
   } = {}) {
     const state = await repositories.state.getState(userId, presetId);
     if (!state) return { status: "skipped", reason: "state_missing" };
-    const turns = await repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId);
+    const turns = schedule?.boundaries || await repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId);
+    const watermarkKind = schedule?.watermarkKind || "complete_turn";
     const ordinal = turns.length;
     const checkpoint = await repositories.runtime.getLibrarianCheckpoint(
       userId,
@@ -177,16 +185,18 @@ function createMemoryLibrarian({
     ) ?? -1);
     const checkpointOrdinal = Number(rowValue(
       checkpoint,
-      "completed_turn_ordinal",
-      "completedTurnOrdinal",
+      "completed_ordinal",
+      "completedOrdinal",
     ) ?? -1);
-    if (checkpointBoundary === boundaryMessageId && checkpointOrdinal === ordinal) {
+    if (checkpointBoundary === boundaryMessageId && checkpointOrdinal === ordinal
+      && (rowValue(checkpoint, "watermark_kind", "watermarkKind") ?? "complete_turn") === watermarkKind) {
       return { status: "completed", deduplicated: true, results: [] };
     }
     const result = await runAt(userId, presetId, {
       sourceGeneration: state.meta.sourceGeneration,
       boundaryMessageId,
-      turnOrdinal: ordinal,
+      watermarkOrdinal: ordinal,
+      watermarkKind,
       triggerType,
       skipBarrier,
     });

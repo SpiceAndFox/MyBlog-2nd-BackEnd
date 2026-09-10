@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { captureWriteLimits } = require("../contracts/sectionPolicy");
 const { SCHEMA_VERSION, validateRendererArtifact } = require("../contracts");
 const {
   buildProposerTaskArtifact,
@@ -27,6 +28,7 @@ function buildNormalEnvelope({
     taskId,
     tickId,
     overdueTodoLimit: config?.overdueTodos?.maxRenderedItems,
+    config,
   });
   const publicTask = artifact.publicInput.task;
   return {
@@ -77,12 +79,13 @@ function buildMaintenanceEnvelope({
     targetMessageId,
     now: new Date(parentEnvelope.task.now).toISOString(),
     userTimeZone: parentEnvelope.task.userTimeZone ?? "UTC",
+    writeLimits: parentEnvelope.task.writeLimits || captureWriteLimits(config),
   };
   const rendered = renderMemoryAndRefs(state, "compactionProposer", [section], {
     overdueTodoLimit: config?.overdueTodos?.maxRenderedItems,
   });
   const artifact = {
-    publicInput: { task: publicTask, memoryText: rendered.memoryText, messages: [] },
+    publicInput: { task: publicTask, memoryText: rendered.memoryText, evidenceText: rendered.evidenceText, messages: [] },
     refMap: rendered.refMap,
     messageMeta: {},
   };

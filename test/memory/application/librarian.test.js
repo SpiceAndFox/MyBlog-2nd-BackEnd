@@ -49,7 +49,7 @@ function store({ completeTurnCount = LIBRARIAN_INTERVAL_TURNS } = {}) {
     async upsertLibrarianCheckpoint(_u, _p, value) {
       checkpoint = {
         source_generation: value.sourceGeneration,
-        completed_turn_ordinal: value.completedTurnOrdinal,
+        completed_ordinal: value.completedOrdinal,
         boundary_message_id: value.boundaryMessageId,
         last_task_id: value.lastTaskId,
       };
@@ -58,7 +58,15 @@ function store({ completeTurnCount = LIBRARIAN_INTERVAL_TURNS } = {}) {
   };
   return {
     repositories: {
-      withTransaction: async (work) => work({}),
+      withTransaction: async (work) => {
+        const before = structuredClone({ state, tasks: [...tasks], snapshots, groups, events, ops, checkpoint });
+        try { return await work({}); } catch (error) {
+          state = before.state; checkpoint = before.checkpoint;
+          tasks.clear(); for (const [key, row] of before.tasks) tasks.set(key, row);
+          for (const [list, previous] of [[snapshots, before.snapshots], [groups, before.groups], [events, before.events], [ops, before.ops]]) list.splice(0, list.length, ...previous);
+          throw error;
+        }
+      },
       state: {
         async getState() { return structuredClone(state); },
         async writeState(_u, _p, next) { state = structuredClone(next); },
@@ -70,10 +78,11 @@ function store({ completeTurnCount = LIBRARIAN_INTERVAL_TURNS } = {}) {
         async insertEvents(rows) { events.push(...structuredClone(rows)); },
       },
       source: {
+        async getByIds(_u, _p, ids) { return ids.map(id => ({ id, role: "user", content: "用户偏好简洁回答。", contentHash: sha256((id === 1 ? "worldFact:1" : "userProfile:1") + ":" + id) })); },
         async getBoundary() { return completeTurnCount * 2; },
         async listCompleteTurnBoundaries() {
           return Array.from({ length: completeTurnCount }, (_, index) => ({
-            turnOrdinal: index + 1,
+            watermarkOrdinal: index + 1,
             boundaryMessageId: (index + 1) * 2,
           }));
         },
@@ -163,7 +172,7 @@ test("Librarian commits state, global event group, snapshot, task, and checkpoin
             status: "changes",
             operations: [{
               action: "merge",
-              refs: ["W1", "UP1"],
+              refs: ["W1", "UP1"], supportRefs: ["UP1-E1"],
               toSection: "userProfile",
               text: "用户偏好简洁回答。",
             }],
@@ -176,7 +185,7 @@ test("Librarian commits state, global event group, snapshot, task, and checkpoin
   const result = await librarian.runAt(1, "default", {
     sourceGeneration: 0,
     boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "periodic",
     skipBarrier: true,
   });
@@ -189,7 +198,7 @@ test("Librarian commits state, global event group, snapshot, task, and checkpoin
   assert.equal(data.inspect.groups[0].group_kind, "maintenance");
   assert.equal(data.inspect.events.length, 1);
   assert.equal(data.inspect.snapshots.length, 1);
-  assert.equal(data.inspect.checkpoint.completed_turn_ordinal, LIBRARIAN_INTERVAL_TURNS);
+  assert.equal(data.inspect.checkpoint.completed_ordinal, LIBRARIAN_INTERVAL_TURNS);
   assert.equal([...data.inspect.tasks.values()][0].status, "succeeded");
 });
 
@@ -222,7 +231,7 @@ test("periodic scheduling uses only complete-turn ordinals and noop advances no 
   assert.equal(data.inspect.state.meta.revision, 0);
   assert.equal(data.inspect.snapshots.length, 0);
   assert.equal(data.inspect.groups.length, 0);
-  assert.equal(data.inspect.checkpoint.completed_turn_ordinal, LIBRARIAN_INTERVAL_TURNS);
+  assert.equal(data.inspect.checkpoint.completed_ordinal, LIBRARIAN_INTERVAL_TURNS);
   assert.equal(data.inspect.checkpoint.boundary_message_id, PERIODIC_BOUNDARY_MESSAGE_ID);
 });
 
@@ -238,7 +247,7 @@ test("periodic scheduling uses the configured Librarian lag threshold", async ()
     config: customConfig,
     providerAdapter: {
       async propose(envelope) {
-        observedOrdinals.push(envelope.task.turnOrdinal);
+        observedOrdinals.push(envelope.task.watermarkOrdinal);
         return {
           status: "ok",
           output: {
@@ -260,7 +269,7 @@ test("periodic scheduling uses the configured Librarian lag threshold", async ()
 
   assert.equal(result.status, "completed");
   assert.deepEqual(observedOrdinals, [3, 6]);
-  assert.equal(data.inspect.checkpoint.completed_turn_ordinal, 6);
+  assert.equal(data.inspect.checkpoint.completed_ordinal, 6);
 });
 
 test("periodic scheduling rebases an empty checkpoint beyond already-processed target cursors", async () => {
@@ -290,9 +299,9 @@ test("periodic scheduling rebases an empty checkpoint beyond already-processed t
   const result = await librarian.runScheduled(1, "default");
 
   assert.equal(result.status, "completed");
-  assert.equal(observedTask.turnOrdinal, LIBRARIAN_INTERVAL_TURNS + 4);
+  assert.equal(observedTask.watermarkOrdinal, LIBRARIAN_INTERVAL_TURNS + 4);
   assert.equal(observedTask.boundaryMessageId, alreadyProcessedBoundary);
-  assert.equal(data.inspect.checkpoint.completed_turn_ordinal, LIBRARIAN_INTERVAL_TURNS + 4);
+  assert.equal(data.inspect.checkpoint.completed_ordinal, LIBRARIAN_INTERVAL_TURNS + 4);
 });
 
 test("skipBarrier skips draining but still rejects misaligned Librarian input", async () => {
@@ -307,7 +316,7 @@ test("skipBarrier skips draining but still rejects misaligned Librarian input", 
   const result = await librarian.runAt(1, "default", {
     sourceGeneration: 0,
     boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "rebuild",
     skipBarrier: true,
   });
@@ -352,7 +361,7 @@ test("schema repair allowance is persisted before the Librarian retry", async ()
   const result = await librarian.runAt(1, "default", {
     sourceGeneration: 0,
     boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "periodic",
     skipBarrier: true,
   });
@@ -406,7 +415,7 @@ test("schema repair allowance survives an interrupted Librarian process", async 
   });
   const envelope = await librarian.createTask(1, "default", {
     boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "periodic",
   });
 
@@ -448,7 +457,7 @@ test("an open Provider circuit durably defers Librarian work", async () => {
   const result = await librarian.runAt(1, "default", {
     sourceGeneration: 0,
     boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID,
-    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS,
     triggerType: "periodic",
     skipBarrier: true,
   });
@@ -458,4 +467,75 @@ test("an open Provider circuit durably defers Librarian work", async () => {
   assert.equal(task.status, "retry_wait");
   assert.equal(task.stage, "provider_circuit_open");
   assert.equal(new Date(task.not_before).getTime(), retryAt.getTime());
+});
+
+
+test("Librarian reducer failures enter bounded repair before semantic persistence", async () => {
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  const state = await data.repositories.state.getState();
+  state.longTerm.worldFacts[0].text = "长".repeat(201);
+  await data.repositories.state.writeState(1, "default", state);
+  let calls = 0;
+  const librarian = createMemoryLibrarian({ repositories: data.repositories, config: config(), providerAdapter: { async propose(envelope, options) {
+    calls++;
+    if (calls === 2) assert.match(JSON.stringify(options.repairFeedback), /TEXT_LENGTH_EXCEEDED/);
+    return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "changes", operations: [{ action: "move", ref: "W1", toSection: "userProfile" }] } };
+  } } });
+  const result = await librarian.runAt(1, "default", { sourceGeneration: 0, boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID, watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS, triggerType: "periodic", skipBarrier: true });
+  assert.equal(result.status, "failed");
+  assert.equal(calls, 2);
+  assert.deepEqual(data.inspect.state, state);
+  assert.equal(data.inspect.groups.length, 0);
+  assert.equal(data.inspect.checkpoint, null);
+  const task = [...data.inspect.tasks.values()][0];
+  assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(task.stage_payload.semanticResult, undefined);
+});
+
+test("Librarian commit rejects evidence edited after proposing", async () => {
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  const before = structuredClone(data.inspect.state);
+  const librarian = createMemoryLibrarian({ repositories: data.repositories, config: config(), providerAdapter: { async propose(envelope) {
+    data.repositories.source.getByIds = async () => [];
+    return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "changes", operations: [{ action: "move", ref: "W1", toSection: "userProfile" }] } };
+  } } });
+  const result = await librarian.runAt(1, "default", { sourceGeneration: 0, boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID, watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS, triggerType: "periodic", skipBarrier: true });
+  assert.equal(result.reason, "source_validation_failed");
+  assert.deepEqual(data.inspect.state, before);
+  assert.equal(data.inspect.events.length, 0);
+  assert.equal(data.inspect.checkpoint, null);
+});
+
+
+test("Librarian rolls back every commit write boundary and resumes its persisted proposal exactly once", async () => {
+  for (const [owner, method] of [["state", "writeState"], ["audit", "insertSnapshot"], ["audit", "insertEventGroup"], ["audit", "insertEvents"], ["runtime", "upsertLibrarianCheckpoint"], ["runtime", "updateTask"]]) {
+    const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+    const before = structuredClone(data.inspect.state);
+    let calls = 0;
+    const dependencies = { repositories: data.repositories, config: config(), providerAdapter: { async propose(envelope) {
+      calls++;
+      return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "changes", operations: [{ action: "move", ref: "W1", toSection: "userProfile" }] } };
+    } } };
+    const librarian = createMemoryLibrarian(dependencies);
+    const envelope = await librarian.createTask(1, "default", { boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID, watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS, triggerType: "periodic" });
+    const original = data.repositories[owner][method];
+    let inject = true;
+    data.repositories[owner][method] = async (...args) => {
+      const result = await original(...args);
+      if (inject && (method !== "updateTask" || args[1].stage === "committed")) { inject = false; throw new Error("injected commit failure"); }
+      return result;
+    };
+    await assert.rejects(librarian.processEnvelope(envelope), /injected commit failure/);
+    assert.deepEqual(data.inspect.state, before, method);
+    assert.equal(data.inspect.events.length, 0, method);
+    assert.equal(data.inspect.checkpoint, null, method);
+    const recovered = createMemoryLibrarian(dependencies);
+    const result = await recovered.processEnvelope(envelope);
+    assert.equal(result.status, "committed", method);
+    assert.equal(calls, 1, method);
+    assert.equal(data.inspect.groups.length, 1, method);
+    await recovered.processEnvelope(envelope);
+    assert.equal(data.inspect.groups.length, 1, method);
+    assert.equal(calls, 1, method);
+  }
 });

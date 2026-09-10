@@ -144,14 +144,14 @@ test("Episode vertical slice sends only readable public input and commits compil
   const result = await pipeline.processIntent(1, "default", episodeIntent());
 
   assert.equal(result.status, "committed");
-  assert.deepEqual(Object.keys(providerRequest.userPayload).sort(), ["memoryText", "messages", "task"]);
+  assert.deepEqual(Object.keys(providerRequest.userPayload).sort(), ["evidenceText", "memoryText", "messages", "task"]);
   assert.equal(JSON.stringify(providerRequest.userPayload).includes("episode:old"), false);
   assert.equal(JSON.stringify(providerRequest.userPayload).includes("contentHash"), false);
   assert.equal(JSON.stringify(providerRequest.userPayload).includes("evidenceKind"), false);
   assert.match(providerRequest.userPayload.memoryText, /E1 \| 双方争执后暂停了交流/);
   assert.equal(store.inspect.state.working.recentEpisodes[0].id, "episode:old");
   assert.equal(store.inspect.state.working.recentEpisodes[0].text, "双方暂停冷静后重新沟通，并澄清了分歧。");
-  assert.deepEqual(store.inspect.state.working.recentEpisodes[0].sourceRefs.map((ref) => ref.messageId), [1, 2]);
+  assert.deepEqual(store.inspect.state.working.recentEpisodes[0].sourceRefs.map((ref) => ref.messageId), [2]);
   assert.equal(store.inspect.state.meta.targetCursors.episodes, 2);
   assert.equal(store.inspect.state.meta.revision, 1);
   assert.equal(store.inspect.events.every((event) => event.evidence_kind === undefined), true);
@@ -159,7 +159,7 @@ test("Episode vertical slice sends only readable public input and commits compil
   assert.equal(task.schema_version, "2.01");
   assert.equal(task.stage, "committed");
   assert.equal(task.stage_payload.semanticResult.sectionResults.recentEpisodes.status, "changes");
-  assert.equal(task.stage_payload.compiledProposal.sectionResults.recentEpisodes.patches[0].op, "updateItem");
+  assert.equal(task.stage_payload.compiledProposal.sectionResults.recentEpisodes.patches[0].op, "correctItem");
   const replayed = replayEventGroups(state, [...store.inspect.groups.values()], store.inspect.events, { userId: 1, presetId: "default" });
   assert.deepEqual(replayed, store.inspect.state);
 });

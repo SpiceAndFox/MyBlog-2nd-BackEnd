@@ -112,6 +112,17 @@ function createChatMemorySourceReader({ database } = {}) {
     }));
   }
 
+  async function listSchedulingMessages(userId, presetId, upToMessageId, { client } = {}) {
+    const scope = normalizeScope(userId, presetId);
+    if (!Number.isSafeInteger(upToMessageId) || upToMessageId < 0) throw new Error("Invalid scheduling boundary");
+    const { rows } = await executor(client).query(`
+      SELECT m.id, (m.turn_id IS NOT NULL AND (m.role='user' OR m.parent_user_message_id IS NOT NULL)) AS has_turn_metadata
+      FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id
+      WHERE ${SOURCE_WHERE} AND m.id<=$3 ORDER BY m.id
+    `, [scope.userId, scope.presetId, upToMessageId]);
+    return rows.map((row) => ({ id: Number(row.id), hasTurnMetadata: row.has_turn_metadata === true }));
+  }
+
   async function hasAnyBetween(userId, presetId, lowerExclusive, upperInclusive, { client } = {}) {
     const scope = normalizeScope(userId, presetId);
     const { rows } = await executor(client).query(`SELECT EXISTS(SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id>$3 AND m.id<=$4) AS present`, [scope.userId, scope.presetId, lowerExclusive, upperInclusive]);
@@ -173,7 +184,7 @@ function createChatMemorySourceReader({ database } = {}) {
     return [...overlap, ...batch].map(mapRow);
   }
 
-  return Object.freeze({ countAfter, listScopes, getObservedWindow, getByIds, listUpTo, getBoundary, listCompleteTurnBoundaries, hasAnyBetween, getHistoryMetrics, getHistoryFingerprint, getForceDrainWindow });
+  return Object.freeze({ countAfter, listScopes, getObservedWindow, getByIds, listUpTo, getBoundary, listCompleteTurnBoundaries, listSchedulingMessages, hasAnyBetween, getHistoryMetrics, getHistoryFingerprint, getForceDrainWindow });
 }
 
 module.exports = { createChatMemorySourceReader };

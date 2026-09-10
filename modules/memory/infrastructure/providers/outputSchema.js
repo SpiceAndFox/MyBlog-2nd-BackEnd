@@ -41,7 +41,7 @@ function semanticTextItemChangeSchema(action, { maxTextLength } = {}) {
   };
 }
 
-function semanticTextItemResultSchema({ maxItems, maxTextLength } = {}) {
+function semanticTextItemResultSchema({ maxItems, maxTextLength, actions = ["add", "revise", "correct", "forget"] } = {}) {
   return {
     oneOf: [
       {
@@ -54,7 +54,7 @@ function semanticTextItemResultSchema({ maxItems, maxTextLength } = {}) {
             type: "array",
             minItems: 1,
             ...(maxItems ? { maxItems } : {}),
-            items: { oneOf: ["add", "update", "correct", "forget"].map((action) => semanticTextItemChangeSchema(action, { maxTextLength })) },
+            items: { oneOf: actions.map((action) => semanticTextItemChangeSchema(action, { maxTextLength })) },
           },
         },
       },
@@ -80,6 +80,7 @@ function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySecti
           additionalProperties: false,
           required: sections,
           properties: Object.fromEntries(sections.map((section) => [section, semanticTextItemResultSchema({
+            actions: require("../../contracts/sectionPolicy").SECTION_ACTIONS[section],
             maxItems: maxItemsBySection[section],
             maxTextLength: maxTextLengthBySection[section],
           })])),
@@ -165,12 +166,12 @@ function buildSingleSectionSemanticOutputSchema(proposer, section, changes) {
 }
 
 function buildWorldFactSemanticOutputSchema() {
-  return buildSingleSectionSemanticOutputSchema("worldFactProposer", "worldFacts", ["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema));
+  return buildSingleSectionSemanticOutputSchema("worldFactProposer", "worldFacts", ["add", "revise", "correct", "forget"].map(semanticTextItemChangeSchema));
 }
 
 function buildAgreementSemanticOutputSchema() {
   return buildSingleSectionSemanticOutputSchema("agreementProposer", "standingAgreements", [
-    ...["add", "update", "correct", "forget"].map(semanticTextItemChangeSchema),
+    ...["add", "revise", "correct", "forget"].map(semanticTextItemChangeSchema),
     semanticChangeSchema("cancel"),
   ]);
 }
@@ -180,7 +181,7 @@ function buildTodoSemanticOutputSchema() {
   const anchor = { anchorMessageId: { type: "integer", minimum: 1 } };
   return buildSingleSectionSemanticOutputSchema("todoProposer", "todos", [
     semanticChangeSchema("add", { ref: false, properties: { ...actorRequester, dueAt, ...anchor }, required: ["actor", "requester"] }),
-    ...["update", "correct"].map((action) => semanticChangeSchema(action, { text: false, properties: { text: { type: "string", minLength: 1 }, ...actorRequester, dueChange, ...anchor }, required: ["dueChange"] })),
+    ...["revise", "correct"].map((action) => semanticChangeSchema(action, { text: false, properties: { text: { type: "string", minLength: 1 }, ...actorRequester, dueChange, ...anchor }, required: ["dueChange"] })),
     ...["forget", "complete", "cancel", "expire"].map((action) => semanticChangeSchema(action)),
   ]);
 }
@@ -196,10 +197,11 @@ function compactionChangeSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["action", "refs", "text"],
+    required: ["action", "refs", "text", "supportRefs"],
     properties: {
       action: { const: "merge" },
       refs: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string", minLength: 1 } },
+      supportRefs: semanticSourceProperties.supportRefs,
       text: { type: "string", minLength: 1 },
     },
   };
@@ -218,10 +220,11 @@ function librarianSectionTextVariants() {
   return LIBRARIAN_SECTIONS.map((section) => ({
     type: "object",
     additionalProperties: false,
-    required: ["toSection", "text"],
+    required: ["toSection", "text", "supportRefs"],
     properties: {
       toSection: { const: section },
       text: librarianTextSchema(section),
+      supportRefs: semanticSourceProperties.supportRefs,
     },
   }));
 }
@@ -234,12 +237,13 @@ function buildLibrarianOutputSchema() {
   const mergeOperations = LIBRARIAN_SECTIONS.map((toSection) => ({
     type: "object",
     additionalProperties: false,
-    required: ["action", "refs", "toSection", "text"],
+    required: ["action", "refs", "toSection", "text", "supportRefs"],
     properties: {
       action: { const: "merge" },
       refs: { type: "array", minItems: 2, uniqueItems: true, items: ref },
       toSection: { const: toSection },
       text: librarianTextSchema(toSection),
+      supportRefs: semanticSourceProperties.supportRefs,
     },
   }));
   const operation = {
@@ -250,23 +254,25 @@ function buildLibrarianOutputSchema() {
         properties: { action: { const: "move" }, ref, toSection: section },
       },
       ...mergeOperations,
+      ...["revise", "correct"].map(action => ({ type: "object", additionalProperties: false, required: ["action", "ref", "text", "supportRefs"], properties: { action: { const: action }, ref, text: { type: "string", minLength: 1 }, supportRefs: semanticSourceProperties.supportRefs } })),
       {
         type: "object", additionalProperties: false,
-        required: ["action", "keeperRef", "duplicateRefs"],
+        required: ["action", "ref", "keeperRef", "reason"],
         properties: {
-          action: { const: "dropDuplicate" },
+          action: { const: "remove" },
+          ref,
+          reason: { const: "duplicate" },
           keeperRef: ref,
-          duplicateRefs: { type: "array", minItems: 1, uniqueItems: true, items: ref },
         },
       },
       {
         type: "object", additionalProperties: false,
         required: ["action", "ref", "parts"],
         properties: {
-          action: { const: "splitMove" },
+          action: { const: "split" },
           ref,
           parts: {
-            type: "array", minItems: 2,
+            type: "array", minItems: 2, maxItems: 4,
             items: { oneOf: librarianSectionTextVariants() },
           },
         },
@@ -282,6 +288,7 @@ function buildLibrarianOutputSchema() {
       proposer: { const: LIBRARIAN_PROPOSER },
       status: { const: status },
       operations,
+      reports: { type: "array", maxItems: 6, items: { type: "object", additionalProperties: false, required: ["ref", "reason"], properties: { ref, reason: { enum: ["unsupported_section", "insufficient_evidence", "cannot_repair"] } } } },
     },
   });
   return {
@@ -289,16 +296,12 @@ function buildLibrarianOutputSchema() {
     strict: true,
     schema: {
       oneOf: [
-        root("changes", { type: "array", minItems: 1, items: operation }),
+        root("changes", { type: "array", minItems: 1, maxItems: 6, items: operation }),
         root("noop", {
           type: "array",
           maxItems: 0,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: [],
-            properties: {},
-          },
+          // The array must stay empty; DeepSeek rejects an empty object schema.
+          items: { type: "string" },
         }),
       ],
     },

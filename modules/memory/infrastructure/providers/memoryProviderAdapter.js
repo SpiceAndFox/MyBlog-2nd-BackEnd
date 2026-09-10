@@ -102,11 +102,12 @@ function validateSemanticEnvelope(envelope) {
   if (!task || !publicTask) errors.push({ path: "$.task", message: "semantic task metadata is required" });
   else {
     const matchingKeys = task.proposer === LIBRARIAN_PROPOSER
-      ? ["taskId", "tickId", "proposer", "targetKey", "boundaryMessageId", "turnOrdinal", "triggerType", "now", "userTimeZone"]
+      ? ["taskId", "tickId", "proposer", "targetKey", "boundaryMessageId", "watermarkOrdinal", "watermarkKind", "triggerType", "now", "userTimeZone"]
       : ["taskId", "tickId", "proposer", "targetKey", "cursorBefore", "targetMessageId", "now", "userTimeZone"];
     for (const key of matchingKeys) {
       if (task[key] !== publicTask[key]) errors.push({ path: `$.task.${key}`, message: "must match Renderer artifact" });
     }
+    if (JSON.stringify(task.writeLimits) !== JSON.stringify(publicTask.writeLimits)) errors.push({ path: "$.task.writeLimits", message: "must match Renderer artifact" });
     if (JSON.stringify(task.targetSections) !== JSON.stringify(publicTask.targetSections)) {
       errors.push({ path: "$.task.targetSections", message: "must match Renderer artifact" });
     }
@@ -126,10 +127,13 @@ function buildProposerUserPayload(envelope) {
         targetKey: task.targetKey,
         targetSections: structuredClone(task.targetSections),
         boundaryMessageId: task.boundaryMessageId,
-        turnOrdinal: task.turnOrdinal,
+        watermarkOrdinal: task.watermarkOrdinal,
+        watermarkKind: task.watermarkKind,
         triggerType: task.triggerType,
+        ...(task.writeLimits ? { writeLimits: structuredClone(task.writeLimits) } : {}),
       },
       memoryText: publicInput.memoryText,
+      evidenceText: publicInput.evidenceText || "",
       messages: [],
     };
   }
@@ -142,8 +146,10 @@ function buildProposerUserPayload(envelope) {
       cursorBefore: task.cursorBefore,
       targetMessageId: task.targetMessageId,
       userTimeZone: task.userTimeZone,
+      ...(task.writeLimits ? { writeLimits: structuredClone(task.writeLimits) } : {}),
     },
     memoryText: publicInput.memoryText,
+    evidenceText: publicInput.evidenceText || "",
     messages: structuredClone(publicInput.messages),
   };
 }

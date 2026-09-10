@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { hydrateEvidenceInput } = require("./evidenceInput");
 const {
   COMPILE_ERROR_REASONS,
   SCHEMA_VERSION,
@@ -70,8 +71,32 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     return compiler;
   }
 
-  function validateProviderOutput(output, envelope) {
-    return validateSemanticResult(output, envelope.artifact);
+  async function validateProviderOutput(output, envelope) {
+    const validation = validateSemanticResult(output, envelope.artifact);
+    if (!validation.ok || containsUnableToDecide(output)
+      || Object.values(output.sectionResults || {}).some(result => result.status === "unable_to_compact")) return validation;
+    const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
+    // Stale work is rebuilt by the normal lifecycle, never repaired against a
+    // different revision. Preflight does not persist state, cursors or item IDs.
+    if (!state || state.meta.revision !== envelope.task.baseRevision
+      || state.meta.sourceGeneration !== envelope.task.sourceGeneration) return validation;
+    try {
+      const proposal = await semanticCompilerForTask().compile({
+        artifact: envelope.artifact, semanticResult: output, baseState: state,
+        userId: envelope.task.userId, presetId: envelope.task.presetId,
+      });
+      let previewId = 0;
+      reduceCompiledProposal({ state, task: envelope.task, proposal, config,
+        idFactory: () => `preview-${++previewId}` });
+    } catch (error) {
+      if (error.code === "MEMORY_WRITE_GUARD_INVALID") {
+        metrics?.increment("memory_write_rejections_total", { targetKey: envelope.task.targetKey, reason: error.reason });
+        return { ok: false, errors: error.validationErrors };
+      }
+      // Source/database failures belong to compilation/recovery, not LLM repair.
+      if (!(error instanceof SemanticCompileError)) throw error;
+    }
+    return validation;
   }
 
   function observedMessages(envelope) {
@@ -127,6 +152,7 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         userId, presetId, state, intent: { ...intent, cursorBefore }, messages, now: now(),
         taskId: options.taskId, tickId: options.tickId, userTimeZone, config,
       });
+      await hydrateEvidenceInput(envelope, repositories.source, { client });
       const overrides = { stage_payload: { normalContextWindow: targetConfig.contextWindow } };
       if (options.predecessorTaskId) {
         overrides.predecessor_task_id = options.predecessorTaskId;

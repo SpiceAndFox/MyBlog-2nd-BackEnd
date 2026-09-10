@@ -9,6 +9,8 @@ const { normalizeItemText } = require("./itemDeduplication");
 const { allocateMemoryItemId } = require("./itemIds");
 const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
+const { sectionLimits, codePointLength, EPISODE_APPEND_SEPARATOR } = require("../contracts/sectionPolicy");
+const { rejectWrite, assertItemLimits } = require("./writeGuards");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target])),
@@ -35,7 +37,7 @@ function eventBase(section, patch, decision, patchId) {
 }
 
 function conflictKeys(section, patch) {
-  if (["setField", "clearField"].includes(patch.op)) return [`${section}:field:${patch.path}`];
+  if (["setField", "correctField", "clearField"].includes(patch.op)) return [`${section}:field:${patch.path}`];
   if (patch.itemId) return [`${section}:item:${patch.itemId}`];
   return (patch.itemIds || []).map((id) => `${section}:item:${id}`);
 }
@@ -59,15 +61,17 @@ function updateTodo(item, value, nowMs) {
   return { ok: true };
 }
 
-function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) {
-  if (patch.op === "setField") {
+function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, task }) {
+  const boundary = task.targetMessageId;
+  if (["setField", "correctField"].includes(patch.op)) {
     const sourceRefs = structuredClone(patch.sourceRefs);
     state.current.scene[patch.path] = {
       value: patch.value,
       sourceRefs,
-      updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)),
+      updatedAtMessageId: boundary,
     };
-    return { normalizedOperation: structuredClone(patch) };
+    assertItemLimits(section, patch.value, sourceRefs, task);
+    return { normalizedOperation: { ...structuredClone(patch), updatedAtMessageId: boundary } };
   }
   if (patch.op === "clearField") {
     state.current.scene[patch.path] = { value: null, sourceRefs: [], updatedAtMessageId: null };
@@ -81,8 +85,8 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
       id: allocateMemoryItemId(state, section, idFactory),
       text: patch.value.text,
       sourceRefs,
-      createdAtMessageId: Math.min(...sourceRefs.map((ref) => ref.messageId)),
-      updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)),
+      createdAtMessageId: boundary,
+      updatedAtMessageId: boundary,
     };
     if (section === "todos") Object.assign(item, {
       actor: patch.value.actor,
@@ -91,6 +95,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
       becameOverdueAt: null,
       dueAt: patch.value.dueAt,
     });
+    assertItemLimits(section, item.text, sourceRefs, task);
     items.push(item);
     return { resultItemId: item.id, normalizedOperation: { op: patch.op, value: structuredClone(item), sourceRefs } };
   }
@@ -99,13 +104,16 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
     const sources = patch.itemIds.map((id) => items.find((item) => item.id === id));
     if (sources.some((item) => !item)) return { rejectReason: "item_not_found" };
     if (section === "todos" && sources.some((item) => item.status !== "active" || item.actor !== sources[0].actor || item.requester !== sources[0].requester || item.dueAt !== sources[0].dueAt)) return { rejectReason: "invalid_state_transition" };
-    const sourceRefs = normalizeSourceRefs(sources.flatMap((item) => item.sourceRefs));
+    const sourceRefs = structuredClone(patch.sourceRefs);
+    const authorized = sources.flatMap((item) => item.sourceRefs);
+    if (sourceRefs.some((ref) => !authorized.some((entry) => entry.messageId === ref.messageId && entry.contentHash === ref.contentHash))) rejectWrite("merge_evidence_not_authorized", section);
+    assertItemLimits(section, patch.value.text, sourceRefs, task);
     const item = {
       id: allocateMemoryItemId(state, section, idFactory),
       text: patch.value.text,
       sourceRefs,
-      createdAtMessageId: Math.min(...sources.map((source) => source.createdAtMessageId)),
-      updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)),
+      createdAtMessageId: boundary,
+      updatedAtMessageId: boundary,
     };
     if (section === "todos") Object.assign(item, {
       actor: sources[0].actor, requester: sources[0].requester, status: "active", becameOverdueAt: null, dueAt: sources[0].dueAt,
@@ -122,7 +130,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
     items.splice(index, 1);
     return { normalizedOperation: structuredClone(patch) };
   }
-  if (patch.op !== "updateItem") return { rejectReason: "schema_invalid" };
+  if (!["appendItem", "reviseItem", "correctItem"].includes(patch.op)) return { rejectReason: "schema_invalid" };
   if (section === "todos") {
     const wasOverdue = item.status === "overdue";
     const todo = updateTodo(item, patch.value, nowMs);
@@ -133,10 +141,23 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
       normalizedOperation: { cleanupKind: "todo_revived_from_overdue", itemId: item.id, dueAt: item.dueAt },
     });
   }
-  if (patch.value.text !== undefined) item.text = patch.value.text;
-  const sourceRefs = normalizeSourceRefs([...item.sourceRefs, ...patch.sourceRefs]);
+  if (patch.op === "appendItem") {
+    const limits = sectionLimits(section, task);
+    if (section !== "recentEpisodes" || !limits.maxAppendChars) rejectWrite("action_not_allowed", section);
+    const existingChars = codePointLength(item.text);
+    const separatorChars = codePointLength(EPISODE_APPEND_SEPARATOR);
+    const limit = Math.max(0, Math.min(limits.maxAppendChars, limits.maxItemChars - existingChars - separatorChars));
+    if (codePointLength(patch.value.text) > limit) rejectWrite("append_length_exceeded", section, {
+      action: "append", limit, actual: codePointLength(patch.value.text), existingChars, separatorChars, maxItemChars: limits.maxItemChars,
+    });
+    item.text = `${item.text}${EPISODE_APPEND_SEPARATOR}${patch.value.text}`;
+  } else if (patch.value.text !== undefined) item.text = patch.value.text;
+  const sourceRefs = patch.op === "appendItem"
+    ? normalizeSourceRefs([...item.sourceRefs, ...patch.sourceRefs])
+    : structuredClone(patch.sourceRefs);
+  assertItemLimits(section, item.text, sourceRefs, task);
   item.sourceRefs = sourceRefs;
-  item.updatedAtMessageId = Math.max(...sourceRefs.map((ref) => ref.messageId));
+  item.updatedAtMessageId = boundary;
   return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
 }
 
@@ -166,6 +187,12 @@ function reduceCompiledProposal({
   const protectedIds = new Set(protectedItemIds);
   const nowMs = new Date(now).getTime();
   if (!Number.isFinite(nowMs)) throw new Error("now must be an ISO timestamp");
+  const reject = (base, reason) => {
+    // A maintenance attempt may encounter items protected by a pending parent.
+    // Normal output is all-or-nothing, including exact duplicates and conflicts.
+    if (task.mode !== "maintenance") rejectWrite(reason, base.section);
+    events.push({ ...base, decision: "rejected", rejectReason: reason });
+  };
 
   for (const section of task.targetSections) {
     const result = proposal.sectionResults[section];
@@ -182,23 +209,23 @@ function reduceCompiledProposal({
       }
       const keys = conflictKeys(section, patch);
       if (keys.some((key) => seen.has(key))) {
-        events.push({ ...base, decision: "rejected", rejectReason: "invalid_state_transition" });
+        reject(base, "invalid_state_transition");
         continue;
       }
-      if (["addItem", "updateItem"].includes(patch.op) && patch.value.text !== undefined
+      if (["addItem", "reviseItem", "correctItem"].includes(patch.op) && patch.value.text !== undefined
         && exactDuplicate(sectionItems(working, section), patch.value.text, patch.itemId || null)) {
-        events.push({ ...base, decision: "rejected", rejectReason: "duplicate_item" });
+        reject(base, "duplicate_item");
         continue;
       }
       const previousScene = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
-      const applied = applyPatch(working, section, patch, { idFactory, nowMs, cleanupEvents });
+      const applied = applyPatch(working, section, patch, { idFactory, nowMs, cleanupEvents, task });
       if (applied.rejectReason) {
-        events.push({ ...base, decision: "rejected", rejectReason: applied.rejectReason });
+        reject(base, applied.rejectReason);
         continue;
       }
       if (section === "scene" && measureSection(working, "scene").renderedChars > config.scene.maxRenderedChars) {
         working.current.scene[patch.path] = previousScene;
-        events.push({ ...base, decision: "rejected", rejectReason: "capacity_exceeded" });
+        reject(base, "capacity_exceeded");
         continue;
       }
       keys.forEach((key) => seen.add(key));

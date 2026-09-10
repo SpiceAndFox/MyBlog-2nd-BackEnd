@@ -1,3 +1,4 @@
+const { sectionLimits, codePointLength } = require("../contracts/sectionPolicy");
 const { ITEM_SECTIONS } = require("../contracts/constants");
 
 const EXACT_TEXT_DEDUPE_SECTIONS = new Set(ITEM_SECTIONS);
@@ -29,10 +30,10 @@ function sourceFingerprint(item) {
 function exactMergeGroupKey(section, item) {
   const text = normalizeItemText(item.text);
   if (!text) return null;
-  if (EXACT_TEXT_DEDUPE_SECTIONS.has(section)) return `text:${text}`;
   if (section === "todos") return item.status === "active"
     ? `todo:${text}:${item.actor}:${item.requester}:${item.dueAt ?? ""}`
     : null;
+  if (EXACT_TEXT_DEDUPE_SECTIONS.has(section)) return `text:${text}`;
   const provenance = sourceFingerprint(item);
   return provenance ? `source:${text}:${provenance}` : null;
 }
@@ -62,7 +63,12 @@ function buildDeterministicExactMergeOutput(state, task, artifact) {
       action: "merge",
       refs: items.map((item) => refByItemId.get(item.id)),
       text: items[0].text,
-    }));
+      supportRefs: Object.entries(artifact.refMap.readOnly)
+        .filter(([, entry]) => entry.itemId === items[0].id)
+        .map(([ref]) => ref),
+    })).filter(change => change.supportRefs.length > 0
+      && change.supportRefs.length <= sectionLimits(section, task).maxSourceRefs
+      && codePointLength(change.text) <= sectionLimits(section, task).maxItemChars);
   if (!changes.length) return null;
   return {
     tickId: task.tickId,

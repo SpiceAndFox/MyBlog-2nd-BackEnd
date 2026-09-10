@@ -92,10 +92,14 @@ function parseProposerOverride(name, proposer, value, adapter) {
     override.model = model;
   }
   if (value.reasoningEffort !== undefined) {
-    if (!OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
+    if (adapter === "deepseek-strict-tools") {
+      const effort = String(value.reasoningEffort).trim();
+      if (!["low", "high", "max"].includes(effort)) throw new Error("DeepSeek reasoning effort must be low, high or max");
+      override.reasoningEffort = effort;
+    } else if (!OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
       throw new Error(`Env ${name}.${proposer}.reasoningEffort requires an OpenCode Go adapter`);
     }
-    override.reasoningEffort = parseReasoningEffort(`${name}.${proposer}.reasoningEffort`, value.reasoningEffort);
+    if (adapter !== "deepseek-strict-tools") override.reasoningEffort = parseReasoningEffort(`${name}.${proposer}.reasoningEffort`, value.reasoningEffort);
   }
   if (!override.model && !override.reasoningEffort) {
     throw new Error(`Env ${name}.${proposer} must override model, reasoningEffort, or both`);
@@ -168,6 +172,9 @@ function loadMemoryProviderConfig(env = {}) {
       "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
       requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE"),
     );
+    const effort = String(env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT ?? "low").trim() || "low";
+    if (!["low", "high", "max"].includes(effort)) throw new Error("DeepSeek reasoning effort must be low, high or max");
+    config.reasoningEffort = effort;
   }
   if (OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
     config.reasoningEffort = parseReasoningEffort("CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT", env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT);

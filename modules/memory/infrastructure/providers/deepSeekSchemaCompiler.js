@@ -108,4 +108,18 @@ function compileDeepSeekSchema(schema) {
   return compiled;
 }
 
-module.exports = { compileDeepSeekSchema, constraintDescriptions };
+function compileDeepSeekToolParameters(responseSchema) {
+  if (responseSchema.name !== "memory_librarian_semantic") return compileDeepSeekSchema(responseSchema.schema);
+  // Strict tools require one root object. Keep status/operations coupling in
+  // local semantic validation; transport always emits reports (empty if none).
+  const branches = responseSchema.schema.oneOf;
+  const changes = branches.find(branch => branch.properties.status.const === "changes");
+  const properties = structuredClone(branches[0].properties);
+  properties.status = { type: "string", enum: branches.map(branch => branch.properties.status.const) };
+  properties.operations = changes
+    ? { ...structuredClone(changes.properties.operations), minItems: 0, description: "Use an empty array for noop; changes requires at least one operation." }
+    : structuredClone(properties.operations);
+  return compileDeepSeekSchema({ type: "object", additionalProperties: false, properties, required: Object.keys(properties) });
+}
+
+module.exports = { compileDeepSeekSchema, compileDeepSeekToolParameters, constraintDescriptions };

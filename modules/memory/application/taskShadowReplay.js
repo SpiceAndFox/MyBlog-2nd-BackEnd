@@ -1,3 +1,4 @@
+const { summarizeMemoryItems, summarizeWriteEvents } = require("../domain/writeDiagnostics");
 const crypto = require("node:crypto");
 const {
   validateSemanticResult,
@@ -88,6 +89,8 @@ function reducerSummary(reduction) {
     rejectReasons,
     capacityViolation: reduction.capacityViolation || null,
     resultRevision: reduction.state?.meta?.revision ?? null,
+    writes: summarizeWriteEvents(reduction.events || []),
+    items: reduction.state ? summarizeMemoryItems(reduction.state) : [],
     events: (reduction?.events || []).map((event) => ({
       section: event.section ?? null,
       decision: event.decision ?? null,

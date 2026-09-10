@@ -22,11 +22,13 @@ function createMemorySourceRebuild(options) {
   const repositories = {
     ...options.repositories,
     source: {
+      listSchedulingMessages: async () => [],
       ...options.repositories.source,
       listCompleteTurnBoundaries: options.repositories.source.listCompleteTurnBoundaries
         || (async () => []),
     },
     runtime: {
+      initializeLibrarianRebuildSchedule: async (_u, _p, _g, schedule) => schedule,
       ...options.repositories.runtime,
       getLibrarianCheckpoint: options.repositories.runtime.getLibrarianCheckpoint
         || (async () => null),
@@ -590,9 +592,10 @@ test("rebuild rebases its first Librarian boundary beyond restored target cursor
     async withTransaction(work) { return work({}); },
     state: { async getState() { return structuredClone(state); } },
     source: {
+      async listSchedulingMessages() { return Array.from({ length: boundaryMessageId }, (_, i) => ({ id: i + 1, hasTurnMetadata: true })); },
       async listCompleteTurnBoundaries() {
         return Array.from({ length: completeTurnCount }, (_, index) => ({
-          turnOrdinal: index + 1,
+          watermarkOrdinal: index + 1,
           boundaryMessageId: (index + 1) * 2,
         }));
       },
@@ -649,7 +652,7 @@ test("rebuild rebases its first Librarian boundary beyond restored target cursor
 
   assert.equal(result.status, "completed");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].turnOrdinal, completeTurnCount);
+  assert.equal(calls[0].watermarkOrdinal, completeTurnCount);
   assert.equal(calls[0].boundaryMessageId, boundaryMessageId);
 });
 

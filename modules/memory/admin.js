@@ -13,8 +13,8 @@ const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
 const { buildMigrationEvidence } = require("./application/migrationEvidence");
-const { latestRejectedOutput } = require("./application/outputRepair");
-const { buildNormalEnvelope } = require("./application/envelope");
+const { latestRejectedOutput, createRepairFeedback } = require("./application/outputRepair");
+const { buildNormalEnvelope, buildMaintenanceEnvelope } = require("./application/envelope");
 const {
   buildProposerTaskArtifact,
   expandProposerTaskArtifact,
@@ -118,6 +118,9 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
 module.exports = Object.freeze({
   buildMigrationEvidence,
   buildNormalEnvelope,
+  buildMaintenanceEnvelope,
+  ...require("./application/librarianRenderer"),
+  ...require("./application/evidenceInput"),
   buildOutputSchema,
   buildProviderRequestPreviews,
   buildProposerUserPayload,
@@ -136,6 +139,7 @@ module.exports = Object.freeze({
   loadMemoryV2Config,
   loadProposerPrompt,
   latestRejectedOutput,
+  createRepairFeedback,
   runStructuredOutputPreflight,
   schemaRepairPrompt,
   schemaRepairRequest,

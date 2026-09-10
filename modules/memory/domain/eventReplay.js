@@ -15,7 +15,7 @@ const DECISIONS = new Set(["accepted", "rejected", "noop", "system_cleanup"]);
 const GROUP_KINDS = new Set(["proposal", "maintenance", "system_cleanup"]);
 const ITEM_SECTIONS = new Set(Object.values(TARGETS).flatMap((target) => target.sections).filter((section) => section !== "scene"));
 const PATCH_OPS = new Set(Object.values(SECTION_OPS).flat());
-const LIBRARIAN_OPS = new Set(["librarianMove", "librarianMerge", "librarianDropDuplicate", "librarianSplitMove"]);
+const LIBRARIAN_OPS = new Set(["librarianMove", "librarianRevise", "librarianCorrect", "librarianMerge", "librarianDropDuplicate", "librarianSplitMove"]);
 const CLEANUPS = Object.freeze({
   scene_expired: { section: "scene", targetKey: "scene", keys: ["cleanupKind", "expiredAt"] },
   expired_scene_evicted: { section: "scene", targetKey: "scene", keys: ["cleanupKind"] },
@@ -67,7 +67,7 @@ function sectionItems(state, section) {
 
 function validateOperationSection(operation, section) {
   if (!SECTION_OPS[section]?.includes(operation.op)) fail(`${operation.op} cannot target section ${section}`);
-  if (["setField", "clearField"].includes(operation.op) && !SCENE_FIELDS.includes(operation.path)) fail(`${operation.op} has an invalid scene path`);
+  if (["setField", "correctField", "clearField"].includes(operation.op) && !SCENE_FIELDS.includes(operation.path)) fail(`${operation.op} has an invalid scene path`);
 }
 
 function validateAcceptedOperation(event, operation) {
@@ -78,8 +78,9 @@ function validateAcceptedOperation(event, operation) {
   const eventItemId = rowValue(event, "item_id", "itemId");
   const resultItemId = rowValue(event, "result_item_id", "resultItemId");
   const mergedFrom = rowValue(event, "merged_from_item_ids", "mergedFromItemIds");
-  if (operation.op === "setField") {
-    requireExactKeys(operation, ["op", "path", "value", "sourceRefs"], "setField operation");
+  if (["setField", "correctField"].includes(operation.op)) {
+    requireExactKeys(operation, ["op", "path", "value", "sourceRefs", "updatedAtMessageId"], "setField operation");
+    safeInteger(operation.updatedAtMessageId, "setField boundary");
     requireText(operation.value, "setField value");
     requireSourceRefs(operation.sourceRefs, "setField sourceRefs");
   } else if (operation.op === "clearField") {
@@ -101,13 +102,13 @@ function validateAcceptedOperation(event, operation) {
     requireText(operation.value.id, "mergeItems value.id");
     if (!isDeepStrictEqual(mergedFrom, operation.itemIds)) fail("mergeItems event sources do not match normalized operation");
     if (resultItemId !== operation.value.id) fail("mergeItems result_item_id does not match value.id");
-  } else if (operation.op === "updateItem") {
-    requireExactKeys(operation, ["op", "itemId", "value", "sourceRefs"], "updateItem operation");
-    requireText(operation.itemId, "updateItem itemId");
-    requireObject(operation.value, "updateItem value");
-    requireSourceRefs(operation.sourceRefs, "updateItem sourceRefs");
-    if (operation.value.id !== operation.itemId) fail("updateItem value.id does not match itemId");
-    if (eventItemId !== operation.itemId) fail("updateItem event item_id does not match normalized operation");
+  } else if (["appendItem", "reviseItem", "correctItem"].includes(operation.op)) {
+    requireExactKeys(operation, ["op", "itemId", "value", "sourceRefs"], "reviseItem operation");
+    requireText(operation.itemId, "reviseItem itemId");
+    requireObject(operation.value, "reviseItem value");
+    requireSourceRefs(operation.sourceRefs, "reviseItem sourceRefs");
+    if (operation.value.id !== operation.itemId) fail("reviseItem value.id does not match itemId");
+    if (eventItemId !== operation.itemId) fail("reviseItem event item_id does not match normalized operation");
   } else {
     requireExactKeys(operation, ["op", "itemId", "sourceRefs"], `${operation.op} operation`);
     requireText(operation.itemId, `${operation.op} itemId`);
@@ -129,8 +130,8 @@ function requireLibrarianItem(item, label) {
   requireText(item.id, `${label}.id`);
   requireText(item.text, `${label}.text`);
   requireSourceRefs(item.sourceRefs, `${label}.sourceRefs`);
-  if (!Number.isSafeInteger(item.createdAtMessageId) || !item.sourceRefs.some((ref) => ref.messageId === item.createdAtMessageId)) fail(`${label}.createdAtMessageId is invalid`);
-  if (item.updatedAtMessageId !== Math.max(...item.sourceRefs.map((ref) => ref.messageId))) fail(`${label}.updatedAtMessageId is invalid`);
+  if (!Number.isSafeInteger(item.createdAtMessageId) || item.createdAtMessageId < 0) fail(`${label}.createdAtMessageId is invalid`);
+  if (!Number.isSafeInteger(item.updatedAtMessageId) || item.updatedAtMessageId < item.createdAtMessageId || item.updatedAtMessageId < Math.max(...item.sourceRefs.map((ref) => ref.messageId))) fail(`${label}.updatedAtMessageId is invalid`);
 }
 
 function validateLibrarianOperation(event, operation) {
@@ -146,6 +147,14 @@ function validateLibrarianOperation(event, operation) {
       || present(rowValue(event, "result_item_id", "resultItemId"))
       || present(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"))
       || event.section !== operation.toSection) fail("librarianMove event metadata is inconsistent");
+  } else if (["librarianRevise", "librarianCorrect"].includes(operation.op)) {
+    requireExactKeys(operation, ["op", "source", "value"], "librarian edit operation");
+    requireLibrarianSelector(operation.source, "librarian edit source");
+    requireLibrarianItem(operation.value, "librarian edit value");
+    if (operation.value.id !== operation.source.itemId || event.section !== operation.source.section
+      || rowValue(event, "item_id", "itemId") !== operation.source.itemId
+      || present(rowValue(event, "result_item_id", "resultItemId"))
+      || present(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"))) fail("librarian edit metadata inconsistent");
   } else if (operation.op === "librarianMerge") {
     requireExactKeys(operation, ["op", "sources", "toSection", "result"], "librarianMerge operation");
     if (!Array.isArray(operation.sources) || operation.sources.length < 2) fail("librarianMerge sources are invalid");
@@ -180,7 +189,6 @@ function validateLibrarianOperation(event, operation) {
       requireLibrarianItem(part.value, `librarianSplitMove parts[${index}].value`);
     });
     if (new Set(operation.parts.map((part) => part.value.id)).size !== operation.parts.length) fail("librarianSplitMove result ids are duplicated");
-    if (!operation.parts.some((part) => part.toSection !== operation.source.section)) fail("librarianSplitMove does not move any part");
     if (rowValue(event, "item_id", "itemId") !== operation.source.itemId
       || present(rowValue(event, "result_item_id", "resultItemId"))
       || present(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"))
@@ -255,6 +263,12 @@ function applySemanticEvent(state, event) {
         if (index < 0) fail(`Replay Librarian source missing: ${operation.source.itemId}`);
         source.splice(index, 1);
         sectionItems(state, operation.toSection).push(structuredClone(operation.value));
+      } else if (["librarianRevise", "librarianCorrect"].includes(operation.op)) {
+        const items = sectionItems(state, operation.source.section);
+        const index = items.findIndex(item => item.id === operation.source.itemId);
+        if (index < 0) fail("Replay Librarian edit source missing");
+        if (items[index].createdAtMessageId !== operation.value.createdAtMessageId) fail("Librarian edit changed creation boundary");
+        items[index] = structuredClone(operation.value);
       } else if (operation.op === "librarianMerge") {
         for (const selector of operation.sources) {
           const items = sectionItems(state, selector.section);
@@ -267,7 +281,7 @@ function applySemanticEvent(state, event) {
         const keeperItems = sectionItems(state, operation.keeper.section);
         const keeperIndex = keeperItems.findIndex((item) => item.id === operation.keeper.itemId);
         if (keeperIndex < 0) fail(`Replay Librarian keeper missing: ${operation.keeper.itemId}`);
-        keeperItems[keeperIndex] = structuredClone(operation.value);
+        if (!isDeepStrictEqual(keeperItems[keeperIndex], operation.value)) fail("Duplicate removal changed keeper");
         for (const selector of operation.duplicates) {
           const items = sectionItems(state, selector.section);
           const index = items.findIndex((item) => item.id === selector.itemId);
@@ -285,11 +299,11 @@ function applySemanticEvent(state, event) {
     }
     if (!PATCH_OPS.has(operation.op)) fail(`Unknown accepted operation: ${operation.op ?? "<missing>"}`);
     const section = event.section;
-    if (operation.op === "setField") {
+    if (["setField", "correctField"].includes(operation.op)) {
       state.current.scene[operation.path] = {
         value: operation.value,
         sourceRefs: structuredClone(operation.sourceRefs),
-        updatedAtMessageId: Math.max(...operation.sourceRefs.map((ref) => ref.messageId)),
+        updatedAtMessageId: operation.updatedAtMessageId,
       };
     } else if (operation.op === "clearField") {
       state.current.scene[operation.path] = { value: null, sourceRefs: [], updatedAtMessageId: null };
@@ -301,9 +315,16 @@ function applySemanticEvent(state, event) {
         items.splice(index, 1);
       } else if (operation.op === "addItem") {
         items.push(structuredClone(operation.value));
-      } else if (operation.op === "updateItem") {
+      } else if (["appendItem", "reviseItem", "correctItem"].includes(operation.op)) {
         const index = items.findIndex((item) => item.id === operation.itemId);
         if (index < 0) fail(`Replay item missing: ${operation.itemId}`);
+        if (items[index].createdAtMessageId !== operation.value.createdAtMessageId) fail("Edit changed creation boundary");
+        if (operation.op === "appendItem") {
+          const delta = rowValue(event, "patch_summary", "patchSummary")?.value?.text;
+          if (typeof delta !== "string" || operation.value.text !== items[index].text + " → " + delta) fail("Append text is inconsistent with its delta");
+          const refs = require("../contracts").normalizeSourceRefs([...items[index].sourceRefs, ...operation.sourceRefs]);
+          if (!isDeepStrictEqual(refs, operation.value.sourceRefs)) fail("Append evidence is inconsistent");
+        } else if (!isDeepStrictEqual(operation.sourceRefs, operation.value.sourceRefs)) fail("Replacement evidence is inconsistent");
         items[index] = structuredClone(operation.value);
       } else if (operation.op === "mergeItems") {
         for (const itemId of operation.itemIds) {

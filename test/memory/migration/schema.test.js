@@ -101,6 +101,6 @@ test("Librarian migration stores one scheduling checkpoint per scope and generat
   const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/013-memory-librarian.sql"), "utf8");
   assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_memory_librarian_checkpoints/i);
   assert.match(migration, /PRIMARY KEY \(user_id, preset_id, source_generation\)/i);
-  assert.match(migration, /completed_turn_ordinal BIGINT NOT NULL/i);
+  assert.match(migration, /completed_ordinal BIGINT NOT NULL/i);
   assert.match(migration, /boundary_message_id BIGINT NOT NULL/i);
 });

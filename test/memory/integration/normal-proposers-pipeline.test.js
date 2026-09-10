@@ -33,7 +33,7 @@ test("normal Semantic IR compiles world fact, agreement, todo and scene domain a
       targetKey: "worldFacts", proposer: "worldFactProposer", section: "worldFacts",
       seed(state) { state.longTerm.worldFacts.push(item("world:1", "旧规则", old)); },
       change: { action: "correct", ref: "W1", text: "新规则", evidenceMessageIds: [2] },
-      expected: { op: "updateItem", itemId: "world:1" },
+      expected: { op: "correctItem", itemId: "world:1" },
     },
     {
       targetKey: "standingAgreements", proposer: "agreementProposer", section: "standingAgreements",

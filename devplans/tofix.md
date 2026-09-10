@@ -1,5 +1,7 @@
 # Memory v2 完整性修复总览
 
+2026-09-09：P0/P1/P2 本地实现完成。离线回归 462/462，开启 thinking 的 DeepSeek 合成评估 10/10；数据库实机重建未执行。实施结果、限制和运行说明见 [08-implementation.md](./toFix/08-implementation.md)。
+
 ## 目标
 
 修复 Memory v2 在长期运行和历史数据 rebuild 中暴露出的四类完整性问题：

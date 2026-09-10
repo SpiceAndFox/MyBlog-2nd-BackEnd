@@ -56,6 +56,7 @@ function withLibrarianRepositoryStubs(repositories = {}) {
     source: {
       async getBoundary() { return 0; },
       async listCompleteTurnBoundaries() { return []; },
+      async listSchedulingMessages() { return []; },
       ...repositories.source,
     },
     runtime: {
@@ -81,6 +82,13 @@ function withLibrarianRepositoryStubs(repositories = {}) {
         return structuredClone(
           librarianCheckpoints.get(`${userId}:${presetId}:${sourceGeneration}`) || null,
         );
+      },
+      async initializeLibrarianRebuildSchedule(userId, presetId, sourceGeneration, schedule) {
+        const key = `${userId}:${presetId}:${sourceGeneration}`;
+        const checkpoint = librarianCheckpoints.get(key) || {};
+        checkpoint.rebuildSchedule ||= structuredClone(schedule);
+        librarianCheckpoints.set(key, checkpoint);
+        return structuredClone(checkpoint.rebuildSchedule);
       },
       async upsertLibrarianCheckpoint(userId, presetId, checkpoint) {
         librarianCheckpoints.set(

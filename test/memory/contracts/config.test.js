@@ -54,7 +54,7 @@ test("v2 config requires an explicit structured-output adapter", () => {
   const config = loadMemoryV2Config(env);
   assert.equal(config.provider.model, "structured-model");
   assert.equal(config.provider.adapter, "openai-json-schema");
-  assert.deepEqual(config.librarian, { lagThreshold: 96 });
+  assert.deepEqual(config.librarian, { lagThreshold: 96, messageBatchSize: 192 });
   assert.deepEqual(config.targets, {
     scene: { lagThreshold: 4, contextWindow: 16 },
     todos: { lagThreshold: 8, contextWindow: 48 },
@@ -79,6 +79,7 @@ test("Librarian lag threshold is required and bounded", () => {
   env.CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD = "12";
   assert.deepEqual(loadMemoryV2Config(env).librarian, {
     lagThreshold: 12,
+    messageBatchSize: 24,
   });
 });
 
@@ -222,6 +223,19 @@ test("DeepSeek provider config passes thinking mode through", () => {
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "disabled");
   env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "ENABLED";
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "enabled");
+});
+
+test("DeepSeek enabled thinking accepts low/high/max including proposer overrides", () => {
+  const env = { ...validEnv(), CHAT_MEMORY_V2_PROVIDER_ADAPTER: "deepseek-strict-tools", CHAT_MEMORY_V2_PROVIDER_THINKING_MODE: "enabled" };
+  for (const effort of ["low", "high", "max"]) {
+    env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = effort;
+    env.CHAT_MEMORY_V2_PROPOSER_MODELS_JSON = JSON.stringify({ librarianProposer: { reasoningEffort: effort } });
+    const config = loadMemoryProviderConfig(env);
+    assert.equal(config.thinkingMode, "enabled");
+    assert.equal(resolveMemoryProviderReasoningEffort(config, "librarianProposer"), effort);
+  }
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "high";
+  assert.throws(() => loadMemoryProviderConfig(env), /THINKING_MODE/);
 });
 
 test("transport-invalid and schema-invalid retry budgets are independently configurable", () => {

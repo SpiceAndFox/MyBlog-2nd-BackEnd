@@ -1,3 +1,4 @@
+const { validateRebuildLibrarianSchedule } = require("../../domain/librarianSchedule");
 const {
   TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES, LIBRARIAN_TARGET_KEY,
 } = require("../../contracts");
@@ -112,26 +113,44 @@ async function getLibrarianCheckpoint(userId, presetId, sourceGeneration, { clie
 }
 async function upsertLibrarianCheckpoint(userId, presetId, checkpoint, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const ordinal = Number(checkpoint.completedTurnOrdinal);
+  const ordinal = Number(checkpoint.completedOrdinal);
   const boundary = Number(checkpoint.boundaryMessageId);
+  const kind = checkpoint.watermarkKind ?? "complete_turn";
+  if (!["complete_turn", "message_batch"].includes(kind)) throw new Error("Invalid Librarian watermark kind");
   if (!Number.isSafeInteger(checkpoint.sourceGeneration) || checkpoint.sourceGeneration < 0
     || !Number.isSafeInteger(ordinal) || ordinal < 0
     || !Number.isSafeInteger(boundary) || boundary < 0) throw new Error("Invalid Librarian checkpoint");
   const { rows } = await executor(client).query(`
     INSERT INTO chat_memory_librarian_checkpoints
-      (user_id,preset_id,source_generation,completed_turn_ordinal,boundary_message_id,last_task_id)
-    VALUES ($1,$2,$3,$4,$5,$6)
+      (user_id,preset_id,source_generation,completed_ordinal,boundary_message_id,last_task_id,watermark_kind)
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
     ON CONFLICT (user_id,preset_id,source_generation) DO UPDATE SET
-      completed_turn_ordinal=EXCLUDED.completed_turn_ordinal,
+      completed_ordinal=EXCLUDED.completed_ordinal,
+      watermark_kind=EXCLUDED.watermark_kind,
       boundary_message_id=EXCLUDED.boundary_message_id,
       last_task_id=EXCLUDED.last_task_id,
       updated_at=NOW()
-    WHERE chat_memory_librarian_checkpoints.completed_turn_ordinal <= EXCLUDED.completed_turn_ordinal
+    WHERE chat_memory_librarian_checkpoints.boundary_message_id <= EXCLUDED.boundary_message_id
+      AND (chat_memory_librarian_checkpoints.watermark_kind <> EXCLUDED.watermark_kind
+        OR chat_memory_librarian_checkpoints.completed_ordinal <= EXCLUDED.completed_ordinal)
     RETURNING *
-  `, [scope.userId, scope.presetId, checkpoint.sourceGeneration, ordinal, boundary, checkpoint.lastTaskId ?? null]);
+  `, [scope.userId, scope.presetId, checkpoint.sourceGeneration, ordinal, boundary, checkpoint.lastTaskId ?? null, kind]);
   return rows[0] || getLibrarianCheckpoint(userId, presetId, checkpoint.sourceGeneration, { client });
 }
-return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime, getLibrarianCheckpoint, upsertLibrarianCheckpoint });
+async function initializeLibrarianRebuildSchedule(userId, presetId, sourceGeneration, schedule, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  validateRebuildLibrarianSchedule(schedule, schedule?.sourceBoundary);
+  const { rows } = await executor(client).query(`
+    INSERT INTO chat_memory_librarian_checkpoints
+      (user_id,preset_id,source_generation,completed_ordinal,boundary_message_id,watermark_kind,rebuild_schedule)
+    VALUES ($1,$2,$3,0,0,$4,$5)
+    ON CONFLICT (user_id,preset_id,source_generation) DO UPDATE SET
+      rebuild_schedule=COALESCE(chat_memory_librarian_checkpoints.rebuild_schedule, EXCLUDED.rebuild_schedule)
+    RETURNING rebuild_schedule
+  `, [scope.userId, scope.presetId, sourceGeneration, schedule.watermarkKind, schedule]);
+  return rows[0].rebuild_schedule;
+}
+return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime, getLibrarianCheckpoint, upsertLibrarianCheckpoint, initializeLibrarianRebuildSchedule });
 }
 
 module.exports = { createRuntimeRepository };

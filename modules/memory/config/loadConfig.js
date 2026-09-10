@@ -1,5 +1,6 @@
 const { TARGET_KEYS, ITEM_SECTIONS } = require("../contracts/constants");
 const { loadMemoryProviderConfig } = require("./loadProviderConfig");
+const { DEFAULT_WRITE_LIMITS } = require("../contracts/sectionPolicy");
 
 function parseBool(env, name, fallback) {
   const raw = env[name];
@@ -18,6 +19,15 @@ function requiredInt(env, name, { min = 0 } = {}) {
   return value;
 }
 function envName(value) { return value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase(); }
+function writeLimits(env, section) {
+  const prefix = `CHAT_MEMORY_V2_${envName(section)}`;
+  const limits = Object.fromEntries(Object.entries(DEFAULT_WRITE_LIMITS[section]).map(([key, fallback]) => {
+    const name = `${prefix}_${envName(key)}`;
+    return [key, env[name] === undefined || String(env[name]).trim() === "" ? fallback : requiredInt(env, name, { min: 1 })];
+  }));
+  if (limits.maxAppendChars > limits.maxItemChars) throw new Error(`${prefix}_MAX_APPEND_CHARS must be <= MAX_ITEM_CHARS`);
+  return limits;
+}
 
 function loadMemoryV2Config(env = {}) {
   const enabled = parseBool(env, "CHAT_MEMORY_V2_ENABLED", false);
@@ -30,7 +40,7 @@ function loadMemoryV2Config(env = {}) {
   const sectionBudgets = {};
   for (const section of ITEM_SECTIONS) {
     const prefix = `CHAT_MEMORY_V2_${envName(section)}`;
-    sectionBudgets[section] = Object.freeze({ maxItems: requiredInt(env, `${prefix}_MAX_ITEMS`, { min: 1 }), maxRenderedChars: requiredInt(env, `${prefix}_MAX_RENDERED_CHARS`, { min: 1 }) });
+    sectionBudgets[section] = Object.freeze({ maxItems: requiredInt(env, `${prefix}_MAX_ITEMS`, { min: 1 }), maxRenderedChars: requiredInt(env, `${prefix}_MAX_RENDERED_CHARS`, { min: 1 }), ...writeLimits(env, section) });
   }
   const targets = {};
   for (const target of TARGET_KEYS) {
@@ -49,8 +59,11 @@ function loadMemoryV2Config(env = {}) {
     enabled: true, schemaVersion: "2.01", sectionBudgets: Object.freeze(sectionBudgets), targets: Object.freeze(targets),
     librarian: Object.freeze({
       lagThreshold: requiredInt(env, "CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD", { min: 1 }),
+      messageBatchSize: (env.CHAT_MEMORY_V2_LIBRARIAN_MESSAGE_BATCH_SIZE === undefined || String(env.CHAT_MEMORY_V2_LIBRARIAN_MESSAGE_BATCH_SIZE).trim() === "")
+        ? requiredInt(env, "CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD", { min: 1 }) * 2
+        : requiredInt(env, "CHAT_MEMORY_V2_LIBRARIAN_MESSAGE_BATCH_SIZE", { min: 1 }),
     }),
-    scene: Object.freeze({ maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS", { min: 1 }), ttlMs: requiredInt(env, "CHAT_MEMORY_V2_SCENE_TTL_MS", { min: 1 }) }),
+    scene: Object.freeze({ maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS", { min: 1 }), ttlMs: requiredInt(env, "CHAT_MEMORY_V2_SCENE_TTL_MS", { min: 1 }), ...writeLimits(env, "scene") }),
     overdueTodos: Object.freeze({ maxRenderedItems: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS", { min: 1 }), maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS", { min: 1 }) }),
     gapBridge: Object.freeze({ maxRawChars: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS", { min: 1 }), retainedMessages: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES", { min: 1 }) }),
     providerRecovery: Object.freeze({ retryMax, transportInvalidRetryMax, schemaInvalidRetryMax, backoffBaseMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS", { min: 1 }), backoffMaxMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS", { min: 1 }), haltAfterConsecutiveErrors }),

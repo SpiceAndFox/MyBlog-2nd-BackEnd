@@ -1,4 +1,6 @@
 const crypto = require("node:crypto");
+const { addEvidenceAliases } = require("./evidenceInput");
+const { captureWriteLimits, sectionLimits, codePointLength } = require("../contracts/sectionPolicy");
 const {
   TARGETS, READ_ONLY_CONTEXT_PATHS, SCENE_FIELDS,
   normalizeSourceRefs, validateRendererArtifact,
@@ -110,7 +112,7 @@ function visibleItems(items, section, namespace, overdueTodoLimit) {
     : [...active, ...overdue];
 }
 
-function addItemRefs({ items, section, namespace, map, lines, overdueTodoLimit }) {
+function addItemRefs({ items, section, namespace, map, lines, overdueTodoLimit, writeLimits }) {
   let index = 0;
   for (const item of visibleItems(items, section, namespace, overdueTodoLimit)) {
     index += 1;
@@ -118,11 +120,18 @@ function addItemRefs({ items, section, namespace, map, lines, overdueTodoLimit }
     const entry = { section, itemId: item.id };
     if (namespace === "readOnly") entry.sourceRefs = normalizeSourceRefs(item.sourceRefs);
     map[ref] = entry;
-    lines.push(`${ref} | ${renderEntry(section, item)}`);
+    let budget = "";
+    if (section === "recentEpisodes" && namespace === "writable") {
+      const limits = sectionLimits(section, { writeLimits });
+      const chars = codePointLength(item.text);
+      const remaining = Math.max(0, Math.min(limits.maxAppendChars, limits.maxItemChars - chars - codePointLength(" → ")));
+      budget = ` [已有 ${chars} 字符；append 新增片段最多 ${remaining} 字符；现有来源 ${item.sourceRefs.length}/${limits.maxSourceRefs}]`;
+    }
+    lines.push(`${ref} | ${renderEntry(section, item)}${budget}`);
   }
 }
 
-function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit } = {}) {
+function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit, writeLimits } = {}) {
   const refMap = { writable: {}, readOnly: {} };
   const blocks = [];
   const scopes = [
@@ -134,11 +143,12 @@ function renderMemoryAndRefs(state, proposer, targetSections, { overdueTodoLimit
       const lines = [];
       const value = getSection(state, section);
       if (section === "scene") addSceneRefs({ scene: value, namespace: scope.namespace, map: refMap[scope.namespace], lines });
-      else addItemRefs({ items: value, section, namespace: scope.namespace, map: refMap[scope.namespace], lines, overdueTodoLimit });
+      else addItemRefs({ items: value, section, namespace: scope.namespace, map: refMap[scope.namespace], lines, overdueTodoLimit, writeLimits });
       blocks.push(`[${scope.heading}${SECTION_LABELS[section]}（${scope.hint}）]\n${lines.length ? lines.join("\n") : "(无)"}`);
     }
   }
-  return { memoryText: blocks.join("\n\n"), refMap };
+  const evidenceText = addEvidenceAliases(state, refMap);
+  return { memoryText: blocks.join("\n\n"), evidenceText, refMap };
 }
 
 function buildProposerTaskArtifact({
@@ -150,6 +160,7 @@ function buildProposerTaskArtifact({
   taskId = crypto.randomUUID(),
   tickId = Date.now(),
   overdueTodoLimit,
+  config,
 } = {}) {
   if (!state || !intent || !Array.isArray(messages) || messages.length === 0) throw new Error("State, intent and observed messages are required");
   const target = TARGETS[intent.targetKey];
@@ -158,7 +169,8 @@ function buildProposerTaskArtifact({
   const targetMessageId = Math.max(...messages.filter((message) => message.id > cursorBefore).map((message) => message.id));
   if (!Number.isSafeInteger(targetMessageId)) throw new Error("Observed messages do not contain a new batch");
   const stateAtTarget = projectStateAtMessage(state, targetMessageId);
-  const { memoryText, refMap } = renderMemoryAndRefs(stateAtTarget, intent.proposer, target.sections, { overdueTodoLimit });
+  const writeLimits = captureWriteLimits(config);
+  const { memoryText, evidenceText, refMap } = renderMemoryAndRefs(stateAtTarget, intent.proposer, target.sections, { overdueTodoLimit, writeLimits });
   const publicMessages = messages.map((message) => ({
     id: message.id,
     role: message.role,
@@ -177,8 +189,10 @@ function buildProposerTaskArtifact({
         targetMessageId,
         now: new Date(now).toISOString(),
         userTimeZone,
+        writeLimits,
       },
       memoryText,
+      evidenceText,
       messages: publicMessages,
     },
     refMap,

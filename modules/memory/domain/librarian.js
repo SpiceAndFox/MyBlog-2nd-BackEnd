@@ -1,8 +1,8 @@
 const crypto = require("node:crypto");
+const { assertItemLimits } = require("./writeGuards");
 const {
   LIBRARIAN_SECTIONS,
   LIBRARIAN_TARGET_KEY,
-  PROFILE_TEXT_MAX_CHARS,
   assertMemoryState,
   normalizeSourceRefs,
   validateLibrarianSemanticResult,
@@ -35,6 +35,20 @@ function resolveRef(artifact, state, ref) {
   return { ref, section: entry.section, itemId: entry.itemId };
 }
 
+function resolveEvidence(artifact, state, refs, owners) {
+  const sources = [];
+  for (const ref of refs || []) {
+    const entry = artifact.refMap.readOnly[ref];
+    if (!entry || (owners && !owners.some(owner => owner.itemId === entry.itemId && owner.section === entry.section))) fail("evidence_owner_invalid", { ref });
+    const item = sectionItems(state, entry.section).find(item => item.id === entry.itemId);
+    if (!entry.sourceRefs?.length || !entry.sourceRefs.every(source => item?.sourceRefs.some(current => current.messageId === source.messageId && current.contentHash === source.contentHash))) fail("evidence_ref_invalid", { ref });
+    sources.push(...entry.sourceRefs);
+  }
+  const result = normalizeSourceRefs(sources);
+  if (!result.length) fail("evidence_required");
+  return result;
+}
+
 function compileLibrarianProposal({ artifact, semanticResult, baseState } = {}) {
   assertMemoryState(baseState);
   const validation = validateLibrarianSemanticResult(semanticResult, artifact);
@@ -47,25 +61,32 @@ function compileLibrarianProposal({ artifact, semanticResult, baseState } = {}) 
       return { op: "librarianMove", source: resolveRef(artifact, baseState, operation.ref), toSection: operation.toSection };
     }
     if (operation.action === "merge") {
+      const sources = operation.refs.map(ref => resolveRef(artifact, baseState, ref));
       return {
         op: "librarianMerge",
-        sources: operation.refs.map((ref) => resolveRef(artifact, baseState, ref)),
+        sources,
+        sourceRefs: resolveEvidence(artifact, baseState, operation.supportRefs, sources),
         toSection: operation.toSection,
         text: operation.text,
       };
     }
-    if (operation.action === "dropDuplicate") {
+    if (operation.action === "remove") {
       return {
         op: "librarianDropDuplicate",
         keeper: resolveRef(artifact, baseState, operation.keeperRef),
-        duplicates: operation.duplicateRefs.map((ref) => resolveRef(artifact, baseState, ref)),
+        duplicates: [resolveRef(artifact, baseState, operation.ref)],
       };
     }
-    if (operation.action === "splitMove") {
+    if (["revise", "correct"].includes(operation.action)) {
+      return { op: operation.action === "revise" ? "librarianRevise" : "librarianCorrect",
+        source: resolveRef(artifact, baseState, operation.ref), text: operation.text,
+        sourceRefs: resolveEvidence(artifact, baseState, operation.supportRefs) };
+    }
+    if (operation.action === "split") {
       return {
         op: "librarianSplitMove",
         source: resolveRef(artifact, baseState, operation.ref),
-        parts: structuredClone(operation.parts),
+        parts: operation.parts.map(part => ({ toSection: part.toSection, text: part.text, sourceRefs: resolveEvidence(artifact, baseState, part.supportRefs, [resolveRef(artifact, baseState, operation.ref)]) })),
       };
     }
     fail("compile_invariant_failed", { action: operation.action });
@@ -89,12 +110,6 @@ function nextLibrarianItemId(state, section, idFactory) {
   }
 }
 
-function validateTextForSection(text, section) {
-  if (typeof text !== "string" || !text.trim()) fail("text_invalid", { section });
-  const limit = PROFILE_TEXT_MAX_CHARS[section];
-  if (limit && [...text].length > limit) fail("text_length_exceeded", { section, limit });
-}
-
 function eventFor(operation, normalizedOperation, index) {
   const sourceIds = normalizedOperation.sources?.map((entry) => entry.itemId)
     || normalizedOperation.duplicates?.map((entry) => entry.itemId)
@@ -103,7 +118,8 @@ function eventFor(operation, normalizedOperation, index) {
   const resultItemId = normalizedOperation.result?.id || null;
   const section = normalizedOperation.toSection
     || normalizedOperation.keeper?.section
-    || normalizedOperation.parts?.[0]?.toSection;
+    || normalizedOperation.parts?.[0]?.toSection
+    || normalizedOperation.source?.section;
   return {
     eventKind: "proposal_decision",
     section,
@@ -138,7 +154,7 @@ function reduceLibrarianProposal({
   }
   if (proposal.tickId !== task.tickId || proposal.proposer !== task.proposer) fail("compiled_metadata_mismatch");
   if (proposal.status === "noop") return { outcome: "noop", state: structuredClone(state), events: [], snapshot: null };
-  if (proposal.status !== "operations" || !Array.isArray(proposal.operations) || !proposal.operations.length) fail("compiled_schema_invalid");
+  if (proposal.status !== "operations" || !Array.isArray(proposal.operations) || !proposal.operations.length || proposal.operations.length > 6) fail("compiled_schema_invalid");
 
   const working = structuredClone(state);
   const events = [];
@@ -154,6 +170,8 @@ function reduceLibrarianProposal({
       reserve(operation.source);
       const source = findItem(working, operation.source);
       if (operation.toSection === operation.source.section) fail("move_same_section");
+      assertItemLimits(operation.toSection, source.item.text, source.item.sourceRefs, task);
+      source.item.updatedAtMessageId = task.boundaryMessageId;
       source.items.splice(source.index, 1);
       sectionItems(working, operation.toSection).push(source.item);
       const normalized = {
@@ -165,17 +183,28 @@ function reduceLibrarianProposal({
       events.push(eventFor(operation, normalized, index));
       return;
     }
+    if (["librarianRevise", "librarianCorrect"].includes(operation.op)) {
+      reserve(operation.source);
+      const source = findItem(working, operation.source);
+      assertItemLimits(operation.source.section, operation.text, operation.sourceRefs, task);
+      source.item.text = operation.text;
+      source.item.sourceRefs = structuredClone(operation.sourceRefs);
+      source.item.updatedAtMessageId = task.boundaryMessageId;
+      events.push(eventFor(operation, { op: operation.op, source: { section: operation.source.section, itemId: source.item.id }, value: structuredClone(source.item) }, index));
+      return;
+    }
     if (operation.op === "librarianMerge") {
       operation.sources.forEach(reserve);
-      validateTextForSection(operation.text, operation.toSection);
+      assertItemLimits(operation.toSection, operation.text, operation.sourceRefs, task);
       const resolved = operation.sources.map((selector) => ({ selector, ...findItem(working, selector) }));
-      const refs = normalizeSourceRefs(resolved.flatMap((entry) => entry.item.sourceRefs));
+      const refs = normalizeSourceRefs(operation.sourceRefs);
+      if (!refs.every(ref => resolved.some(entry => entry.item.sourceRefs.some(current => current.messageId === ref.messageId && current.contentHash === ref.contentHash)))) fail("evidence_owner_invalid");
       const item = {
         id: nextLibrarianItemId(working, operation.toSection, idFactory),
         text: operation.text,
         sourceRefs: refs,
-        createdAtMessageId: Math.min(...resolved.map((entry) => entry.item.createdAtMessageId)),
-        updatedAtMessageId: Math.max(...refs.map((ref) => ref.messageId)),
+        createdAtMessageId: task.boundaryMessageId,
+        updatedAtMessageId: task.boundaryMessageId,
       };
       for (const entry of resolved) {
         const current = findItem(working, entry.selector);
@@ -196,9 +225,6 @@ function reduceLibrarianProposal({
       operation.duplicates.forEach(reserve);
       const keeper = findItem(working, operation.keeper);
       const duplicateItems = operation.duplicates.map((selector) => ({ selector, ...findItem(working, selector) }));
-      const refs = normalizeSourceRefs([keeper.item, ...duplicateItems.map((entry) => entry.item)].flatMap((item) => item.sourceRefs));
-      keeper.item.sourceRefs = refs;
-      keeper.item.updatedAtMessageId = Math.max(...refs.map((ref) => ref.messageId));
       for (const entry of duplicateItems) {
         const current = findItem(working, entry.selector);
         current.items.splice(current.index, 1);
@@ -214,18 +240,20 @@ function reduceLibrarianProposal({
     }
     if (operation.op === "librarianSplitMove") {
       reserve(operation.source);
-      if (!Array.isArray(operation.parts) || operation.parts.length < 2) fail("split_parts_invalid");
-      if (!operation.parts.some((part) => part.toSection !== operation.source.section)) fail("split_does_not_move");
+      if (!Array.isArray(operation.parts) || (operation.parts.length < 2 || operation.parts.length > 4)) fail("split_parts_invalid");
       const source = findItem(working, operation.source);
-      operation.parts.forEach((part) => validateTextForSection(part.text, part.toSection));
+      operation.parts.forEach(part => {
+        assertItemLimits(part.toSection, part.text, part.sourceRefs, task);
+        if (!part.sourceRefs.every(ref => source.item.sourceRefs.some(current => current.messageId === ref.messageId && current.contentHash === ref.contentHash))) fail("evidence_owner_invalid");
+      });
       source.items.splice(source.index, 1);
       const parts = operation.parts.map((part) => {
         const item = {
           id: nextLibrarianItemId(working, part.toSection, idFactory),
           text: part.text,
-          sourceRefs: structuredClone(source.item.sourceRefs),
-          createdAtMessageId: source.item.createdAtMessageId,
-          updatedAtMessageId: source.item.updatedAtMessageId,
+          sourceRefs: structuredClone(part.sourceRefs),
+          createdAtMessageId: task.boundaryMessageId,
+          updatedAtMessageId: task.boundaryMessageId,
         };
         sectionItems(working, part.toSection).push(item);
         return { toSection: part.toSection, value: structuredClone(item) };

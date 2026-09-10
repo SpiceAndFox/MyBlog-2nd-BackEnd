@@ -61,10 +61,21 @@ test("DeepSeek compiler preserves dropped constraints as positive descriptions",
 
 test("DeepSeek compiler preserves Librarian status branches and target text limits", () => {
   const compiled = compileDeepSeekSchema(buildOutputSchema("librarianProposer").schema);
-  assert.equal(compiled.anyOf.length, 2);
+  assert.equal(compiled.anyOf.length, 4);
   const serialized = JSON.stringify(compiled);
   assert.match(serialized, /Array must contain at least 1 items/);
   assert.match(serialized, /Array must contain at most 0 items/);
   assert.match(serialized, /String length must be at most 200 Unicode characters/);
   assert.match(serialized, /String length must be at most 300 Unicode characters/);
+});
+
+
+test("DeepSeek Librarian tool parameters use one nonempty root object and retain local status validation", () => {
+  const { compileDeepSeekToolParameters } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+  const tool = compileDeepSeekToolParameters(buildOutputSchema("librarianProposer"));
+  assert.equal(tool.type, "object");
+  assert.equal(tool.anyOf, undefined);
+  assert.deepEqual(tool.properties.status.enum, ["changes", "noop"]);
+  assert.ok(tool.required.includes("reports"));
+  assert.match(tool.properties.operations.description, /empty array for noop/);
 });

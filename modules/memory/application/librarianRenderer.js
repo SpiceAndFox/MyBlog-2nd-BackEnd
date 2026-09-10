@@ -5,36 +5,21 @@ const {
   LIBRARIAN_TARGET_KEY,
   validateLibrarianArtifact,
 } = require("../contracts");
-const { REF_PREFIX, SECTION_LABELS, sectionPath } = require("./proposerTaskRenderer");
-
-function sectionItems(state, section) {
-  const [container, key] = sectionPath(section);
-  return state[container][key];
-}
+const { renderMemoryAndRefs } = require("./proposerTaskRenderer");
+const { captureWriteLimits } = require("../contracts/sectionPolicy");
 
 function renderLibrarianMemory(state) {
-  const writable = {};
-  const blocks = [];
-  for (const section of LIBRARIAN_SECTIONS) {
-    const lines = [];
-    let index = 0;
-    for (const item of sectionItems(state, section)) {
-      index += 1;
-      const ref = `${REF_PREFIX[section]}${index}`;
-      writable[ref] = { section, itemId: item.id };
-      lines.push(`${ref} | ${item.text}`);
-    }
-    blocks.push(`[${SECTION_LABELS[section]}]\n${lines.length ? lines.join("\n") : "(无)"}`);
-  }
-  return { memoryText: blocks.join("\n\n"), refMap: { writable, readOnly: {} } };
+  return renderMemoryAndRefs(state, LIBRARIAN_PROPOSER, LIBRARIAN_SECTIONS);
 }
 
 function buildLibrarianEnvelope({
   userId,
   presetId,
   state,
+  config,
   boundaryMessageId,
-  turnOrdinal,
+  watermarkOrdinal,
+  watermarkKind = "complete_turn",
   triggerType,
   now = new Date(),
   userTimeZone,
@@ -49,13 +34,15 @@ function buildLibrarianEnvelope({
     targetKey: LIBRARIAN_TARGET_KEY,
     targetSections: LIBRARIAN_SECTIONS.slice(),
     boundaryMessageId,
-    turnOrdinal,
+    watermarkOrdinal,
+    watermarkKind,
     triggerType,
+    writeLimits: captureWriteLimits(config),
     now: new Date(now).toISOString(),
     userTimeZone,
   };
   const artifact = {
-    publicInput: { task: publicTask, memoryText: rendered.memoryText, messages: [] },
+    publicInput: { task: publicTask, memoryText: rendered.memoryText, evidenceText: rendered.evidenceText, messages: [] },
     refMap: rendered.refMap,
     messageMeta: {},
   };
@@ -76,14 +63,14 @@ function buildLibrarianEnvelope({
       baseRevision: state.meta.revision,
       mode: "librarian",
       observedMessageIds: [],
-      trigger: { type: triggerType, boundaryMessageId, turnOrdinal },
+      trigger: { type: triggerType, boundaryMessageId, watermarkOrdinal, watermarkKind },
     },
     artifact,
   };
 }
 
 function librarianDedupeKey(task) {
-  return ["maintenance", "librarian", task.sourceGeneration, task.triggerType, task.turnOrdinal, task.boundaryMessageId, task.baseRevision].join(":");
+  return ["maintenance", "librarian", task.sourceGeneration, task.watermarkKind, task.triggerType, task.watermarkOrdinal, task.boundaryMessageId, task.baseRevision].join(":");
 }
 
 module.exports = { renderLibrarianMemory, buildLibrarianEnvelope, librarianDedupeKey };

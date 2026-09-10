@@ -105,7 +105,7 @@ test("Memory v2 inspector renders 2.01 flat provenance without writing", async (
     sections: ["userProfile", "assistantProfile"],
   });
 
-  assert.equal(output, "[该类记忆可能滞后]\n[User 核心档案]\n- 偏好: 旧偏好\n\n[Assistant 核心档案]\n- 风格: 温和");
+  assert.equal(output, "[该类记忆可能滞后]\n[User 核心档案]\n- 偏好: 旧偏好\n\n[Assistant 核心档案]\n- 风格: 温和\n\n[写入尺寸诊断]\nuserProfile/userProfile:1: chars=7, sources=1\nassistantProfile/assistantProfile:1: chars=6, sources=1");
   assert.equal(queries.length, 1);
   assert.deepEqual(queries[0].params, [7, "companion"]);
   assert.match(queries[0].sql, /^\s*SELECT/);

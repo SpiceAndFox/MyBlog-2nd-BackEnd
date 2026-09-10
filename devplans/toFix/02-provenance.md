@@ -3,7 +3,7 @@
 ## 状态与优先级
 
 - 优先级：P1
-- 状态：待实现
+- 状态：本地实现与验收完成，见 [08-implementation.md](./08-implementation.md)
 - 前置：[01-write-path-guards.md](./01-write-path-guards.md) 的 `append / revise / correct` 动作语义
 
 ## 问题

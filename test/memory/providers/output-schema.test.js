@@ -54,7 +54,7 @@ test("compaction output schema is maintenance-only and section-specific", () => 
   const resultVariants = schema.properties.sectionResults.properties.todos.oneOf;
   const change = resultVariants[0].properties.changes.items;
   assert.equal(change.properties.action.const, "merge");
-  assert.deepEqual(change.required, ["action", "refs", "text"]);
+  assert.deepEqual(change.required, ["action", "refs", "text", "supportRefs"]);
   assert.equal(JSON.stringify(change).includes("itemId"), false);
   assert.equal(JSON.stringify(change).includes("evidenceKind"), false);
   assert.equal(resultVariants[1].properties.status.const, "unable_to_compact");
@@ -65,7 +65,7 @@ test("profile output schema exposes only text Semantic changes and source select
   assert.deepEqual(schema.properties.sectionStatuses.required, ["userProfile", "assistantProfile", "relationship"]);
   const change = schema.properties.changes.items;
   assert.deepEqual(change.required, ["section", "action", "sources"]);
-  assert.deepEqual(change.properties.action.enum, ["add", "update", "correct", "forget"]);
+  assert.deepEqual(change.properties.action.enum, ["add", "revise", "correct", "forget"]);
   assert.equal(JSON.stringify(schema).includes('"oneOf"'), false);
   assert.equal(JSON.stringify(schema).includes('"anyOf"'), false);
   for (const forbidden of ["op", "itemId", "evidenceKind", "quote", "facet", "canonicalKey", "factBasis"]) {
@@ -96,14 +96,14 @@ test("Librarian output schema exposes only conservative global maintenance opera
   assert.equal(noop.properties.operations.maxItems, 0);
   const variants = changes.properties.operations.items.oneOf;
   assert.deepEqual([...new Set(variants.map((variant) => variant.properties.action.const))], [
-    "move", "merge", "dropDuplicate", "splitMove",
+    "move", "merge", "revise", "correct", "remove", "split",
   ]);
   const userProfileMerge = variants.find((variant) => (
     variant.properties.action.const === "merge"
     && variant.properties.toSection.const === "userProfile"
   ));
   assert.equal(userProfileMerge.properties.text.maxLength, 200);
-  const split = variants.find((variant) => variant.properties.action.const === "splitMove");
+  const split = variants.find((variant) => variant.properties.action.const === "split");
   const relationshipPart = split.properties.parts.items.oneOf.find(
     (variant) => variant.properties.toSection.const === "relationship",
   );

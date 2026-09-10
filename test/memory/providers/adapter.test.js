@@ -287,7 +287,7 @@ test("Provider Adapter accepts the Librarian message-free global maintenance con
     presetId: "default",
     state: createInitialMemoryState(),
     boundaryMessageId: 0,
-    turnOrdinal: 0,
+    watermarkOrdinal: 0,
     triggerType: "manual",
     now: "2026-07-26T00:00:00.000Z",
     userTimeZone: "Asia/Shanghai",

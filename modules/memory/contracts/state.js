@@ -72,7 +72,7 @@ function validateSceneField(field, path, errors) {
   const newest = Array.isArray(field.sourceRefs) && field.sourceRefs.length
     ? Math.max(...field.sourceRefs.map((ref) => ref.messageId))
     : null;
-  if (field.updatedAtMessageId !== newest) add(errors, `${path}.updatedAtMessageId`, "must equal the newest source message id");
+  if (!nonNegativeInteger(field.updatedAtMessageId) || field.updatedAtMessageId < newest) add(errors, `${path}.updatedAtMessageId`, "must be a boundary at or after the evidence");
 }
 
 function validateItem(item, section, path, errors) {
@@ -83,8 +83,8 @@ function validateItem(item, section, path, errors) {
   if (typeof item.text !== "string" || !item.text.trim()) add(errors, `${path}.text`, "must be a non-empty string");
   validateSourceRefs(item.sourceRefs, `${path}.sourceRefs`, errors);
   const ids = Array.isArray(item.sourceRefs) ? item.sourceRefs.map((ref) => ref.messageId).filter(nonNegativeInteger) : [];
-  if (!nonNegativeInteger(item.createdAtMessageId) || (ids.length && !ids.includes(item.createdAtMessageId))) add(errors, `${path}.createdAtMessageId`, "must identify persisted creation provenance");
-  if (!nonNegativeInteger(item.updatedAtMessageId) || (ids.length && item.updatedAtMessageId !== Math.max(...ids))) add(errors, `${path}.updatedAtMessageId`, "must equal the newest source message id");
+  if (!nonNegativeInteger(item.createdAtMessageId)) add(errors, `${path}.createdAtMessageId`, "must identify the creation boundary");
+  if (!nonNegativeInteger(item.updatedAtMessageId) || item.updatedAtMessageId < item.createdAtMessageId || (ids.length && item.updatedAtMessageId < Math.max(...ids))) add(errors, `${path}.updatedAtMessageId`, "must be at or after creation and current evidence");
   if (section !== "todos") return;
   if (!["user", "assistant", "both"].includes(item.actor)) add(errors, `${path}.actor`, "is invalid");
   if (!["user", "assistant"].includes(item.requester)) add(errors, `${path}.requester`, "is invalid");

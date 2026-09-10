@@ -13,7 +13,7 @@ function boundedString(value, fallback = "") {
 function safeIssueMeta(meta) {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const safe = {};
-  for (const key of ["actualType", "limit", "actual", "section", "messageId"]) {
+  for (const key of ["actualType", "limit", "actual", "section", "messageId", "action", "existingChars", "separatorChars", "maxItemChars"]) {
     const value = meta[key];
     if (typeof value === "string") safe[key] = boundedString(value).slice(0, 80);
     else if (Number.isSafeInteger(value)) safe[key] = value;

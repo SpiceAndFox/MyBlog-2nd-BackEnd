@@ -1,3 +1,4 @@
+const { sectionLimits } = require("../../contracts/sectionPolicy");
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -46,8 +47,11 @@ function bindSectionResult(resultSchema, artifact, section) {
   if (!changesBranch || !itemSchema) return;
   const { writableRefs, readOnlyRefs, messageIds } = renderedSelectors(artifact, section);
   if (itemSchema.properties?.refs) {
-    if (writableRefs.length >= 2) {
+    if (writableRefs.length >= 2 && readOnlyRefs.length) {
       itemSchema.properties.refs.items = { type: "string", enum: writableRefs };
+      itemSchema.properties.supportRefs.items = { type: "string", enum: readOnlyRefs };
+      itemSchema.properties.text.maxLength = sectionLimits(section, artifact?.publicInput?.task).maxItemChars;
+      itemSchema.properties.supportRefs.maxItems = sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs;
     } else {
       resultSchema.oneOf = resultSchema.oneOf.filter((branch) => branch !== changesBranch);
     }
@@ -75,19 +79,36 @@ function bindOutputSchema(schema, artifact, sections) {
   const bound = structuredClone(schema);
   if (bound.name === "memory_librarian_semantic") {
     const refs = Object.keys(artifact?.refMap?.writable || {}).sort();
+    const evidenceRefs = Object.keys(artifact?.refMap?.readOnly || {}).sort();
     const rootBranches = bound.schema?.oneOf || [];
     const changesBranch = rootBranches.find((branch) => branch.properties?.status?.const === "changes");
     const operationArray = changesBranch?.properties?.operations;
     if (!refs.length) {
       bound.schema.oneOf = rootBranches.filter((branch) => branch.properties?.status?.const === "noop");
+      bound.schema.oneOf[0].properties.reports.maxItems = 0;
       return bound;
     }
     let operations = operationArray?.items?.oneOf || [];
     if (refs.length < 2) {
-      operations = operations.filter((variant) => !["merge", "dropDuplicate"].includes(variant.properties?.action?.const));
+      operations = operations.filter((variant) => !["merge", "remove"].includes(variant.properties?.action?.const));
       operationArray.items.oneOf = operations;
     }
+    if (!evidenceRefs.length) operations = operations.filter(variant => ["move", "remove"].includes(variant.properties?.action?.const));
+    operationArray.items.oneOf = operations;
+    for (const branch of rootBranches) {
+      if (refs.length) branch.properties.reports.items.properties.ref = { type: "string", enum: refs };
+      else branch.properties.reports.maxItems = 0;
+    }
     for (const variant of operations) {
+      const section = variant.properties.toSection?.const;
+      if (variant.properties.text && section) variant.properties.text.maxLength = sectionLimits(section, artifact?.publicInput?.task).maxItemChars;
+      if (variant.properties.supportRefs) variant.properties.supportRefs.items = { type: "string", enum: evidenceRefs };
+      for (const part of variant.properties.parts?.items?.oneOf || []) {
+        part.properties.supportRefs.items = { type: "string", enum: evidenceRefs };
+        const limits = sectionLimits(part.properties.toSection.const, artifact?.publicInput?.task);
+        part.properties.text.maxLength = limits.maxItemChars;
+        part.properties.supportRefs.maxItems = limits.maxSourceRefs;
+      }
       for (const field of ["ref", "keeperRef"]) {
         if (variant.properties?.[field]) variant.properties[field] = { type: "string", enum: refs };
       }

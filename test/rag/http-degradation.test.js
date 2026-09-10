@@ -77,8 +77,9 @@ async function retrieve() {
 
 test("real embedding HTTP 429 degrades the composed RAG query", async () => {
   behavior = "429";
-  config.embeddingTimeoutMs = 200;
-  config.queryTimeoutMs = 250;
+  // This test checks an HTTP response, so tolerate CPU contention from the full suite.
+  config.embeddingTimeoutMs = 5000;
+  config.queryTimeoutMs = 6000;
   const result = await retrieve();
   assert.deepEqual(result.messages, []);
   assert.equal(result.stats.reason, "retrieval_degraded");
@@ -87,8 +88,9 @@ test("real embedding HTTP 429 degrades the composed RAG query", async () => {
 
 test("real embedding response dimension corruption degrades the composed RAG query", async () => {
   behavior = "wrong-dimensions";
-  config.embeddingTimeoutMs = 200;
-  config.queryTimeoutMs = 250;
+  // This test checks an HTTP response, so tolerate CPU contention from the full suite.
+  config.embeddingTimeoutMs = 5000;
+  config.queryTimeoutMs = 6000;
   const result = await retrieve();
   assert.deepEqual(result.messages, []);
   assert.equal(result.stats.reason, "retrieval_degraded");

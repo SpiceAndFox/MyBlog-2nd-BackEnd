@@ -269,3 +269,35 @@ test("unable_to_decide expands once, then commits one cursor-only revision idemp
   assert.equal(task.stage_payload.compiledProposal, undefined);
   assert.equal(task.stage_payload.unableResult.sectionResults.todos.status, "unable_to_decide");
 });
+
+
+test("an oversized append result consumes one durable repair and cannot partially commit on restart", async () => {
+  const data = store();
+  const [original] = await data.repositories.source.getByIds();
+  const next = { ...original, id: 2 };
+  data.repositories.source.getObservedWindow = async () => [next];
+  data.repositories.source.getByIds = async (_u, _p, ids) => [original, next].filter(m => ids.includes(m.id));
+  const state = await data.repositories.state.getState();
+  state.meta.targetCursors.episodes = 1;
+  state.working.recentEpisodes = [{ id: "arc", text: "旧".repeat(590), sourceRefs: [{ messageId: 1, contentHash: original.contentHash }], createdAtMessageId: 1, updatedAtMessageId: 1 }];
+  await data.repositories.state.writeState(1, "default", state);
+  const settings = { ...config, targets: { episodes: { lagThreshold: 1, contextWindow: 2 } } };
+  let calls = 0;
+  const providerAdapter = { async propose(envelope, options) {
+    calls++;
+    if (calls === 2) assert.match(JSON.stringify(options.repairFeedback), /TEXT_LENGTH_EXCEEDED/);
+    return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "changes", changes: [{ action: "append", ref: "E1", text: "新".repeat(20), evidenceMessageIds: [2] }] }, milestones: { status: "noop" } } } };
+  } };
+  const make = () => createNormalWritePipeline({ observer: {}, repositories: data.repositories, config: settings, now: () => fixedNow, providerAdapter });
+  const pipeline = make();
+  const envelope = await pipeline.createTask(1, "default", { targetKey: "episodes", proposer: "episodeProposer", targetSections: ["recentEpisodes", "milestones"], trigger: { type: "lagThreshold" } });
+  const result = await pipeline.processEnvelope(envelope);
+  assert.equal(result.halted, true);
+  assert.equal(calls, 2);
+  assert.deepEqual(data.inspect.state, state);
+  assert.equal(data.inspect.events.length, 0);
+  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage_payload.schemaInvalidAttempts, 1);
+  await make().processEnvelope(envelope);
+  assert.equal(calls, 2);
+  assert.deepEqual(data.inspect.state, state);
+});

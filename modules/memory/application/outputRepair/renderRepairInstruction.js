@@ -52,8 +52,16 @@ function renderRepairMessage(feedback = {}, task = null) {
     targets.push("每个 change 至少提供一种 schema 允许的可见来源；没有来源的候选不输出，并重新给出该 section 的终局。");
   }
   if (plan.directives.includes("REWRITE_ATOMIC_TEXT_WITHIN_LIMIT")) {
-    const limits = lengthLimits(issues);
-    targets.push(`将超长字段改写为一个原子短句，Unicode 字符数不得超过 ${limits.length ? limits.join("/") : "错误中给定的"} 上限。`);
+    const appendIssues = issues.filter(issue => issue.code === ISSUE_CODES.TEXT_LENGTH_EXCEEDED && issue.meta?.action === "append");
+    for (const issue of appendIssues) {
+      const { limit, existingChars, separatorChars, maxItemChars } = issue.meta;
+      targets.push(`append 的新增 text 最多 ${limit} 个 Unicode 字符：已有 ${existingChars} 字符 + 分隔符 ${separatorChars} 字符 + 新增片段不得超过 ${maxItemChars}。只压缩新增片段，不改写旧文本；若新内容属于独立互动弧，应使用 add，不因人物或长期话题相同就追加到旧事件。不得伪造 correct 或删除必要事实来绕过限制。`);
+    }
+    const otherIssues = issues.filter(issue => issue.meta?.action !== "append");
+    if (otherIssues.some(issue => issue.code === ISSUE_CODES.TEXT_LENGTH_EXCEEDED)) {
+      const limits = lengthLimits(otherIssues);
+      targets.push(`将超长字段改写为一个原子短句，Unicode 字符数不得超过 ${limits.length ? limits.join("/") : "错误中给定的"} 上限。`);
+    }
   }
   if (plan.directives.includes("USE_NOOP_FOR_ZERO_CHANGES")) {
     targets.push(usesFlatWire

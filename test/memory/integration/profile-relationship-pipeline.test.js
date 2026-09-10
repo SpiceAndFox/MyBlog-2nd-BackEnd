@@ -145,7 +145,7 @@ test("Profile/Relationship uses readable Semantic input and can derive long-term
   assert.equal(result.status, "committed");
   assert.equal(providerRequests.length, 3);
   const providerRequest = providerRequests.find((request) => request.proposer === "userProfileProposer");
-  assert.deepEqual(Object.keys(providerRequest.userPayload).sort(), ["memoryText", "messages", "task"]);
+  assert.deepEqual(Object.keys(providerRequest.userPayload).sort(), ["evidenceText", "memoryText", "messages", "task"]);
   assert.match(providerRequest.userPayload.memoryText, /E1 \| 用户在交流压力过大时需要先暂停/);
   assert.equal(JSON.stringify(providerRequest.userPayload).includes("episode:pause"), false);
   assert.equal(JSON.stringify(providerRequest.responseSchema).includes("facet"), false);
@@ -164,7 +164,7 @@ test("Profile/Relationship uses readable Semantic input and can derive long-term
   assert.equal(task.stage_payload.compiledProposal.sectionResults.userProfile.patches[0].op, "addItem");
 });
 
-test("Profile/Relationship support-only correct, update and forget compile without typed metadata or evidence-count gates", async () => {
+test("Profile/Relationship support-only correct, revise and forget replace current evidence and preserve audit actions", async () => {
   const support = message(1, "user", "这些长期档案需要按现在的共识调整。");
   const userSource = message(2, "user", "我以前说过自己喜欢长篇回复。");
   const assistantSource = message(3, "assistant", "我曾把爱开玩笑写成固定人格。");
@@ -190,7 +190,7 @@ test("Profile/Relationship support-only correct, update and forget compile witho
       sectionResults: {
         userProfile: { status: "changes", changes: [{ action: "correct", ref: "UP1", text: "用户偏好简短回应。", supportRefs: ["E1"] }] },
         assistantProfile: { status: "changes", changes: [{ action: "forget", ref: "AP1", supportRefs: ["E1"] }] },
-        relationship: { status: "changes", changes: [{ action: "update", ref: "R1", text: "双方使用新称呼。", supportRefs: ["E1"] }] },
+        relationship: { status: "changes", changes: [{ action: "revise", ref: "R1", text: "双方使用新称呼。", supportRefs: ["E1"] }] },
       },
     } }) },
     repositories: store.repositories,
@@ -204,17 +204,17 @@ test("Profile/Relationship support-only correct, update and forget compile witho
   assert.equal(result.status, "committed");
   assert.equal(store.inspect.state.longTerm.userProfile[0].id, "userProfile:reply");
   assert.equal(store.inspect.state.longTerm.userProfile[0].text, "用户偏好简短回应。");
-  assert.deepEqual(store.inspect.state.longTerm.userProfile[0].sourceRefs.map((ref) => ref.messageId), [1, 2]);
+  assert.deepEqual(store.inspect.state.longTerm.userProfile[0].sourceRefs.map((ref) => ref.messageId), [1]);
   assert.deepEqual(store.inspect.state.longTerm.assistantProfile, []);
   assert.equal(store.inspect.state.longTerm.relationship[0].id, "relationship:name");
   assert.equal(store.inspect.state.longTerm.relationship[0].text, "双方使用新称呼。");
-  assert.deepEqual(store.inspect.state.longTerm.relationship[0].sourceRefs.map((ref) => ref.messageId), [1, 4]);
+  assert.deepEqual(store.inspect.state.longTerm.relationship[0].sourceRefs.map((ref) => ref.messageId), [1]);
   const compiled = [...store.inspect.tasks.values()][0].stage_payload.compiledProposal;
   assert.deepEqual([
     compiled.sectionResults.userProfile.patches[0].op,
     compiled.sectionResults.assistantProfile.patches[0].op,
     compiled.sectionResults.relationship.patches[0].op,
-  ], ["updateItem", "forgetItem", "updateItem"]);
+  ], ["correctItem", "forgetItem", "reviseItem"]);
   assert.equal(JSON.stringify(store.inspect.state).includes("factBasis"), false);
   assert.equal(JSON.stringify(store.inspect.events).includes("evidence_kind"), false);
 });

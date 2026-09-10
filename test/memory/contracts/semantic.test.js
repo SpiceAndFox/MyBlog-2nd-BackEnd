@@ -121,7 +121,7 @@ test("Semantic contract accepts support-only changes and rejects persistent prot
     tickId: 101,
     proposer: "episodeProposer",
     sectionResults: {
-      recentEpisodes: { status: "changes", changes: [{ action: "update", ref: "E1", text: "双方暂停后恢复了沟通。", supportRefs: ["R1"] }] },
+      recentEpisodes: { status: "changes", changes: [{ action: "append", ref: "E1", text: "双方暂停后恢复了沟通。", supportRefs: ["R1"] }] },
       milestones: { status: "noop" },
     },
   };
@@ -157,7 +157,7 @@ test("Semantic contract rejects invented, read-only and wrong-section writable r
   assert.ok(wrongSection.errors.some((error) => /writable Memory for recentEpisodes/.test(error.message)));
 });
 
-test("Compiler expands historical support sources, merges direct sources and maps correct to updateItem", async () => {
+test("Compiler expands historical support sources, merges direct sources and preserves the correct action", async () => {
   const { state, artifact, oldMessage, newMessage } = fixture();
   const rows = [oldMessage, newMessage].map((entry) => ({ ...entry, userId: 9, presetId: "default" }));
   const compiler = createSemanticCompiler({
@@ -184,12 +184,12 @@ test("Compiler expands historical support sources, merges direct sources and map
   };
   const compiled = await compiler.compile({ artifact, semanticResult, baseState: state, userId: 9, presetId: "default" });
   assert.deepEqual(compiled.sectionResults.recentEpisodes.patches[0], {
-    op: "updateItem",
+    op: "correctItem",
     itemId: "episode:1",
     value: { text: "暂停并不代表拒绝关系；双方冷静后恢复了沟通。" },
     sourceRefs: [source(1, oldMessage.content), source(3, newMessage.content)],
   });
-  assert.equal(JSON.stringify(compiled).includes("correct"), false);
+  assert.equal(JSON.stringify(compiled).includes("correctItem"), true);
   assert.equal(JSON.stringify(compiled).includes("evidenceKind"), false);
 });
 
@@ -224,7 +224,7 @@ test("2.01 Reducer applies compiled patches with flat provenance and no tombston
   });
   assert.equal(reduced.outcome, "committable");
   assert.equal(reduced.state.working.recentEpisodes[0].id, "episode:1");
-  assert.deepEqual(reduced.state.working.recentEpisodes[0].sourceRefs.map((ref) => ref.messageId), [1, 2, 3]);
+  assert.deepEqual(reduced.state.working.recentEpisodes[0].sourceRefs.map((ref) => ref.messageId), [1, 3]);
   assert.equal(reduced.events.some((event) => Object.prototype.hasOwnProperty.call(event, "evidenceKind")), false);
   assert.equal(Object.prototype.hasOwnProperty.call(reduced, "tombstones"), false);
 });

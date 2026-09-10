@@ -4,6 +4,8 @@ const {
   isSafetySignal,
 } = require("./providerProtocol");
 const { buildDeepSeekHttpRequest, normalizeBaseUrl } = require("./structuredHttpRequest");
+const { parseStrictJsonContent } = require("./structuredJsonContent");
+const { validateLocalJsonSchema } = require("./localJsonSchemaValidator");
 
 function parseToolArguments(value) {
   if (value && typeof value === "object") return { output: value, recovery: null, error: null };
@@ -24,7 +26,7 @@ function parseToolArguments(value) {
   }
 }
 
-function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", reasoningEffort = "low", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
@@ -33,7 +35,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
   if (normalizedBaseUrl.hostname === "api.deepseek.com" && !normalizedBaseUrl.pathname.endsWith("/beta/")) {
     throw new Error("DeepSeek strict tools require CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.deepseek.com/beta");
   }
-  const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens, thinkingMode };
+  const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens, thinkingMode, reasoningEffort };
   return async function invokeStructured(request) {
     const { responseSchema } = request;
     const functionName = responseSchema?.name;
@@ -64,6 +66,25 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
         return { safetyBlocked: true, finishReason, model: data?.model ?? requestedModel, usage: data?.usage };
       }
       const toolCall = choice?.message?.tool_calls?.find((entry) => entry?.function?.name === functionName);
+      // With thinking enabled DeepSeek requires auto tool choice and can return
+      // the same JSON in content. Accept it only after the full bound schema
+      // passes locally; never replace malformed or unexpected tool calls.
+      const content = choice?.message?.content;
+      if (thinkingMode === "enabled" && !choice?.message?.tool_calls?.length
+        && typeof content === "string" && content.trim()) {
+        const parsed = parseStrictJsonContent(content, { finishReason });
+        const validation = parsed.transportError ? null : validateLocalJsonSchema(responseSchema.schema, parsed.output);
+        return {
+          output: parsed.output,
+          rawOutput: content,
+          finishReason,
+          model: data?.model ?? requestedModel,
+          usage: data?.usage ?? null,
+          transportError: parsed.transportError,
+          transportRecovery: validation?.ok ? "accepted_schema_valid_json_content" : null,
+          ...(validation && !validation.ok ? { outputSchemaErrors: validation.errors } : {}),
+        };
+      }
       const rawOutput = toolCall?.function?.arguments;
       const parsed = toolCall
         ? parseToolArguments(toolCall?.function?.arguments)

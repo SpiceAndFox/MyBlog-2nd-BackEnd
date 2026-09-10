@@ -3,7 +3,7 @@
 ## 状态与优先级
 
 - 优先级：P1
-- 状态：待实现
+- 状态：本地实现与验收完成，见 [08-implementation.md](./08-implementation.md)
 - 目标：长时间 turn-less rebuild 中可以周期运行 Librarian，同时保持 checkpoint、恢复与去重简单确定
 
 ## 当前失效机制

@@ -18,40 +18,33 @@ const COMPILE_ERROR_REASONS = Object.freeze([
   "compile_invariant_failed",
 ]);
 
-const SECTION_ACTIONS = Object.freeze({
-  scene: Object.freeze(["set", "correct", "clear", "forget"]),
-  todos: Object.freeze(["add", "update", "correct", "forget", "complete", "cancel", "expire"]),
-  standingAgreements: Object.freeze(["add", "update", "correct", "forget", "cancel"]),
-  recentEpisodes: Object.freeze(["add", "update", "correct", "forget"]),
-  milestones: Object.freeze(["add", "update", "correct", "forget"]),
-  worldFacts: Object.freeze(["add", "update", "correct", "forget"]),
-  userProfile: Object.freeze(["add", "update", "correct", "forget"]),
-  assistantProfile: Object.freeze(["add", "update", "correct", "forget"]),
-  relationship: Object.freeze(["add", "update", "correct", "forget"]),
-});
+const { SECTION_ACTIONS, sectionLimits, validateWriteLimits } = require("./sectionPolicy");
 
 const COMPILED_OP_FIELDS = Object.freeze({
+  correctField: Object.freeze(["op", "path", "value", "sourceRefs"]),
   setField: Object.freeze(["op", "path", "value", "sourceRefs"]),
   clearField: Object.freeze(["op", "path", "sourceRefs"]),
   addItem: Object.freeze(["op", "value", "sourceRefs"]),
-  updateItem: Object.freeze(["op", "itemId", "value", "sourceRefs"]),
+  reviseItem: Object.freeze(["op", "itemId", "value", "sourceRefs"]),
+  correctItem: Object.freeze(["op", "itemId", "value", "sourceRefs"]),
+  appendItem: Object.freeze(["op", "itemId", "value", "sourceRefs"]),
   forgetItem: Object.freeze(["op", "itemId", "sourceRefs"]),
   completeTodo: Object.freeze(["op", "itemId", "sourceRefs"]),
   cancelTodo: Object.freeze(["op", "itemId", "sourceRefs"]),
   expireTodo: Object.freeze(["op", "itemId", "sourceRefs"]),
   cancelAgreement: Object.freeze(["op", "itemId", "sourceRefs"]),
-  mergeItems: Object.freeze(["op", "itemIds", "value"]),
+  mergeItems: Object.freeze(["op", "itemIds", "value", "sourceRefs"]),
 });
 const SECTION_OPS = Object.freeze({
-  scene: Object.freeze(["setField", "clearField"]),
-  todos: Object.freeze(["addItem", "updateItem", "forgetItem", "completeTodo", "cancelTodo", "expireTodo", "mergeItems"]),
-  standingAgreements: Object.freeze(["addItem", "updateItem", "forgetItem", "cancelAgreement", "mergeItems"]),
-  recentEpisodes: Object.freeze(["addItem", "updateItem", "forgetItem"]),
-  milestones: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
-  worldFacts: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
-  userProfile: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
-  assistantProfile: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
-  relationship: Object.freeze(["addItem", "updateItem", "forgetItem", "mergeItems"]),
+  scene: Object.freeze(["setField", "correctField", "clearField"]),
+  todos: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "completeTodo", "cancelTodo", "expireTodo", "mergeItems"]),
+  standingAgreements: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "cancelAgreement", "mergeItems"]),
+  recentEpisodes: Object.freeze(["addItem", "appendItem", "correctItem", "forgetItem"]),
+  milestones: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "mergeItems"]),
+  worldFacts: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "mergeItems"]),
+  userProfile: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "mergeItems"]),
+  assistantProfile: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "mergeItems"]),
+  relationship: Object.freeze(["addItem", "reviseItem", "correctItem", "forgetItem", "mergeItems"]),
 });
 
 function add(errors, path, message, code, meta) {
@@ -129,10 +122,11 @@ function validateRendererArtifact(artifact) {
   if (artifact?.publicInput?.task?.proposer === LIBRARIAN_PROPOSER) return validateLibrarianArtifact(artifact);
   const errors = [];
   if (!checkObject(artifact, ["publicInput", "refMap", "messageMeta"], [], "$", errors)) return { ok: false, errors };
-  if (checkObject(artifact.publicInput, ["task", "memoryText", "messages"], [], "$.publicInput", errors)) {
+  if (checkObject(artifact.publicInput, ["task", "memoryText", "messages"], ["evidenceText"], "$.publicInput", errors)) {
     const task = artifact.publicInput.task;
     const taskKeys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "cursorBefore", "targetMessageId", "now", "userTimeZone"];
-    if (checkObject(task, taskKeys, [], "$.publicInput.task", errors)) {
+    if (checkObject(task, taskKeys, ["writeLimits"], "$.publicInput.task", errors)) {
+      errors.push(...validateWriteLimits(task.writeLimits));
       if (!positiveText(task.taskId)) add(errors, "$.publicInput.task.taskId", "must be a non-empty string");
       if (!nonNegativeInteger(task.tickId)) add(errors, "$.publicInput.task.tickId", "must be a non-negative safe integer");
       if (!TARGET_KEYS.includes(task.targetKey)) add(errors, "$.publicInput.task.targetKey", "is invalid");
@@ -216,14 +210,17 @@ function validateDueChange(value, path, errors) {
   } else checkObject(value, ["mode"], [], path, errors);
 }
 
-function validateSemanticChange(change, section, path, errors, { maintenance = false } = {}) {
+function validateSemanticChange(change, section, path, errors, { maintenance = false, task } = {}) {
   const commonOptional = ["ref", "text", "evidenceMessageIds", "supportRefs", "actor", "requester", "dueAt", "dueChange", "anchorMessageId", "refs"];
   if (!checkObject(change, ["action"], commonOptional, path, errors)) return;
   if (maintenance) {
     if (change.action !== "merge") add(errors, `${path}.action`, "compaction only permits merge");
     validateUniqueSelectors(change.refs, `${path}.refs`, errors, positiveText, "must be a non-empty short ref");
     if (!positiveText(change.text)) add(errors, `${path}.text`, "must be a non-empty string");
-    for (const field of ["ref", "evidenceMessageIds", "supportRefs", "actor", "requester", "dueAt", "dueChange", "anchorMessageId"]) {
+    validateUniqueSelectors(change.supportRefs, `${path}.supportRefs`, errors, positiveText, "must select evidence of the merged items");
+    const limit = sectionLimits(section, task)?.maxItemChars;
+    if (limit && [...String(change.text || "")].length > limit) add(errors, `${path}.text`, `must contain at most ${limit} characters`, VALIDATION_ISSUE_CODES.TEXT_LENGTH_EXCEEDED, { section, limit });
+    for (const field of ["ref", "evidenceMessageIds", "actor", "requester", "dueAt", "dueChange", "anchorMessageId"]) {
       if (change[field] !== undefined) add(errors, `${path}.${field}`, "is not allowed for merge");
     }
     return;
@@ -241,9 +238,10 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
   if (needsTarget && !positiveText(change.ref)) add(errors, `${path}.ref`, "is required for this action");
   if (addAction && change.ref !== undefined) add(errors, `${path}.ref`, "is not allowed for add");
   const terminal = ["forget", "clear", "complete", "cancel", "expire"].includes(change.action);
-  const needsText = !terminal && !(section === "todos" && ["update", "correct"].includes(change.action));
+  const needsText = !terminal && !(section === "todos" && ["revise", "correct"].includes(change.action));
   if (needsText && !positiveText(change.text)) add(errors, `${path}.text`, "must be a non-empty string");
-  const textLimit = PROFILE_TEXT_MAX_CHARS[section];
+  const limits = sectionLimits(section, task);
+  const textLimit = change.action === "append" ? limits?.maxAppendChars : limits?.maxItemChars;
   if (change.text !== undefined && textLimit && [...String(change.text)].length > textLimit) {
     add(
       errors,
@@ -255,7 +253,7 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
   }
   if (terminal && change.text !== undefined) add(errors, `${path}.text`, "is not allowed for terminal actions");
 
-  const todoEdit = section === "todos" && ["add", "update", "correct"].includes(change.action);
+  const todoEdit = section === "todos" && ["add", "revise", "correct"].includes(change.action);
   for (const field of ["actor", "requester", "dueAt", "dueChange", "anchorMessageId"]) {
     if (!todoEdit && change[field] !== undefined) add(errors, `${path}.${field}`, `is only allowed for todo edits`);
   }
@@ -268,8 +266,8 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
     } else {
       if (change.actor !== undefined && !["user", "assistant", "both"].includes(change.actor)) add(errors, `${path}.actor`, "is invalid");
       if (change.requester !== undefined && !["user", "assistant"].includes(change.requester)) add(errors, `${path}.requester`, "is invalid");
-      if (change.dueAt !== undefined) add(errors, `${path}.dueAt`, "is not allowed for update/correct");
-      if (change.dueChange === undefined) add(errors, `${path}.dueChange`, "is required for todo update/correct");
+      if (change.dueAt !== undefined) add(errors, `${path}.dueAt`, "is not allowed for revise/correct");
+      if (change.dueChange === undefined) add(errors, `${path}.dueChange`, "is required for todo revise/correct");
       else validateDueChange(change.dueChange, `${path}.dueChange`, errors);
     }
     const anchored = dueAtRequiresMessageAnchor(change.dueAt) || dueAtRequiresMessageAnchor(change.dueChange?.dueAt);
@@ -325,7 +323,7 @@ function validateSemanticResult(result, taskOrArtifact) {
           }
           entry.changes.forEach((change, index) => {
             const changePath = `${sectionPath}.changes[${index}]`;
-            validateSemanticChange(change, section, changePath, errors, { maintenance });
+            validateSemanticChange(change, section, changePath, errors, { maintenance, task });
             if (!artifact) return;
             const writableRefs = change.action === "merge" ? change.refs : (change.action === "add" ? [] : [change.ref]);
             for (const ref of writableRefs || []) {
@@ -372,7 +370,7 @@ function validateSemanticResult(result, taskOrArtifact) {
 }
 
 function validateCompiledValue(value, section, op, path, errors) {
-  if (op === "setField") { if (!positiveText(value)) add(errors, path, "must be a non-empty string"); return; }
+  if (["setField", "correctField"].includes(op)) { if (!positiveText(value)) add(errors, path, "must be a non-empty string"); return; }
   if (!isPlainObject(value)) { add(errors, path, "must be an object"); return; }
   if (op === "mergeItems" || section !== "todos") {
     if (!checkObject(value, ["text"], [], path, errors)) return;
@@ -406,7 +404,7 @@ function validateCompiledPatch(patch, section, { maintenance = false } = {}) {
   if (!SECTIONS.includes(section)) add(errors, "$.section", "is invalid");
   else if (!SECTION_OPS[section].includes(patch.op)) add(errors, "$.op", `is not allowed for ${section}`);
   if (maintenance !== (patch.op === "mergeItems")) add(errors, "$.op", maintenance ? "maintenance only permits mergeItems" : "mergeItems is maintenance-only");
-  if (["setField", "clearField"].includes(patch.op)) {
+  if (["setField", "correctField", "clearField"].includes(patch.op)) {
     if (section !== "scene") add(errors, "$.op", "requires scene");
     if (!SCENE_FIELDS.includes(patch.path)) add(errors, "$.path", "is not a scene field");
   } else if (section === "scene") add(errors, "$.op", "is not allowed for scene");

@@ -28,7 +28,7 @@ test("generic schema binding also restricts compaction merge refs", () => {
           T1: { section: "todos" },
           A1: { section: "standingAgreements" },
         },
-        readOnly: {},
+        readOnly: { "T1-E1": { section: "todos" } },
       },
       messageMeta: {},
     },

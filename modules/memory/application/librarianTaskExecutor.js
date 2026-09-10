@@ -1,4 +1,6 @@
 const crypto = require("node:crypto");
+const { hydrateEvidenceInput } = require("./evidenceInput");
+const { normalizeSourceMessage } = require("../domain/semanticCompiler");
 const {
   SCHEMA_VERSION,
   LIBRARIAN_TARGET_KEY,
@@ -152,7 +154,8 @@ function createLibrarianTaskExecutor({
 
   async function createTask(userId, presetId, {
     boundaryMessageId,
-    turnOrdinal,
+    watermarkOrdinal,
+    watermarkKind = "complete_turn",
     triggerType,
     taskId,
     tickId,
@@ -165,14 +168,17 @@ function createLibrarianTaskExecutor({
         userId,
         presetId,
         state,
+        config,
         boundaryMessageId,
-        turnOrdinal,
+        watermarkOrdinal,
+        watermarkKind,
         triggerType,
         now: now(),
         userTimeZone,
         taskId,
         tickId,
       });
+      await hydrateEvidenceInput(envelope, repositories.source, { client });
       let row = await repositories.runtime.createTask(librarianTaskRow(envelope), { client });
       if (String(rowValue(row, "task_id", "taskId")) !== envelope.task.taskId
         && ["failed", "cancelled"].includes(rowValue(row, "status", "status"))) {
@@ -180,12 +186,15 @@ function createLibrarianTaskExecutor({
           userId,
           presetId,
           state,
+          config,
           boundaryMessageId,
-          turnOrdinal,
+          watermarkOrdinal,
+          watermarkKind,
           triggerType,
           now: now(),
           userTimeZone,
         });
+        await hydrateEvidenceInput(retryEnvelope, repositories.source, { client });
         const retryRow = librarianTaskRow(retryEnvelope);
         retryRow.dedupe_key = `${retryRow.dedupe_key}:retry:${retryEnvelope.task.taskId}`;
         row = await repositories.runtime.createTask(retryRow, { client });
@@ -321,7 +330,21 @@ function createLibrarianTaskExecutor({
     let repairFeedback = persistedStagePayload?.schemaRepairFeedback ?? null;
     let rejectedOutput = latestRejectedOutput(persistedStagePayload, repairFeedback);
     while (true) {
-      const adapterResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
+      let adapterResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
+      if (adapterResult.status === "ok") {
+        const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
+        if (state?.meta.revision === envelope.task.baseRevision && state.meta.sourceGeneration === envelope.task.sourceGeneration) {
+          try {
+            const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult: adapterResult.output, baseState: state });
+            let serial = 0;
+            reduceLibrarianProposal({ state, task: envelope.task, proposal, config, idFactory: () => 'preview-' + envelope.task.taskId + '-' + ++serial });
+          } catch (error) {
+            if (!["MEMORY_LIBRARIAN_PROPOSAL_INVALID", "MEMORY_WRITE_GUARD_INVALID"].includes(error.code)) throw error;
+            adapterResult = { status: "error", reason: "output_schema_invalid", rejectedOutput: adapterResult.output,
+              detail: { boundary: "output", errors: error.validationErrors || error.detail?.errors || [{ path: "$.operations", message: error.reason || error.message }] } };
+          }
+        }
+      }
       if (adapterResult.status === "deferred" && adapterResult.reason === "provider_circuit_open") {
         return { terminalResult: await persistCircuitDeferral(envelope, adapterResult) };
       }
@@ -352,6 +375,30 @@ function createLibrarianTaskExecutor({
       }, { client });
       return true;
     });
+  }
+
+  async function validateSources(envelope, proposal, state, client) {
+    const refs = [];
+    for (const op of proposal.operations || []) {
+      refs.push(...(op.sourceRefs || []), ...(op.parts || []).flatMap(part => part.sourceRefs || []));
+      for (const selector of [op.source, op.keeper, ...(op.sources || []), ...(op.duplicates || [])].filter(Boolean)) {
+        const items = selector.section === "standingAgreements" ? state.working.standingAgreements : state.longTerm[selector.section];
+        refs.push(...items.find(item => item.id === selector.itemId).sourceRefs);
+      }
+    }
+    if (!refs.length) return;
+    const rows = await repositories.source.getByIds(envelope.task.userId, envelope.task.presetId, [...new Set(refs.map(ref => ref.messageId))], { client });
+    const messages = new Map(rows.map(row => { const m = normalizeSourceMessage(row); return [m.id, m]; }));
+    for (const ref of refs) {
+      const m = messages.get(ref.messageId);
+      if (!m || m.contentHash !== ref.contentHash
+        || (m.userId !== undefined && Number(m.userId) !== envelope.task.userId)
+        || (m.presetId !== undefined && String(m.presetId) !== envelope.task.presetId)) {
+        const error = new Error("Librarian evidence changed or disappeared");
+        error.reason = "source_validation_failed";
+        throw error;
+      }
+    }
   }
 
   async function processEnvelope(envelope) {
@@ -455,6 +502,7 @@ function createLibrarianTaskExecutor({
       let reduction;
       try {
         reduction = reduceLibrarianProposal({ state, task: envelope.task, proposal, config, idFactory });
+        await validateSources(envelope, proposal, state, client);
       } catch (error) {
         await repositories.runtime.updateTask(envelope.task.taskId, {
           status: "failed", stage: "failed", not_before: null, last_error_reason: error.reason || "compile_invariant_failed",
@@ -469,7 +517,8 @@ function createLibrarianTaskExecutor({
       if (reduction.outcome === "noop") {
         await repositories.runtime.upsertLibrarianCheckpoint(envelope.task.userId, envelope.task.presetId, {
           sourceGeneration: envelope.task.sourceGeneration,
-          completedTurnOrdinal: envelope.task.turnOrdinal,
+          completedOrdinal: envelope.task.watermarkOrdinal,
+          watermarkKind: envelope.task.watermarkKind,
           boundaryMessageId: envelope.task.boundaryMessageId,
           lastTaskId: envelope.task.taskId,
         }, { client });
@@ -478,7 +527,8 @@ function createLibrarianTaskExecutor({
         }, { client });
         await appendOps(envelope, "noop", Number(rowValue(task, "attempt", "attempt") ?? 0), {
           boundaryMessageId: envelope.task.boundaryMessageId,
-          turnOrdinal: envelope.task.turnOrdinal,
+          watermarkOrdinal: envelope.task.watermarkOrdinal,
+          reports: semanticResult.reports || [],
         }, client);
         return { status: "noop", taskId: envelope.task.taskId, revision: state.meta.revision };
       }
@@ -511,7 +561,8 @@ function createLibrarianTaskExecutor({
       );
       await repositories.runtime.upsertLibrarianCheckpoint(envelope.task.userId, envelope.task.presetId, {
         sourceGeneration: envelope.task.sourceGeneration,
-        completedTurnOrdinal: envelope.task.turnOrdinal,
+        completedOrdinal: envelope.task.watermarkOrdinal,
+        watermarkKind: envelope.task.watermarkKind,
         boundaryMessageId: envelope.task.boundaryMessageId,
         lastTaskId: envelope.task.taskId,
       }, { client });
@@ -525,6 +576,7 @@ function createLibrarianTaskExecutor({
       await appendOps(envelope, "committed", Number(rowValue(task, "attempt", "attempt") ?? 0), {
         revision: reduction.state.meta.revision,
         operationCount: reduction.events.length,
+        reports: semanticResult.reports || [],
       }, client);
       return {
         status: "committed",

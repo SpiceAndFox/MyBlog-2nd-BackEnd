@@ -3,7 +3,7 @@
 ## 状态与优先级
 
 - 优先级：P2
-- 状态：待设计与实现
+- 状态：本地实现与验收完成，见 [08-implementation.md](./08-implementation.md)
 - 前置：[02-provenance.md](./02-provenance.md) 的目标 evidence 语义
 - 目标：用少量正交操作修复已有复合、重复和误分类 item
 

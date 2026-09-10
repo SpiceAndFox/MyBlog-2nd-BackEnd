@@ -7,6 +7,20 @@ const { createStructuredTransport } = require("../../../modules/memory/infrastru
 const { buildStructuredMessages } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
 const { parseJsonObjectContent } = require("../../../modules/memory/infrastructure/providers/structuredJsonContent");
 
+test("DeepSeek thinking stays enabled for initial and repair requests with per-proposer effort", () => {
+  const { buildDeepSeekHttpRequest } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
+  const config = { baseUrl: "https://api.deepseek.com/beta", model: "deepseek-v4-flash", thinkingMode: "enabled", reasoningEffort: "low", proposerModels: { librarianProposer: { reasoningEffort: "high" } } };
+  const request = { proposer: "librarianProposer", systemPrompt: "Return the tool result", userPayload: {}, responseSchema: { name: "result", schema: { type: "object", properties: {}, additionalProperties: false, required: [] } } };
+  for (const repairContext of [undefined, { assistantOutput: '{"invalid":true}', userMessage: "Repair the rejected output" }]) {
+    const { body } = buildDeepSeekHttpRequest(config, { ...request, repairContext });
+    assert.deepEqual(body.thinking, { type: "enabled" });
+    assert.equal(body.reasoning_effort, "high");
+    assert.equal(body.tool_choice, "auto");
+    assert.equal(body.messages.some(message => message.role === "assistant"), false);
+    if (repairContext) assert.match(JSON.stringify(body.messages), /invalid/);
+  }
+});
+
 test("DeepSeek tool argument parser only repairs excess trailing closing braces", () => {
   assert.deepEqual(parseToolArguments('{"ok":true}}'), {
     output: { ok: true }, recovery: "trimmed_1_trailing_brace", error: null,

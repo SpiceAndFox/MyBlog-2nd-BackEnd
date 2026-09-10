@@ -1,5 +1,7 @@
 # 子任务 07：Rehearsal 与评估
 
+2026-09-09：离线与合成 API 验收已完成，结果见 [08-implementation.md](./08-implementation.md)。以下真实 task 清单保留为后续只读抽样参考；本次未运行全量数据库 rehearsal。后续优先 default 小范围样本。
+
 ## 状态与环境假设
 
 本系统尚未上线，当前阶段只验证目标设计：
