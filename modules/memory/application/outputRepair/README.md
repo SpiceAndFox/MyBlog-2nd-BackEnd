@@ -36,3 +36,27 @@ Safety invariants:
 
 Increment `OUTPUT_REPAIR_POLICY_VERSION` when a policy change can alter repair
 instructions, normalization, retry scope, or acceptance behavior.
+
+## Business repair (policy v8)
+
+- Domain validators use `writeIssue` / `rejectWriteIssues` to report a stable
+  reason, a semantic path and bounded facts/constraints. `locateWriteError`
+  binds each issue to its change. Normal reduction collects up to eight issues
+  across independent targets, and rejects the complete proposal before commit.
+  Write guards run before mutating each target; dependent operations report
+  `CHANGE_TARGET_CONFLICT` with the first change's `relatedPath`.
+- Add a constraint to a domain diagnostic to receive generic business feedback.
+  Register an entry in `renderBusinessRepair.js` only when a rule needs special
+  advice. That entry owns the description, planned directive and rendered advice.
+  Never put raw messages, credentials or arbitrary item dumps in issue metadata.
+- `providerBusinessRejection` maps both issue and related paths to the invocation
+  wire format. Composite Profile rejections store a bounded `specialist_bundle`
+  of individual candidates/protocol metadata. Issues identify their specialist.
+  A resumed adapter validates saved sections against the bound schema, reuses
+  sections with no reported error, and sends local feedback/candidates only to
+  affected specialists. Actual calls alone contribute usage and call counts.
+- Unavailable or oversized rejected candidates never fall back to an older
+  candidate. Feedback still works without replaying an assistant output.
+- These rules preserve the existing retry budget and do not guarantee that a
+  model can repair every candidate. Compilation/source failures and maintenance
+  recovery retain their existing handling; no business rule invents evidence.

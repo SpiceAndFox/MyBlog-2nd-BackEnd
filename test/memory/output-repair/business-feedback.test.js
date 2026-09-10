@@ -4,6 +4,8 @@ const { providerBusinessRejection } = require("../../../modules/memory/infrastru
 const { todoV2ToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocolV2");
 const { createRepairFeedback, renderRepairMessage, appendRejectedOutputAttempt, latestRejectedOutput } = require("../../../modules/memory/application/outputRepair");
 const { testWriteLimits } = require("../support/memory-builders");
+const { writeIssue, rejectWrite, locateWriteError } = require("../../../modules/memory/domain/writeGuards");
+const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
 
 const TASK = { proposer: "todoProposer", outputProtocol: "todo-v2", tickId: 1, targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
 const WIRE = { results: { todos: { status: "changes", changes: [
@@ -41,7 +43,8 @@ test("source-limit and duplicate rejections produce field-specific corrective in
   assert.equal(feedback.errors[0].path, "$.results.todos.changes[1].sources");
   assert.equal(feedback.errors[1].path, "$.results.todos.changes[1].text.value");
   const message = renderRepairMessage(feedback, TASK);
-  assert.match(message, /本次选择了 3 条来源，上限为 2/);
+  assert.match(message, /结果包含 3 条底层证据，上限为 2/);
+  assert.match(message, /不一定等于 sources 数组长度/);
   assert.match(message, /保留其他合法修改/);
   assert.doesNotMatch(message, /sectionResults|evidenceMessageIds/);
 });
@@ -59,4 +62,57 @@ test("injected adapters re-encode valid semantic fixtures explicitly and never s
   const legacyResult = providerBusinessRejection({ output }, validation, legacy);
   assert.ok(legacyResult.rejectedOutput.sectionStatuses);
   assert.equal(legacyResult.errors[0].path, "$.changes[1].dueMode");
+  const malformedLegacy = structuredClone(output);
+  malformedLegacy.sectionResults.todos.changes = {};
+  assert.equal(providerBusinessRejection({ output: malformedLegacy }, validation, legacy).rejectedOutputKind, "unavailable");
+});
+
+test("new business rules render bounded constraints without registering a special repair template", () => {
+  let error;
+  try {
+    rejectWrite("future_domain_rule", "todos", { field: "actor", constraint: "A supported delegation is required.",
+      currentValue: "assistant", proposedValue: "user", rawSource: "private-source", credentials: "secret" });
+  } catch (value) { error = locateWriteError(value, "todos", 1); }
+  const mapped = providerBusinessRejection({ output: todoV2ToSemantic(WIRE, TASK), wireOutput: WIRE }, { errors: error.validationErrors }, TASK);
+  const feedback = createRepairFeedback({ ...mapped, validationLayer: "business" }, 1, TASK);
+  assert.equal(feedback.errors[0].code, "BUSINESS_RULE_VIOLATION");
+  assert.equal(feedback.validationLayer, "business");
+  assert.ok(feedback.plan.directives.includes("RECHECK_BUSINESS_CONSTRAINT"));
+  const rendered = renderRepairMessage(JSON.parse(JSON.stringify(feedback)), TASK);
+  for (const value of ["future_domain_rule", "A supported delegation is required.", "T9", "assistant", "user", "unable_to_decide"]) assert.ok(rendered.includes(value), value);
+  assert.doesNotMatch(rendered, /private-source|credentials|secret|sectionResults/);
+  const bounded = createRepairFeedback({ errors: [writeIssue("new_rule", "todos", { constraint: "x".repeat(2000), currentValue: false, proposedValue: null })] }, 1, TASK);
+  assert.equal(bounded.errors[0].meta.constraint.length, 240);
+  assert.equal(bounded.errors[0].meta.currentValue, false);
+  assert.equal(bounded.errors[0].meta.proposedValue, null);
+});
+
+test("conflict diagnostics map both changes into Todo v2 and interleaved flat wire positions", () => {
+  const issue = { code: "CHANGE_TARGET_CONFLICT", path: "$.sectionResults.todos.changes[1]",
+    meta: { relatedPath: "$.sectionResults.todos.changes[0]" } };
+  const mapped = providerBusinessRejection({ wireOutput: WIRE, output: todoV2ToSemantic(WIRE, TASK) }, { errors: [issue] }, TASK);
+  const rendered = renderRepairMessage(createRepairFeedback(mapped, 1, TASK), TASK);
+  assert.match(rendered, /与 \$\.results\.todos\.changes\[0\] 操作同一目标/);
+  assert.doesNotMatch(rendered, /sectionResults|invalid_state_transition/);
+  const task = { ...TASK, proposer: "episodeProposer", outputProtocol: "legacy-v1", targetSections: ["recentEpisodes", "milestones"] };
+  const wire = { sectionStatuses: { recentEpisodes: "changes", milestones: "changes" }, changes: [
+    { section: "milestones", action: "add", text: "纪念日", sources: ["message:1"] },
+    { section: "recentEpisodes", action: "append", target: "E1", text: "发展", sources: ["message:2"] },
+    { section: "milestones", action: "add", text: "另一纪念日", sources: ["message:1"] },
+    { section: "recentEpisodes", action: "forget", target: "E1", sources: ["message:2"] },
+  ] };
+  const flat = providerBusinessRejection({ wireOutput: wire, output: flatWireToSemanticOutput(wire, task) }, { errors: [{
+    ...issue, path: "$.sectionResults.recentEpisodes.changes[1]", meta: { relatedPath: "$.sectionResults.recentEpisodes.changes[0]" },
+  }] }, task);
+  assert.equal(flat.errors[0].path, "$.changes[3]");
+  assert.equal(flat.errors[0].meta.relatedPath, "$.changes[1]");
+});
+
+test("unavailable or oversized latest candidates never replay an older rejected output", () => {
+  const first = appendRejectedOutputAttempt({}, { rejectedOutput: WIRE }, 0, 3);
+  const unavailable = appendRejectedOutputAttempt(first, { rejectedOutputKind: "unavailable" }, 1, 3);
+  assert.equal(latestRejectedOutput(unavailable), undefined);
+  const oversized = appendRejectedOutputAttempt(first, { rejectedOutput: { specialistOutputs: { data: "x".repeat(300000) } } }, 1, 3);
+  assert.equal(latestRejectedOutput(oversized), undefined);
+  assert.equal(oversized.schemaRejectedOutputs[1].reason, "size_limit");
 });

@@ -113,7 +113,7 @@ test("final append length is checked before episode eviction and does not mutate
       assert.equal(error.reason, "append_length_exceeded");
       assert.equal(error.validationErrors[0].code, "TEXT_LENGTH_EXCEEDED");
       assert.deepEqual(error.validationErrors[0].meta, {
-        section: "recentEpisodes", action: "append", limit: 2, actual: 3,
+        section: "recentEpisodes", reason: "append_length_exceeded", field: "text", action: "append", limit: 2, actual: 3,
         existingChars: 3, separatorChars: 3, maxItemChars: 8,
       });
       const { renderRepairMessage } = require("../../../modules/memory/application/outputRepair");
@@ -167,6 +167,20 @@ test("source cap rejects a large explicit selection without truncating it", () =
   assert.throws(() => reduce(f, [{ op: "reviseItem", itemId: "existing", value: { text: "短文本" }, sourceRefs: [source(1), source(2), source(3)] }]),
     (error) => error.reason === "source_limit_exceeded");
   assert.deepEqual(f.state.longTerm.worldFacts[0], initialItem);
+});
+
+test("failed revisions leave no preview mutations that create spurious errors in independent changes", () => {
+  const f = fixture();
+  f.task.writeLimits.worldFacts.maxSourceRefs = 2;
+  const before = structuredClone(f.state);
+  assert.throws(() => reduce(f, [
+    { op: "reviseItem", itemId: "existing", value: { text: "新的事实" }, sourceRefs: [source(1), source(2), source(3)] },
+    { op: "addItem", value: { text: "新的事实" }, sourceRefs: [source(2)] },
+  ]), error => {
+    assert.deepEqual(error.validationErrors.map(issue => issue.code), ["SOURCE_LIMIT_EXCEEDED"]);
+    return true;
+  });
+  assert.deepEqual(f.state, before);
 });
 
 test("invalid target and duplicate operations do not partially commit", () => {

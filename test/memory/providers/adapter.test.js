@@ -303,7 +303,7 @@ test("Provider Adapter replays rejected output and feedback as a multi-turn repa
   assert.equal(request.systemPrompt, "base prompt");
   assert.doesNotMatch(request.systemPrompt, /SCHEMA_REPAIR/);
   assert.deepEqual(request.repairContext.assistantOutput, rejectedOutput);
-  assert.match(request.repairContext.userMessage, /\[SCHEMA_REPAIR_V7\]/);
+  assert.match(request.repairContext.userMessage, /\[SCHEMA_REPAIR_V8\]/);
   assert.match(request.repairContext.userMessage, /dueAt.*days must be non-negative/s);
   assert.deepEqual(request.userPayload, buildProposerUserPayload(envelope()));
   assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "taskId"), false);
@@ -330,7 +330,7 @@ test("Provider Adapter keeps the legacy combined-prompt fallback for old repair 
   await adapter.propose(envelope(), {
     repairFeedback: { attempt: 1, errors: [{ path: "$", message: "invalid" }] },
   });
-  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V7\]/);
+  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V8\]/);
   assert.equal(request.repairContext, null);
 });
 

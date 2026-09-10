@@ -130,3 +130,55 @@ test("redundant Todo edits still participate in conflict checks; failures never 
   assert.throws(() => reduce(f, [patch({}, [source(3)]), { op: "cancelTodo", itemId: "missing", sourceRefs: [source(4)] }]), error => error.reason === "item_not_found");
   assert.deepEqual(f.state, before);
 });
+
+test("Todo validation reports limits, dates and both participant conflicts before any mutation", () => {
+  const f = fixture();
+  f.task.writeLimits.todos.maxItemChars = 3;
+  f.task.writeLimits.todos.maxSourceRefs = 1;
+  const before = structuredClone(f.state);
+  assert.throws(() => reduce(f, [patch({ text: "必须完整保留的任务内容", actor: "user", requester: "user",
+    dueChange: { mode: "set", dueAt: NOW } })]), error => {
+    assert.deepEqual(error.validationErrors.map(issue => issue.code), [
+      "TEXT_LENGTH_EXCEEDED", "SOURCE_LIMIT_EXCEEDED", "TODO_OVERDUE_REQUIRES_FUTURE_DUE",
+      "TODO_OVERDUE_PARTICIPANT_CHANGE", "TODO_OVERDUE_PARTICIPANT_CHANGE",
+    ]);
+    assert.deepEqual(error.validationErrors.map(issue => issue.path.split("].")[1]), [
+      "text", "evidenceMessageIds", "dueChange", "actor", "requester",
+    ]);
+    return true;
+  });
+  assert.deepEqual(f.state, before);
+});
+
+test("independent Todo changes report together while dependent changes identify their original conflict", () => {
+  const f = fixture();
+  f.state.working.todos.push({ ...structuredClone(f.state.working.todos[0]), id: "todo:2", text: "另一项任务" });
+  const before = structuredClone(f.state);
+  assert.throws(() => reduce(f, [
+    patch({ actor: "user" }),
+    { ...patch({ requester: "user" }), itemId: "todo:2" },
+    { op: "completeTodo", itemId: "todo:1", sourceRefs: [source(3)] },
+  ]), error => {
+    assert.deepEqual(error.validationErrors.map(issue => issue.code), [
+      "TODO_OVERDUE_REQUIRES_FUTURE_DUE", "TODO_OVERDUE_PARTICIPANT_CHANGE",
+      "TODO_OVERDUE_REQUIRES_FUTURE_DUE", "TODO_OVERDUE_PARTICIPANT_CHANGE", "CHANGE_TARGET_CONFLICT",
+    ]);
+    assert.equal(error.validationErrors[4].path, "$.sectionResults.todos.changes[2]");
+    assert.equal(error.validationErrors[4].meta.relatedPath, "$.sectionResults.todos.changes[0]");
+    return true;
+  });
+  assert.deepEqual(f.state, before);
+});
+
+test("business diagnostics stay bounded and later failures do not commit earlier valid changes", () => {
+  const f = fixture();
+  const before = structuredClone(f.state);
+  const invalid = Array.from({ length: 12 }, (_, index) => ({ ...patch(), itemId: `missing:${index}` }));
+  assert.throws(() => reduce(f, [patch({ dueChange: { mode: "set", dueAt: FUTURE } }), ...invalid]), error => {
+    assert.equal(error.validationErrors.length, 8);
+    assert.equal(error.validationErrors[0].path, "$.sectionResults.todos.changes[1].ref");
+    assert.equal(error.validationErrors.at(-1).path, "$.sectionResults.todos.changes[8].ref");
+    return true;
+  });
+  assert.deepEqual(f.state, before);
+});

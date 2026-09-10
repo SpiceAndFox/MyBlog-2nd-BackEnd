@@ -60,6 +60,8 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
   return {
     policyVersion: OUTPUT_REPAIR_POLICY_VERSION,
     attempt,
+    ...(["business", "semantic", "wire_schema", "transport"].includes(safeDetail.validationLayer)
+      ? { validationLayer: safeDetail.validationLayer } : {}),
     ...(specialist ? { specialist } : {}),
     errors,
     plan: buildRepairPlan({ errors, specialist, task }),
@@ -106,7 +108,8 @@ function captureRejectedOutput(value) {
 
 function appendRejectedOutputAttempt(stagePayload, adapterResult, attempt, maxEntries) {
   const next = structuredClone(stagePayload || {});
-  const captured = captureRejectedOutput(adapterResult?.rejectedOutput);
+  const captured = captureRejectedOutput(adapterResult?.rejectedOutput)
+    || (adapterResult?.rejectedOutputKind === "unavailable" ? { available: false, reason: "unavailable" } : null);
   if (!captured) return next;
   const entry = {
     attempt,
@@ -134,10 +137,10 @@ function latestRejectedOutput(stagePayload, feedback = null) {
     : [];
   const specialist = feedback?.specialist || null;
   const selected = [...entries].reverse().find((entry) => (
-    entry?.available === true
-    && (!specialist || entry.specialist === specialist)
+    !specialist || entry.specialist === specialist
   ));
-  return selected?.output;
+  // Never replay an older candidate against feedback for an unavailable one.
+  return selected?.available === true ? selected.output : undefined;
 }
 
 module.exports = {

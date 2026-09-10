@@ -1,4 +1,6 @@
 const { ISSUE_CODES } = require("./policy");
+const { MAX_VALIDATION_ISSUES } = require("../../contracts/validationIssueCodes");
+const { businessRepairRule } = require("./renderBusinessRepair");
 
 function valueType(value) {
   if (value === null) return "null";
@@ -14,12 +16,14 @@ function safeIssueMeta(meta) {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const safe = {};
   for (const key of ["actualType", "limit", "actual", "section", "messageId", "action", "existingChars", "separatorChars", "maxItemChars",
-    "target", "field", "currentStatus", "currentDueAt", "proposedDueAt", "referenceTime", "currentValue", "proposedValue"]) {
+    "target", "field", "currentStatus", "currentDueAt", "proposedDueAt", "referenceTime", "currentValue", "proposedValue", "reason", "specialist"]) {
     const value = meta[key];
     if (typeof value === "string") safe[key] = boundedString(value).slice(0, 80);
     else if (Number.isSafeInteger(value)) safe[key] = value;
-    else if (value === null && ["currentDueAt", "proposedDueAt"].includes(key)) safe[key] = null;
+    else if ((value === null || typeof value === "boolean") && ["currentDueAt", "proposedDueAt", "currentValue", "proposedValue"].includes(key)) safe[key] = value;
   }
+  if (typeof meta.constraint === "string") safe.constraint = boundedString(meta.constraint);
+  if (typeof meta.relatedPath === "string") safe.relatedPath = boundedString(meta.relatedPath).replace(/[^A-Za-z0-9_$.[\]-]/g, "?");
   return Object.keys(safe).length ? safe : null;
 }
 
@@ -48,10 +52,6 @@ function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoV2 = fals
     [ISSUE_CODES.SUPPORT_REF_INVALID]: "supportRefs must be selected from the bound read-only enum",
     [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "evidenceMessageIds must be selected from the bound message enum",
     [ISSUE_CODES.TEXT_LENGTH_EXCEEDED]: "text must satisfy the section character limit",
-    [ISSUE_CODES.SOURCE_LIMIT_EXCEEDED]: "selected sources must satisfy the section source limit",
-    [ISSUE_CODES.DUPLICATE_ITEM]: "text duplicates another existing item",
-    [ISSUE_CODES.TODO_OVERDUE_REQUIRES_FUTURE_DUE]: "changing an overdue Todo's business fields requires a supported future due date",
-    [ISSUE_CODES.TODO_OVERDUE_PARTICIPANT_CHANGE]: "reactivating an overdue Todo must preserve actor and requester",
     [ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON]: "previous tool arguments are not valid JSON",
     [ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE]: "previous structured output ended before JSON was complete",
     [ISSUE_CODES.STRUCTURED_OUTPUT_MISSING]: "structured tool arguments are missing",
@@ -64,12 +64,12 @@ function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoV2 = fals
       [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "sources must be selected from the bound source enum",
     });
   }
-  return messages[code]
+  return businessRepairRule(code)?.message || messages[code]
     || boundedString(issue?.message, "does not satisfy the local output contract");
 }
 
 function classifyIssues(errors, options = {}) {
-  return (Array.isArray(errors) ? errors : []).slice(0, 8).map((issue) => {
+  return (Array.isArray(errors) ? errors : []).slice(0, MAX_VALIDATION_ISSUES).map((issue) => {
     const code = inferIssueCode(issue);
     const meta = safeIssueMeta(issue?.meta);
     return {

@@ -23,11 +23,14 @@ const {
 } = require("./flatWireProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
-const PROFILE_SPECIALISTS = Object.freeze([
-  Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),
-  Object.freeze({ proposer: "assistantProfileProposer", section: "assistantProfile" }),
-  Object.freeze({ proposer: "relationshipProposer", section: "relationship" }),
-]);
+const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
+
+function completedProtocol(metadata, response) {
+  return { ...metadata, outputChannel: response?.outputChannel ?? "adapter",
+    wireSchemaHash: response?.wireSchemaHash ?? null, wireSchemaBytes: response?.wireSchemaBytes ?? null,
+    schemaDiagnostics: response?.schemaDiagnostics ?? [], rawSchemaValid: response?.rawSchemaValid ?? null,
+    normalizations: response?.wireNormalizations || [], transportRecovery: response?.transportRecovery ?? null };
+}
 
 function mergeUsage(responses) {
   const totals = {};
@@ -190,8 +193,9 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   const profileRepairCache = new WeakMap();
 
-  function rememberProfileSections(envelope, sectionResults) {
-    profileRepairCache.set(envelope, { sectionResults: structuredClone(sectionResults) });
+  function rememberProfileSections(envelope, sectionResults, specialistOutputs) {
+    profileRepairCache.set(envelope, { sectionResults: structuredClone(sectionResults),
+      specialistOutputs: structuredClone(specialistOutputs) });
   }
 
   return Object.freeze({
@@ -199,12 +203,15 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       let response;
       let responseSchema;
       let protocolMetadata;
+      let specialistOutputs;
       try {
         const envelopeResult = validateSemanticEnvelope(envelope);
         if (!envelopeResult.ok) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "input", errors: envelopeResult.errors } };
         const { task } = envelope;
         const userPayload = buildProposerUserPayload(envelope);
         if (task.proposer === "profileRelationshipProposer") {
+          const businessRepair = repairFeedback?.validationLayer === "business";
+          const businessOutputs = businessRepair ? rejectedOutput?.specialistOutputs : null;
           const retrySpecialist = PROFILE_SPECIALISTS.find((entry) => entry.proposer === repairFeedback?.specialist) || null;
           const cached = retrySpecialist ? profileRepairCache.get(envelope) : null;
           const cacheComplete = cached && PROFILE_SPECIALISTS
@@ -214,37 +221,51 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           const settledRuns = await Promise.allSettled(selectedSpecialists.map(async (specialist) => {
             const specialistPayload = buildSpecialistPayload(userPayload, specialist);
             const specialistArtifact = buildSpecialistArtifact(envelope.artifact, specialist);
-            const specialistFeedback = !repairFeedback
+            const businessErrors = businessRepair ? repairFeedback.errors.filter(issue =>
+              issue.meta?.specialist === specialist.proposer || issue.meta?.section === specialist.section) : [];
+            const specialistFeedback = businessRepair
+              ? businessErrors.length ? { ...repairFeedback, errors: businessErrors, specialist: specialist.proposer } : null
+              : !repairFeedback
               ? null
               : !retrySpecialist || retrySpecialist.proposer === specialist.proposer
                 ? repairFeedback
                 : null;
+            const schema = bindSpecialistSchema(
+              buildOutputSchema(specialist.proposer, [specialist.section]), specialistArtifact, specialist.section,
+            );
+            const stored = businessOutputs?.[specialist.proposer];
+            if (businessRepair && !specialistFeedback && stored?.output !== undefined) {
+              // Durable reuse is conditional on this invocation's bound contract.
+              const wire = validateProviderWireOutput(schema, stored.output);
+              if (wire.ok && validateSemanticResult(flatWireToSemanticOutput(wire.output, specialistPayload.task), specialistArtifact).ok) {
+                return { specialist, specialistArtifact, specialistResponse: { output: wire.output },
+                  protocol: stored.protocol, reused: true, outputKind: stored.outputKind };
+              }
+            }
             const repair = schemaRepairRequest(
               await promptLoader(specialist.proposer),
               specialistFeedback,
               specialistPayload.task,
-              specialistFeedback ? rejectedOutput : undefined,
+              specialistFeedback ? (businessRepair ? stored?.output : rejectedOutput) : undefined,
             );
             const specialistResponse = await invokeStructured({
               proposer: specialist.proposer,
               systemPrompt: repair.systemPrompt,
               userPayload: specialistPayload,
               repairContext: repair.repairContext,
-              responseSchema: bindSpecialistSchema(
-                buildOutputSchema(specialist.proposer, [specialist.section]),
-                specialistArtifact,
-                specialist.section,
-              ),
+              responseSchema: schema,
             });
-            return { specialist, specialistArtifact, specialistResponse };
+            return { specialist, specialistArtifact, specialistResponse,
+              protocol: completedProtocol(providerProtocolMetadata(specialistArtifact.publicInput.task, schema), specialistResponse) };
           }));
           const rejected = settledRuns.find((run) => run.status === "rejected");
           if (rejected) throw rejected.reason;
           const specialistRuns = settledRuns.map((run) => run.value);
-          const responses = specialistRuns.map((run) => run.specialistResponse);
+          const responses = specialistRuns.filter(run => !run.reused).map((run) => run.specialistResponse);
           const sectionResults = structuredClone(cacheComplete ? cached.sectionResults : {});
+          specialistOutputs = structuredClone(cacheComplete ? cached.specialistOutputs : {});
           let invalidRun = null;
-          for (const { specialist, specialistArtifact, specialistResponse } of specialistRuns) {
+          for (const { specialist, specialistArtifact, specialistResponse, protocol, outputKind } of specialistRuns) {
             if (specialistResponse?.refusal || specialistResponse?.safetyBlocked || isSafetySignal(specialistResponse?.finishReason)) {
               profileRepairCache.delete(envelope);
               return { status: "error", reason: "safety_policy_blocked", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
@@ -282,10 +303,12 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               continue;
             }
             sectionResults[specialist.section] = normalized.output.sectionResults[specialist.section];
+            specialistOutputs[specialist.proposer] = { output: structuredClone(specialistResponse.output),
+              outputKind: outputKind || "provider_wire", ...(protocol ? { protocol } : {}) };
           }
           if (invalidRun) {
             if (cacheComplete) profileRepairCache.delete(envelope);
-            else rememberProfileSections(envelope, sectionResults);
+            else rememberProfileSections(envelope, sectionResults, specialistOutputs);
             return {
               status: "error",
               reason: "output_schema_invalid",
@@ -367,11 +390,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           outputSchemaErrors: wire.ok ? null : wire.errors };
       }
       const repairErrors = usesTodoV2(envelope.task) ? todoV2RepairErrors : flatWireRepairErrors;
-      const protocol = protocolMetadata ? { ...protocolMetadata, outputChannel: response?.outputChannel ?? "adapter",
-        wireSchemaHash: response?.wireSchemaHash ?? null,
-        wireSchemaBytes: response?.wireSchemaBytes ?? null, schemaDiagnostics: response?.schemaDiagnostics ?? [],
-        rawSchemaValid: response?.rawSchemaValid ?? null, normalizations: response?.wireNormalizations || [],
-        transportRecovery: response?.transportRecovery ?? null } : null;
+      const protocol = protocolMetadata ? completedProtocol(protocolMetadata, response) : null;
       if (Array.isArray(response?.outputSchemaErrors) && response.outputSchemaErrors.length) {
         return {
           status: "error",
@@ -421,6 +440,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         status: "ok",
         output,
         ...(responseSchema ? { wireOutput: structuredClone(response.output) } : {}),
+        ...(specialistOutputs ? { specialistOutputs } : {}),
         ...(protocol ? { protocol } : {}),
         ...(normalized.applied.length ? { normalizations: normalized.applied } : {}),
         usage: response?.usage ?? null,

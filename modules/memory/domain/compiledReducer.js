@@ -10,7 +10,8 @@ const { allocateMemoryItemId } = require("./itemIds");
 const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
 const { sectionLimits, codePointLength, EPISODE_APPEND_SEPARATOR } = require("../contracts/sectionPolicy");
-const { rejectWrite, assertItemLimits, locateWriteError } = require("./writeGuards");
+const { rejectWrite, rejectWriteIssues, assertItemLimits, locateWriteError } = require("./writeGuards");
+const { VALIDATION_ISSUE_CODES: ISSUE_CODES, MAX_VALIDATION_ISSUES } = require("../contracts/validationIssueCodes");
 const { applyTodoRevision } = require("./todoRevision");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
@@ -52,12 +53,12 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
   const boundary = task.targetMessageId;
   if (["setField", "correctField"].includes(patch.op)) {
     const sourceRefs = structuredClone(patch.sourceRefs);
+    assertItemLimits(section, patch.value, sourceRefs, task);
     state.current.scene[patch.path] = {
       value: patch.value,
       sourceRefs,
       updatedAtMessageId: boundary,
     };
-    assertItemLimits(section, patch.value, sourceRefs, task);
     return { normalizedOperation: { ...structuredClone(patch), updatedAtMessageId: boundary } };
   }
   if (patch.op === "clearField") {
@@ -68,6 +69,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
   const items = sectionItems(state, section);
   if (patch.op === "addItem") {
     const sourceRefs = structuredClone(patch.sourceRefs);
+    assertItemLimits(section, patch.value.text, sourceRefs, task);
     const item = {
       id: allocateMemoryItemId(state, section, idFactory),
       text: patch.value.text,
@@ -82,7 +84,6 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
       becameOverdueAt: null,
       dueAt: patch.value.dueAt,
     });
-    assertItemLimits(section, item.text, sourceRefs, task);
     items.push(item);
     return { resultItemId: item.id, normalizedOperation: { op: patch.op, value: structuredClone(item), sourceRefs } };
   }
@@ -128,6 +129,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
     });
     return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
   }
+  let nextText = patch.value.text ?? item.text;
   if (patch.op === "appendItem") {
     const limits = sectionLimits(section, task);
     if (section !== "recentEpisodes" || !limits.maxAppendChars) rejectWrite("action_not_allowed", section);
@@ -137,12 +139,13 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
     if (codePointLength(patch.value.text) > limit) rejectWrite("append_length_exceeded", section, {
       action: "append", limit, actual: codePointLength(patch.value.text), existingChars, separatorChars, maxItemChars: limits.maxItemChars,
     });
-    item.text = `${item.text}${EPISODE_APPEND_SEPARATOR}${patch.value.text}`;
-  } else if (patch.value.text !== undefined) item.text = patch.value.text;
+    nextText = `${item.text}${EPISODE_APPEND_SEPARATOR}${patch.value.text}`;
+  }
   const sourceRefs = patch.op === "appendItem"
     ? normalizeSourceRefs([...item.sourceRefs, ...patch.sourceRefs])
     : structuredClone(patch.sourceRefs);
-  assertItemLimits(section, item.text, sourceRefs, task);
+  assertItemLimits(section, nextText, sourceRefs, task);
+  item.text = nextText;
   item.sourceRefs = sourceRefs;
   item.updatedAtMessageId = boundary;
   return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
@@ -170,14 +173,15 @@ function reduceCompiledProposal({
   const working = structuredClone(state);
   const events = [];
   const cleanupEvents = [];
-  const seen = new Set();
+  const seen = new Map();
+  const businessIssues = [];
   const protectedIds = new Set(protectedItemIds);
   const nowMs = new Date(now).getTime();
   if (!Number.isFinite(nowMs)) throw new Error("now must be an ISO timestamp");
-  const reject = (base, reason) => {
+  const reject = (base, reason, detail = {}) => {
     // A maintenance attempt may encounter items protected by a pending parent.
     // Normal output is all-or-nothing, including exact duplicates and conflicts.
-    if (task.mode !== "maintenance") rejectWrite(reason, base.section);
+    if (task.mode !== "maintenance") rejectWrite(reason, base.section, detail);
     events.push({ ...base, decision: "rejected", rejectReason: reason });
   };
 
@@ -196,10 +200,17 @@ function reduceCompiledProposal({
           continue;
         }
         const keys = conflictKeys(section, patch);
-        if (keys.some((key) => seen.has(key))) {
-          reject(base, "invalid_state_transition");
+        const conflict = keys.find((key) => seen.has(key));
+        if (conflict) {
+          reject(base, "invalid_state_transition", {
+            issueCode: ISSUE_CODES.CHANGE_TARGET_CONFLICT, relatedPath: seen.get(conflict),
+          });
           continue;
         }
+        // Even a rejected change reserves its target: later changes on that
+        // target are dependent conflicts, not independent repair candidates.
+        const rememberTargets = () => keys.forEach(key => seen.set(key, `$.sectionResults.${section}.changes[${changeIndex}]`));
+        if (task.mode !== "maintenance") rememberTargets();
         if (["addItem", "reviseItem", "correctItem"].includes(patch.op) && patch.value.text !== undefined
           && exactDuplicate(sectionItems(working, section), patch.value.text, patch.itemId || null)) {
           reject(base, "duplicate_item");
@@ -216,18 +227,25 @@ function reduceCompiledProposal({
           reject(base, "capacity_exceeded");
           continue;
         }
-        keys.forEach((key) => seen.add(key));
+        if (task.mode === "maintenance") rememberTargets();
         if (applied.noopReason) {
           events.push({ ...base, decision: "noop", patchSummary: { ...base.patchSummary, noopReason: applied.noopReason } });
           continue;
         }
         events.push({ ...base, resultItemId: applied.resultItemId || null, normalizedOperation: applied.normalizedOperation });
       } catch (error) {
-        throw locateWriteError(error, section, changeIndex);
+        if (error?.code !== "MEMORY_WRITE_GUARD_INVALID" || task.mode === "maintenance") {
+          throw locateWriteError(error, section, changeIndex);
+        }
+        // applyPatch checks write guards before mutating its target. Successful
+        // previews remain private; any collected failure rejects the whole batch.
+        businessIssues.push(...locateWriteError(error, section, changeIndex).validationErrors);
+        if (businessIssues.length >= MAX_VALIDATION_ISSUES) rejectWriteIssues(businessIssues);
       }
     }
   }
 
+  rejectWriteIssues(businessIssues);
   const lifecycle = normalizeLifecycle(working, lifecycleAnchors, now, config);
   const acceptedSections = [...new Set(events.filter((event) => event.decision === "accepted").map((event) => event.section))];
   const violation = findCapacityViolation(lifecycle.state, config, acceptedSections);

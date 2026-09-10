@@ -3,6 +3,7 @@ const { ISSUE_CODES, OUTPUT_REPAIR_POLICY_VERSION } = require("./policy");
 const { LIBRARIAN_PROPOSER } = require("../../contracts");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
 const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { businessRepairRule } = require("./renderBusinessRepair");
 
 function expectedShape(task) {
   if (usesTodoV2(task)) return { results: { todos: { status: "<noop | unable_to_decide | changes>", changes: "<only present for changes; complete Todo v2 array>" } } };
@@ -54,14 +55,18 @@ function buildRepairPlan({ errors, specialist = null, task = null } = {}) {
   ].includes(code))) directives.push("SELECT_ONLY_SCHEMA_ENUM_SOURCES");
   if (codes.includes(ISSUE_CODES.SOURCE_MISSING)) directives.push("SUPPLY_ONE_VISIBLE_SOURCE_OR_REMOVE_CHANGE");
   if (codes.includes(ISSUE_CODES.TEXT_LENGTH_EXCEEDED)) directives.push("REWRITE_ATOMIC_TEXT_WITHIN_LIMIT");
-  if (codes.includes(ISSUE_CODES.SOURCE_LIMIT_EXCEEDED)) directives.push("SELECT_SUFFICIENT_SOURCES_WITHIN_LIMIT");
-  if (codes.includes(ISSUE_CODES.DUPLICATE_ITEM)) directives.push("RESOLVE_EXISTING_ITEM_DUPLICATE");
-  if (codes.includes(ISSUE_CODES.TODO_OVERDUE_REQUIRES_FUTURE_DUE)) directives.push("RESOLVE_OVERDUE_DUE_CONFLICT");
-  if (codes.includes(ISSUE_CODES.TODO_OVERDUE_PARTICIPANT_CHANGE)) directives.push("PRESERVE_OVERDUE_PARTICIPANTS");
+  for (const code of codes) {
+    const rule = businessRepairRule(code);
+    if (rule) directives.push(rule.directive);
+  }
+  if (issues.some(issue => !businessRepairRule(issue.code)
+    && (issue.code === ISSUE_CODES.BUSINESS_RULE_VIOLATION || issue.meta?.constraint))) directives.push("RECHECK_BUSINESS_CONSTRAINT");
   if (codes.includes(ISSUE_CODES.CHANGES_EMPTY)) directives.push("USE_NOOP_FOR_ZERO_CHANGES");
+  const specialists = [...new Set(issues.map(issue => issue.meta?.specialist).filter(Boolean))];
   return {
     policyVersion: OUTPUT_REPAIR_POLICY_VERSION,
-    retryScope: specialist ? { kind: "specialist", proposer: specialist } : { kind: "task" },
+    retryScope: specialist ? { kind: "specialist", proposer: specialist }
+      : specialists.length ? { kind: "specialists", proposers: specialists } : { kind: "task" },
     issueCodes: codes,
     directives,
     expectedShape: expectedShape(task),

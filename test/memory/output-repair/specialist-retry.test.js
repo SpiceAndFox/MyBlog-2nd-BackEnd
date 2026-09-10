@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { createRepairFeedback } = require("../../../modules/memory/application/outputRepair");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { profileEnvelope } = require("../support/provider-envelopes");
+const { providerBusinessRejection } = require("../../../modules/memory/infrastructure/providers/providerBusinessRejection");
 
 test("Profile repair retries only the failed specialist and merges cached valid sections", async () => {
   const calls = [];
@@ -117,10 +118,41 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
   assert.equal(calls[3].proposer, "relationshipProposer");
   assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
   assert.equal(Object.hasOwn(calls[3].repairContext, "assistantOutput"), false);
-  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V7\]/);
+  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V8\]/);
   assert.match(calls[3].repairContext.userMessage, /JSON 完成前中止/);
   assert.match(calls[3].repairContext.userMessage, /sources 仅保留.*最少来源/);
   assert.match(calls[3].repairContext.userMessage, /section 才使用 noop/);
   assert.match(calls[3].repairContext.userMessage, /不得从末尾继续/);
   assert.ok(calls[3].repairContext.userMessage.includes(JSON.stringify(truncated)));
+});
+
+test("Profile business recovery revalidates retained selectors and does not reuse an invalid saved section", async () => {
+  const envelope = profileEnvelope();
+  const wire = section => ({ sectionStatuses: { [section]: "changes" }, changes: [
+    { section, action: "add", text: `${section} fact`, sources: ["message:1"] },
+  ] });
+  const makeAdapter = invokeStructured => createMemoryProviderAdapter({ promptLoader: async () => "prompt", invokeStructured });
+  const first = await makeAdapter(async request => ({ output: wire(request.userPayload.task.targetSections[0]) })).propose(envelope);
+  const mapped = providerBusinessRejection(first, { errors: [{ code: "DUPLICATE_ITEM",
+    path: "$.sectionResults.relationship.changes[0].text", meta: { section: "relationship" } }] }, envelope.task);
+  mapped.rejectedOutput.specialistOutputs.userProfileProposer.output.changes[0].sources = ["message:999"];
+  const calls = [];
+  const result = await makeAdapter(async request => {
+    calls.push(request);
+    const section = request.userPayload.task.targetSections[0];
+    if (section === "userProfile") assert.equal(request.repairContext, null);
+    else {
+      assert.equal(section, "relationship");
+      assert.deepEqual(request.repairContext.assistantOutput, wire(section));
+    }
+    return { output: { sectionStatuses: { [section]: "noop" }, changes: [] } };
+  }).propose(JSON.parse(JSON.stringify(envelope)), {
+    repairFeedback: createRepairFeedback({ ...mapped, validationLayer: "business" }, 1, envelope.task),
+    rejectedOutput: mapped.rejectedOutput,
+  });
+  assert.equal(result.status, "ok");
+  assert.equal(result.callCount, 2);
+  assert.deepEqual(calls.map(request => request.proposer), ["userProfileProposer", "relationshipProposer"]);
+  assert.equal(result.output.sectionResults.assistantProfile.status, "changes");
+  assert.equal(result.output.sectionResults.userProfile.status, "noop");
 });

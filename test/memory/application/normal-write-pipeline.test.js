@@ -123,7 +123,7 @@ test("persisted Todo tasks without a protocol marker resume using the legacy sch
   assert.equal(row.stage_payload.providerProtocol.outputProtocol, "legacy-v1");
 });
 
-test("Todo business rejection retries with original v2 output and exact date conflict before evidence-only commit", async () => {
+for (const participantConflict of [false, true]) test(`Todo business rejection repairs ${participantConflict ? "combined constraints during force drain" : "the date conflict"} before evidence-only commit`, async () => {
   const store = fakes();
   const messages = [
     { ...message, id: 1, createdAt: "2026-01-01T12:00:00.000Z" },
@@ -140,8 +140,10 @@ test("Todo business rejection retries with original v2 output and exact date con
     text: { mode: "keep" }, actor: { mode: "keep" }, requester: { mode: "keep" },
     due: { mode: "relativeDays", offset: 1, anchorSource: "message:2" },
   }] } } };
+  if (participantConflict) candidate.results.todos.changes[0].actor = { mode: "set", value: "assistant" };
   const repaired = structuredClone(candidate);
   repaired.results.todos.changes[0].due = { mode: "keep" };
+  repaired.results.todos.changes[0].actor = { mode: "keep" };
   const requests = [];
   const providerAdapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async request => {
     requests.push(request);
@@ -151,6 +153,10 @@ test("Todo business rejection retries with original v2 output and exact date con
       for (const value of ["$.results.todos.changes[0].due", "T1", dueAt, "2026-01-04T00:00:00.000Z", "2026-09-10T00:00:00.000Z"]) assert.ok(instruction.includes(value), value);
       assert.match(instruction, /不得为了通过校验编造未来日期/);
       assert.match(instruction, /若只补充证据/);
+      if (participantConflict) {
+        assert.match(instruction, /TODO_OVERDUE_PARTICIPANT_CHANGE/);
+        assert.match(instruction, /\$\.results\.todos\.changes\[0\]\.actor\.value/);
+      }
       assert.doesNotMatch(instruction, /sectionResults|dueChange|todo:old/);
     }
     return { output: requests.length === 1 ? candidate : repaired, model: "test", outputChannel: "tool_arguments",
@@ -158,7 +164,8 @@ test("Todo business rejection retries with original v2 output and exact date con
   } });
   const pipeline = createNormalWritePipeline({ observer: {}, config, repositories: store.repositories, providerAdapter,
     now: () => new Date("2026-09-10T00:00:00.000Z") });
-  const result = await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1 });
+  const result = await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1,
+    ...(participantConflict ? { trigger: { type: "forceDrain" } } : {}) });
   assert.equal(result.status, "committed");
   assert.equal(requests.length, 2);
   assert.equal(requests[0].systemPrompt, await loadProposerPrompt("todoProposer", { outputProtocol: "todo-v2" }));
@@ -175,10 +182,12 @@ test("Todo business rejection retries with original v2 output and exact date con
   assert.equal(issue.path, "$.results.todos.changes[0].due");
   assert.equal(issue.meta.target, "T1");
   assert.equal(issue.meta.currentDueAt, dueAt);
+  assert.equal(row.stage_payload.schemaRepairFeedback.errors.length, participantConflict ? 2 : 1);
   const todo = store.inspect.state.working.todos[0];
   assert.equal(todo.status, "overdue");
   assert.equal(todo.dueAt, dueAt);
   assert.equal(todo.becameOverdueAt, dueAt);
+  assert.equal(todo.actor, "user");
   assert.deepEqual(todo.sourceRefs.map(ref => ref.messageId), [1, 2]);
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });
