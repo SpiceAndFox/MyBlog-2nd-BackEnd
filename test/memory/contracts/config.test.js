@@ -2,14 +2,43 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadMemoryV2Config } = require("../../../modules/memory/config/loadConfig");
 const { loadMemoryProviderConfig, resolveMemoryProviderModel, resolveMemoryProviderReasoningEffort } = require("../../../modules/memory/config/loadProviderConfig");
+const { memoryExampleEnv } = require("../support/memory-builders");
 
 test("v2 config is inert while feature is disabled", () => assert.deepEqual(loadMemoryV2Config({}), { enabled: false }));
 test("v2 config fails explicitly when enabled configuration is incomplete", () => {
   assert.throws(() => loadMemoryV2Config({ CHAT_MEMORY_V2_ENABLED: "true" }), /Missing required env/);
 });
 
+test("Memory tuning values must be explicit and never fall back on missing or blank env", () => {
+  const env = validEnv();
+  const keys = Object.keys(env).filter(key => /_MAX_(ITEM_CHARS|SOURCE_REFS|APPEND_CHARS)$/.test(key));
+  keys.push("CHAT_MEMORY_V2_LIBRARIAN_MESSAGE_BATCH_SIZE", "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS");
+  for (const key of keys) {
+    for (const value of [undefined, "", "  ", "0", "-1", "1.5", "NaN"]) {
+      assert.throws(() => loadMemoryV2Config({ ...env, [key]: value }), new RegExp(key), `${key}=${value}`);
+    }
+  }
+  assert.throws(() => loadMemoryV2Config({ ...env,
+    CHAT_MEMORY_V2_RECENT_EPISODES_MAX_ITEM_CHARS: "10",
+    CHAT_MEMORY_V2_RECENT_EPISODES_MAX_APPEND_CHARS: "11",
+  }), /MAX_APPEND_CHARS must be <= MAX_ITEM_CHARS/);
+});
+
+test("provider thinking controls require explicit values for each applicable adapter", () => {
+  for (const adapter of ["deepseek-strict-tools", "opencode-go-json-schema", "opencode-go-json-object"]) {
+    for (const key of ["CHAT_MEMORY_V2_PROVIDER_THINKING_MODE", "CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT"]) {
+      for (const value of [undefined, "", "  "]) {
+        assert.throws(() => loadMemoryProviderConfig({ ...validEnv(),
+          CHAT_MEMORY_V2_PROVIDER_ADAPTER: adapter, [key]: value,
+        }), new RegExp(key));
+      }
+    }
+  }
+});
+
 function validEnv() {
-  const env = { CHAT_MEMORY_V2_ENABLED: "true" };
+  const env = Object.fromEntries(Object.entries(memoryExampleEnv()).filter(([key]) => /_MAX_(ITEM_CHARS|SOURCE_REFS|APPEND_CHARS)$/.test(key)));
+  env.CHAT_MEMORY_V2_ENABLED = "true";
   const sections = ["TODOS", "STANDING_AGREEMENTS", "RECENT_EPISODES", "MILESTONES", "WORLD_FACTS", "USER_PROFILE", "ASSISTANT_PROFILE", "RELATIONSHIP"];
   for (const section of sections) {
     env[`CHAT_MEMORY_V2_${section}_MAX_ITEMS`] = "20";
@@ -44,7 +73,8 @@ function validEnv() {
     CHAT_MEMORY_V2_PROVIDER_MODEL: "structured-model", CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS: "60000",
     CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000", CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS: "8192",
     CHAT_MEMORY_V2_PROVIDER_CONCURRENCY: "2", CHAT_MEMORY_V2_PROVIDER_QUEUE_MAX: "32",
-    CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD: "96",
+    CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD: "96", CHAT_MEMORY_V2_LIBRARIAN_MESSAGE_BATCH_SIZE: "192",
+    CHAT_MEMORY_V2_PROVIDER_THINKING_MODE: "disabled", CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT: "low",
   });
   return env;
 }
@@ -79,7 +109,7 @@ test("Librarian lag threshold is required and bounded", () => {
   env.CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD = "12";
   assert.deepEqual(loadMemoryV2Config(env).librarian, {
     lagThreshold: 12,
-    messageBatchSize: 24,
+    messageBatchSize: 192,
   });
 });
 
@@ -126,7 +156,7 @@ test("provider config supports validated per-proposer model overrides with a def
   assert.throws(() => loadMemoryProviderConfig(env), /non-empty model id/);
 });
 
-test("provider config accepts the OpenCode Go adapter without thinking mode env", () => {
+test("provider config requires an explicit OpenCode Go thinking mode", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
   env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "none";
@@ -134,6 +164,8 @@ test("provider config accepts the OpenCode Go adapter without thinking mode env"
   assert.equal(provider.adapter, "opencode-go-json-schema");
   assert.equal(provider.reasoningEffort, "none");
   assert.equal(provider.thinkingMode, "disabled");
+  delete env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE;
+  assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_THINKING_MODE/);
 });
 
 test("provider config accepts OpenCode Go JSON object mode with reasoning overrides", () => {
@@ -163,6 +195,7 @@ test("OpenCode Go provider config validates an explicit thinking mode", () => {
 test("OpenCode Go provider config requires an explicit reasoning effort", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-schema";
+  delete env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT;
   assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_REASONING_EFFORT must be one of/);
   env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "turbo";
   assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_REASONING_EFFORT must be one of/);
@@ -218,6 +251,7 @@ test("DeepSeek provider config passes thinking mode through", () => {
   const env = validEnv();
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "deepseek-strict-tools";
   env.CHAT_MEMORY_V2_PROVIDER_BASE_URL = "https://api.deepseek.com/beta";
+  delete env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE;
   assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_THINKING_MODE/);
   env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "disabled";
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "disabled");

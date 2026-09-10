@@ -33,7 +33,7 @@ function fixture() {
   state.longTerm.userProfile.push(item("userProfile:1", "用户偏好简洁回答。", [3]));
   state.longTerm.assistantProfile.push(item("assistantProfile:1", "助手保持直接而温和。", [4]));
   state.longTerm.relationship.push(item("relationship:1", "双方是长期写作搭档。", [4]));
-  const envelope = buildLibrarianEnvelope({
+  const envelope = buildLibrarianEnvelope({ config: createMemoryTestConfig(),
     userId: 1,
     presetId: "default",
     state,
@@ -223,7 +223,7 @@ test("same-section split selects evidence independently and records new creation
   original.text = "用户在杭州工作；用户喜欢绘画。";
   original.sourceRefs = [original.sourceRefs[0], { messageId: 4, contentHash: sha256("painting") }];
   original.updatedAtMessageId = 4;
-  f.envelope = buildLibrarianEnvelope({ ...f.envelope.task, state: f.state });
+  f.envelope = buildLibrarianEnvelope({ config: createMemoryTestConfig(), ...f.envelope.task, state: f.state });
   const reduction = runOperation(f, [{ action: "split", ref: "UP1", parts: [
     { toSection: "userProfile", text: "用户在杭州工作。", supportRefs: ["UP1-E1"] },
     { toSection: "userProfile", text: "用户喜欢绘画。", supportRefs: ["UP1-E2"] },

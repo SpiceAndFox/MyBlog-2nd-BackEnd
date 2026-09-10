@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -29,7 +30,7 @@ test("Provider Adapter accepts valid native structured output", async () => {
 
 test("JSON object transport validates the parsed output locally", async () => {
   let httpRequest;
-  const invokeStructured = createStructuredTransport({
+  const invokeStructured = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled",
     adapter: "opencode-go-json-object",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",
@@ -62,7 +63,7 @@ test("JSON object transport validates the parsed output locally", async () => {
 });
 
 test("JSON object transport rejects malformed flat wire entries before Semantic conversion", async () => {
-  const invokeStructured = createStructuredTransport({
+  const invokeStructured = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled",
     adapter: "opencode-go-json-object",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",
@@ -282,7 +283,7 @@ test("schema repair adds concise positive enum guidance only for selector errors
 });
 
 test("Provider Adapter accepts the Librarian message-free global maintenance contract", async () => {
-  const librarianEnvelope = buildLibrarianEnvelope({
+  const librarianEnvelope = buildLibrarianEnvelope({ config: createMemoryTestConfig(),
     userId: 1,
     presetId: "default",
     state: createInitialMemoryState(),

@@ -102,12 +102,12 @@ test("Librarian output schema exposes only conservative global maintenance opera
     variant.properties.action.const === "merge"
     && variant.properties.toSection.const === "userProfile"
   ));
-  assert.equal(userProfileMerge.properties.text.maxLength, 200);
+  assert.equal(userProfileMerge.properties.text.maxLength, undefined, "limits are bound from the task");
   const split = variants.find((variant) => variant.properties.action.const === "split");
   const relationshipPart = split.properties.parts.items.oneOf.find(
     (variant) => variant.properties.toSection.const === "relationship",
   );
-  assert.equal(relationshipPart.properties.text.maxLength, 300);
+  assert.equal(relationshipPart.properties.text.maxLength, undefined, "limits are bound from the task");
   assert.equal(JSON.stringify(schema).includes("evidenceMessageIds"), false);
   assert.equal(JSON.stringify(schema).includes("addItem"), false);
 });

@@ -70,8 +70,8 @@ test("incomplete repair candidates stay quoted in user diagnostic data", () => {
 
 test("structured transport factory maps DeepSeek strict tool calls to normalized output", async () => {
   let request;
-  const invoke = createStructuredTransport({
-    adapter: "deepseek-strict-tools",
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
+    adapter: "deepseek-strict-tools", reasoningEffort: "low",
     baseUrl: "https://api.deepseek.com/beta",
     apiKey: "test-key",
     model: "deepseek-v4-flash",
@@ -108,8 +108,8 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
 
 test("structured transport routes models by proposer and falls back to the default", async () => {
   const models = [];
-  const invoke = createStructuredTransport({
-    adapter: "deepseek-strict-tools",
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
+    adapter: "deepseek-strict-tools", reasoningEffort: "low",
     baseUrl: "https://api.deepseek.com/beta",
     apiKey: "test-key",
     model: "default-model",
@@ -146,7 +146,7 @@ test("structured transport routes models by proposer and falls back to the defau
 
 test("structured transport enforces input capability before dispatch", async () => {
   let called = false;
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "model",
     timeoutMs: 1000, maxInputTokens: 4, maxOutputTokens: 32,
   }, { fetchImpl: async () => { called = true; throw new Error("must not dispatch"); } });
@@ -155,7 +155,7 @@ test("structured transport enforces input capability before dispatch", async () 
 });
 
 test("OpenAI-compatible HTTP safety rejection is normalized", async () => {
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "model",
     timeoutMs: 1000, maxInputTokens: 1_000_000, maxOutputTokens: 32,
   }, { fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error: { code: "content_filter", message: "blocked by safety policy" } }) }) });
@@ -180,7 +180,7 @@ test("OpenAI-compatible transport distinguishes aborted incomplete JSON from ord
       }],
     },
   ];
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "opencode-go-json-schema",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "key",
@@ -212,8 +212,8 @@ test("OpenAI-compatible transport distinguishes aborted incomplete JSON from ord
 });
 
 test("DeepSeek transport classifies aborted incomplete tool arguments", async () => {
-  const invoke = createStructuredTransport({
-    adapter: "deepseek-strict-tools",
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
+    adapter: "deepseek-strict-tools", reasoningEffort: "low",
     baseUrl: "https://api.deepseek.com/beta",
     apiKey: "key",
     model: "model",
@@ -249,14 +249,14 @@ test("DeepSeek transport classifies aborted incomplete tool arguments", async ()
 });
 
 test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {
-  assert.throws(() => createStructuredTransport({
-    adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,
+  assert.throws(() => createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
+    adapter: "deepseek-strict-tools", reasoningEffort: "low", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,
   }), /api\.deepseek\.com\/beta/);
 });
 
 test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables reasoning", async () => {
   let request;
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "opencode-go-json-schema",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",
@@ -309,7 +309,7 @@ test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables r
 
 test("OpenCode Go JSON object adapter puts the bound schema in the prompt and parses JSON locally", async () => {
   const requests = [];
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "opencode-go-json-object",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",
@@ -457,7 +457,7 @@ test("OpenCode Go schema compiler strips nested uniqueItems without touching sup
 
 test("OpenCode Go adapter routes model and reasoning effort by proposer with profile inheritance", async () => {
   const requests = [];
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "opencode-go-json-schema",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",
@@ -485,7 +485,7 @@ test("OpenCode Go adapter routes model and reasoning effort by proposer with pro
 
 test("OpenCode Go inference controls follow the effective proposer model", async () => {
   const requests = [];
-  const invoke = createStructuredTransport({
+  const invoke = createStructuredTransport({ maxOutputTokens: 1024, thinkingMode: "disabled", reasoningEffort: "none",
     adapter: "opencode-go-json-object",
     baseUrl: "https://opencode.test/v1/",
     apiKey: "test-key",

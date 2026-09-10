@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -39,6 +40,7 @@ function fixture() {
   state.meta.revision = 7;
   state.meta.targetCursors.episodes = 2;
   const artifact = buildProposerTaskArtifact({
+    config: createMemoryTestConfig(),
     state,
     intent: { targetKey: "episodes", proposer: "episodeProposer", cursorBefore: 2 },
     messages: [overlapMessage, newMessage],
@@ -92,6 +94,7 @@ test("Renderer artifact hides derived Memory newer than its own targetMessageId"
     updatedAtMessageId: 6,
   };
   const artifact = buildProposerTaskArtifact({
+    config: createMemoryTestConfig(),
     state,
     intent: { targetKey: "episodes", proposer: "episodeProposer", cursorBefore: 2 },
     messages: [trigger],
@@ -252,6 +255,7 @@ test("Compiler resolves relative Todo dates from the explicit direct-message anc
   state.meta.targetCursors.todos = 9;
   const anchor = message(10, "user", "明天提醒我交报告。", "2026-07-22T16:30:00.000Z");
   const artifact = buildProposerTaskArtifact({
+    config: createMemoryTestConfig(),
     state,
     intent: { targetKey: "todos", proposer: "todoProposer", cursorBefore: 9 },
     messages: [anchor],
@@ -291,6 +295,7 @@ test("Compiler resolves a Todo day-of-month from message time and the frozen use
   state.meta.targetCursors.todos = 10;
   const anchor = message(11, "user", "咱们9号出去看电影吧。", "2026-07-22T16:30:00.000Z");
   const artifact = buildProposerTaskArtifact({
+    config: createMemoryTestConfig(),
     state,
     intent: { targetKey: "todos", proposer: "todoProposer", cursorBefore: 10 },
     messages: [anchor],

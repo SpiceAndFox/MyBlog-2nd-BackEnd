@@ -1,13 +1,14 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { createObserver, canScheduleNormal } = require("../../../modules/memory/application/observer");
 const { buildNormalEnvelope, normalDedupeKey } = require("../../../modules/memory/application/envelope");
 
-const config = {
+const config = createMemoryTestConfig({
   targets: Object.fromEntries(["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"].map((key) => [key, { lagThreshold: key === "scene" ? 2 : 3, contextWindow: 6 }])),
   overdueTodos: { maxRenderedItems: 2 },
-};
+});
 
 test("Observer only emits lag-eligible and schedulable target intents", async () => {
   const state = createInitialMemoryState();

@@ -1,5 +1,5 @@
 const {
-  TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS, PROFILE_TEXT_MAX_CHARS,
+  TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS,
   LIBRARIAN_PROPOSER,
 } = require("./constants");
 const { validateLibrarianArtifact, validateLibrarianSemanticResult } = require("./librarian");
@@ -124,8 +124,8 @@ function validateRendererArtifact(artifact) {
   if (!checkObject(artifact, ["publicInput", "refMap", "messageMeta"], [], "$", errors)) return { ok: false, errors };
   if (checkObject(artifact.publicInput, ["task", "memoryText", "messages"], ["evidenceText"], "$.publicInput", errors)) {
     const task = artifact.publicInput.task;
-    const taskKeys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "cursorBefore", "targetMessageId", "now", "userTimeZone"];
-    if (checkObject(task, taskKeys, ["writeLimits"], "$.publicInput.task", errors)) {
+    const taskKeys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "cursorBefore", "targetMessageId", "now", "userTimeZone", "writeLimits"];
+    if (checkObject(task, taskKeys, [], "$.publicInput.task", errors)) {
       errors.push(...validateWriteLimits(task.writeLimits));
       if (!positiveText(task.taskId)) add(errors, "$.publicInput.task.taskId", "must be a non-empty string");
       if (!nonNegativeInteger(task.tickId)) add(errors, "$.publicInput.task.tickId", "must be a non-negative safe integer");

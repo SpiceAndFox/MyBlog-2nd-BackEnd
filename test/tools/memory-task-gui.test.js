@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { testWriteLimits } = require("../memory/support/memory-builders");
 const {
   parseArgs,
   resolveOptions,
@@ -12,6 +13,7 @@ const { OUTPUT_REPAIR_POLICY_VERSION } = require("../../modules/memory/applicati
 function taskRow(overrides = {}) {
   const envelope = {
     task: {
+      writeLimits: testWriteLimits(),
       taskId: "00000000-0000-4000-8000-000000000001",
       tickId: 1,
       proposer: "episodeProposer",
@@ -25,6 +27,7 @@ function taskRow(overrides = {}) {
     artifact: {
       publicInput: {
         task: {
+          writeLimits: testWriteLimits(),
           taskId: "00000000-0000-4000-8000-000000000001",
           tickId: 1,
           proposer: "episodeProposer",

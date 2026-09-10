@@ -1,3 +1,4 @@
+const { testWriteLimits } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
@@ -22,6 +23,7 @@ test("generic schema binding also restricts compaction merge refs", () => {
   const bound = bindOutputSchema(
     buildOutputSchema("compactionProposer", ["todos"]),
     {
+      publicInput: { task: { writeLimits: testWriteLimits() } },
       refMap: {
         writable: {
           T2: { section: "todos" },
@@ -43,6 +45,7 @@ test("flat binding disables impossible changes when no visible source exists", (
   const bound = bindOutputSchema(
     buildOutputSchema("currentStateProposer", ["scene"]),
     {
+      publicInput: { task: { writeLimits: testWriteLimits() } },
       refMap: { writable: {}, readOnly: {} },
       messageMeta: {},
     },

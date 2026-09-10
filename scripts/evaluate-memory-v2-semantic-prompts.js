@@ -6,7 +6,7 @@ const {
   contracts,
   createMemoryProviderAdapter,
   createStructuredTransport,
-  loadMemoryProviderConfig,
+  loadMemoryV2Config,
   loadProposerPrompt,
 } = require("../modules/memory/admin");
 
@@ -66,7 +66,7 @@ function agreementIntent() {
   };
 }
 
-function buildEnvelope({ state, intent, messages, tickId }) {
+function buildEnvelope({ state, intent, messages, tickId, config }) {
   return buildNormalEnvelope({
     userId: 1,
     presetId: "semantic-prompt-evaluation",
@@ -77,7 +77,7 @@ function buildEnvelope({ state, intent, messages, tickId }) {
     taskId: `00000000-0000-4000-8000-${String(tickId).padStart(12, "0")}`,
     now: "2026-07-23T00:01:00.000Z",
     userTimeZone: "Asia/Shanghai",
-    config: { overdueTodos: { maxRenderedItems: 10 } },
+    config,
   });
 }
 
@@ -90,9 +90,9 @@ function expectNoop(output, section, errors) {
   if (output?.sectionResults?.[section]?.status !== "noop") errors.push(`${section} should be noop`);
 }
 
-function profilePreferenceCase() {
+function profilePreferenceCase(config) {
   const state = contracts.createInitialMemoryState();
-  const envelope = buildEnvelope({
+  const envelope = buildEnvelope({ config,
     state,
     intent: profileIntent(),
     messages: [message(10, "你不用每次都在结尾问我问题，正常接着聊就行。")],
@@ -114,9 +114,9 @@ function profilePreferenceCase() {
   };
 }
 
-function profileTransientCase() {
+function profileTransientCase(config) {
   const state = contracts.createInitialMemoryState();
-  const envelope = buildEnvelope({
+  const envelope = buildEnvelope({ config,
     state,
     intent: profileIntent(),
     messages: [message(10, "这一次回复请只用三句话，我正在测试输出长度。")],
@@ -133,11 +133,11 @@ function profileTransientCase() {
   };
 }
 
-function profileRoleEndCase() {
+function profileRoleEndCase(config) {
   const state = contracts.createInitialMemoryState();
   state.longTerm.userProfile.push(item("profile:captain", "用户喜欢扮演威严的船长。", 1));
   state.longTerm.relationship.push(item("relationship:crew", "双方以船长与大副的身份长期互动。", 2));
-  const envelope = buildEnvelope({
+  const envelope = buildEnvelope({ config,
     state,
     intent: profileIntent(),
     messages: [message(10, "航海角色扮演只是这次 API 测试，我并不喜欢这种角色扮演；现在结束角色关系，恢复普通对话。")],
@@ -168,7 +168,7 @@ function profileRoleEndCase() {
   };
 }
 
-function profileLongWindowCoverageCase() {
+function profileLongWindowCoverageCase(config) {
   const state = contracts.createInitialMemoryState();
   state.longTerm.relationship.push(item(
     "relationship:role-history",
@@ -186,7 +186,7 @@ function profileLongWindowCoverageCase() {
     if (index === 59) content = "记得；那是已经结束的角色扮演，现在只是共同回忆。";
     return windowMessage(id, index, content, role);
   });
-  const envelope = buildEnvelope({ state, intent: profileIntent(), messages, tickId: 5 });
+  const envelope = buildEnvelope({ config, state, intent: profileIntent(), messages, tickId: 5 });
   return {
     id: "profile-long-window-preserves-explicit-style-boundaries",
     envelope,
@@ -200,14 +200,14 @@ function profileLongWindowCoverageCase() {
   };
 }
 
-function agreementRoleEndCase() {
+function agreementRoleEndCase(config) {
   const state = contracts.createInitialMemoryState();
   state.working.standingAgreements.push(
     item("agreement:captain-decisions", "重大航海决策由船长与大副共同盖章。", 1),
     item("agreement:captain-chair", "老船长的驾驶舱座椅永久保留。", 2),
     item("agreement:concise", "日常交流保持简洁直接。", 3),
   );
-  const envelope = buildEnvelope({
+  const envelope = buildEnvelope({ config,
     state,
     intent: agreementIntent(),
     messages: [message(10, "航海角色扮演现在结束，船长和大副的角色关系不再继续；恢复普通对话。")],
@@ -227,11 +227,11 @@ function agreementRoleEndCase() {
   };
 }
 
-function buildCases() {
-  return [profilePreferenceCase(), profileTransientCase(), profileRoleEndCase(), profileLongWindowCoverageCase(), agreementRoleEndCase()];
+function buildCases(config) {
+  return [profilePreferenceCase(config), profileTransientCase(config), profileRoleEndCase(config), profileLongWindowCoverageCase(config), agreementRoleEndCase(config)];
 }
 
-async function evaluate({ adapter, cases = buildCases() }) {
+async function evaluate({ adapter, config, cases = buildCases(config) }) {
   const results = [];
   for (const fixture of cases) {
     const providerResult = await adapter.propose(fixture.envelope);
@@ -247,12 +247,13 @@ async function evaluate({ adapter, cases = buildCases() }) {
 
 async function main() {
   dotenv.config();
-  const provider = loadMemoryProviderConfig(process.env);
+  const config = loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
+  const provider = config.provider;
   const adapter = createMemoryProviderAdapter({
     invokeStructured: createStructuredTransport(provider),
     promptLoader: loadProposerPrompt,
   });
-  const results = await evaluate({ adapter });
+  const results = await evaluate({ adapter, config });
   const passed = results.filter((result) => result.passed).length;
   process.stdout.write(`${JSON.stringify({ passed, total: results.length, results }, null, 2)}\n`);
   if (passed !== results.length) process.exitCode = 1;

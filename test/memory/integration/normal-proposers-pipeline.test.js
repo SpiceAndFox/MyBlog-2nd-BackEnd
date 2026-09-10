@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -59,6 +60,7 @@ test("normal Semantic IR compiles world fact, agreement, todo and scene domain a
     const state = contracts.createInitialMemoryState();
     entry.seed(state);
     const artifact = buildProposerTaskArtifact({
+    config: createMemoryTestConfig(),
       state, intent: { targetKey: entry.targetKey, proposer: entry.proposer, cursorBefore: 1 }, messages: [old, current],
       now: "2026-07-22T02:01:00.000Z", userTimeZone: "Asia/Shanghai", taskId: `task-${entry.targetKey}`, tickId: 10,
     });

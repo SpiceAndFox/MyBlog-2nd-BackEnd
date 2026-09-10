@@ -1,7 +1,4 @@
 const {
-  PROFILE_TEXT_MAX_CHARS,
-} = require("../../contracts/constants");
-const {
   FLAT_WIRE_PROPOSER_SECTIONS,
   FLAT_WIRE_STATUSES,
   flatWireSections,
@@ -65,9 +62,6 @@ function buildFlatWireOutputSchema(proposer, targetSections) {
     text: {
       type: "string",
       minLength: 1,
-      ...(sections.every((section) => PROFILE_TEXT_MAX_CHARS[section])
-        ? { maxLength: Math.max(...sections.map((section) => PROFILE_TEXT_MAX_CHARS[section])) }
-        : {}),
       description: "Full result text, except append: only the new fragment. Omit for terminal actions.",
     },
     sources: {

@@ -76,7 +76,7 @@ function validateRebuildLibrarianSchedule(schedule, sourceBoundary) {
   return schedule;
 }
 
-function buildRebuildLibrarianSchedule({ messages, turns, sourceBoundary, lagThreshold, messageBatchSize = lagThreshold * 2 }) {
+function buildRebuildLibrarianSchedule({ messages, turns, sourceBoundary, lagThreshold, messageBatchSize }) {
   if (!Number.isSafeInteger(messageBatchSize) || messageBatchSize < 1) throw new Error("Invalid Librarian message batch size");
   let previous = 0;
   for (const message of messages) {

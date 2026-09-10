@@ -16,7 +16,8 @@ function normalizeModelId(value) {
 }
 
 function resolveThinkingMode(config) {
-  return config?.thinkingMode === "enabled" ? "enabled" : "disabled";
+  if (!["enabled", "disabled"].includes(config?.thinkingMode)) throw new Error("Memory Provider thinkingMode is required");
+  return config.thinkingMode;
 }
 
 function buildOpencodeGoInferenceControls(config, proposer) {

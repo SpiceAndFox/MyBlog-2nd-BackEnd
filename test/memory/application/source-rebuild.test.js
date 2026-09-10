@@ -39,7 +39,7 @@ function createMemorySourceRebuild(options) {
     repositories,
     librarian: options.librarian || NOOP_LIBRARIAN,
     config: {
-      librarian: { lagThreshold: LIBRARIAN_INTERVAL_TURNS },
+      librarian: { lagThreshold: LIBRARIAN_INTERVAL_TURNS, messageBatchSize: 192 },
       ...options.config,
     },
   });

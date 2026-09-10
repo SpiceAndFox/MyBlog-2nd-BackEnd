@@ -48,8 +48,8 @@ function validateLibrarianArtifact(artifact) {
   if (!exactKeys(artifact, ["publicInput", "refMap", "messageMeta"], [], "$", errors)) return { ok: false, errors };
   if (exactKeys(artifact.publicInput, ["task", "memoryText", "messages"], ["evidenceText"], "$.publicInput", errors)) {
     const task = artifact.publicInput.task;
-    const keys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "boundaryMessageId", "watermarkOrdinal", "watermarkKind", "triggerType", "now", "userTimeZone"];
-    if (exactKeys(task, keys, ["writeLimits"], "$.publicInput.task", errors)) {
+    const keys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "boundaryMessageId", "watermarkOrdinal", "watermarkKind", "triggerType", "now", "userTimeZone", "writeLimits"];
+    if (exactKeys(task, keys, [], "$.publicInput.task", errors)) {
       errors.push(...validateWriteLimits(task.writeLimits));
       if (!text(task.taskId)) errors.push(issue("$.publicInput.task.taskId", "must be a non-empty string"));
       if (!integer(task.tickId)) errors.push(issue("$.publicInput.task.tickId", "must be a non-negative safe integer"));

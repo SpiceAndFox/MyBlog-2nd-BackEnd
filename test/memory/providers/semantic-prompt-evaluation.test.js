@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildCases, evaluate } = require("../../../scripts/evaluate-memory-v2-semantic-prompts");
@@ -63,7 +64,7 @@ function outputFor(fixtureId) {
 }
 
 test("semantic prompt evaluation fixtures are synthetic, valid envelopes with stable expected refs", () => {
-  const cases = buildCases();
+  const cases = buildCases(createMemoryTestConfig());
   const byId = new Map(cases.map((fixture) => [fixture.id, fixture]));
   assert.equal(byId.size, cases.length, "fixture ids must be unique");
 
@@ -82,7 +83,7 @@ test("semantic prompt evaluation fixtures are synthetic, valid envelopes with st
 });
 
 test("semantic prompt evaluator scores capture, noop, invalidation, and scoped cancellation", async () => {
-  const cases = buildCases();
+  const cases = buildCases(createMemoryTestConfig());
   let index = 0;
   const adapter = {
     async propose() {
@@ -95,7 +96,7 @@ test("semantic prompt evaluator scores capture, noop, invalidation, and scoped c
 });
 
 test("semantic prompt evaluator reports over-broad cancellation", async () => {
-  const [fixture] = buildCases().slice(-1);
+  const [fixture] = buildCases(createMemoryTestConfig()).slice(-1);
   const output = outputFor(fixture.id);
   output.sectionResults.standingAgreements.changes.push({ action: "cancel", ref: "A3", evidenceMessageIds: [10] });
   const [result] = await evaluate({ adapter: { propose: async () => ({ status: "ok", output }) }, cases: [fixture] });

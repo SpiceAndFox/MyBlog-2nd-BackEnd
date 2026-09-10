@@ -1,4 +1,20 @@
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { parse } = require("dotenv");
+const { WRITE_LIMIT_KEYS } = require("../../../modules/memory/contracts/sectionPolicy");
+
+function memoryExampleEnv() {
+  return parse(fs.readFileSync(path.join(__dirname, "../../../.env.example")));
+}
+
+function testWriteLimits() {
+  const env = memoryExampleEnv();
+  const envName = value => value.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase();
+  return Object.fromEntries(Object.entries(WRITE_LIMIT_KEYS).map(([section, keys]) => [section,
+    Object.fromEntries(keys.map(key => [key, Number(env[`CHAT_MEMORY_V2_${envName(section)}_${envName(key)}`])])),
+  ]));
+}
 
 const ITEM_SECTIONS = [
   "todos", "standingAgreements", "recentEpisodes", "milestones",
@@ -6,7 +22,8 @@ const ITEM_SECTIONS = [
 ];
 
 function createSectionBudgets(maxItems = 20, maxRenderedChars = 2000) {
-  return Object.fromEntries(ITEM_SECTIONS.map((section) => [section, { maxItems, maxRenderedChars }]));
+  const limits = testWriteLimits();
+  return Object.fromEntries(ITEM_SECTIONS.map((section) => [section, { maxItems, maxRenderedChars, ...limits[section] }]));
 }
 
 function createMemoryTestConfig(overrides = {}) {
@@ -21,9 +38,9 @@ function createMemoryTestConfig(overrides = {}) {
       backoffMaxMs: 2,
       haltAfterConsecutiveErrors: 3,
     },
-    scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
+    scene: { ttlMs: 86_400_000, maxRenderedChars: 1000, ...testWriteLimits().scene },
     overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-    librarian: { lagThreshold: 96 },
+    librarian: { lagThreshold: 96, messageBatchSize: 192 },
     sectionBudgets: createSectionBudgets(),
   };
   return {
@@ -35,7 +52,7 @@ function createMemoryTestConfig(overrides = {}) {
     scene: { ...base.scene, ...overrides.scene },
     overdueTodos: { ...base.overdueTodos, ...overrides.overdueTodos },
     librarian: { ...base.librarian, ...overrides.librarian },
-    sectionBudgets: overrides.sectionBudgets || base.sectionBudgets,
+    sectionBudgets: Object.fromEntries(ITEM_SECTIONS.map(section => [section, { ...base.sectionBudgets[section], ...overrides.sectionBudgets?.[section] }])),
   };
 }
 
@@ -122,6 +139,8 @@ function sequence(...values) {
 }
 
 module.exports = {
+  memoryExampleEnv,
+  testWriteLimits,
   ITEM_SECTIONS,
   createSectionBudgets,
   createMemoryTestConfig,

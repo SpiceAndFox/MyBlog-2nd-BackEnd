@@ -26,7 +26,7 @@ function parseToolArguments(value) {
   }
 }
 
-function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, thinkingMode = "disabled", reasoningEffort = "low", fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
+function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens, thinkingMode, reasoningEffort, fetchImpl = globalThis.fetch, extraHeaders = {} } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");

@@ -2,7 +2,7 @@ const dotenv = require("dotenv");
 dotenv.config();
 const crypto = require("node:crypto");
 const {
-  loadMemoryProviderConfig, createStructuredTransport, createMemoryProviderAdapter,
+  loadMemoryV2Config, createStructuredTransport, createMemoryProviderAdapter,
   loadProposerPrompt, contracts, domain, buildNormalEnvelope, createSemanticCompiler,
 } = require("../modules/memory/admin");
 
@@ -11,7 +11,8 @@ function hash(content) {
 }
 
 async function main() {
-  const provider = loadMemoryProviderConfig(process.env);
+  const config = loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
+  const provider = config.provider;
   const adapter = createMemoryProviderAdapter({
     invokeStructured: createStructuredTransport(provider),
     promptLoader: loadProposerPrompt,
@@ -25,14 +26,7 @@ async function main() {
     content,
     contentHash: hash(content),
   };
-  const config = {
-    overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-    scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
-    sectionBudgets: Object.fromEntries(
-      ["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"]
-        .map((section) => [section, { maxItems: 20, maxRenderedChars: 2000 }]),
-    ),
-  };
+
   const state = contracts.createInitialMemoryState();
   const envelope = buildNormalEnvelope({
     userId: 1,

@@ -44,11 +44,6 @@ function requiredInt(env, name, { min = 0 } = {}) {
   return value;
 }
 
-function optionalInt(env, name, fallback, { min = 0 } = {}) {
-  if (env[name] === undefined || String(env[name]).trim() === "") return fallback;
-  return requiredInt(env, name, { min });
-}
-
 function parseReasoningEffort(label, value) {
   const effort = String(value ?? "").trim().toLowerCase();
   if (!REASONING_EFFORT_VALUES.includes(effort)) {
@@ -57,11 +52,8 @@ function parseReasoningEffort(label, value) {
   return effort;
 }
 
-function parseThinkingMode(label, value, fallback) {
-  const raw = value === undefined || String(value).trim() === ""
-    ? fallback
-    : value;
-  const mode = String(raw ?? "").trim().toLowerCase();
+function parseThinkingMode(label, value) {
+  const mode = String(value ?? "").trim().toLowerCase();
   if (!THINKING_MODE_VALUES.includes(mode)) {
     throw new Error(`Env ${label} must be one of: ${THINKING_MODE_VALUES.join(", ")}`);
   }
@@ -165,14 +157,14 @@ function loadMemoryProviderConfig(env = {}) {
     proposerModels: optionalProposerModels(env, adapter),
     timeoutMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS", { min: 1 }),
     maxInputTokens: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS", { min: 100_000 }),
-    maxOutputTokens: optionalInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS", 8192, { min: 1 }),
+    maxOutputTokens: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS", { min: 1 }),
   };
   if (adapter === "deepseek-strict-tools") {
     config.thinkingMode = parseThinkingMode(
       "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
       requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE"),
     );
-    const effort = String(env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT ?? "low").trim() || "low";
+    const effort = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT");
     if (!["low", "high", "max"].includes(effort)) throw new Error("DeepSeek reasoning effort must be low, high or max");
     config.reasoningEffort = effort;
   }
@@ -180,8 +172,7 @@ function loadMemoryProviderConfig(env = {}) {
     config.reasoningEffort = parseReasoningEffort("CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT", env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT);
     config.thinkingMode = parseThinkingMode(
       "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
-      env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE,
-      "disabled",
+      requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE"),
     );
   }
   return Object.freeze(config);

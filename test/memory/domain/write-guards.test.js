@@ -8,10 +8,45 @@ const { compileSemanticResult } = require("../../../modules/memory/domain/semant
 const { buildNormalEnvelope } = require("../../../modules/memory/application/envelope");
 const { mapEventToRow } = require("../../../modules/memory/application/eventMapper");
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
+const { memoryExampleEnv } = require("../support/memory-builders");
+const { loadMemoryV2Config } = require("../../../modules/memory/config/loadConfig");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
 
 const config = createMemoryTestConfig();
 const source = (messageId) => ({ messageId, contentHash: sha256(`message-${messageId}`) });
 const initialItem = { id: "existing", text: "旧事实", sourceRefs: [source(1)], createdAtMessageId: 1, updatedAtMessageId: 1 };
+
+test("explicit env limits reach schemas, semantic validation and reducers through a stable task snapshot", () => {
+  const env = { ...memoryExampleEnv(), CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
+    CHAT_MEMORY_V2_WORLD_FACTS_MAX_ITEM_CHARS: "377", CHAT_MEMORY_V2_WORLD_FACTS_MAX_SOURCE_REFS: "2" };
+  const loaded = loadMemoryV2Config(env);
+  const f = fixture();
+  f.task.writeLimits = captureWriteLimits(loaded);
+  const artifact = { publicInput: { task: f.task }, refMap: { writable: {}, readOnly: {} }, messageMeta: { 2: {} } };
+  const schema = bindOutputSchema(buildOutputSchema("worldFactProposer", ["worldFacts"]), artifact);
+  assert.equal(schema.schema.properties.changes.items.properties.text.maxLength, 377);
+  assert.equal(schema.schema.properties.changes.items.properties.sources.maxItems, 2);
+  const text = "字".repeat(377);
+  const output = { tickId: f.task.tickId, proposer: f.task.proposer, sectionResults: {
+    worldFacts: { status: "changes", changes: [{ action: "add", text, evidenceMessageIds: [2] }] },
+  } };
+  assert.equal(validateSemanticResult(output, f.task).ok, true);
+  assert.equal(reduce(f, [{ op: "addItem", value: { text }, sourceRefs: [source(2)] }]).state.longTerm.worldFacts.at(-1).text, text);
+  output.sectionResults.worldFacts.changes[0].text += "字";
+  assert.equal(validateSemanticResult(output, f.task).ok, false);
+  assert.throws(() => reduce(f, [{ op: "addItem", value: { text: text + "字" }, sourceRefs: [source(2)] }]), error => error.reason === "text_length_exceeded");
+  env.CHAT_MEMORY_V2_WORLD_FACTS_MAX_ITEM_CHARS = "7";
+  assert.equal(captureWriteLimits(loadMemoryV2Config(env)).worldFacts.maxItemChars, 7);
+  assert.equal(f.task.writeLimits.worldFacts.maxItemChars, 377);
+});
+
+test("tasks and configs without explicit write limits fail instead of using hidden defaults", () => {
+  assert.throws(() => captureWriteLimits({}), /Invalid scene.maxItemChars/);
+  const f = fixture();
+  delete f.task.writeLimits;
+  assert.throws(() => reduce(f, [{ op: "addItem", value: { text: "新事实" }, sourceRefs: [source(2)] }]), /task.writeLimits.worldFacts/);
+});
 
 function fixture(section = "worldFacts") {
   const state = createInitialMemoryState();

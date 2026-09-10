@@ -75,7 +75,7 @@ function buildOpenAiHttpRequest(config, request, {
     body: {
       model,
       stream: false,
-      max_tokens: config.maxOutputTokens ?? 8192,
+      max_tokens: config.maxOutputTokens,
       messages: buildStructuredMessages(request),
       response_format: {
         type: "json_schema",
@@ -100,7 +100,7 @@ function buildOpenAiJsonObjectHttpRequest(config, request, { extraBody = {} } = 
     body: {
       model,
       stream: false,
-      max_tokens: config.maxOutputTokens ?? 8192,
+      max_tokens: config.maxOutputTokens,
       messages: buildJsonObjectMessages(request),
       response_format: { type: "json_object" },
       ...(extension || {}),
@@ -131,9 +131,9 @@ function buildDeepSeekHttpRequest(config, request) {
     body: {
       model: resolveMemoryProviderModel(config, proposer),
       stream: false,
-      max_tokens: config.maxOutputTokens ?? 8192,
-      thinking: { type: config.thinkingMode ?? "disabled" },
-      ...(config.thinkingMode === "enabled" ? { reasoning_effort: resolveMemoryProviderReasoningEffort(config, proposer) ?? "low" } : {}),
+      max_tokens: config.maxOutputTokens,
+      thinking: { type: config.thinkingMode },
+      ...(config.thinkingMode === "enabled" ? { reasoning_effort: resolveMemoryProviderReasoningEffort(config, proposer) } : {}),
       messages,
       tools: [{
         type: "function",

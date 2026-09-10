@@ -5,20 +5,15 @@ const crypto = require("node:crypto");
 const {
   contracts, domain, buildNormalEnvelope, buildMaintenanceEnvelope, buildLibrarianEnvelope,
   hydrateEvidenceInput, createMemoryProviderAdapter, createStructuredTransport,
-  createSemanticCompiler, loadMemoryProviderConfig, loadProposerPrompt, createRepairFeedback,
+  createSemanticCompiler, loadMemoryV2Config, loadProposerPrompt, createRepairFeedback,
 } = require("../modules/memory/admin");
 
-const config = {
-  scene: { ttlMs: 86400000, maxRenderedChars: 1000 },
-  overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
-  sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map(section => [section, { maxItems: 20, maxRenderedChars: 4000 }])),
-};
 const hash = text => `sha256:${crypto.createHash("sha256").update(text).digest("hex")}`;
 const message = (id, content) => ({ id, content, role: "user", contentKind: "raw", contentHash: hash(content), createdAt: new Date(Date.UTC(2026, 8, 9, 0, id)).toISOString() });
 const item = (id, text, messages) => ({ id, text, sourceRefs: messages.map(m => ({ messageId: m.id, contentHash: m.contentHash })), createdAtMessageId: messages[0].id, updatedAtMessageId: messages.at(-1).id });
 const items = (state, section) => ["standingAgreements", "recentEpisodes", "todos"].includes(section) ? state.working[section] : state.longTerm[section];
 
-function cases() {
+function cases(config) {
   const definitions = [
     { name: "thinking-repair", kind: "normal", section: "worldFacts", history: [], next: "我们设定的港城只有两座桥，这是一条固定世界设定。", repair: true, check: s => s.longTerm.worldFacts.length === 1 },
     { name: "worldfact-boundary", kind: "normal", section: "worldFacts", history: [], next: "我们看完日落，你陪着我坐了一会儿，我觉得很温暖。", check: (s, r) => s.longTerm.worldFacts.length === 0 && r.sectionResults.worldFacts.status === "noop" },
@@ -54,12 +49,13 @@ function cases() {
 
 async function main() {
   require("dotenv").config({ quiet: true });
-  const provider = loadMemoryProviderConfig(process.env);
+  const config = loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
+  const provider = config.provider;
   if (provider.adapter !== "deepseek-strict-tools" || provider.thinkingMode !== "enabled") throw new Error("This evaluation requires DeepSeek with thinking enabled");
   const adapter = createMemoryProviderAdapter({ invokeStructured: createStructuredTransport(provider), promptLoader: loadProposerPrompt });
   const results = [];
   const filter = process.argv[2] || "";
-  for (const sample of cases().filter(sample => sample.name.includes(filter))) {
+  for (const sample of cases(config).filter(sample => sample.name.includes(filter))) {
     const sourceReader = { async getByIds(_u, _p, ids) { return sample.messages.filter(m => ids.includes(m.id)); } };
     await hydrateEvidenceInput(sample.envelope, sourceReader);
     const started = Date.now();

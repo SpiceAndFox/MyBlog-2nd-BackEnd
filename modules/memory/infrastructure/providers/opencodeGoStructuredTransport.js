@@ -9,8 +9,8 @@ const { buildOpencodeGoInferenceControls } = require("./opencodeGoRequestPolicy"
 function createOpencodeGoStructuredTransport({
   model,
   proposerModels = {},
-  reasoningEffort = "none",
-  thinkingMode = "disabled",
+  reasoningEffort,
+  thinkingMode,
   extraBody,
   ...options
 } = {}) {

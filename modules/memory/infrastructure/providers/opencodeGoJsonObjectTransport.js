@@ -10,8 +10,8 @@ const { parseJsonObjectContent } = require("./structuredJsonContent");
 function createOpencodeGoJsonObjectTransport({
   model,
   proposerModels = {},
-  reasoningEffort = "none",
-  thinkingMode = "disabled",
+  reasoningEffort,
+  thinkingMode,
   extraBody,
   ...options
 } = {}) {

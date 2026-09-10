@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -31,7 +32,7 @@ function item(id, text, sourceMessage) {
   };
 }
 
-const config = {
+const config = createMemoryTestConfig({
   targets: { profileRelationship: { lagThreshold: 1, contextWindow: 4 } },
   overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
@@ -41,7 +42,7 @@ const config = {
   }])),
   providerRecovery: { retryMax: 1, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 10, backoffMaxMs: 100, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
-};
+});
 
 function storeFixture({ state, observedMessages, databaseMessages }) {
   let currentState = structuredClone(state);

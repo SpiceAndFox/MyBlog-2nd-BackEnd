@@ -1,8 +1,8 @@
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { buildNormalEnvelope } = require("../../../modules/memory/application/envelope");
-const { sha256 } = require("./memory-builders");
+const { sha256, createMemoryTestConfig } = require("./memory-builders");
 
-const config = { overdueTodos: { maxRenderedItems: 2 } };
+const config = createMemoryTestConfig({ overdueTodos: { maxRenderedItems: 2 } });
 
 function envelope() {
   return buildNormalEnvelope({

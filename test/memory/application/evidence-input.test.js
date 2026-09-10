@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildLibrarianEnvelope } = require("../../../modules/memory/application/librarianRenderer");
@@ -9,7 +10,7 @@ function fixture(count = 1, chars = 20) {
   const state = createInitialMemoryState();
   const messages = Array.from({ length: count }, (_, i) => ({ id: i + 1, role: "user", content: "字".repeat(chars), contentHash: sha256("message" + i) }));
   state.longTerm.userProfile = messages.map(message => ({ id: "profile-" + message.id, text: "条目" + message.id, sourceRefs: [{ messageId: message.id, contentHash: message.contentHash }], createdAtMessageId: message.id, updatedAtMessageId: message.id }));
-  const envelope = buildLibrarianEnvelope({ userId: 1, presetId: "test", state, boundaryMessageId: count, watermarkOrdinal: 1, triggerType: "manual", userTimeZone: "UTC" });
+  const envelope = buildLibrarianEnvelope({ config: createMemoryTestConfig(), userId: 1, presetId: "test", state, boundaryMessageId: count, watermarkOrdinal: 1, triggerType: "manual", userTimeZone: "UTC" });
   return { state, messages, envelope };
 }
 

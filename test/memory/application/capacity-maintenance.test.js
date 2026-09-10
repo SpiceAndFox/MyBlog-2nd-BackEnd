@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -9,13 +10,13 @@ const { reduceCompiledProposal } = require("../../../modules/memory/domain/compi
 
 const hash = (value) => `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 const message = { id: 3, role: "user", createdAt: "2026-07-13T00:00:00.000Z", contentKind: "raw", content: "还要记得归还杂志", contentHash: hash("还要记得归还杂志") };
-const config = {
+const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: section === "todos" ? 2 : 20, maxRenderedChars: 2000 }])),
   providerRecovery: { retryMax: 2, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
-};
+});
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
 
 function todo(id, text, messageId) {
@@ -406,7 +407,7 @@ test("normal commits no longer schedule proactive high-water hygiene", async () 
   const data = store();
   const capacityConfig = {
     ...config,
-    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
+    sectionBudgets: { ...config.sectionBudgets, todos: { ...config.sectionBudgets.todos, maxItems: 4, maxRenderedChars: 2000 } },
   };
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: data.repositories, config: capacityConfig,

@@ -1,6 +1,5 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { PROFILE_TEXT_MAX_CHARS } = require("../../../modules/memory/contracts/constants");
 const { createRepairFeedback } = require("../../../modules/memory/application/outputRepair");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { profileEnvelope } = require("../support/provider-envelopes");
@@ -20,7 +19,7 @@ test("Profile repair retries only the failed specialist and merges cached valid 
       const section = sections[request.proposer];
       if (request.proposer === "relationshipProposer") relationshipCalls += 1;
       const text = request.proposer === "relationshipProposer" && relationshipCalls === 1
-        ? "关".repeat(PROFILE_TEXT_MAX_CHARS.relationship + 1)
+        ? "关".repeat(request.userPayload.task.writeLimits.relationship.maxItemChars + 1)
         : `${section} fact`;
       return {
         output: {
@@ -48,7 +47,7 @@ test("Profile repair retries only the failed specialist and merges cached valid 
     "assistantProfile",
     "relationship",
   ]);
-  assert.match(calls[3].systemPrompt, new RegExp(`Unicode 字符数不得超过 ${PROFILE_TEXT_MAX_CHARS.relationship}`));
+  assert.match(calls[3].systemPrompt, new RegExp(`Unicode 字符数不得超过 ${envelope.task.writeLimits.relationship.maxItemChars}`));
   assert.equal(
     calls[3].responseSchema.schema.properties.changes.items.properties.section.enum[0],
     "relationship",

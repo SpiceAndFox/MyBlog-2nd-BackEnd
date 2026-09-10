@@ -61,6 +61,13 @@ function bindSectionResult(resultSchema, artifact, section) {
   if (!Array.isArray(variants)) return;
   const boundVariants = variants.filter((variant) => {
     if (!isPlainObject(variant?.properties)) return false;
+    const limits = sectionLimits(section, artifact?.publicInput?.task);
+    if (variant.properties.text) {
+      variant.properties.text.maxLength = variant.properties.action?.const === "append" ? limits.maxAppendChars : limits.maxItemChars;
+    }
+    for (const key of ["supportRefs", "evidenceMessageIds"]) {
+      if (variant.properties[key]) variant.properties[key].maxItems = limits.maxSourceRefs;
+    }
     if (variant.properties.ref) {
       if (!writableRefs.length) return false;
       variant.properties.ref = { type: "string", enum: writableRefs };

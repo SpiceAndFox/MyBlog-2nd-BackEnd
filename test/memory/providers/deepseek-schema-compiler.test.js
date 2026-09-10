@@ -1,3 +1,5 @@
+const { testWriteLimits } = require("../support/memory-builders");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
@@ -60,7 +62,11 @@ test("DeepSeek compiler preserves dropped constraints as positive descriptions",
 });
 
 test("DeepSeek compiler preserves Librarian status branches and target text limits", () => {
-  const compiled = compileDeepSeekSchema(buildOutputSchema("librarianProposer").schema);
+  const bound = bindOutputSchema(buildOutputSchema("librarianProposer"), {
+    publicInput: { task: { writeLimits: testWriteLimits() } },
+    refMap: { writable: { U1: { section: "userProfile" }, U2: { section: "userProfile" } }, readOnly: { "U1-E1": {} } },
+  });
+  const compiled = compileDeepSeekSchema(bound.schema);
   assert.equal(compiled.anyOf.length, 4);
   const serialized = JSON.stringify(compiled);
   assert.match(serialized, /Array must contain at least 1 items/);

@@ -12,7 +12,7 @@ function createOpenAiStructuredTransport({
   proposerModels = {},
   timeoutMs,
   maxInputTokens,
-  maxOutputTokens = 8192,
+  maxOutputTokens,
   fetchImpl = globalThis.fetch,
   extraHeaders = {},
   extraBody = {},

@@ -1,3 +1,4 @@
+const { createMemoryTestConfig } = require("./memory-builders");
 const crypto = require("node:crypto");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 
@@ -24,13 +25,13 @@ const message = {
   content: messageContent,
   contentHash: `sha256:${crypto.createHash("sha256").update(messageContent, "utf8").digest("hex")}`,
 };
-const config = {
+const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
   overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   scene: { ttlMs: 1000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((key) => [key, { maxItems: 20, maxRenderedChars: 2000 }])),
   providerRecovery: { retryMax: 2, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
-};
+});
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
 
 function store() {

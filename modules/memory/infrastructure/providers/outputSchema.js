@@ -2,7 +2,6 @@ const { buildDueAtSchema } = require("../../contracts/dueAt");
 const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
-  PROFILE_TEXT_MAX_CHARS,
 } = require("../../contracts/constants");
 const {
   buildFlatWireOutputSchema,
@@ -102,7 +101,6 @@ function buildProfileRelationshipSemanticOutputSchema() {
   return buildTextItemSemanticOutputSchema(
     "profileRelationshipProposer",
     ["userProfile", "assistantProfile", "relationship"],
-    { maxTextLengthBySection: PROFILE_TEXT_MAX_CHARS },
   );
 }
 
@@ -207,12 +205,10 @@ function compactionChangeSchema() {
   };
 }
 
-function librarianTextSchema(section) {
-  const maxLength = PROFILE_TEXT_MAX_CHARS[section];
+function librarianTextSchema() {
   return {
     type: "string",
     minLength: 1,
-    ...(maxLength ? { maxLength } : {}),
   };
 }
 
@@ -342,9 +338,7 @@ function buildOutputSchema(proposer, targetSections) {
   if (proposer === "episodeProposer") return buildEpisodeSemanticOutputSchema();
   if (proposer === "profileRelationshipProposer") return buildProfileRelationshipSemanticOutputSchema();
   if (PROFILE_SPECIALIST_SECTIONS[proposer]) {
-    return buildTextItemSemanticOutputSchema(proposer, [PROFILE_SPECIALIST_SECTIONS[proposer]], {
-      maxTextLengthBySection: PROFILE_TEXT_MAX_CHARS,
-    });
+    return buildTextItemSemanticOutputSchema(proposer, [PROFILE_SPECIALIST_SECTIONS[proposer]]);
   }
   if (proposer === "worldFactProposer") return buildWorldFactSemanticOutputSchema();
   if (proposer === "agreementProposer") return buildAgreementSemanticOutputSchema();

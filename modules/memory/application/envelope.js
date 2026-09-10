@@ -83,6 +83,7 @@ function buildMaintenanceEnvelope({
   };
   const rendered = renderMemoryAndRefs(state, "compactionProposer", [section], {
     overdueTodoLimit: config?.overdueTodos?.maxRenderedItems,
+    writeLimits: publicTask.writeLimits,
   });
   const artifact = {
     publicInput: { task: publicTask, memoryText: rendered.memoryText, evidenceText: rendered.evidenceText, messages: [] },

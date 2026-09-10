@@ -1,3 +1,4 @@
+const { testWriteLimits } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
@@ -107,7 +108,7 @@ test("every Proposer prompt retains a minimal no-change and a regular changes JS
 
     if (proposer === "compactionProposer") {
       for (const example of examples) {
-        const task = {
+        const task = { writeLimits: testWriteLimits(),
           tickId: 0,
           proposer,
           targetKey: "profileRelationship",
@@ -125,7 +126,7 @@ test("every Proposer prompt retains a minimal no-change and a regular changes JS
     }
 
     if (proposer === "librarianProposer") {
-      const task = { tickId: 0, proposer, targetKey: "librarian" };
+      const task = { writeLimits: testWriteLimits(), tickId: 0, proposer, targetKey: "librarian" };
       for (const example of examples) {
         assert.deepEqual(validateSemanticResult(example, task), { ok: true, errors: [] });
       }
@@ -135,7 +136,7 @@ test("every Proposer prompt retains a minimal no-change and a regular changes JS
     }
 
     const expectedSections = PROMPT_SECTIONS[proposer];
-    const task = {
+    const task = { writeLimits: testWriteLimits(),
       tickId: 0,
       proposer,
       targetKey: TARGET_KEYS_BY_PROPOSER[proposer],
