@@ -3,29 +3,29 @@ const { constraintDescriptions } = require("./schemaConstraintDescriptions");
 const LOCAL_ONLY = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 const SUPPORTED = new Set(["type", "properties", "required", "additionalProperties", "description", "enum", "anyOf", "items", "pattern", "minimum", "maximum"]);
 
-function compileDeepSeekV2Schema(source) {
+function compileDeepSeekTodoSchema(source) {
   const diagnostics = [];
   function visit(schema, path) {
     for (const key of Object.keys(schema)) {
-      if (!SUPPORTED.has(key) && !LOCAL_ONLY.has(key)) throw new Error(`Unsupported Todo v2 schema keyword ${path}.${key}`);
+      if (!SUPPORTED.has(key) && !LOCAL_ONLY.has(key)) throw new Error(`Unsupported Todo schema keyword ${path}.${key}`);
     }
     if (schema.type === "object") {
       const names = Object.keys(schema.properties || {});
       if (schema.additionalProperties !== false || names.length !== schema.required?.length || names.some(name => !schema.required.includes(name))) {
-        throw new Error(`Todo v2 schema requires an exact required object at ${path}`);
+        throw new Error(`Todo schema requires an exact required object at ${path}`);
       }
     }
     if (schema.anyOf) {
       const branches = schema.anyOf;
       for (let i = 0; i < branches.length; i++) {
-        if (branches[i].type !== "object") throw new Error(`Todo v2 union requires object branches at ${path}`);
+        if (branches[i].type !== "object") throw new Error(`Todo union requires object branches at ${path}`);
         for (let j = 0; j < i; j++) {
           const disjoint = Object.entries(branches[i].properties).some(([key, value]) => {
             const other = branches[j].properties[key];
             return branches[i].required.includes(key) && branches[j].required.includes(key)
               && value.enum && other?.enum && value.enum.every(entry => !other.enum.includes(entry));
           });
-          if (!disjoint) throw new Error(`Todo v2 union requires disjoint discriminators at ${path}`);
+          if (!disjoint) throw new Error(`Todo union requires disjoint discriminators at ${path}`);
         }
       }
     }
@@ -45,4 +45,4 @@ function compileDeepSeekV2Schema(source) {
   return { schema: visit(source, "$"), diagnostics };
 }
 
-module.exports = { compileDeepSeekV2Schema };
+module.exports = { compileDeepSeekTodoSchema };

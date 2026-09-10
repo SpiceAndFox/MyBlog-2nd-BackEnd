@@ -42,7 +42,7 @@ function inferIssueCode(issue) {
   return ISSUE_CODES.CONTRACT_INVALID;
 }
 
-function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoV2 = false } = {}) {
+function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoWireProtocol = false } = {}) {
   const messages = {
     [ISSUE_CODES.OBJECT_REQUIRED]: "must be an object",
     [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: "sectionResults must be an object",
@@ -56,9 +56,9 @@ function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoV2 = fals
     [ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE]: "previous structured output ended before JSON was complete",
     [ISSUE_CODES.STRUCTURED_OUTPUT_MISSING]: "structured tool arguments are missing",
   };
-  if (usesFlatWire || usesTodoV2) {
+  if (usesFlatWire || usesTodoWireProtocol) {
     Object.assign(messages, {
-      [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: usesTodoV2 ? "root output must match results.todos" : "root output must match sectionStatuses and changes",
+      [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: usesTodoWireProtocol ? "root output must match results.todos" : "root output must match sectionStatuses and changes",
       [ISSUE_CODES.WRITABLE_REF_INVALID]: "target must be selected from the bound writable enum",
       [ISSUE_CODES.SUPPORT_REF_INVALID]: "sources must be selected from the bound source enum",
       [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "sources must be selected from the bound source enum",

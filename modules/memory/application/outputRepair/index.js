@@ -8,7 +8,7 @@ const {
   SAFE_NORMALIZATIONS,
 } = require("./policy");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
-const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
 const { renderRepairInstruction, renderRepairMessage } = require("./renderRepairInstruction");
 
 function createRepairFeedback(detail = {}, attempt = 0, task = null) {
@@ -48,7 +48,7 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
   const errors = classifyIssues([
     ...(transportIssue ? [transportIssue] : []),
     ...(Array.isArray(safeDetail.errors) ? safeDetail.errors : []),
-  ], { usesFlatWire: isFlatWireProposer(task?.proposer) && !usesTodoV2(task), usesTodoV2: usesTodoV2(task) });
+  ], { usesFlatWire: isFlatWireProposer(task?.proposer), usesTodoWireProtocol: usesTodoWireProtocol(task) });
   if (!errors.length) {
     errors.push({
       code: ISSUE_CODES.CONTRACT_INVALID,

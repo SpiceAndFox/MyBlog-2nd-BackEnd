@@ -1,6 +1,4 @@
-const { buildDueAtSchema } = require("../../contracts/dueAt");
-const { usesTodoV2 } = require("../../contracts/outputProtocol");
-const { buildTodoV2OutputSchema } = require("./todoWireProtocolV2");
+const { buildTodoOutputSchema } = require("./todoWireProtocol");
 const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
@@ -9,13 +7,6 @@ const {
   buildFlatWireOutputSchema,
   isFlatWireProposer,
 } = require("./flatWireProtocol");
-
-const dueAt = buildDueAtSchema();
-const dueChange = { oneOf: [
-  { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "keep" } } },
-  { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "clear" } } },
-  { type: "object", additionalProperties: false, required: ["mode", "dueAt"], properties: { mode: { const: "set" }, dueAt } },
-] };
 
 const semanticSourceProperties = Object.freeze({
   evidenceMessageIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "integer", minimum: 1 } },
@@ -176,16 +167,6 @@ function buildAgreementSemanticOutputSchema() {
   ]);
 }
 
-function buildTodoSemanticOutputSchema() {
-  const actorRequester = { actor: { enum: ["user", "assistant", "both"] }, requester: { enum: ["user", "assistant"] } };
-  const anchor = { anchorMessageId: { type: "integer", minimum: 1 } };
-  return buildSingleSectionSemanticOutputSchema("todoProposer", "todos", [
-    semanticChangeSchema("add", { ref: false, properties: { ...actorRequester, dueAt, ...anchor }, required: ["actor", "requester"] }),
-    ...["revise", "correct"].map((action) => semanticChangeSchema(action, { text: false, properties: { text: { type: "string", minLength: 1 }, ...actorRequester, dueChange, ...anchor }, required: ["dueChange"] })),
-    ...["forget", "complete", "cancel", "expire"].map((action) => semanticChangeSchema(action)),
-  ]);
-}
-
 function buildCurrentStateSemanticOutputSchema() {
   return buildSingleSectionSemanticOutputSchema("currentStateProposer", "scene", [
     ...["set", "correct"].map((action) => semanticChangeSchema(action)),
@@ -306,8 +287,8 @@ function buildLibrarianOutputSchema() {
   };
 }
 
-function buildOutputSchema(proposer, targetSections, protocol = {}) {
-  if (usesTodoV2({ ...protocol, proposer })) return buildTodoV2OutputSchema();
+function buildOutputSchema(proposer, targetSections) {
+  if (proposer === "todoProposer") return buildTodoOutputSchema();
   if (proposer === LIBRARIAN_PROPOSER) return buildLibrarianOutputSchema();
   if (proposer === "compactionProposer") {
     if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");
@@ -345,7 +326,6 @@ function buildOutputSchema(proposer, targetSections, protocol = {}) {
   }
   if (proposer === "worldFactProposer") return buildWorldFactSemanticOutputSchema();
   if (proposer === "agreementProposer") return buildAgreementSemanticOutputSchema();
-  if (proposer === "todoProposer") return buildTodoSemanticOutputSchema();
   if (proposer === "currentStateProposer") return buildCurrentStateSemanticOutputSchema();
   throw new Error(`Semantic output schema is not implemented for Memory proposer: ${proposer}`);
 }
@@ -357,7 +337,6 @@ module.exports = {
   PROFILE_SPECIALIST_SECTIONS,
   buildWorldFactSemanticOutputSchema,
   buildAgreementSemanticOutputSchema,
-  buildTodoSemanticOutputSchema,
   buildCurrentStateSemanticOutputSchema,
   buildLibrarianOutputSchema,
 };

@@ -2,7 +2,7 @@ const { buildRepairPlan } = require("./buildRepairPlan");
 const { classifyIssues } = require("./classifyIssues");
 const { ISSUE_CODES } = require("./policy");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
-const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
 const { renderBusinessRepair } = require("./renderBusinessRepair");
 
 function lengthLimits(issues) {
@@ -19,9 +19,9 @@ function renderRepairInstruction(systemPrompt, feedback = {}, task = null) {
 
 function renderRepairMessage(feedback = {}, task = null) {
   const safeFeedback = feedback && typeof feedback === "object" ? feedback : {};
-  const todoV2 = usesTodoV2(task);
-  const usesFlatWire = isFlatWireProposer(task?.proposer) && !todoV2;
-  const issues = classifyIssues(safeFeedback.errors, { usesFlatWire, usesTodoV2: todoV2 });
+  const todoWire = usesTodoWireProtocol(task);
+  const usesFlatWire = isFlatWireProposer(task?.proposer);
+  const issues = classifyIssues(safeFeedback.errors, { usesFlatWire, usesTodoWireProtocol: todoWire });
   if (!issues.length) return "";
   // Rebuild from the actual invocation task. A durable composite Profile
   // failure is retried as one specialist whose proposer/sections differ from
@@ -31,8 +31,8 @@ function renderRepairMessage(feedback = {}, task = null) {
     specialist: safeFeedback.specialist,
     task,
   });
-  const targets = renderBusinessRepair(issues, { todoV2 });
-  if (todoV2) targets.push("根对象只包含 results.todos。noop/unable_to_decide 只含 status；changes 必须给出完整 changes 数组。revise/correct 的 text、actor、requester 各自使用 {mode:keep} 或 {mode:set,value:...}，日期使用 due 对象。target、sources、due.anchorSource 只选本次 schema 中的枚举值。");
+  const targets = renderBusinessRepair(issues, { todoWire });
+  if (todoWire) targets.push("根对象只包含 results.todos。noop/unable_to_decide 只含 status；changes 必须给出完整 changes 数组。revise/correct 的 text、actor、requester 各自使用 {mode:keep} 或 {mode:set,value:...}，日期使用 due 对象。target、sources、due.anchorSource 只选本次 schema 中的枚举值。");
   if (plan.directives.includes("RETURN_VALID_JSON_TOOL_ARGUMENTS")) {
     targets.push("上一条输出不是合法 JSON。请重新序列化整个 tool arguments 对象，确保所有字段名和字符串使用成对双引号，并正确使用逗号、冒号与转义字符。");
   }
@@ -48,7 +48,7 @@ function renderRepairMessage(feedback = {}, task = null) {
     targets.push(`完整根结构必须匹配：${JSON.stringify(plan.expectedShape)}`);
   }
   if (plan.directives.includes("SELECT_ONLY_SCHEMA_ENUM_SOURCES")) {
-    targets.push((usesFlatWire || todoV2)
+    targets.push((usesFlatWire || todoWire)
       ? "target 与 sources 只从本次 tool schema 的 enum 值中逐字符复制；不得省略或改写前缀、大小写、标点。"
       : "ref、supportRefs 与 evidenceMessageIds 只从本次 tool schema 的 enum 值中逐字符复制；不得省略或改写前缀、大小写、标点。");
   }

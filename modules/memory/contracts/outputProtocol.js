@@ -1,15 +1,12 @@
-// Each token identifies an immutable wire/prompt/compiler bundle. Changes to
-// that bundle require a new token so persisted retries keep their contract.
-const TODO_OUTPUT_PROTOCOL = "todo-v2";
-const LEGACY_OUTPUT_PROTOCOL = "legacy-v1";
+const { isFlatWireProposer } = require("./flatWire");
 
-function resolveOutputProtocol(task = {}) {
-  const protocol = task?.outputProtocol ?? LEGACY_OUTPUT_PROTOCOL;
-  if (protocol === LEGACY_OUTPUT_PROTOCOL) return protocol;
-  if (protocol === TODO_OUTPUT_PROTOCOL && task.proposer === "todoProposer") return protocol;
-  throw new Error(`Unsupported Memory output protocol ${protocol} for ${task.proposer}`);
+function usesTodoWireProtocol(task) { return task?.proposer === "todoProposer"; }
+
+// Diagnostic labels describe the current format; task metadata never selects
+// an alternate implementation or an archived prompt.
+function outputProtocolForProposer(proposer) {
+  if (proposer === "todoProposer") return "todo";
+  return isFlatWireProposer(proposer) ? "flat" : "semantic";
 }
 
-function usesTodoV2(task) { return resolveOutputProtocol(task) === TODO_OUTPUT_PROTOCOL; }
-
-module.exports = { TODO_OUTPUT_PROTOCOL, LEGACY_OUTPUT_PROTOCOL, resolveOutputProtocol, usesTodoV2 };
+module.exports = { outputProtocolForProposer, usesTodoWireProtocol };

@@ -11,7 +11,7 @@ const { createRepairFeedback, isTransportRepairFailure } = require("./outputRepa
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
-const { resolveOutputProtocol } = require("../contracts/outputProtocol");
+const { outputProtocolForProposer } = require("../contracts/outputProtocol");
 
 function rowValue(row, snake, camel = snake) {
   return row?.[snake] ?? row?.[camel];
@@ -163,7 +163,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         semanticInputVariant: inputVariant,
       },
       provenance: {
-        outputProtocol: resolveOutputProtocol(envelope.task),
+        outputProtocol: outputProtocolForProposer(envelope.task.proposer),
         adapter: config.provider.adapter,
         requestedModel,
         thinkingMode: config.provider.thinkingMode ?? null,

@@ -1,14 +1,14 @@
 const { sectionLimits } = require("../../contracts/sectionPolicy");
-const { semanticOutputToFlatWire, flatWireToSemanticOutput } = require("./flatWireProtocol");
+const { parseSourceTokens, messageSource, memorySource } = require("./flatWireProtocol");
 
-const TODO_V2_SCHEMA_NAME = "memory_todo_v2";
+const TODO_SCHEMA_NAME = "memory_todo";
 const object = (properties) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 const enumeration = (...values) => ({ type: "string", enum: values });
 const mode = (value, properties = {}) => object({ mode: enumeration(value), ...properties });
 const union = (...anyOf) => ({ anyOf });
 const edit = (value) => union(mode("keep"), mode("set", { value }));
 
-function buildTodoV2OutputSchema(artifact = null) {
+function buildTodoOutputSchema(artifact = null) {
   const limits = artifact ? sectionLimits("todos", artifact.publicInput.task) : null;
   const targets = artifact ? Object.entries(artifact.refMap?.writable || {})
     .filter(([, entry]) => entry.section === "todos").map(([ref]) => ref).sort() : null;
@@ -41,53 +41,65 @@ function buildTodoV2OutputSchema(artifact = null) {
     }
     results.push(object({ status: enumeration("changes"), changes: { type: "array", minItems: 1, items: union(...changes) } }));
   }
-  return { name: TODO_V2_SCHEMA_NAME, strict: true, schema: object({ results: object({ todos: union(...results) }) }) };
+  return { name: TODO_SCHEMA_NAME, strict: true, schema: object({ results: object({ todos: union(...results) }) }) };
 }
 
 // Call only after complete wire validation. These conversions never read old
 // target values; keep preserves omission in the existing Semantic IR.
-function todoV2ToSemantic(value, task) {
+function todoWireToSemantic(value, task) {
   const result = value.results.todos;
-  const flat = { sectionStatuses: { todos: result.status }, changes: (result.changes || []).map(change => {
-    const out = { section: "todos", action: change.action, sources: change.sources };
-    if (change.target !== undefined) out.target = change.target;
+  const changes = (result.changes || []).map(change => {
+    const out = { action: change.action, ...parseSourceTokens(change.sources) };
+    if (change.target !== undefined) out.ref = change.target;
     if (!["add", "revise", "correct"].includes(change.action)) return out;
     for (const field of ["text", "actor", "requester"]) {
       if (change.action === "add") out[field] = change[field];
       else if (change[field].mode === "set") out[field] = change[field].value;
     }
     const due = change.due;
-    if (due.mode !== "none") out.dueMode = due.mode;
-    if (due.mode === "absolute") out.dueValue = due.date;
-    else if (due.mode === "dayOfMonth") out.dueValue = String(due.day);
-    else if (due.mode.startsWith("relative")) out.dueValue = String(due.offset);
-    if (due.anchorSource !== undefined) out.anchorSource = due.anchorSource;
+    if (["keep", "clear"].includes(due.mode)) out.dueChange = { mode: due.mode };
+    else if (due.mode !== "none") {
+      const unit = { relativeDays: "days", relativeMonths: "months", relativeYears: "years" }[due.mode];
+      const expression = due.mode === "absolute" ? { mode: "absolute", date: due.date }
+        : due.mode === "dayOfMonth" ? { mode: "dayOfMonth", day: due.day }
+        : { mode: "relative", [unit]: due.offset };
+      if (change.action === "add") out.dueAt = expression;
+      else out.dueChange = { mode: "set", dueAt: expression };
+    }
+    if (due.anchorSource !== undefined) out.anchorMessageId = Number(due.anchorSource.slice("message:".length));
     return out;
-  }) };
-  return flatWireToSemanticOutput(flat, task);
+  });
+  return { tickId: task.tickId, proposer: task.proposer,
+    sectionResults: { todos: { status: result.status, ...(result.status === "changes" ? { changes } : {}) } } };
 }
 
-function semanticToTodoV2(value, task) {
-  const flat = semanticOutputToFlatWire(value, task);
-  const status = flat.sectionStatuses.todos;
+function semanticToTodoWire(value) {
+  const { status, changes } = value.sectionResults.todos;
   if (status !== "changes") return { results: { todos: { status } } };
-  return { results: { todos: { status, changes: flat.changes.map(change => {
-    const out = { action: change.action, sources: change.sources };
-    if (change.target !== undefined) out.target = change.target;
+  return { results: { todos: { status, changes: changes.map(change => {
+    const out = { action: change.action, sources: [
+      ...(change.evidenceMessageIds || []).map(messageSource),
+      ...(change.supportRefs || []).map(memorySource),
+    ] };
+    if (change.ref !== undefined) out.target = change.ref;
     if (!["add", "revise", "correct"].includes(change.action)) return out;
     for (const field of ["text", "actor", "requester"]) {
       out[field] = change.action === "add" ? change[field] : change[field] === undefined ? { mode: "keep" } : { mode: "set", value: change[field] };
     }
-    out.due = { mode: change.dueMode || "none" };
-    if (change.dueMode === "absolute") out.due.date = change.dueValue;
-    else if (change.dueMode === "dayOfMonth") out.due.day = Number(change.dueValue);
-    else if (change.dueMode?.startsWith("relative")) out.due.offset = Number(change.dueValue);
-    if (change.anchorSource !== undefined) out.due.anchorSource = change.anchorSource;
+    const expression = change.dueAt ?? change.dueChange?.dueAt;
+    out.due = { mode: change.dueChange?.mode || "none" };
+    if (expression?.mode === "absolute") out.due = { mode: "absolute", date: expression.date };
+    else if (expression?.mode === "dayOfMonth") out.due = { mode: "dayOfMonth", day: expression.day };
+    else if (expression?.mode === "relative") {
+      const unit = ["days", "months", "years"].find(key => expression[key] !== undefined);
+      out.due = { mode: `relative${unit[0].toUpperCase()}${unit.slice(1)}`, offset: expression[unit] };
+    }
+    if (change.anchorMessageId !== undefined) out.due.anchorSource = messageSource(change.anchorMessageId);
     return out;
   }) } } };
 }
 
-function todoV2RepairErrors(errors, wire) {
+function todoWireRepairErrors(errors, wire) {
   return (errors || []).map(issue => {
     const path = String(issue.path || "$");
     const match = path.match(/^\$\.sectionResults\.todos(?:\.changes\[(\d+)\])?(.*)$/);
@@ -104,4 +116,4 @@ function todoV2RepairErrors(errors, wire) {
   });
 }
 
-module.exports = { TODO_V2_SCHEMA_NAME, buildTodoV2OutputSchema, todoV2ToSemantic, semanticToTodoV2, todoV2RepairErrors };
+module.exports = { TODO_SCHEMA_NAME, buildTodoOutputSchema, todoWireToSemantic, semanticToTodoWire, todoWireRepairErrors };

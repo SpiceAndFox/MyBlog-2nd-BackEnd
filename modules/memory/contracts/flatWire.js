@@ -2,7 +2,6 @@ const FLAT_WIRE_STATUSES = Object.freeze(["changes", "noop", "unable_to_decide"]
 
 const FLAT_WIRE_PROPOSER_SECTIONS = Object.freeze({
   currentStateProposer: Object.freeze(["scene"]),
-  todoProposer: Object.freeze(["todos"]),
   agreementProposer: Object.freeze(["standingAgreements"]),
   episodeProposer: Object.freeze(["recentEpisodes", "milestones"]),
   profileRelationshipProposer: Object.freeze(["userProfile", "assistantProfile", "relationship"]),

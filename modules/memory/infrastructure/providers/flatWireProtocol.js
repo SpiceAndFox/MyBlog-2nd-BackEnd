@@ -11,23 +11,6 @@ const FLAT_WIRE_SOURCE_PREFIXES = Object.freeze({
 });
 const { SECTION_ACTIONS, sectionLimits } = require("../../contracts/sectionPolicy");
 const BASE_CHANGE_FIELDS = Object.freeze(["section", "action", "target", "text", "sources"]);
-const TODO_CHANGE_FIELDS = Object.freeze([
-  ...BASE_CHANGE_FIELDS,
-  "actor",
-  "requester",
-  "dueMode",
-  "dueValue",
-  "anchorSource",
-]);
-const DUE_MODES = Object.freeze([
-  "keep",
-  "clear",
-  "absolute",
-  "relativeDays",
-  "relativeMonths",
-  "relativeYears",
-  "dayOfMonth",
-]);
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -72,19 +55,6 @@ function buildFlatWireOutputSchema(proposer, targetSections) {
       description: "One or more visible message:ID or memory:REF source tokens.",
     },
   };
-  if (proposer === "todoProposer") {
-    Object.assign(changeProperties, {
-      actor: { type: "string", enum: ["user", "assistant", "both"] },
-      requester: { type: "string", enum: ["user", "assistant"] },
-      dueMode: { type: "string", enum: DUE_MODES.slice() },
-      dueValue: { type: "string", minLength: 1 },
-      anchorSource: {
-        type: "string",
-        minLength: 1,
-        description: "A message:ID token also present in sources.",
-      },
-    });
-  }
   return {
     name: `memory_flat_${proposer}_v1`,
     strict: true,
@@ -159,10 +129,6 @@ function bindFlatWireOutputSchema(schema, artifact, sections) {
   ];
   if (sources.length) properties.sources.items = { type: "string", enum: sources };
   else bound.schema.properties.changes.maxItems = 0;
-  if (properties.anchorSource) {
-    if (messageIds.length) properties.anchorSource = { type: "string", enum: messageIds.map(messageSource) };
-    else delete properties.anchorSource;
-  }
   return bound;
 }
 
@@ -186,52 +152,15 @@ function parseSourceTokens(values) {
   };
 }
 
-function dueExpression(mode, value) {
-  if (mode === "absolute") return { mode: "absolute", date: value };
-  if (mode === "dayOfMonth") return { mode: "dayOfMonth", day: strictInteger(value) };
-  const unit = {
-    relativeDays: "days",
-    relativeMonths: "months",
-    relativeYears: "years",
-  }[mode];
-  return unit ? { mode: "relative", [unit]: strictInteger(value) } : null;
-}
-
-function strictInteger(value) {
-  return /^-?\d+$/.test(String(value ?? "")) ? Number(value) : Number.NaN;
-}
-
-function parseAnchorSource(value) {
-  if (value === undefined) return undefined;
-  const token = String(value);
-  if (!token.startsWith(FLAT_WIRE_SOURCE_PREFIXES.message)) return token;
-  const raw = token.slice(FLAT_WIRE_SOURCE_PREFIXES.message.length);
-  return /^[1-9]\d*$/.test(raw) ? Number(raw) : token;
-}
-
-function wireChangeToSemantic(change, proposer) {
+function wireChangeToSemantic(change) {
   if (!isPlainObject(change)) return change;
-  const allowed = new Set(proposer === "todoProposer" ? TODO_CHANGE_FIELDS : BASE_CHANGE_FIELDS);
+  const allowed = new Set(BASE_CHANGE_FIELDS);
   const output = {
     action: change.action,
     ...parseSourceTokens(change.sources),
   };
   if (change.target !== undefined) output.ref = change.target;
   if (change.text !== undefined) output.text = change.text;
-  if (change.actor !== undefined) output.actor = change.actor;
-  if (change.requester !== undefined) output.requester = change.requester;
-  if (change.anchorSource !== undefined) output.anchorMessageId = parseAnchorSource(change.anchorSource);
-  if (change.dueMode !== undefined) {
-    if (["keep", "clear"].includes(change.dueMode)) {
-      output.dueChange = { mode: change.dueMode };
-    } else {
-      const expression = dueExpression(change.dueMode, change.dueValue);
-      if (change.action === "add") output.dueAt = expression;
-      else output.dueChange = { mode: "set", dueAt: expression };
-    }
-  } else if (change.dueValue !== undefined) {
-    output.__wireDueValueWithoutMode = change.dueValue;
-  }
   const unexpected = Object.keys(change).filter((key) => !allowed.has(key));
   if (unexpected.length) output.__wireUnexpectedFields = unexpected;
   return output;
@@ -259,7 +188,7 @@ function flatWireToSemanticOutput(value, task) {
   for (const section of new Set([...expectedSections, ...actualSections])) {
     const changes = value.changes
       .filter((change) => isPlainObject(change) && String(change.section ?? "__missing_section__") === section)
-      .map((change) => wireChangeToSemantic(change, task.proposer));
+      .map(wireChangeToSemantic);
     const status = value.sectionStatuses[section];
     sectionResults[section] = {
       status,
@@ -303,9 +232,7 @@ function flatWireIssuePath(path, output) {
   const index = flatWireChangeIndex(output, section, Number(localIndex));
   const suffix = rawSuffix
     .replace(/^\.ref(?=\.|\[|$)/, ".target")
-    .replace(/^\.(evidenceMessageIds|supportRefs)(?=\.|\[|$)/, ".sources")
-    .replace(/^\.anchorMessageId(?=\.|\[|$)/, ".anchorSource")
-    .replace(/^\.(dueAt|dueChange)(?=\.|\[|$).*/, ".dueMode");
+    .replace(/^\.(evidenceMessageIds|supportRefs)(?=\.|\[|$)/, ".sources");
   return `$.changes[${index}]${suffix}`;
 }
 
@@ -315,17 +242,6 @@ function flatWireRepairErrors(errors, output, task) {
     ...issue,
     path: flatWireIssuePath(issue?.path, output),
   }));
-}
-
-function dueExpressionToWire(expression) {
-  if (!expression) return {};
-  if (expression.mode === "absolute") return { dueMode: "absolute", dueValue: expression.date };
-  if (expression.mode === "dayOfMonth") return { dueMode: "dayOfMonth", dueValue: String(expression.day) };
-  const unit = ["days", "months", "years"].find((key) => expression[key] !== undefined);
-  return unit ? {
-    dueMode: `relative${unit[0].toUpperCase()}${unit.slice(1)}`,
-    dueValue: String(expression[unit]),
-  } : {};
 }
 
 function semanticChangeToWire(change, section) {
@@ -339,14 +255,6 @@ function semanticChangeToWire(change, section) {
   };
   if (change.ref !== undefined) output.target = change.ref;
   if (change.text !== undefined) output.text = change.text;
-  if (change.actor !== undefined) output.actor = change.actor;
-  if (change.requester !== undefined) output.requester = change.requester;
-  if (change.dueAt !== undefined) Object.assign(output, dueExpressionToWire(change.dueAt));
-  if (change.dueChange !== undefined) {
-    if (["keep", "clear"].includes(change.dueChange.mode)) output.dueMode = change.dueChange.mode;
-    else Object.assign(output, dueExpressionToWire(change.dueChange.dueAt));
-  }
-  if (change.anchorMessageId !== undefined) output.anchorSource = messageSource(change.anchorMessageId);
   return output;
 }
 
@@ -380,5 +288,6 @@ module.exports = {
   isFlatWireSchema,
   messageSource,
   memorySource,
+  parseSourceTokens,
   semanticOutputToFlatWire,
 };

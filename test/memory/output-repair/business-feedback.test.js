@@ -1,20 +1,20 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { providerBusinessRejection } = require("../../../modules/memory/infrastructure/providers/providerBusinessRejection");
-const { todoV2ToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocolV2");
+const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocol");
 const { createRepairFeedback, renderRepairMessage, appendRejectedOutputAttempt, latestRejectedOutput } = require("../../../modules/memory/application/outputRepair");
 const { testWriteLimits } = require("../support/memory-builders");
 const { writeIssue, rejectWrite, locateWriteError } = require("../../../modules/memory/domain/writeGuards");
 const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
 
-const TASK = { proposer: "todoProposer", outputProtocol: "todo-v2", tickId: 1, targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
+const TASK = { proposer: "todoProposer", tickId: 1, targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
 const WIRE = { results: { todos: { status: "changes", changes: [
   { action: "complete", target: "T1", sources: ["message:1"] },
   { action: "revise", target: "T9", sources: ["message:2"], text: { mode: "keep" }, actor: { mode: "set", value: "user" }, requester: { mode: "keep" }, due: { mode: "absolute", date: "2026-10-01" } },
 ] } } };
 
-test("business feedback maps later changes and participant values to v2 and survives persisted retry", () => {
-  const result = { output: todoV2ToSemantic(WIRE, TASK), wireOutput: WIRE, protocol: { outputProtocol: "todo-v2", rawSchemaValid: true, schemaHash: "hash" } };
+test("business feedback maps later changes and participant values to Todo wire fields and survives persisted retry", () => {
+  const result = { output: todoWireToSemantic(WIRE, TASK), wireOutput: WIRE, protocol: { outputProtocol: "todo", rawSchemaValid: true, schemaHash: "hash" } };
   const mapped = providerBusinessRejection(result, { validationLayer: "business", errors: [{
     code: "TODO_OVERDUE_PARTICIPANT_CHANGE", path: "$.sectionResults.todos.changes[1].actor", message: "invalid_state_transition",
     meta: { field: "actor", currentValue: "assistant", proposedValue: "user", currentStatus: "overdue", secret: "must-not-leak" },
@@ -34,7 +34,7 @@ test("business feedback maps later changes and participant values to v2 and surv
 });
 
 test("source-limit and duplicate rejections produce field-specific corrective instructions", () => {
-  const result = { output: todoV2ToSemantic(WIRE, TASK), wireOutput: WIRE };
+  const result = { output: todoWireToSemantic(WIRE, TASK), wireOutput: WIRE };
   const mapped = providerBusinessRejection(result, { errors: [
     { code: "SOURCE_LIMIT_EXCEEDED", path: "$.sectionResults.todos.changes[1].evidenceMessageIds", message: "source_limit_exceeded", meta: { limit: 2, actual: 3 } },
     { code: "DUPLICATE_ITEM", path: "$.sectionResults.todos.changes[1].text", message: "duplicate_item" },
@@ -62,8 +62,8 @@ test("requester repair distinguishes the original proposer from later confirmati
   assert.doesNotMatch(renderRepairMessage(feedbackFor("actor"), TASK), /最初由谁提出/);
 });
 
-test("injected adapters re-encode valid semantic fixtures explicitly and never send malformed IR as Todo v2", () => {
-  const output = todoV2ToSemantic(WIRE, TASK);
+test("injected adapters re-encode valid semantic fixtures explicitly and never send malformed IR as Todo", () => {
+  const output = todoWireToSemantic(WIRE, TASK);
   const validation = { errors: [{ path: "$.sectionResults.todos.changes[1].dueChange", message: "invalid_state_transition" }] };
   const reencoded = providerBusinessRejection({ output }, validation, TASK);
   assert.deepEqual(reencoded.rejectedOutput, WIRE);
@@ -71,13 +71,9 @@ test("injected adapters re-encode valid semantic fixtures explicitly and never s
   const malformed = providerBusinessRejection({ output: null }, validation, TASK);
   assert.equal(malformed.rejectedOutput, undefined);
   assert.equal(malformed.rejectedOutputKind, "unavailable");
-  const legacy = { ...TASK, outputProtocol: "legacy-v1" };
-  const legacyResult = providerBusinessRejection({ output }, validation, legacy);
-  assert.ok(legacyResult.rejectedOutput.sectionStatuses);
-  assert.equal(legacyResult.errors[0].path, "$.changes[1].dueMode");
-  const malformedLegacy = structuredClone(output);
-  malformedLegacy.sectionResults.todos.changes = {};
-  assert.equal(providerBusinessRejection({ output: malformedLegacy }, validation, legacy).rejectedOutputKind, "unavailable");
+  const malformedChanges = structuredClone(output);
+  malformedChanges.sectionResults.todos.changes = {};
+  assert.equal(providerBusinessRejection({ output: malformedChanges }, validation, TASK).rejectedOutputKind, "unavailable");
 });
 
 test("new business rules render bounded constraints without registering a special repair template", () => {
@@ -86,7 +82,7 @@ test("new business rules render bounded constraints without registering a specia
     rejectWrite("future_domain_rule", "todos", { field: "actor", constraint: "A supported delegation is required.",
       currentValue: "assistant", proposedValue: "user", rawSource: "private-source", credentials: "secret" });
   } catch (value) { error = locateWriteError(value, "todos", 1); }
-  const mapped = providerBusinessRejection({ output: todoV2ToSemantic(WIRE, TASK), wireOutput: WIRE }, { errors: error.validationErrors }, TASK);
+  const mapped = providerBusinessRejection({ output: todoWireToSemantic(WIRE, TASK), wireOutput: WIRE }, { errors: error.validationErrors }, TASK);
   const feedback = createRepairFeedback({ ...mapped, validationLayer: "business" }, 1, TASK);
   assert.equal(feedback.errors[0].code, "BUSINESS_RULE_VIOLATION");
   assert.equal(feedback.validationLayer, "business");
@@ -100,14 +96,14 @@ test("new business rules render bounded constraints without registering a specia
   assert.equal(bounded.errors[0].meta.proposedValue, null);
 });
 
-test("conflict diagnostics map both changes into Todo v2 and interleaved flat wire positions", () => {
+test("conflict diagnostics map both changes into Todo and interleaved flat wire positions", () => {
   const issue = { code: "CHANGE_TARGET_CONFLICT", path: "$.sectionResults.todos.changes[1]",
     meta: { relatedPath: "$.sectionResults.todos.changes[0]" } };
-  const mapped = providerBusinessRejection({ wireOutput: WIRE, output: todoV2ToSemantic(WIRE, TASK) }, { errors: [issue] }, TASK);
+  const mapped = providerBusinessRejection({ wireOutput: WIRE, output: todoWireToSemantic(WIRE, TASK) }, { errors: [issue] }, TASK);
   const rendered = renderRepairMessage(createRepairFeedback(mapped, 1, TASK), TASK);
   assert.match(rendered, /与 \$\.results\.todos\.changes\[0\] 操作同一目标/);
   assert.doesNotMatch(rendered, /sectionResults|invalid_state_transition/);
-  const task = { ...TASK, proposer: "episodeProposer", outputProtocol: "legacy-v1", targetSections: ["recentEpisodes", "milestones"] };
+  const task = { ...TASK, proposer: "episodeProposer", targetSections: ["recentEpisodes", "milestones"] };
   const wire = { sectionStatuses: { recentEpisodes: "changes", milestones: "changes" }, changes: [
     { section: "milestones", action: "add", text: "纪念日", sources: ["message:1"] },
     { section: "recentEpisodes", action: "append", target: "E1", text: "发展", sources: ["message:2"] },

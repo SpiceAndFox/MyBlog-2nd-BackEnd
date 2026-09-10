@@ -1,13 +1,13 @@
 const { validateLocalJsonSchema } = require("./localJsonSchemaValidator");
 const { isDeepStrictEqual } = require("node:util");
-const { TODO_V2_SCHEMA_NAME } = require("./todoWireProtocolV2");
+const { TODO_SCHEMA_NAME } = require("./todoWireProtocol");
 
 function validateProviderWireOutput(responseSchema, output) {
   const validation = validateLocalJsonSchema(responseSchema.schema, output);
   if (validation.ok) return { ...validation, output, rawSchemaValid: true, normalizations: [] };
   // Preserve only the existing empty-changes -> noop normalization. Match the
   // entire envelope first so this never hides unknown fields or other errors.
-  if (responseSchema.name === TODO_V2_SCHEMA_NAME
+  if (responseSchema.name === TODO_SCHEMA_NAME
     && isDeepStrictEqual(output, { results: { todos: { status: "changes", changes: [] } } })) {
     const normalized = { results: { todos: { status: "noop" } } };
     if (validateLocalJsonSchema(responseSchema.schema, normalized).ok) {

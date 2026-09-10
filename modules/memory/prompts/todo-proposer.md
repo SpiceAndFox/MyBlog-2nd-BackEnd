@@ -6,11 +6,13 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的对象，不解释判断过程。根对象固定为 `sectionStatuses` 与 `changes`；不要输出 `tickId`、`proposer` 或 `sectionResults`，调用方会自动补齐。
-- `sectionStatuses` 必须且只能包含 `todos`，值为 `changes | noop | unable_to_decide`；`changes` 始终是数组。状态为 changes 时至少有一条 `section=todos` 的 change，否则不得有 todo change。
-- 每条 change 固定提供 `section`、`action` 与至少一个 `sources`。消息来源使用 schema 中的 `message:<ID>`，辅助 Memory 使用 `memory:<REF>`；不要输出 `evidenceMessageIds` 或 `supportRefs`。
-- `target` 只能选择 schema 提供的可修改短引用；`add` 不使用 target，其他修改已有事项的动作必须使用 target。
-- 有确定变化用 `changes`；确认没有待办候选或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明、目标未显示或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
+- 只输出 JSON Schema 约束的对象，不解释判断过程。根对象固定为 `results`，其中必须且只能包含 `todos`。不输出 tickId、proposer、sectionStatuses、sectionResults，也不在 change 中重复 section。
+- `results.todos` 有三种互斥形式：`{"status":"noop"}`、`{"status":"unable_to_decide"}`、`{"status":"changes","changes":[...]}`。只有 changes 状态携带 changes，且数组至少一条。
+- 每条 change 必须有 action 与至少一个 sources。来源只从 schema 枚举选择 `message:<ID>` 或 `memory:<REF>`；不输出 evidenceMessageIds 或 supportRefs。
+- add 必须带 text、actor、requester、due，不带 target。没有确定日期时使用 `due={"mode":"none"}`。
+- revise/correct 必须带 target、sources、text、actor、requester、due。text、actor、requester 各自使用 `{"mode":"keep"}` 表示不修改，或 `{"mode":"set","value":...}` 表示设置。keep 不带 value，不复述旧值。due 使用下述日期协议。
+- forget/complete/cancel/expire 只带 action、target、sources；不得携带文本、责任人和日期编辑字段。
+- target 只能选择当前可修改短引用。确认无变化用 noop；只有发现可能变化却因信息不足、指代不明、目标未显示或无法判断而不能裁决时用 unable_to_decide。不要把无法判断伪装成 noop。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash 或 schema 之外的字段。
 
 ## JSON 输出示例
@@ -18,27 +20,34 @@
 最短 noop：
 
 ```json
-{"sectionStatuses":{"todos":"noop"},"changes":[]}
+{"results":{"todos":{"status":"noop"}}}
 ```
 
 常规 changes——相对日期（token 仅表示 schema 中实际显示的枚举值）：
 
 ```json
 {
-  "sectionStatuses": { "todos": "changes" },
-  "changes": [
-    {
-      "section": "todos",
-      "action": "add",
-      "text": "归还图书",
-      "actor": "user",
-      "requester": "user",
-      "dueMode": "relativeDays",
-      "dueValue": "1",
-      "anchorSource": "message:101",
-      "sources": ["message:101"]
+  "results": {
+    "todos": {
+      "status": "changes",
+      "changes": [
+        {
+          "action": "add",
+          "text": "归还图书",
+          "actor": "user",
+          "requester": "user",
+          "due": {
+            "mode": "relativeDays",
+            "offset": 1,
+            "anchorSource": "message:101"
+          },
+          "sources": [
+            "message:101"
+          ]
+        }
+      ]
     }
-  ]
+  }
 }
 ```
 
@@ -71,12 +80,15 @@
 
 ## 日期理解与证据锚定
 
-- 明确的完整年月日使用 `dueMode=absolute` 与 ISO 日期 `dueValue`；今天使用 `relativeDays` 与 `"0"`，明天使用 `relativeDays` 与 `"1"`，其他相对天、月或年使用 `relativeDays | relativeMonths | relativeYears` 与整数字符串。
-- 只有日号、没有明确年月时使用 `dayOfMonth`，表示从日期来源消息的本地日期起选择当天或之后最近一次有效的该日号，不猜成完整日期。
-- 相对日期与 `dayOfMonth` 必须提供 `anchorSource`，且该 `message:<ID>` token 必须同时属于本 change 的 `sources`。只由辅助 Memory 支持的 change 不能创建这两类日期。
-- 不使用 `task.now`、Provider 调用时间或现实日期补全期限。承接回答可以继承相邻消息中明确的日期，但必须把实际日期来源消息作为直接证据。
-- 修改已有事项的期限时，保留或移除分别使用 `dueMode=keep | clear`；设定新期限时使用对应日期 dueMode 与 dueValue。即使只修改其他内容，也使用 `keep`。
-- 仍无法可靠结构化的日期表达保留在 `text` 中，不输出日期字段。
+- 所有日期字段放在 due 对象内，不使用扁平的 dueMode、dueValue、anchorSource。
+- 完整年月日使用 `{"mode":"absolute","date":"YYYY-MM-DD"}`，且必须是真实有效的日期。
+- 今天使用 `{"mode":"relativeDays","offset":0,"anchorSource":"message:<ID>"}`，明天 offset=1；其他相对天、月、年使用 relativeDays/relativeMonths/relativeYears 与整数 offset。relativeDays 最小为 0，月和年最小为 1。不要把数字写成字符串。
+- 只有日号、没有明确年月时使用 `{"mode":"dayOfMonth","day":15,"anchorSource":"message:<ID>"}`，day 为 1 到 31 的整数；从来源消息本地日期起选当天或之后最近一次有效日号，不猜成完整日期。
+- 相对日期与 dayOfMonth 必须提供 due.anchorSource，且同一 message token 必须同时属于该 change.sources。只有辅助 Memory 来源时不能创建这两类日期。absolute 不带 anchorSource。
+- add 未设定期限使用 `{"mode":"none"}`；revise/correct 保留或移除期限分别使用 `{"mode":"keep"}` / `{"mode":"clear"}`。这些模式只有 mode，不携带额外字段。
+- revise/correct 即使只修改其他字段，也明确使用 due.keep。新期限使用 absolute、relativeDays、relativeMonths、relativeYears 或 dayOfMonth 对象。
+- 不使用 task.now、Provider 调用时间或现实日期补全期限。承接回答可以继承相邻消息中明确的日期，但必须把实际日期来源消息作为直接证据。
+- 仍无法可靠结构化的日期表达保留在 text 中；新增使用 due.none，修改已有事项使用 due.keep，不猜测日期。
 
 ## 内容格式
 

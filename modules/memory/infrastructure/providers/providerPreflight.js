@@ -6,8 +6,8 @@ const {
   LIBRARIAN_TARGET_KEY,
 } = require("../../contracts");
 const { validateSemanticResult } = require("../../contracts/semantic");
-const { TODO_OUTPUT_PROTOCOL, usesTodoV2 } = require("../../contracts/outputProtocol");
-const { semanticToTodoV2, todoV2ToSemantic } = require("./todoWireProtocolV2");
+const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
+const { semanticToTodoWire, todoWireToSemantic } = require("./todoWireProtocol");
 const { validateProviderWireOutput } = require("./validateProviderWireOutput");
 const { buildOutputSchema } = require("./outputSchema");
 const { bindOutputSchema } = require("./bindOutputSchema");
@@ -30,19 +30,18 @@ function normalCase(targetKey, definition, tickId) {
     targetSections: definition.sections,
     tickId,
     mode: "normal",
-    ...(definition.proposer === "todoProposer" ? { outputProtocol: TODO_OUTPUT_PROTOCOL } : {}),
   };
   const output = {
     tickId,
     proposer: definition.proposer,
     sectionResults: Object.fromEntries(definition.sections.map((section) => [section, { status: "noop" }])),
   };
-  return { name: targetKey, task, output, responseSchema: buildOutputSchema(definition.proposer, definition.sections, task) };
+  return { name: targetKey, task, output, responseSchema: buildOutputSchema(definition.proposer, definition.sections) };
 }
 
-function todoV2PreflightCases() {
+function todoPreflightCases() {
   // Synthetic probe limits, independent of production data and persistence.
-  const task = { targetKey: "todos", targetSections: ["todos"], proposer: "todoProposer", outputProtocol: TODO_OUTPUT_PROTOCOL,
+  const task = { targetKey: "todos", targetSections: ["todos"], proposer: "todoProposer",
     tickId: 1, writeLimits: { todos: { maxItemChars: 200, maxSourceRefs: 4 } } };
   const probes = [
     ["noop", { status: "noop" }],
@@ -50,9 +49,9 @@ function todoV2PreflightCases() {
     ["revise-keep", { status: "changes", changes: [{ action: "revise", ref: "T1", actor: "both", dueChange: { mode: "keep" }, evidenceMessageIds: [101] }] }],
     ["complete", { status: "changes", changes: [{ action: "complete", ref: "T1", evidenceMessageIds: [101] }] }],
   ];
-  return probes.map(([name, result]) => ({ name: `todos:v2-${name}`, task,
+  return probes.map(([name, result]) => ({ name: `todos:${name}`, task,
     output: { tickId: task.tickId, proposer: task.proposer, sectionResults: { todos: result } },
-    responseSchema: bindOutputSchema(buildOutputSchema(task.proposer, task.targetSections, task), {
+    responseSchema: bindOutputSchema(buildOutputSchema(task.proposer, task.targetSections), {
       publicInput: { task }, messageMeta: { 101: {} },
       refMap: { writable: { T1: { section: "todos" } }, readOnly: {} },
     }) }));
@@ -94,15 +93,15 @@ function preflightCases() {
   return cases;
 }
 
-async function runStructuredOutputPreflight({ invokeStructured, promptLoader, todoV2Only = false } = {}) {
+async function runStructuredOutputPreflight({ invokeStructured, promptLoader, todoOnly = false } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("Preflight invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("Preflight promptLoader is required");
   const results = [];
-  for (const probe of todoV2Only ? todoV2PreflightCases() : [...preflightCases(), ...todoV2PreflightCases().slice(1)]) {
-    const expectedWireOutput = usesTodoV2(probe.task) ? semanticToTodoV2(probe.output, probe.task) : semanticOutputToFlatWire(probe.output, probe.task);
+  for (const probe of todoOnly ? todoPreflightCases() : [...preflightCases(), ...todoPreflightCases().slice(1)]) {
+    const expectedWireOutput = usesTodoWireProtocol(probe.task) ? semanticToTodoWire(probe.output) : semanticOutputToFlatWire(probe.output, probe.task);
     const response = await invokeStructured({
       proposer: probe.task.proposer,
-      systemPrompt: `${await promptLoader(probe.task.proposer, probe.task)}\n\n[PREFLIGHT]\nReturn exactly userPayload.expectedOutput through the required schema-constrained output channel. Do not add fields.`,
+      systemPrompt: `${await promptLoader(probe.task.proposer)}\n\n[PREFLIGHT]\nReturn exactly userPayload.expectedOutput through the required schema-constrained output channel. Do not add fields.`,
       userPayload: { expectedOutput: expectedWireOutput },
       responseSchema: probe.responseSchema,
     });
@@ -111,7 +110,7 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader, to
     if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
     const wire = validateProviderWireOutput(probe.responseSchema, response?.output);
     if (!wire.ok) throw new Error(`Provider returned schema-invalid wire output for ${probe.name}: ${JSON.stringify(wire.errors)}`);
-    const semanticOutput = usesTodoV2(probe.task) ? todoV2ToSemantic(wire.output, probe.task) : flatWireToSemanticOutput(response?.output, probe.task);
+    const semanticOutput = usesTodoWireProtocol(probe.task) ? todoWireToSemantic(wire.output, probe.task) : flatWireToSemanticOutput(response?.output, probe.task);
     const validation = validateSemanticResult(semanticOutput, probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);
@@ -139,4 +138,4 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader, to
   return results;
 }
 
-module.exports = { preflightCases, todoV2PreflightCases, runStructuredOutputPreflight };
+module.exports = { preflightCases, todoPreflightCases, runStructuredOutputPreflight };

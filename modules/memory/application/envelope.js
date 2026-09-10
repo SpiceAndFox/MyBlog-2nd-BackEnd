@@ -1,5 +1,4 @@
 const crypto = require("node:crypto");
-const { TODO_OUTPUT_PROTOCOL } = require("../contracts/outputProtocol");
 const { captureWriteLimits } = require("../contracts/sectionPolicy");
 const { SCHEMA_VERSION, validateRendererArtifact } = require("../contracts");
 const {
@@ -35,7 +34,6 @@ function buildNormalEnvelope({
   return {
     task: {
       ...publicTask,
-      ...(publicTask.proposer === "todoProposer" ? { outputProtocol: TODO_OUTPUT_PROTOCOL } : {}),
       userId: Number(userId),
       presetId: String(presetId),
       schemaVersion: SCHEMA_VERSION,

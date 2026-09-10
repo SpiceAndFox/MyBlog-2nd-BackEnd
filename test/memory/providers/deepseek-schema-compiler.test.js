@@ -4,10 +4,24 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
 const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { FLAT_WIRE_PROPOSER_SECTIONS } = require("../../../modules/memory/contracts/flatWire");
+
+test("ordinary flat proposer schemas stay within the measured optional-field expansion budget", () => {
+  for (const [proposer, sections] of Object.entries(FLAT_WIRE_PROPOSER_SECTIONS)) {
+    const source = buildOutputSchema(proposer, sections).schema;
+    const change = source.properties.changes.items;
+    const optional = Object.keys(change.properties).filter(key => !change.required.includes(key));
+    assert.deepEqual(optional, ["target", "text"], proposer);
+    const compiled = compileDeepSeekSchema(source);
+    assert.equal(compiled.properties.changes.items.anyOf.length, 4, proposer);
+    assert.ok(Buffer.byteLength(JSON.stringify(compiled)) < 4_000, proposer);
+  }
+});
 
 test("DeepSeek compiler preserves optional object fields as strict anyOf variants", () => {
-  const source = buildOutputSchema("todoProposer").schema;
+  const source = buildOutputSchema("userProfileProposer", ["userProfile"]).schema;
   const compiled = compileDeepSeekSchema(source);
+  assert.equal(compiled.properties.changes.items.anyOf.length, 4);
   const seen = new Set();
   function inspect(value) {
     if (!value || typeof value !== "object") return;

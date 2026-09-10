@@ -1,10 +1,15 @@
 const { testWriteLimits } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
 const { TARGETS } = require("../../../modules/memory/contracts");
 const { validateSemanticResult } = require("../../../modules/memory/contracts/semantic");
 const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
+const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocol");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
+const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
 
 const PROMPT_SECTIONS = Object.freeze({
   currentStateProposer: TARGETS.scene.sections,
@@ -48,13 +53,20 @@ function jsonExamples(prompt) {
   return [...prompt.matchAll(/```json\s*([\s\S]*?)\s*```/g)].map((match) => JSON.parse(match[1]));
 }
 
-test("registered Proposer prompts load as non-empty text", async () => {
+test("registered Proposer prompts load non-empty text only from the active prompt directory", async (t) => {
+  const readFile = fs.readFile;
+  const promptDirectory = path.resolve(__dirname, "../../../modules/memory/prompts");
+  t.mock.method(fs, "readFile", async (file, ...args) => {
+    assert.equal(path.dirname(path.resolve(file)), promptDirectory);
+    return readFile(file, ...args);
+  });
   assert.ok(Object.keys(FILES).length > 0);
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
     assert.ok(prompt.trim().length > 0, `${proposer} prompt must not be empty`);
   }
   await assert.rejects(loadProposerPrompt("unknownProposer"), /Unknown Memory proposer prompt/);
+  await loadProposerPrompt("todoProposer", { outputProtocol: "retired-contract" });
 });
 
 test("all Proposer prompts are self-contained and start with their own identity", async () => {
@@ -88,11 +100,13 @@ test("prompts retain the machine protocol without freezing editorial wording", a
     const prompt = await loadProposerPrompt(proposer);
     assertIncludesTerms(prompt, proposer, NORMAL_PROTOCOL_TERMS);
     assert.equal(prompt.includes("sectionResults"), true, `${proposer} must explicitly prohibit the old root shape`);
-    assert.match(prompt, /根对象固定为 `sectionStatuses` 与 `changes`/);
+    assert.match(prompt, proposer === "todoProposer"
+      ? /根对象固定为 `results`/
+      : /根对象固定为 `sectionStatuses` 与 `changes`/);
     assert.equal(
       prompt.indexOf("## 输出契约") > prompt.indexOf("你是后台运行"),
       true,
-      `${proposer} must introduce its role before the flat output contract`,
+      `${proposer} must introduce its role before the output contract`,
     );
   }
   for (const proposer of ["compactionProposer", "librarianProposer"]) {
@@ -142,6 +156,15 @@ test("every Proposer prompt retains a minimal no-change and a regular changes JS
       targetKey: TARGET_KEYS_BY_PROPOSER[proposer],
       targetSections: expectedSections,
     };
+    if (proposer === "todoProposer") {
+      for (const example of examples) {
+        assert.equal(validateProviderWireOutput(buildOutputSchema(proposer), example).ok, true);
+        assert.deepEqual(validateSemanticResult(todoWireToSemantic(example, task), task), { ok: true, errors: [] });
+      }
+      assert.ok(examples.some(example => JSON.stringify(example) === '{"results":{"todos":{"status":"noop"}}}'));
+      assert.ok(examples.some(example => example.results.todos.status === "changes" && example.results.todos.changes.length > 0));
+      continue;
+    }
     for (const example of examples) {
       const semantic = flatWireToSemanticOutput(example, task);
       assert.deepEqual(validateSemanticResult(semantic, task), { ok: true, errors: [] });

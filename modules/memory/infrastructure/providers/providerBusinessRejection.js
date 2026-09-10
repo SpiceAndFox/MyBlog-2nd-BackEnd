@@ -1,6 +1,6 @@
-const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
 const { validateSemanticResult } = require("../../contracts/semantic");
-const { semanticToTodoV2, todoV2RepairErrors } = require("./todoWireProtocolV2");
+const { semanticToTodoWire, todoWireRepairErrors } = require("./todoWireProtocol");
 const { semanticOutputToFlatWire, flatWireRepairErrors } = require("./flatWireProtocol");
 const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
 const { createRepairFeedback } = require("../../application/outputRepair");
@@ -10,17 +10,17 @@ const { profileRepairBundle } = require("./profileRepairState");
 // provider's original wire shape, while retaining transport/protocol metadata.
 function providerBusinessRejection(result, validation, task) {
   if (task.proposer === "profileRelationshipProposer") return profileBusinessRejection(result, validation, task);
-  const todoV2 = usesTodoV2(task);
+  const todoWire = usesTodoWireProtocol(task);
   const canEncode = validateSemanticResult(result.output, task).ok;
   const wire = result.wireOutput ?? (canEncode
-    ? (todoV2 ? semanticToTodoV2(result.output, task) : semanticOutputToFlatWire(result.output, task)) : undefined);
-  const mapped = todoV2 ? todoV2RepairErrors(validation.errors, wire)
+    ? (todoWire ? semanticToTodoWire(result.output) : semanticOutputToFlatWire(result.output, task)) : undefined);
+  const mapped = todoWire ? todoWireRepairErrors(validation.errors, wire)
     : flatWireRepairErrors(validation.errors, wire, task);
   const errors = mapped.map(issue => {
-    const match = issue.path.match(todoV2 ? /^\$\.results\.todos\.changes\[(\d+)\]/ : /^\$\.changes\[(\d+)\]/);
-    const change = match ? (todoV2 ? wire?.results?.todos?.changes : wire?.changes)?.[Number(match[1])] : null;
+    const match = issue.path.match(todoWire ? /^\$\.results\.todos\.changes\[(\d+)\]/ : /^\$\.changes\[(\d+)\]/);
+    const change = match ? (todoWire ? wire?.results?.todos?.changes : wire?.changes)?.[Number(match[1])] : null;
     const relatedPath = issue.meta?.relatedPath
-      ? (todoV2 ? todoV2RepairErrors([{ path: issue.meta.relatedPath }], wire)
+      ? (todoWire ? todoWireRepairErrors([{ path: issue.meta.relatedPath }], wire)
         : flatWireRepairErrors([{ path: issue.meta.relatedPath }], wire, task))[0].path : null;
     return { ...issue, meta: { ...issue.meta,
       ...(relatedPath ? { relatedPath } : {}),

@@ -64,14 +64,14 @@ async function buildProviderRequestPreviews({
   const userPayload = buildProposerUserPayload(envelope);
   if (envelope.task.proposer !== "profileRelationshipProposer") {
     const responseSchema = bindOutputSchema(
-      buildOutputSchema(envelope.task.proposer, envelope.task.targetSections, envelope.task),
+      buildOutputSchema(envelope.task.proposer, envelope.task.targetSections),
       envelope.artifact,
       envelope.task.targetSections,
     );
     const repair = schemaRepairRequest(
-      await promptLoader(envelope.task.proposer, envelope.task),
+      await promptLoader(envelope.task.proposer),
       repairFeedback,
-      { ...userPayload.task, outputProtocol: envelope.task.outputProtocol },
+      userPayload.task,
       rejectedOutput,
     );
     return [previewEntry(providerConfig, {

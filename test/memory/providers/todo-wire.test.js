@@ -1,31 +1,32 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const { createMemoryTestConfig, testWriteLimits, sha256 } = require("../support/memory-builders");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { buildNormalEnvelope } = require("../../../modules/memory/application/envelope");
-const { resolveOutputProtocol } = require("../../../modules/memory/contracts/outputProtocol");
 const { validateSemanticResult } = require("../../../modules/memory/contracts/semantic");
 const { loadProposerPrompt } = require("../../../modules/memory/prompts");
 const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
 const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
 const { compileDeepSeekToolParameters } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
-const { compileDeepSeekV2Schema } = require("../../../modules/memory/infrastructure/providers/deepSeekV2SchemaCompiler");
-const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
-const { todoV2ToSemantic, semanticToTodoV2, todoV2RepairErrors } = require("../../../modules/memory/infrastructure/providers/todoWireProtocolV2");
+const { compileDeepSeekTodoSchema } = require("../../../modules/memory/infrastructure/providers/deepSeekTodoSchemaCompiler");
+const { todoWireToSemantic, semanticToTodoWire, todoWireRepairErrors } = require("../../../modules/memory/infrastructure/providers/todoWireProtocol");
 const { validateLocalJsonSchema } = require("../../../modules/memory/infrastructure/providers/localJsonSchemaValidator");
 const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
 const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
+const { buildDeepSeekHttpRequest } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { buildProviderRequestPreviews } = require("../../../modules/memory/infrastructure/providers/providerRequestPreview");
 const { createRepairFeedback, renderRepairInstruction } = require("../../../modules/memory/application/outputRepair");
 
-const TASK = { tickId: 0, proposer: "todoProposer", targetKey: "todos", targetSections: ["todos"], outputProtocol: "todo-v2", writeLimits: testWriteLimits() };
+const TASK = { tickId: 0, proposer: "todoProposer", targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
 const NOOP = { results: { todos: { status: "noop" } } };
 const ADD = { action: "add", sources: ["message:101"], text: "归还图书", actor: "user", requester: "user", due: { mode: "none" } };
 const EDIT = { action: "revise", sources: ["message:101"], target: "T1", text: { mode: "keep" }, actor: { mode: "keep" }, requester: { mode: "keep" }, due: { mode: "keep" } };
 const CONFIG = { adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com/beta", apiKey: "test-key", model: "test-model", thinkingMode: "enabled", reasoningEffort: "low", timeoutMs: 1000, maxInputTokens: 250_000, maxOutputTokens: 1024 };
 const changes = (...entries) => ({ results: { todos: { status: "changes", changes: entries } } });
-const build = (task = TASK) => buildOutputSchema(task.proposer, task.targetSections, task);
+const build = (task = TASK) => buildOutputSchema(task.proposer, task.targetSections);
 
 function artifact({ targets = 1, messages = 2, memories = 1 } = {}) {
   return { publicInput: { task: TASK },
@@ -43,36 +44,39 @@ function envelope() {
   });
 }
 
-test("Todo v2 preserves all 124 legacy semantic action, date and optional edit combinations", () => {
+test("Todo preserves all 124 semantic action, date and optional edit combinations", () => {
   const schema = bindOutputSchema(build(), artifact());
   const compiled = compileDeepSeekToolParameters(schema);
-  const dates = [{ dueMode: "absolute", dueValue: "2026-09-11" },
-    ...["relativeDays", "relativeMonths", "relativeYears", "dayOfMonth"].map(dueMode => ({ dueMode, dueValue: "1", anchorSource: "message:101" }))];
-  const base = { section: "todos", sources: ["message:101", "memory:T1-E1"] };
+  const dates = [{ dueAt: { mode: "absolute", date: "2026-09-11" } },
+    ...["days", "months", "years"].map(unit => ({ dueAt: { mode: "relative", [unit]: 1 }, anchorMessageId: 101 })),
+    { dueAt: { mode: "dayOfMonth", day: 1 }, anchorMessageId: 101 }];
+  const base = { evidenceMessageIds: [101], supportRefs: ["T1-E1"] };
   const entries = [{}, ...dates].map(date => ({ ...base, action: "add", text: "归还图书", actor: "user", requester: "user", ...date }));
+  const edits = [{ dueChange: { mode: "keep" } }, { dueChange: { mode: "clear" } },
+    ...dates.map(({ dueAt, ...rest }) => ({ dueChange: { mode: "set", dueAt }, ...rest }))];
   for (const action of ["revise", "correct"]) {
-    for (const date of [{ dueMode: "keep" }, { dueMode: "clear" }, ...dates]) {
-      for (let mask = 0; mask < 8; mask++) entries.push({ ...base, action, target: "T1", ...date,
+    for (const date of edits) {
+      for (let mask = 0; mask < 8; mask++) entries.push({ ...base, action, ref: "T1", ...date,
         ...(mask & 1 ? { text: "归还图书" } : {}), ...(mask & 2 ? { actor: "both" } : {}), ...(mask & 4 ? { requester: "assistant" } : {}) });
     }
   }
-  for (const action of ["forget", "complete", "cancel", "expire"]) entries.push({ ...base, action, target: "T1" });
-  const fixtures = entries.map(entry => ({ sectionStatuses: { todos: "changes" }, changes: [entry] }));
-  for (const status of ["noop", "unable_to_decide"]) fixtures.push({ sectionStatuses: { todos: status }, changes: [] });
-  assert.equal(fixtures.length, 124);
-  for (const flat of fixtures) {
-    const semantic = flatWireToSemanticOutput(flat, TASK);
+  for (const action of ["forget", "complete", "cancel", "expire"]) entries.push({ ...base, action, ref: "T1" });
+  const results = entries.map(entry => ({ status: "changes", changes: [entry] }));
+  for (const status of ["noop", "unable_to_decide"]) results.push({ status });
+  assert.equal(results.length, 124);
+  for (const result of results) {
+    const semantic = { tickId: TASK.tickId, proposer: TASK.proposer, sectionResults: { todos: result } };
     assert.deepEqual(validateSemanticResult(semantic, TASK), { ok: true, errors: [] });
-    const wire = semanticToTodoV2(semantic, TASK);
+    const wire = semanticToTodoWire(semantic);
     assert.deepEqual(validateLocalJsonSchema(schema.schema, wire), { ok: true, errors: [] });
     assert.equal(validateLocalJsonSchema(compiled, wire).ok, true);
-    assert.deepEqual(todoV2ToSemantic(wire, TASK), semantic);
+    assert.deepEqual(todoWireToSemantic(wire, TASK), semantic);
   }
-  const semanticEdit = todoV2ToSemantic(changes(EDIT), TASK).sectionResults.todos.changes[0];
+  const semanticEdit = todoWireToSemantic(changes(EDIT), TASK).sectionResults.todos.changes[0];
   assert.equal(Object.hasOwn(semanticEdit, "text"), false, "keep must not fetch or overwrite the old value");
 });
 
-test("Todo v2 rejects mismatched fields, invalid selectors and typed date errors at precise paths", () => {
+test("Todo rejects mismatched fields, invalid selectors and typed date errors at precise paths", () => {
   const schema = bindOutputSchema(build(), artifact());
   const invalid = [
     { ...EDIT, target: "T999" }, { ...EDIT, text: { mode: "set" } },
@@ -103,7 +107,7 @@ test("Todo v2 rejects mismatched fields, invalid selectors and typed date errors
   assert.equal(validateProviderWireOutput(schema, { results: { todos: { status: "noop", changes: [] } } }).ok, false);
 });
 
-test("Todo v2 keeps unsupported provider limits enforceable locally and normalizes only exact empty changes", () => {
+test("Todo keeps unsupported provider limits enforceable locally and normalizes only exact empty changes", () => {
   const context = artifact({ messages: TASK.writeLimits.todos.maxSourceRefs + 1 });
   const schema = bindOutputSchema(build(), context);
   const compiled = compileDeepSeekToolParameters(schema);
@@ -126,7 +130,7 @@ test("Todo v2 keeps unsupported provider limits enforceable locally and normaliz
   }
 });
 
-test("Todo v2 prunes unavailable actions and anchored dates without changing permissions", () => {
+test("Todo prunes unavailable actions and anchored dates without changing permissions", () => {
   for (const targets of [0, 1]) for (const messages of [0, 1]) for (const memories of [0, 1]) {
     const schema = bindOutputSchema(build(), artifact({ targets, messages, memories }));
     const sources = [messages ? "message:101" : "memory:T1-E1"];
@@ -138,13 +142,14 @@ test("Todo v2 prunes unavailable actions and anchored dates without changing per
   }
 });
 
-test("Todo v2 compiler avoids optional-field expansion and reports every local-only constraint", () => {
+test("Todo compiler avoids optional-field expansion and reports every local-only constraint", () => {
   const context = artifact({ targets: 10, messages: 20, memories: 10 });
   const schema = bindOutputSchema(build(), context);
   const snapshot = structuredClone(schema);
-  const { schema: compiled, diagnostics } = compileDeepSeekV2Schema(schema.schema);
-  const legacy = compileDeepSeekToolParameters(bindOutputSchema(buildOutputSchema(TASK.proposer), context));
-  assert.ok(Buffer.byteLength(JSON.stringify(compiled)) < Buffer.byteLength(JSON.stringify(legacy)) / 3);
+  const { schema: compiled, diagnostics } = compileDeepSeekTodoSchema(schema.schema);
+  assert.ok(Buffer.byteLength(JSON.stringify(compiled)) < 12_000);
+  const changesResult = compiled.properties.results.properties.todos.anyOf.find(branch => branch.properties.status.enum.includes("changes"));
+  assert.equal(changesResult.properties.changes.items.anyOf.length, 3);
   assert.deepEqual(schema, snapshot);
   assert.ok(diagnostics.some(entry => entry.keyword === "maxLength" && entry.value === TASK.writeLimits.todos.maxItemChars));
   assert.ok(diagnostics.every(entry => entry.enforcement === "local" && entry.providerHint === "description"));
@@ -158,42 +163,50 @@ test("Todo v2 compiler avoids optional-field expansion and reports every local-o
     Object.values(node).forEach(inspect);
   }
   inspect(compiled);
-  assert.throws(() => compileDeepSeekV2Schema({ ...schema.schema, not: {} }), /Unsupported/);
-  assert.throws(() => compileDeepSeekV2Schema({ ...schema.schema, required: [] }), /exact required object/);
+  assert.throws(() => compileDeepSeekTodoSchema({ ...schema.schema, not: {} }), /Unsupported/);
+  assert.throws(() => compileDeepSeekTodoSchema({ ...schema.schema, required: [] }), /exact required object/);
   const duplicate = schema.schema.properties.results.properties.todos.anyOf[0];
-  assert.throws(() => compileDeepSeekV2Schema({ anyOf: [duplicate, duplicate] }), /disjoint/);
+  assert.throws(() => compileDeepSeekTodoSchema({ anyOf: [duplicate, duplicate] }), /disjoint/);
 });
 
-test("new Todo tasks pin v2 while restored legacy tasks retain their schema and protected prompt", async () => {
+test("all Todo tasks use the sole official schema and protected prompt", async () => {
   const current = envelope();
-  assert.equal(current.task.outputProtocol, "todo-v2");
-  assert.equal(current.artifact.publicInput.task.outputProtocol, undefined);
+  assert.equal(Object.hasOwn(current.task, "outputProtocol"), false);
+  assert.equal(Object.hasOwn(current.artifact.publicInput.task, "outputProtocol"), false);
   const restored = JSON.parse(JSON.stringify(current));
-  assert.equal(resolveOutputProtocol(restored.task), "todo-v2");
-  assert.equal(build(restored.task).name, "memory_todo_v2");
-  delete restored.task.outputProtocol;
-  assert.equal(resolveOutputProtocol(restored.task), "legacy-v1");
-  assert.notEqual(build(restored.task).name, "memory_todo_v2");
-  const oldPrompt = await loadProposerPrompt(TASK.proposer, restored.task);
-  assert.equal(oldPrompt, await loadProposerPrompt(TASK.proposer));
-  const prompt = await loadProposerPrompt(TASK.proposer, current.task);
-  assert.notEqual(prompt, oldPrompt);
+  restored.task.outputProtocol = "retired-contract";
+  assert.equal(build(restored.task).name, "memory_todo");
+  assert.deepEqual(build(restored.task), build(current.task));
+  const prompt = await loadProposerPrompt(TASK.proposer);
+  assert.equal(await loadProposerPrompt(TASK.proposer, restored.task), prompt);
+  assert.equal(prompt, await fs.readFile(path.join(__dirname, "../../../modules/memory/prompts/todo-proposer.md"), "utf8"));
+  assert.deepEqual(buildOutputSchema(TASK.proposer), build(current.task));
   const examples = [...prompt.matchAll(/```json\s*([\s\S]*?)\s*```/g)].map(match => JSON.parse(match[1]));
   assert.ok(examples.some(example => JSON.stringify(example) === JSON.stringify(NOOP)));
   assert.ok(examples.some(example => example.results.todos.status === "changes"));
   for (const example of examples) assert.equal(validateProviderWireOutput(bindOutputSchema(build(), artifact()), example).ok, true);
-  assert.throws(() => build({ ...TASK, outputProtocol: "todo-v999" }), /Unsupported/);
-  assert.throws(() => build({ ...TASK, proposer: "episodeProposer" }), /Unsupported/);
+});
+
+test("Todo HTTP requests keep the official tool name and bound schema in both thinking modes", () => {
+  const responseSchema = bindOutputSchema(build(), artifact());
+  for (const thinkingMode of ["enabled", "disabled"]) {
+    const { body } = buildDeepSeekHttpRequest({ ...CONFIG, thinkingMode }, {
+      proposer: TASK.proposer, systemPrompt: "test", userPayload: {}, responseSchema,
+    });
+    assert.equal(body.tools[0].function.name, "memory_todo");
+    assert.deepEqual(body.tools[0].function.parameters, compileDeepSeekToolParameters(responseSchema));
+    assert.deepEqual(body.tool_choice, thinkingMode === "enabled" ? "auto" : { type: "function", function: { name: "memory_todo" } });
+  }
 });
 
 for (const channel of ["tool_arguments", "content", "openai_content"]) {
-  test(`Todo v2 ${channel} validates the full wire schema before semantic decoding`, async () => {
+  test(`Todo ${channel} validates the full wire schema before semantic decoding`, async () => {
     for (const candidate of [NOOP, changes(ADD), changes(), changes({ ...ADD, text: "" }), { ...NOOP, extra: true }]) {
       const taskEnvelope = envelope();
       const config = channel === "openai_content" ? { ...CONFIG, adapter: "openai-json-schema", baseUrl: "https://test.invalid/v1" } : CONFIG;
       const invokeStructured = createStructuredTransport(config, { fetchImpl: async () => ({ ok: true, json: async () => ({
         choices: [{ finish_reason: "stop", message: channel === "tool_arguments"
-          ? { tool_calls: [{ function: { name: "memory_todo_v2", arguments: JSON.stringify(candidate) } }] }
+          ? { tool_calls: [{ function: { name: "memory_todo", arguments: JSON.stringify(candidate) } }] }
           : { content: JSON.stringify(candidate) } }],
       }) }) });
       const adapter = createMemoryProviderAdapter({ invokeStructured, promptLoader: loadProposerPrompt });
@@ -202,16 +215,16 @@ for (const channel of ["tool_arguments", "content", "openai_content"]) {
       assert.equal(result.status, expected.ok ? "ok" : "error");
       assert.equal(result.protocol.outputChannel, channel === "openai_content" ? "content" : channel);
       assert.equal(result.protocol.rawSchemaValid, expected.rawSchemaValid);
-      assert.equal(result.protocol.outputProtocol, "todo-v2");
+      assert.equal(result.protocol.outputProtocol, "todo");
       if (!expected.ok) assert.equal(result.detail.validationLayer, "wire_schema");
       if (expected.normalizations.length) assert.deepEqual(result.normalizations, expected.normalizations);
     }
   });
 }
 
-test("Todo v2 rejects semantic-shaped provider output and checks calendar and anchor semantics", async () => {
+test("Todo rejects semantic-shaped provider output and checks calendar and anchor semantics", async () => {
   for (const [output, layer] of [
-    [todoV2ToSemantic(NOOP, TASK), "wire_schema"],
+    [todoWireToSemantic(NOOP, TASK), "wire_schema"],
     [changes({ ...ADD, due: { mode: "absolute", date: "2026-02-30" } }), "semantic"],
   ]) {
     const result = await createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async () => ({ output }) }).propose(envelope());
@@ -221,13 +234,13 @@ test("Todo v2 rejects semantic-shaped provider output and checks calendar and an
   }
   const wire = changes({ ...ADD, sources: ["message:102"], due: { mode: "relativeDays", offset: 1, anchorSource: "message:101" } });
   assert.equal(validateProviderWireOutput(bindOutputSchema(build(), artifact()), wire).ok, true);
-  const checked = validateSemanticResult(todoV2ToSemantic(wire, TASK), TASK);
+  const checked = validateSemanticResult(todoWireToSemantic(wire, TASK), TASK);
   assert.equal(checked.ok, false, "cross-field anchor membership remains a semantic constraint");
 });
 
-test("Todo v2 preview and repair use the pinned schema, prompt, and wire field names", async () => {
+test("Todo preview and repair use the official schema, prompt, and wire field names", async () => {
   const current = envelope();
-  const issue = todoV2RepairErrors([{ path: "$.sectionResults.todos.changes[0].ref", message: "must be rendered as writable Memory" }], changes(EDIT));
+  const issue = todoWireRepairErrors([{ path: "$.sectionResults.todos.changes[0].ref", message: "must be rendered as writable Memory" }], changes(EDIT));
   const feedback = createRepairFeedback({ errors: issue }, 1, current.task);
   assert.equal(feedback.errors[0].path, "$.results.todos.changes[0].target");
   assert.match(feedback.errors[0].message, /^target /);
@@ -236,18 +249,18 @@ test("Todo v2 preview and repair use the pinned schema, prompt, and wire field n
   const [initial] = await buildProviderRequestPreviews({ envelope: current, providerConfig: CONFIG, promptLoader: loadProposerPrompt });
   const [repair] = await buildProviderRequestPreviews({ envelope: current, providerConfig: CONFIG, promptLoader: loadProposerPrompt, repairFeedback: feedback, rejectedOutput: changes(EDIT) });
   assert.equal(initial.protocol.schemaHash, repair.protocol.schemaHash);
-  assert.equal(initial.body.tools[0].function.name, "memory_todo_v2");
+  assert.equal(initial.body.tools[0].function.name, "memory_todo");
   assert.deepEqual(initial.body.tools, repair.body.tools);
   const expanded = structuredClone(current);
   expanded.artifact.messageMeta[102] = {};
   const [expandedPreview] = await buildProviderRequestPreviews({ envelope: expanded, providerConfig: CONFIG, promptLoader: loadProposerPrompt });
-  assert.equal(expandedPreview.protocol.outputProtocol, "todo-v2");
+  assert.equal(expandedPreview.protocol.outputProtocol, "todo");
   assert.notEqual(expandedPreview.protocol.schemaHash, initial.protocol.schemaHash);
-  const legacy = structuredClone(current);
-  delete legacy.task.outputProtocol;
-  const [legacyPreview] = await buildProviderRequestPreviews({ envelope: legacy, providerConfig: CONFIG, promptLoader: loadProposerPrompt });
-  assert.equal(legacyPreview.protocol.outputProtocol, "legacy-v1");
-  assert.notEqual(legacyPreview.body.tools[0].function.name, "memory_todo_v2");
+  const restored = structuredClone(current);
+  restored.task.outputProtocol = "retired-contract";
+  const [restoredPreview] = await buildProviderRequestPreviews({ envelope: restored, providerConfig: CONFIG, promptLoader: loadProposerPrompt });
+  assert.equal(restoredPreview.protocol.outputProtocol, "todo");
+  assert.deepEqual(restoredPreview.body, initial.body);
 });
 
 test("schema definitions count toward input budget before either provider sends a request", async () => {
@@ -262,5 +275,63 @@ test("schema definitions count toward input budget before either provider sends 
       return true;
     });
     assert.equal(called, false);
+  }
+});
+
+test("Todo rejects incompatible repair feedback before dispatch or request preview", async () => {
+  const current = envelope();
+  const feedbacks = [
+    { errors: [{ path: "$.changes[0].dueMode", message: "invalid" }] },
+    { plan: { expectedShape: { sectionStatuses: { todos: "changes" }, changes: "array" } } },
+    { plan: { expectedShape: { results: { todos: null } } } },
+    { plan: { expectedShape: { results: { todos: [] } } } },
+  ];
+  let calls = 0;
+  const adapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt,
+    invokeStructured: async () => { calls++; return { output: NOOP }; } });
+  for (const repairFeedback of feedbacks) for (const rejectedOutput of [undefined, { sectionStatuses: { todos: "noop" }, changes: [] }]) {
+    const options = { repairFeedback, rejectedOutput };
+    const snapshot = structuredClone(options);
+    const result = await adapter.propose(current, options);
+    assert.equal(result.reason, "output_schema_invalid");
+    assert.equal(result.detail.boundary, "input");
+    assert.equal(result.detail.code, "MEMORY_REPAIR_CONTEXT_INVALID");
+    assert.match(result.detail.errors[0].message, /recreate this development task/);
+    await assert.rejects(buildProviderRequestPreviews({ envelope: current, providerConfig: CONFIG,
+      promptLoader: loadProposerPrompt, ...options }), { code: "MEMORY_REPAIR_CONTEXT_INVALID" });
+    assert.deepEqual(options, snapshot);
+  }
+  assert.equal(calls, 0);
+});
+
+test("current Todo feedback still repairs malformed roots, missing fields, and missing or truncated candidates", async () => {
+  const current = envelope();
+  for (const candidate of [
+    { sectionStatuses: { todos: "noop" }, changes: [] },
+    changes({ ...ADD, due: undefined }),
+  ]) {
+    const requests = [];
+    const adapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt,
+      invokeStructured: async request => {
+        requests.push(request);
+        return { output: requests.length === 1 ? candidate : NOOP };
+      } });
+    const failed = await adapter.propose(current);
+    assert.equal(failed.reason, "output_schema_invalid");
+    assert.equal(failed.detail.boundary, "output");
+    const feedback = createRepairFeedback(failed.detail, 1, current.task);
+    const repaired = await adapter.propose(current, { repairFeedback: feedback, rejectedOutput: failed.rejectedOutput });
+    assert.equal(repaired.status, "ok");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[1].repairContext.assistantOutput, candidate);
+    assert.deepEqual(requests[1].responseSchema, requests[0].responseSchema);
+  }
+  for (const rejectedOutput of [undefined, '{"results":{"todos":']) {
+    const feedback = createRepairFeedback({ transportError: "tool_arguments_incomplete_json" }, 1, current.task);
+    let request;
+    const adapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt,
+      invokeStructured: async value => { request = value; return { output: NOOP }; } });
+    assert.equal((await adapter.propose(current, { repairFeedback: feedback, rejectedOutput })).status, "ok");
+    assert.match(request.repairContext?.userMessage || request.systemPrompt, /results\.todos/);
   }
 });

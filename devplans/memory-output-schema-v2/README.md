@@ -1,6 +1,8 @@
 # Memory LLM 输出协议与 strict schema 设计提案
 
-日期：2026-09-10。状态：Todo v2 无引用版本已接入运行时，并通过离线回归与 4 项 DeepSeek API 合成探测。实现范围与验证记录见 [IMPLEMENTATION.md](IMPLEMENTATION.md)。本文保留设计依据及后续实验建议；本目录 prototype/schema JSON 是设计实验产物，运行时使用生产 builder。
+日期：2026-09-10。状态：Todo 无引用方案已成为唯一正式实现。实现范围与验证记录见 [IMPLEMENTATION.md](IMPLEMENTATION.md)。本文保留设计依据及历史实验建议；本目录 prototype/schema JSON 是设计实验产物，不是运行时或测试依赖，运行时只使用生产 builder。
+
+正式化更新：提示词已晋升为 `modules/memory/prompts/todo-proposer.md`，旧版仅存于 `archive/memory-v2-prompts/2026-9-10/todo-proposer.md`；运行时代码使用正式 Todo 命名，schema/tool 名为 `memory_todo`，探测参数为 `--todo-only`。不保留旧 Todo 实现、协议分流或实验参数别名；archive 不得作为运行时或测试依赖。下文版本命名和迁移步骤仅保留为设计历史，不代表当前可选配置。
 
 这里的 v2 指模型输出的 wire protocol，不是 Memory 数据库或 Semantic IR 的版本。现有 Memory `2.01` 数据契约不随之修改。
 
