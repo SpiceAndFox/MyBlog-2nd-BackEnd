@@ -17,7 +17,7 @@ function buildTodoOutputSchema(artifact = null) {
   const sources = artifact ? [...messages, ...Object.keys(artifact.refMap?.readOnly || {}).sort().map(ref => `memory:${ref}`)] : null;
   const selector = (values) => values ? enumeration(...values) : { type: "string", minLength: 1 };
   const text = { type: "string", minLength: 1, ...(limits ? { maxLength: limits.maxItemChars } : {}), description: "One complete atomic Todo text." };
-  const common = { sources: { type: "array", minItems: 1, uniqueItems: true, ...(limits ? { maxItems: limits.maxSourceRefs } : {}), items: selector(sources), description: "Visible message:ID or memory:REF tokens supporting the change." } };
+  const common = { sources: { type: "array", minItems: 1, uniqueItems: true, ...(limits && limits.maxSourceRefs !== null ? { maxItems: limits.maxSourceRefs } : {}), items: selector(sources), description: "Visible message:ID or memory:REF tokens supporting the change." } };
   function due(adding) {
     const variants = adding ? [mode("none")] : [mode("keep"), mode("clear")];
     variants.push(mode("absolute", { date: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" } }));

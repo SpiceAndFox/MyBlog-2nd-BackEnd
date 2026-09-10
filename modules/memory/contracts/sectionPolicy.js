@@ -19,10 +19,14 @@ const WRITE_LIMIT_KEYS = Object.freeze(Object.fromEntries(Object.keys(SECTION_AC
 
 const EPISODE_APPEND_SEPARATOR = " → ";
 function codePointLength(value) { return Array.from(value || "").length; }
+// null is the JSON-safe, explicit representation of a disabled source-count cap.
+function validWriteLimit(key, value) {
+  return (key === "maxSourceRefs" && value === null) || (Number.isSafeInteger(value) && value >= 1);
+}
 function sectionLimits(section, task) {
   const limits = task?.writeLimits?.[section];
   if (!WRITE_LIMIT_KEYS[section] || !limits
-    || WRITE_LIMIT_KEYS[section].some(key => !Number.isSafeInteger(limits[key]) || limits[key] < 1)
+    || WRITE_LIMIT_KEYS[section].some(key => !validWriteLimit(key, limits[key]))
     || limits.maxAppendChars > limits.maxItemChars) {
     throw new Error(`Missing or invalid task.writeLimits.${section}; recreate the task with explicit Memory configuration`);
   }
@@ -33,7 +37,7 @@ function captureWriteLimits(config) {
     const budget = section === "scene" ? config?.scene : config?.sectionBudgets?.[section];
     const limits = Object.fromEntries(keys.map(key => {
       const value = budget?.[key];
-      if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid ${section}.${key}`);
+      if (!validWriteLimit(key, value)) throw new Error(`Invalid ${section}.${key}`);
       return [key, value];
     }));
     if (limits.maxAppendChars > limits.maxItemChars) throw new Error(`Invalid ${section}.maxAppendChars`);
@@ -43,14 +47,14 @@ function captureWriteLimits(config) {
 
 function validateWriteLimits(limits) {
   const errors = [];
-  const fail = (path) => errors.push({ path: `$.publicInput.task.writeLimits${path ? `.${path}` : ""}`, message: "must match the positive integer section limits" });
+  const fail = (path) => errors.push({ path: `$.publicInput.task.writeLimits${path ? `.${path}` : ""}`, message: "must match the positive integer section limits (maxSourceRefs may be null for unlimited sources)" });
   if (!limits || typeof limits !== "object" || Array.isArray(limits)) { fail(""); return errors; }
   for (const key of Object.keys(limits)) if (!WRITE_LIMIT_KEYS[key]) fail(key);
   for (const [section, keys] of Object.entries(WRITE_LIMIT_KEYS)) {
     const value = limits[section];
     if (!value || typeof value !== "object" || Array.isArray(value)) { fail(section); continue; }
     for (const key of new Set([...keys, ...Object.keys(value)])) {
-      if (!keys.includes(key) || !Number.isSafeInteger(value[key]) || value[key] < 1) fail(`${section}.${key}`);
+      if (!keys.includes(key) || !validWriteLimit(key, value[key])) fail(`${section}.${key}`);
     }
     if (value.maxAppendChars > value.maxItemChars) fail(`${section}.maxAppendChars`);
   }

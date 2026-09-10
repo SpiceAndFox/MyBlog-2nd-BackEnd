@@ -53,7 +53,7 @@ function itemLimitIssues(section, text, sourceRefs, task) {
   const chars = codePointLength(text);
   const issues = [];
   if (chars > limits.maxItemChars) issues.push(writeIssue("text_length_exceeded", section, { limit: limits.maxItemChars, actual: chars }));
-  if (sourceRefs.length > limits.maxSourceRefs) issues.push(writeIssue("source_limit_exceeded", section, { limit: limits.maxSourceRefs, actual: sourceRefs.length }));
+  if (limits.maxSourceRefs !== null && sourceRefs.length > limits.maxSourceRefs) issues.push(writeIssue("source_limit_exceeded", section, { limit: limits.maxSourceRefs, actual: sourceRefs.length }));
   return issues;
 }
 

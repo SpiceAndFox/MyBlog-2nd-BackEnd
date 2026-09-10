@@ -9,6 +9,25 @@ test("v2 config fails explicitly when enabled configuration is incomplete", () =
   assert.throws(() => loadMemoryV2Config({ CHAT_MEMORY_V2_ENABLED: "true" }), /Missing required env/);
 });
 
+test("source-count limits default to enabled and can be disabled independently of text limits", () => {
+  const env = validEnv();
+  assert.equal(loadMemoryV2Config(env).sourceRefsLimitEnabled, true);
+  const limited = loadMemoryV2Config({ ...env, CHAT_MEMORY_V2_SOURCE_REFS_LIMIT_ENABLED: "true" });
+  const disabledEnv = { ...env, CHAT_MEMORY_V2_SOURCE_REFS_LIMIT_ENABLED: "false" };
+  for (const key of Object.keys(disabledEnv)) if (key.endsWith("_MAX_SOURCE_REFS")) delete disabledEnv[key];
+  const unlimited = loadMemoryV2Config(disabledEnv);
+  assert.equal(unlimited.sourceRefsLimitEnabled, false);
+  for (const section of Object.keys(unlimited.sectionBudgets)) {
+    assert.equal(unlimited.sectionBudgets[section].maxSourceRefs, null);
+    assert.equal(unlimited.sectionBudgets[section].maxItemChars, limited.sectionBudgets[section].maxItemChars);
+  }
+  assert.equal(unlimited.scene.maxSourceRefs, null);
+  assert.equal(unlimited.scene.maxItemChars, limited.scene.maxItemChars);
+  assert.throws(() => loadMemoryV2Config({ ...disabledEnv, CHAT_MEMORY_V2_SOURCE_REFS_LIMIT_ENABLED: "true" }), /MAX_SOURCE_REFS/);
+  assert.throws(() => loadMemoryV2Config({ ...env, CHAT_MEMORY_V2_SOURCE_REFS_LIMIT_ENABLED: "unlimited" }), /must be a boolean/);
+  assert.throws(() => loadMemoryV2Config({ ...disabledEnv, CHAT_MEMORY_V2_SCENE_MAX_ITEM_CHARS: "0" }), /MAX_ITEM_CHARS/);
+});
+
 test("Memory tuning values must be explicit and never fall back on missing or blank env", () => {
   const env = validEnv();
   const keys = Object.keys(env).filter(key => /_MAX_(ITEM_CHARS|SOURCE_REFS|APPEND_CHARS)$/.test(key));

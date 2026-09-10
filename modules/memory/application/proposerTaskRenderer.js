@@ -125,7 +125,7 @@ function addItemRefs({ items, section, namespace, map, lines, overdueTodoLimit, 
       const limits = sectionLimits(section, { writeLimits });
       const chars = codePointLength(item.text);
       const remaining = Math.max(0, Math.min(limits.maxAppendChars, limits.maxItemChars - chars - codePointLength(" → ")));
-      budget = ` [已有 ${chars} 字符；append 新增片段最多 ${remaining} 字符；现有来源 ${item.sourceRefs.length}/${limits.maxSourceRefs}]`;
+      budget = ` [已有 ${chars} 字符；append 新增片段最多 ${remaining} 字符；现有来源 ${item.sourceRefs.length}/${limits.maxSourceRefs === null ? "不限" : limits.maxSourceRefs}]`;
     }
     lines.push(`${ref} | ${renderEntry(section, item)}${budget}`);
   }

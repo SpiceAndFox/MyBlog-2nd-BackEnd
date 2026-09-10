@@ -4,6 +4,11 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function bindSourceLimit(schema, maxSourceRefs) {
+  if (maxSourceRefs === null) delete schema.maxItems;
+  else schema.maxItems = maxSourceRefs;
+}
+
 function removeRequiredAlternatives(variant, field) {
   if (!Array.isArray(variant.anyOf)) return;
   variant.anyOf = variant.anyOf.filter((entry) => !entry.required?.includes(field));
@@ -52,7 +57,7 @@ function bindSectionResult(resultSchema, artifact, section) {
       itemSchema.properties.refs.items = { type: "string", enum: writableRefs };
       itemSchema.properties.supportRefs.items = { type: "string", enum: readOnlyRefs };
       itemSchema.properties.text.maxLength = sectionLimits(section, artifact?.publicInput?.task).maxItemChars;
-      itemSchema.properties.supportRefs.maxItems = sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs;
+      bindSourceLimit(itemSchema.properties.supportRefs, sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs);
     } else {
       resultSchema.oneOf = resultSchema.oneOf.filter((branch) => branch !== changesBranch);
     }
@@ -67,7 +72,7 @@ function bindSectionResult(resultSchema, artifact, section) {
       variant.properties.text.maxLength = variant.properties.action?.const === "append" ? limits.maxAppendChars : limits.maxItemChars;
     }
     for (const key of ["supportRefs", "evidenceMessageIds"]) {
-      if (variant.properties[key]) variant.properties[key].maxItems = limits.maxSourceRefs;
+      if (variant.properties[key]) bindSourceLimit(variant.properties[key], limits.maxSourceRefs);
     }
     if (variant.properties.ref) {
       if (!writableRefs.length) return false;
@@ -116,7 +121,7 @@ function bindOutputSchema(schema, artifact, sections) {
         part.properties.supportRefs.items = { type: "string", enum: evidenceRefs };
         const limits = sectionLimits(part.properties.toSection.const, artifact?.publicInput?.task);
         part.properties.text.maxLength = limits.maxItemChars;
-        part.properties.supportRefs.maxItems = limits.maxSourceRefs;
+        bindSourceLimit(part.properties.supportRefs, limits.maxSourceRefs);
       }
       for (const field of ["ref", "keeperRef"]) {
         if (variant.properties?.[field]) variant.properties[field] = { type: "string", enum: refs };

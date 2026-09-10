@@ -67,7 +67,7 @@ function buildDeterministicExactMergeOutput(state, task, artifact) {
         .filter(([, entry]) => entry.itemId === items[0].id)
         .map(([ref]) => ref),
     })).filter(change => change.supportRefs.length > 0
-      && change.supportRefs.length <= sectionLimits(section, task).maxSourceRefs
+      && (sectionLimits(section, task).maxSourceRefs === null || change.supportRefs.length <= sectionLimits(section, task).maxSourceRefs)
       && codePointLength(change.text) <= sectionLimits(section, task).maxItemChars);
   if (!changes.length) return null;
   return {

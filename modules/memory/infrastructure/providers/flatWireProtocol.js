@@ -115,7 +115,9 @@ function bindFlatWireOutputSchema(schema, artifact, sections) {
   const properties = bound.schema?.properties?.changes?.items?.properties;
   if (!properties) return bound;
   properties.text.maxLength = Math.max(...selected.map((section) => sectionLimits(section, artifact?.publicInput?.task).maxItemChars));
-  properties.sources.maxItems = Math.max(...selected.map((section) => sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs));
+  const sourceLimits = selected.map((section) => sectionLimits(section, artifact?.publicInput?.task).maxSourceRefs);
+  if (sourceLimits.includes(null)) delete properties.sources.maxItems;
+  else properties.sources.maxItems = Math.max(...sourceLimits);
   if (writableRefs.length) properties.target = { ...properties.target, enum: writableRefs };
   else {
     delete properties.target;
