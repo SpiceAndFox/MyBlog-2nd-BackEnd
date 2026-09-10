@@ -4,6 +4,8 @@ const { createInitialMemoryState } = require("../../../modules/memory/contracts"
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
 const { createMemoryMetrics } = require("../../../modules/memory/application/metrics");
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
+const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
+const { loadProposerPrompt } = require("../../../modules/memory/prompts");
 
 const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
@@ -72,6 +74,53 @@ test("normal task atomically persists state, event group, snapshot, task and tar
   assert.equal(task.stage_payload.semanticInputVariant, "base");
   assert.equal(task.stage_payload.unableResult, undefined);
   assert.equal(store.inspect.statuses.at(-1).status, "healthy");
+});
+
+test("Todo v2 pipeline persists pinned protocol metadata across schema repair and commit", async () => {
+  const store = fakes();
+  const requests = [];
+  const metrics = createMemoryMetrics();
+  const providerAdapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async request => {
+    requests.push(request);
+    return { output: requests.length === 1
+      ? { results: { todos: { status: "changes", changes: [{ action: "add", sources: ["message:1"], text: "还书", actor: "user", requester: "user" }] } } }
+      : { results: { todos: { status: "changes", changes: [] } } } };
+  } });
+  const pipeline = createNormalWritePipeline({ observer: {}, config, repositories: store.repositories, providerAdapter, metrics,
+    now: () => new Date("2026-07-12T00:01:00Z") });
+  const result = await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0 });
+  assert.equal(result.status, "committed");
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0].responseSchema, requests[1].responseSchema);
+  assert.match(requests[1].repairContext.userMessage, /results\.todos\.changes\[0\]\.due/);
+  const row = [...store.inspect.tasks.values()][0];
+  assert.equal(row.task_payload.task.outputProtocol, "todo-v2");
+  assert.equal(row.stage_payload.providerProtocol.outputProtocol, "todo-v2");
+  assert.equal(row.stage_payload.providerProtocol.rawSchemaValid, false);
+  assert.deepEqual(row.stage_payload.providerProtocol.normalizations, [{ code: "EMPTY_CHANGES_TO_NOOP", section: "todos" }]);
+  assert.equal(row.stage_payload.schemaRejectedOutputs[0].protocol.schemaHash, row.stage_payload.providerProtocol.schemaHash);
+  assert.equal(row.stage_payload.semanticResult.sectionResults.todos.status, "noop");
+  assert.equal(metrics.snapshot().counters["memory_provider_wire_normalizations_total{outputChannel=adapter,outputProtocol=todo-v2,rawSchemaValid=false,targetKey=todos}"], 1);
+});
+
+test("persisted Todo tasks without a protocol marker resume using the legacy schema and prompt", async () => {
+  const store = fakes();
+  const requests = [];
+  const providerAdapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async request => {
+    requests.push(request);
+    return { output: { sectionStatuses: { todos: "noop" }, changes: [] } };
+  } });
+  const pipeline = createNormalWritePipeline({ observer: {}, config, repositories: store.repositories, providerAdapter,
+    now: () => new Date("2026-07-12T00:01:00Z") });
+  const envelope = await pipeline.createTask(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 0 });
+  const row = store.inspect.tasks.get(envelope.task.taskId);
+  delete row.task_payload.task.outputProtocol;
+  const restored = JSON.parse(JSON.stringify(row.task_payload));
+  const result = await pipeline.processEnvelope(restored);
+  assert.equal(result.status, "committed");
+  assert.equal(requests[0].responseSchema.name, "memory_flat_todoProposer_v1");
+  assert.equal(requests[0].systemPrompt, await loadProposerPrompt("todoProposer"));
+  assert.equal(row.stage_payload.providerProtocol.outputProtocol, "legacy-v1");
 });
 
 test("an open provider circuit durably sleeps work instead of polling the same task", async () => {
@@ -283,15 +332,12 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   const observedCounts = [];
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: store.repositories, config: localConfig,
-    providerAdapter: { propose: async (envelope) => {
-      observedCounts.push(envelope.artifact.publicInput.messages.length);
+    providerAdapter: createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async (request) => {
+      assert.equal(request.responseSchema.name, "memory_todo_v2");
+      observedCounts.push(request.userPayload.messages.length);
       if (observedCounts.length === 1) localConfig.targets.todos.contextWindow = 99;
-      return { status: "ok", output: {
-        tickId: envelope.task.tickId,
-        proposer: envelope.task.proposer,
-        sectionResults: { todos: { status: observedCounts.length === 1 ? "unable_to_decide" : "noop" } },
-      } };
-    } },
+      return { output: { results: { todos: { status: observedCounts.length === 1 ? "unable_to_decide" : "noop" } } } };
+    } }),
   });
   const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1 };
   const first = await pipeline.processIntent(1, "default", intent);
@@ -303,6 +349,8 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   assert.deepEqual(Object.keys(task.stage_payload.expandedArtifact).sort(), ["messageMeta", "publicInput"]);
   assert.equal(task.stage_payload.semanticResult, undefined);
   assert.equal(task.stage_payload.unableResult.sectionResults.todos.status, "unable_to_decide");
+  const baseSchemaHash = task.stage_payload.providerProtocol.schemaHash;
+  assert.equal(task.stage_payload.providerProtocol.outputProtocol, "todo-v2");
   store.repositories.source.getForceDrainWindow = async () => { throw new Error("durable expanded input must be reused"); };
   const second = await pipeline.processEnvelope(envelope);
   assert.equal(second.status, "committed");
@@ -310,6 +358,8 @@ test("unable_to_decide retry doubles overlap context and completes the same dura
   assert.deepEqual(expansionOptions, { newBatchSize: 1, contextWindow: 4 });
   assert.deepEqual(task.stage_payload.expandedArtifact.publicInput.messages.map((entry) => entry.id), [1, 2]);
   assert.equal(task.stage_payload.semanticInputVariant, "expanded");
+  assert.equal(task.stage_payload.providerProtocol.outputProtocol, "todo-v2");
+  assert.notEqual(task.stage_payload.providerProtocol.schemaHash, baseSchemaHash);
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });
 

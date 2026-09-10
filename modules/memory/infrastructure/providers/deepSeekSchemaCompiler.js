@@ -1,16 +1,8 @@
+const { constraintDescriptions } = require("./schemaConstraintDescriptions");
+const { compileDeepSeekV2Schema } = require("./deepSeekV2SchemaCompiler");
 const { buildDeepSeekTodoSchema } = require("./deepSeekTodoSchema");
 
 const DROPPED_KEYWORDS = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
-
-function constraintDescriptions(schema) {
-  const descriptions = [];
-  if (Number.isSafeInteger(schema.minLength)) descriptions.push(`String length must be at least ${schema.minLength} Unicode characters.`);
-  if (Number.isSafeInteger(schema.maxLength)) descriptions.push(`String length must be at most ${schema.maxLength} Unicode characters.`);
-  if (Number.isSafeInteger(schema.minItems)) descriptions.push(`Array must contain at least ${schema.minItems} items.`);
-  if (Number.isSafeInteger(schema.maxItems)) descriptions.push(`Array must contain at most ${schema.maxItems} items.`);
-  if (schema.uniqueItems === true) descriptions.push("Array items must be unique.");
-  return descriptions;
-}
 
 function literalType(value) {
   if (value === null) return "null";
@@ -111,6 +103,7 @@ function compileDeepSeekSchema(schema) {
 }
 
 function compileDeepSeekToolParameters(responseSchema) {
+  if (responseSchema.name === "memory_todo_v2") return compileDeepSeekV2Schema(responseSchema.schema).schema;
   if (responseSchema.name === "memory_flat_todoProposer_v1") {
     return compileDeepSeekSchema(buildDeepSeekTodoSchema(responseSchema.schema));
   }

@@ -1,0 +1,65 @@
+{
+  "note": "Offline UTF-8 compact JSON bytes, not measured API tokens. Refs and new shapes are not API-tested.",
+  "rows": [
+    {
+      "scenario": "one_target",
+      "oldGeneric": 132225,
+      "currentFlat": 30233,
+      "currentWithRefs": 21431,
+      "nestedDateOptionalEdits": 22636,
+      "nestedDateExplicitEdits": 6735,
+      "groupedV2": 6811,
+      "groupedV2WithRefs": 5165
+    },
+    {
+      "scenario": "representative",
+      "oldGeneric": 205569,
+      "currentFlat": 45453,
+      "currentWithRefs": 19222,
+      "nestedDateOptionalEdits": 36796,
+      "nestedDateExplicitEdits": 10206,
+      "groupedV2": 10282,
+      "groupedV2WithRefs": 5796
+    },
+    {
+      "scenario": "large_selectors",
+      "oldGeneric": 908481,
+      "currentFlat": 192566,
+      "currentWithRefs": 26244,
+      "nestedDateOptionalEdits": 171995,
+      "nestedDateExplicitEdits": 43331,
+      "groupedV2": 43407,
+      "groupedV2WithRefs": 12818
+    },
+    {
+      "scenario": "no_target",
+      "oldGeneric": 57569,
+      "currentFlat": 3554,
+      "currentWithRefs": 2763,
+      "nestedDateOptionalEdits": 2630,
+      "nestedDateExplicitEdits": 2630,
+      "groupedV2": 2910,
+      "groupedV2WithRefs": 2910
+    },
+    {
+      "scenario": "memory_only",
+      "oldGeneric": 64065,
+      "currentFlat": 19466,
+      "currentWithRefs": 13668,
+      "nestedDateOptionalEdits": 12809,
+      "nestedDateExplicitEdits": 4552,
+      "groupedV2": 4628,
+      "groupedV2WithRefs": 3885
+    }
+  ],
+  "validation": {
+    "roundTrips": 124,
+    "rejectedStructuralCases": 12,
+    "localConstraintBoundaryVerified": true,
+    "unavailableBranchesVerified": true
+  },
+  "representativeOutput": {
+    "currentFlatBytes": 198,
+    "groupedV2Bytes": 259
+  }
+}

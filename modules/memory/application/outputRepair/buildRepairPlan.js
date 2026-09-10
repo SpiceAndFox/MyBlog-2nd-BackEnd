@@ -2,8 +2,10 @@ const { classifyIssues } = require("./classifyIssues");
 const { ISSUE_CODES, OUTPUT_REPAIR_POLICY_VERSION } = require("./policy");
 const { LIBRARIAN_PROPOSER } = require("../../contracts");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
+const { usesTodoV2 } = require("../../contracts/outputProtocol");
 
 function expectedShape(task) {
+  if (usesTodoV2(task)) return { results: { todos: { status: "<noop | unable_to_decide | changes>", changes: "<only present for changes; complete Todo v2 array>" } } };
   if (task?.proposer === LIBRARIAN_PROPOSER) {
     return {
       tickId: "<copy task.tickId>",
@@ -30,7 +32,7 @@ function expectedShape(task) {
 }
 
 function buildRepairPlan({ errors, specialist = null, task = null } = {}) {
-  const issues = classifyIssues(errors, { usesFlatWire: isFlatWireProposer(task?.proposer) });
+  const issues = classifyIssues(errors, { usesFlatWire: isFlatWireProposer(task?.proposer) && !usesTodoV2(task), usesTodoV2: usesTodoV2(task) });
   const codes = [...new Set(issues.map((issue) => issue.code))];
   const directives = ["RETURN_COMPLETE_REPLACEMENT"];
   if (codes.includes(ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON)) {

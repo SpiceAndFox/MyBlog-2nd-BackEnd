@@ -5,7 +5,7 @@ const { loadMemoryProviderConfig, createStructuredTransport, runStructuredOutput
 async function main() {
   const config = loadMemoryProviderConfig(process.env);
   const invokeStructured = createStructuredTransport(config);
-  const probes = await runStructuredOutputPreflight({ invokeStructured, promptLoader: loadProposerPrompt });
+  const probes = await runStructuredOutputPreflight({ invokeStructured, promptLoader: loadProposerPrompt, todoV2Only: process.argv.includes("--todo-v2-only") });
   process.stdout.write(`${JSON.stringify({
     status: "supported",
     adapter: config.adapter,

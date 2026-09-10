@@ -113,12 +113,27 @@ function validateNode(schema, value, path, errors) {
     if (matches !== 1) errors.push({ path, message: "must match exactly one oneOf branch" });
   }
   if (schema.anyOf) {
-    const matches = schema.anyOf.some((branch) => {
+    const alternatives = schema.anyOf.map((branch) => {
       const branchErrors = [];
       validateNode(branch, value, path, branchErrors);
-      return branchErrors.length === 0;
+      return { branch, errors: branchErrors };
     });
-    if (!matches) errors.push({ path, message: "must match at least one anyOf branch" });
+    if (!alternatives.some(entry => entry.errors.length === 0)) {
+      // For a disjoint tagged union, report the selected branch's actual field
+      // errors. This improves repair feedback without changing acceptance.
+      const selected = isPlainObject(value) ? alternatives.find(({ branch }) => (
+        Object.entries(branch.properties || {}).some(([key, property]) => (
+          branch.required?.includes(key) && Array.isArray(property.enum)
+          && property.enum.some(entry => deepEqual(entry, value[key]))
+          && schema.anyOf.every(other => other === branch || (
+            other.required?.includes(key) && Array.isArray(other.properties?.[key]?.enum)
+            && property.enum.every(entry => !other.properties[key].enum.some(candidate => deepEqual(entry, candidate)))
+          ))
+        ))
+      )) : null;
+      if (selected) errors.push(...selected.errors);
+      else errors.push({ path, message: "must match at least one anyOf branch" });
+    }
   }
   if (schema.type !== undefined && !matchesType(schema.type, value)) {
     errors.push({ path, message: `must be ${schema.type}; received ${valueType(value)}` });

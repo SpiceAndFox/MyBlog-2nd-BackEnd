@@ -15,6 +15,7 @@ test("provider preflight exercises every normal proposer and both maintenance sc
     "scene", "todos", "standingAgreements", "episodes",
     "profileRelationship:userProfile", "profileRelationship:assistantProfile", "profileRelationship:relationship",
     "worldFacts", "compaction:todos", "librarian",
+    "todos:v2-add-relative", "todos:v2-revise-keep", "todos:v2-complete",
   ]);
   assert.equal(new Set(requests.map((request) => request.responseSchema.name)).size, 10);
   assert.equal(requests.every((request) => request.responseSchema.strict === true), true);

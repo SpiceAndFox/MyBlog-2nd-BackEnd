@@ -1,0 +1,30 @@
+{
+  "results": {
+    "todos": {
+      "status": "changes",
+      "changes": [
+        {
+          "action": "revise",
+          "sources": [
+            "message:101"
+          ],
+          "target": "T1",
+          "text": {
+            "mode": "keep"
+          },
+          "actor": {
+            "mode": "keep"
+          },
+          "requester": {
+            "mode": "keep"
+          },
+          "due": {
+            "mode": "relativeDays",
+            "offset": 1,
+            "anchorSource": "message:101"
+          }
+        }
+      ]
+    }
+  }
+}

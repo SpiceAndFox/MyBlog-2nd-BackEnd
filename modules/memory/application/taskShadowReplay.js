@@ -11,6 +11,7 @@ const { createRepairFeedback, isTransportRepairFailure } = require("./outputRepa
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
+const { resolveOutputProtocol } = require("../contracts/outputProtocol");
 
 function rowValue(row, snake, camel = snake) {
   return row?.[snake] ?? row?.[camel];
@@ -133,8 +134,8 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
       stagePayload,
       rowValue(row, "context_expansion_attempt", "contextExpansionAttempt"),
     );
-    const prompt = await promptLoader(envelope.task.proposer);
-    const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections);
+    const prompt = await promptLoader(envelope.task.proposer, envelope.task);
+    const outputSchema = buildOutputSchema(envelope.task.proposer, envelope.task.targetSections, envelope.task);
     const requestedModel = resolveMemoryProviderModel(config.provider, envelope.task.proposer);
     const persistedSemanticResult = stagePayload.semanticResult ?? null;
     const persistedUnableResult = stagePayload.unableResult ?? null;
@@ -162,6 +163,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         semanticInputVariant: inputVariant,
       },
       provenance: {
+        outputProtocol: resolveOutputProtocol(envelope.task),
         adapter: config.provider.adapter,
         requestedModel,
         thinkingMode: config.provider.thinkingMode ?? null,
@@ -174,6 +176,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         },
       },
       baseline: persistedResult ? {
+        providerProtocol: stagePayload.providerProtocol ?? null,
         resultKind: persistedSemanticResult ? "semanticResult" : "unableResult",
         resultHash: sha256(persistedResult),
         semanticResultHash: persistedSemanticResult ? sha256(persistedSemanticResult) : null,
@@ -196,6 +199,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
       providerResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
       providerAttempts.push({
         attempt,
+        protocol: providerResult.protocol ?? null,
         status: providerResult.status,
         reason: providerResult.reason ?? null,
         model: providerResult.model ?? requestedModel,

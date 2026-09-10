@@ -314,6 +314,16 @@ function createNormalProviderRecovery({
         providerCallCount / Math.max(1, messageCount),
       );
       const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
+      if (result.protocol) {
+        const protocolLabels = { targetKey: envelope.task.targetKey, outputProtocol: result.protocol.outputProtocol,
+          outputChannel: result.protocol.outputChannel, rawSchemaValid: String(result.protocol.rawSchemaValid) };
+        metrics?.increment("memory_provider_wire_results_total", protocolLabels);
+        metrics?.observe("memory_provider_schema_bytes", { outputProtocol: result.protocol.outputProtocol }, result.protocol.schemaBytes);
+        if (Number.isSafeInteger(result.protocol.wireSchemaBytes)) {
+          metrics?.observe("memory_provider_wire_schema_bytes", { outputProtocol: result.protocol.outputProtocol }, result.protocol.wireSchemaBytes);
+        }
+        if (result.normalizations?.length) metrics?.increment("memory_provider_wire_normalizations_total", protocolLabels);
+      }
       const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
       if (Number.isFinite(inputTokens)) {
         metrics?.observe(

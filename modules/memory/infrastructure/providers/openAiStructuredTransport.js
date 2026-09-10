@@ -4,6 +4,8 @@ const {
 } = require("./providerProtocol");
 const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
 const { parseStrictJsonContent } = require("./structuredJsonContent");
+const { validateProviderWireOutput } = require("./validateProviderWireOutput");
+const { providerWireSchemaMetadata } = require("./providerProtocolMetadata");
 
 function createOpenAiStructuredTransport({
   baseUrl,
@@ -31,7 +33,7 @@ function createOpenAiStructuredTransport({
       compileSchema,
       extraBody,
     });
-    assertStructuredRequestLimits({ messages: body.messages, maxInputTokens, maxOutputTokens });
+    assertStructuredRequestLimits({ ...body, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
@@ -76,11 +78,16 @@ function createOpenAiStructuredTransport({
         transportRecovery = parsed.transportRecovery;
         outputSchemaValidation = parsed.schemaValidation;
       }
-      if (!transportError && !outputSchemaValidation && typeof validateOutputSchema === "function") {
-        outputSchemaValidation = validateOutputSchema(request?.responseSchema?.schema, output);
+      if (!transportError) {
+        outputSchemaValidation = validateProviderWireOutput(request.responseSchema, output);
+        output = outputSchemaValidation.output;
       }
       return {
         output,
+        outputChannel: "content",
+        ...providerWireSchemaMetadata(body),
+        rawSchemaValid: outputSchemaValidation?.rawSchemaValid ?? false,
+        wireNormalizations: outputSchemaValidation?.normalizations ?? [],
         rawOutput,
         finishReason,
         model: data?.model ?? requestedModel,

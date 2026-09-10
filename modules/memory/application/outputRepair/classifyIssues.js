@@ -36,7 +36,7 @@ function inferIssueCode(issue) {
   return ISSUE_CODES.CONTRACT_INVALID;
 }
 
-function canonicalMessage(code, issue, { usesFlatWire = false } = {}) {
+function canonicalMessage(code, issue, { usesFlatWire = false, usesTodoV2 = false } = {}) {
   const messages = {
     [ISSUE_CODES.OBJECT_REQUIRED]: "must be an object",
     [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: "sectionResults must be an object",
@@ -50,9 +50,9 @@ function canonicalMessage(code, issue, { usesFlatWire = false } = {}) {
     [ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE]: "previous structured output ended before JSON was complete",
     [ISSUE_CODES.STRUCTURED_OUTPUT_MISSING]: "structured tool arguments are missing",
   };
-  if (usesFlatWire) {
+  if (usesFlatWire || usesTodoV2) {
     Object.assign(messages, {
-      [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: "root output must match sectionStatuses and changes",
+      [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: usesTodoV2 ? "root output must match results.todos" : "root output must match sectionStatuses and changes",
       [ISSUE_CODES.WRITABLE_REF_INVALID]: "target must be selected from the bound writable enum",
       [ISSUE_CODES.SUPPORT_REF_INVALID]: "sources must be selected from the bound source enum",
       [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "sources must be selected from the bound source enum",
@@ -78,7 +78,7 @@ function classifyIssues(errors, options = {}) {
 function summarizeOutputShape(output) {
   const summary = { rootType: valueType(output) };
   if (!output || typeof output !== "object" || Array.isArray(output)) return summary;
-  const knownTopLevelKeys = ["operations", "proposer", "sectionResults", "status", "tickId"];
+  const knownTopLevelKeys = ["operations", "proposer", "sectionResults", "sectionStatuses", "changes", "results", "status", "tickId"];
   const actualTopLevelKeys = Object.keys(output);
   summary.topLevelKeys = knownTopLevelKeys.filter((key) => actualTopLevelKeys.includes(key));
   const unexpectedTopLevelKeyCount = actualTopLevelKeys.length - summary.topLevelKeys.length;

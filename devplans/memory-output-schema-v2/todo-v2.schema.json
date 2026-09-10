@@ -1,0 +1,657 @@
+{
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "object",
+      "properties": {
+        "todos": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "noop"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "unable_to_decide"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "changes"
+                  ]
+                },
+                "changes": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "add"
+                            ]
+                          },
+                          "sources": {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "message:101"
+                              ]
+                            },
+                            "description": "One or more visible message:ID or memory:REF source tokens.",
+                            "maxItems": 16
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Full result text, except append: only the new fragment. Omit for terminal actions.",
+                            "maxLength": 300
+                          },
+                          "actor": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant",
+                              "both"
+                            ]
+                          },
+                          "requester": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant"
+                            ]
+                          },
+                          "due": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "none"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "absolute"
+                                    ]
+                                  },
+                                  "date": {
+                                    "type": "string",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "date"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeDays"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeMonths"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeYears"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "dayOfMonth"
+                                    ]
+                                  },
+                                  "day": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 31
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "day",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "text",
+                          "actor",
+                          "requester",
+                          "due"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "revise",
+                              "correct"
+                            ]
+                          },
+                          "sources": {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "message:101"
+                              ]
+                            },
+                            "description": "One or more visible message:ID or memory:REF source tokens.",
+                            "maxItems": 16
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Writable short ref. Omit only for add.",
+                            "enum": [
+                              "T1"
+                            ]
+                          },
+                          "text": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Full result text, except append: only the new fragment. Omit for terminal actions.",
+                                    "maxLength": 300
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "actor": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string",
+                                    "enum": [
+                                      "user",
+                                      "assistant",
+                                      "both"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "requester": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string",
+                                    "enum": [
+                                      "user",
+                                      "assistant"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "due": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "clear"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "absolute"
+                                    ]
+                                  },
+                                  "date": {
+                                    "type": "string",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "date"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeDays"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeMonths"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "relativeYears"
+                                    ]
+                                  },
+                                  "offset": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "offset",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "dayOfMonth"
+                                    ]
+                                  },
+                                  "day": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 31
+                                  },
+                                  "anchorSource": {
+                                    "type": "string",
+                                    "enum": [
+                                      "message:101"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "day",
+                                  "anchorSource"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "target",
+                          "text",
+                          "actor",
+                          "requester",
+                          "due"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "forget",
+                              "complete",
+                              "cancel",
+                              "expire"
+                            ]
+                          },
+                          "sources": {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "message:101"
+                              ]
+                            },
+                            "description": "One or more visible message:ID or memory:REF source tokens.",
+                            "maxItems": 16
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Writable short ref. Omit only for add.",
+                            "enum": [
+                              "T1"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "target"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "status",
+                "changes"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "results"
+  ],
+  "additionalProperties": false
+}

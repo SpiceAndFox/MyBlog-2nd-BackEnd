@@ -8,6 +8,7 @@ const {
   bindSpecialistSchema,
 } = require("./bindOutputSchema");
 const { buildStructuredHttpRequest } = require("./structuredHttpRequest");
+const { providerProtocolMetadata, providerWireSchemaMetadata } = require("./providerProtocolMetadata");
 
 const PROFILE_SPECIALISTS = Object.freeze([
   Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),
@@ -44,6 +45,8 @@ function previewEntry(providerConfig, semanticRequest, { phase, section = null }
     method: httpRequest.method,
     endpoint: httpRequest.endpoint,
     body: httpRequest.body,
+    ...(httpRequest.schemaDiagnostics ? { schemaDiagnostics: httpRequest.schemaDiagnostics } : {}),
+    ...(semanticRequest.protocol ? { protocol: { ...semanticRequest.protocol, ...providerWireSchemaMetadata(httpRequest.body) } } : {}),
   };
 }
 
@@ -61,14 +64,14 @@ async function buildProviderRequestPreviews({
   const userPayload = buildProposerUserPayload(envelope);
   if (envelope.task.proposer !== "profileRelationshipProposer") {
     const responseSchema = bindOutputSchema(
-      buildOutputSchema(envelope.task.proposer, envelope.task.targetSections),
+      buildOutputSchema(envelope.task.proposer, envelope.task.targetSections, envelope.task),
       envelope.artifact,
       envelope.task.targetSections,
     );
     const repair = schemaRepairRequest(
-      await promptLoader(envelope.task.proposer),
+      await promptLoader(envelope.task.proposer, envelope.task),
       repairFeedback,
-      userPayload.task,
+      { ...userPayload.task, outputProtocol: envelope.task.outputProtocol },
       rejectedOutput,
     );
     return [previewEntry(providerConfig, {
@@ -77,6 +80,7 @@ async function buildProviderRequestPreviews({
       userPayload,
       repairContext: repair.repairContext,
       responseSchema,
+      protocol: providerProtocolMetadata(envelope.task, responseSchema),
     }, {
       phase: repairFeedback ? "schema-repair" : "initial",
     })];

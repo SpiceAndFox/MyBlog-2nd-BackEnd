@@ -1,4 +1,6 @@
 const { buildDueAtSchema } = require("../../contracts/dueAt");
+const { usesTodoV2 } = require("../../contracts/outputProtocol");
+const { buildTodoV2OutputSchema } = require("./todoWireProtocolV2");
 const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
@@ -304,7 +306,8 @@ function buildLibrarianOutputSchema() {
   };
 }
 
-function buildOutputSchema(proposer, targetSections) {
+function buildOutputSchema(proposer, targetSections, protocol = {}) {
+  if (usesTodoV2({ ...protocol, proposer })) return buildTodoV2OutputSchema();
   if (proposer === LIBRARIAN_PROPOSER) return buildLibrarianOutputSchema();
   if (proposer === "compactionProposer") {
     if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");

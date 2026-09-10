@@ -1,4 +1,5 @@
 const { sectionLimits } = require("../../contracts/sectionPolicy");
+const { TODO_V2_SCHEMA_NAME, buildTodoV2OutputSchema } = require("./todoWireProtocolV2");
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -82,6 +83,7 @@ function bindSectionResult(resultSchema, artifact, section) {
 }
 
 function bindOutputSchema(schema, artifact, sections) {
+  if (schema.name === TODO_V2_SCHEMA_NAME) return buildTodoV2OutputSchema(artifact);
   if (isFlatWireSchema(schema)) return bindFlatWireOutputSchema(schema, artifact, sections);
   const bound = structuredClone(schema);
   if (bound.name === "memory_librarian_semantic") {

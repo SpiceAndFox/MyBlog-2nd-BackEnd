@@ -8,6 +8,7 @@ const {
   SAFE_NORMALIZATIONS,
 } = require("./policy");
 const { isFlatWireProposer } = require("../../contracts/flatWire");
+const { usesTodoV2 } = require("../../contracts/outputProtocol");
 const { renderRepairInstruction, renderRepairMessage } = require("./renderRepairInstruction");
 
 function createRepairFeedback(detail = {}, attempt = 0, task = null) {
@@ -47,7 +48,7 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
   const errors = classifyIssues([
     ...(transportIssue ? [transportIssue] : []),
     ...(Array.isArray(safeDetail.errors) ? safeDetail.errors : []),
-  ], { usesFlatWire: isFlatWireProposer(task?.proposer) });
+  ], { usesFlatWire: isFlatWireProposer(task?.proposer) && !usesTodoV2(task), usesTodoV2: usesTodoV2(task) });
   if (!errors.length) {
     errors.push({
       code: ISSUE_CODES.CONTRACT_INVALID,
@@ -109,6 +110,7 @@ function appendRejectedOutputAttempt(stagePayload, adapterResult, attempt, maxEn
   if (!captured) return next;
   const entry = {
     attempt,
+    ...(adapterResult?.protocol ? { protocol: structuredClone(adapterResult.protocol) } : {}),
     ...(adapterResult?.detail?.specialist ? { specialist: adapterResult.detail.specialist } : {}),
     ...captured,
   };

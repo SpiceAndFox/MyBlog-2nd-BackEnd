@@ -5,7 +5,8 @@ const {
 } = require("./providerProtocol");
 const { buildDeepSeekHttpRequest, normalizeBaseUrl } = require("./structuredHttpRequest");
 const { parseStrictJsonContent } = require("./structuredJsonContent");
-const { validateLocalJsonSchema } = require("./localJsonSchemaValidator");
+const { validateProviderWireOutput } = require("./validateProviderWireOutput");
+const { providerWireSchemaMetadata } = require("./providerProtocolMetadata");
 
 function parseToolArguments(value) {
   if (value && typeof value === "object") return { output: value, recovery: null, error: null };
@@ -39,8 +40,9 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
   return async function invokeStructured(request) {
     const { responseSchema } = request;
     const functionName = responseSchema?.name;
-    const { endpoint, body } = buildDeepSeekHttpRequest(providerConfig, request);
-    assertStructuredRequestLimits({ messages: body.messages, maxInputTokens, maxOutputTokens });
+    const { endpoint, body, schemaDiagnostics } = buildDeepSeekHttpRequest(providerConfig, request);
+    const wireMetadata = providerWireSchemaMetadata(body);
+    assertStructuredRequestLimits({ ...body, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
@@ -73,9 +75,14 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
       if (thinkingMode === "enabled" && !choice?.message?.tool_calls?.length
         && typeof content === "string" && content.trim()) {
         const parsed = parseStrictJsonContent(content, { finishReason });
-        const validation = parsed.transportError ? null : validateLocalJsonSchema(responseSchema.schema, parsed.output);
+        const validation = parsed.transportError ? null : validateProviderWireOutput(responseSchema, parsed.output);
         return {
-          output: parsed.output,
+          output: validation?.output ?? parsed.output,
+          outputChannel: "content",
+          ...wireMetadata,
+          schemaDiagnostics,
+          rawSchemaValid: validation?.rawSchemaValid ?? false,
+          wireNormalizations: validation?.normalizations ?? [],
           rawOutput: content,
           finishReason,
           model: data?.model ?? requestedModel,
@@ -95,8 +102,15 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
       ) {
         parsed.error = "tool_arguments_incomplete_json";
       }
+      const validation = parsed.error ? null : validateProviderWireOutput(responseSchema, parsed.output);
       return {
-        output: parsed.output,
+        output: validation?.output ?? parsed.output,
+        outputChannel: "tool_arguments",
+        ...wireMetadata,
+        schemaDiagnostics,
+        rawSchemaValid: validation?.rawSchemaValid ?? false,
+        wireNormalizations: validation?.normalizations ?? [],
+        ...(validation && !validation.ok ? { outputSchemaErrors: validation.errors } : {}),
         rawOutput,
         finishReason,
         model: data?.model ?? requestedModel,

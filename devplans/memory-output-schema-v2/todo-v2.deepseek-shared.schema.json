@@ -1,0 +1,533 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "todos": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "noop"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "unable_to_decide"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "changes"
+                  ]
+                },
+                "changes": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "add"
+                            ]
+                          },
+                          "sources": {
+                            "$ref": "#/$def/s1"
+                          },
+                          "text": {
+                            "$ref": "#/$def/s2"
+                          },
+                          "actor": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant",
+                              "both"
+                            ]
+                          },
+                          "requester": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant"
+                            ]
+                          },
+                          "due": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "none"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "$ref": "#/$def/s3"
+                              },
+                              {
+                                "$ref": "#/$def/s4"
+                              },
+                              {
+                                "$ref": "#/$def/s5"
+                              },
+                              {
+                                "$ref": "#/$def/s6"
+                              },
+                              {
+                                "$ref": "#/$def/s7"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "text",
+                          "actor",
+                          "requester",
+                          "due"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "revise",
+                              "correct"
+                            ]
+                          },
+                          "sources": {
+                            "$ref": "#/$def/s1"
+                          },
+                          "target": {
+                            "type": "string",
+                            "description": "Writable short ref. Omit only for add. String length must be at least 1 Unicode characters.",
+                            "enum": [
+                              "T1"
+                            ]
+                          },
+                          "text": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "$ref": "#/$def/s2"
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ]
+                              }
+                            ]
+                          },
+                          "actor": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string",
+                                    "enum": [
+                                      "user",
+                                      "assistant",
+                                      "both"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ]
+                              }
+                            ]
+                          },
+                          "requester": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "set"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string",
+                                    "enum": [
+                                      "user",
+                                      "assistant"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode",
+                                  "value"
+                                ]
+                              }
+                            ]
+                          },
+                          "due": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keep"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "mode": {
+                                    "type": "string",
+                                    "enum": [
+                                      "clear"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "mode"
+                                ]
+                              },
+                              {
+                                "$ref": "#/$def/s3"
+                              },
+                              {
+                                "$ref": "#/$def/s4"
+                              },
+                              {
+                                "$ref": "#/$def/s5"
+                              },
+                              {
+                                "$ref": "#/$def/s6"
+                              },
+                              {
+                                "$ref": "#/$def/s7"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "target",
+                          "text",
+                          "actor",
+                          "requester",
+                          "due"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "forget",
+                              "complete",
+                              "cancel",
+                              "expire"
+                            ]
+                          },
+                          "sources": {
+                            "$ref": "#/$def/s1"
+                          },
+                          "target": {
+                            "type": "string",
+                            "description": "Writable short ref. Omit only for add. String length must be at least 1 Unicode characters.",
+                            "enum": [
+                              "T1"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "sources",
+                          "target"
+                        ]
+                      }
+                    ]
+                  },
+                  "description": "Array must contain at least 1 items."
+                }
+              },
+              "required": [
+                "status",
+                "changes"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "todos"
+      ]
+    }
+  },
+  "required": [
+    "results"
+  ],
+  "$def": {
+    "s1": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "message:101"
+        ]
+      },
+      "description": "One or more visible message:ID or memory:REF source tokens. Array must contain at least 1 items. Array must contain at most 16 items. Array items must be unique."
+    },
+    "s2": {
+      "type": "string",
+      "description": "Full result text, except append: only the new fragment. Omit for terminal actions. String length must be at least 1 Unicode characters. String length must be at most 300 Unicode characters."
+    },
+    "s3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "absolute"
+          ]
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        }
+      },
+      "required": [
+        "mode",
+        "date"
+      ]
+    },
+    "s4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "relativeDays"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "anchorSource": {
+          "type": "string",
+          "enum": [
+            "message:101"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "offset",
+        "anchorSource"
+      ]
+    },
+    "s5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "relativeMonths"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "anchorSource": {
+          "type": "string",
+          "enum": [
+            "message:101"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "offset",
+        "anchorSource"
+      ]
+    },
+    "s6": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "relativeYears"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "anchorSource": {
+          "type": "string",
+          "enum": [
+            "message:101"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "offset",
+        "anchorSource"
+      ]
+    },
+    "s7": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "dayOfMonth"
+          ]
+        },
+        "day": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31
+        },
+        "anchorSource": {
+          "type": "string",
+          "enum": [
+            "message:101"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "day",
+        "anchorSource"
+      ]
+    }
+  }
+}
