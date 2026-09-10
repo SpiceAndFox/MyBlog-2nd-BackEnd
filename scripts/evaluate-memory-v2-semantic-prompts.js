@@ -227,8 +227,56 @@ function agreementRoleEndCase(config) {
   };
 }
 
+function todoRequesterCases(config) {
+  return ["active-confirmation", "overdue-confirmation", "incorrect-origin"].map((scenario, index) => {
+    const correction = scenario === "incorrect-origin";
+    const overdue = scenario === "overdue-confirmation";
+    const state = contracts.createInitialMemoryState();
+    const messages = [
+      { ...message(8, "我来整理采购清单。", "assistant"), createdAt: "2026-01-01T08:00:00.000Z" },
+      { ...message(10, "那你整理好给我看看。"), createdAt: "2026-01-01T08:01:00.000Z" },
+    ];
+    state.meta.targetCursors.todos = 8;
+    state.working.todos.push({
+      ...item("todo:shopping-list", "整理采购清单", 8), actor: "assistant", requester: correction ? "user" : "assistant",
+      status: overdue ? "overdue" : "active", dueAt: overdue ? "2026-01-02T00:00:00.000Z" : null,
+      becameOverdueAt: overdue ? "2026-01-02T00:00:00.000Z" : null,
+      sourceRefs: [{ messageId: 8, contentHash: messages[0].contentHash }],
+    });
+    const envelope = buildEnvelope({ config, state, messages, tickId: 6 + index,
+      intent: { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 8, trigger: { type: "evaluation" } },
+    });
+    return {
+      id: `todo-requester-${scenario}`,
+      envelope,
+      score(output) {
+        const validation = contracts.validateSemanticResult(output, envelope.artifact);
+        if (!validation.ok) return validation.errors.map(error => `${error.path}: ${error.message}`);
+        const result = output.sectionResults.todos;
+        if (!correction && result.status === "noop") return [];
+        const edits = changes(output, "todos");
+        if (result.status !== "changes" || edits.length !== 1) return ["todos should preserve the proposal origin, using noop or one supported edit"];
+        const [edit] = edits;
+        const errors = [];
+        if (edit.ref !== "T1" || !(correction ? ["correct"] : ["revise", "correct"]).includes(edit.action)) {
+          errors.push("T1 must not be duplicated, terminated or revived to change its requester");
+        }
+        if ((correction && edit.requester !== "assistant") || (!correction && edit.requester !== undefined && edit.requester !== "assistant")) {
+          errors.push("requester must remain the original proposer, or correct an incorrectly recorded origin");
+        }
+        if ((edit.actor !== undefined && edit.actor !== "assistant") || (edit.text !== undefined && edit.text !== "整理采购清单")
+          || edit.dueChange?.mode !== "keep") errors.push("confirmation must preserve the existing actor, text and deadline");
+        const evidence = edit.evidenceMessageIds || [];
+        if (!evidence.includes(correction ? 8 : 10)) errors.push("the edit must cite the origin evidence or the new confirmation");
+        return errors;
+      },
+    };
+  });
+}
+
 function buildCases(config) {
-  return [profilePreferenceCase(config), profileTransientCase(config), profileRoleEndCase(config), profileLongWindowCoverageCase(config), agreementRoleEndCase(config)];
+  return [profilePreferenceCase(config), profileTransientCase(config), profileRoleEndCase(config), profileLongWindowCoverageCase(config),
+    ...todoRequesterCases(config), agreementRoleEndCase(config)];
 }
 
 async function evaluate({ adapter, config, cases = buildCases(config) }) {

@@ -4,6 +4,13 @@ const assert = require("node:assert/strict");
 const { buildCases, evaluate } = require("../../../scripts/evaluate-memory-v2-semantic-prompts");
 
 function outputFor(fixtureId) {
+  if (fixtureId.startsWith("todo-requester-")) {
+    const correction = fixtureId === "todo-requester-incorrect-origin";
+    return { tickId: correction ? 8 : fixtureId === "todo-requester-active-confirmation" ? 6 : 7,
+      proposer: "todoProposer", sectionResults: { todos: correction
+        ? { status: "changes", changes: [{ action: "correct", ref: "T1", requester: "assistant", dueChange: { mode: "keep" }, evidenceMessageIds: [8] }] }
+        : { status: "noop" } } };
+  }
   if (fixtureId === "profile-reusable-preference-without-permanence-marker") {
     return {
       tickId: 1,
@@ -102,4 +109,26 @@ test("semantic prompt evaluator reports over-broad cancellation", async () => {
   const [result] = await evaluate({ adapter: { propose: async () => ({ status: "ok", output }) }, cases: [fixture] });
   assert.equal(result.passed, false);
   assert.match(result.errors.join("\n"), /A3 should remain/);
+});
+
+test("requester evaluation rejects swapped origins and fabricated changes while allowing confirmation evidence", () => {
+  const cases = buildCases(createMemoryTestConfig()).filter(fixture => fixture.id.startsWith("todo-requester-"));
+  assert.equal(cases.length, 3);
+  for (const fixture of cases) {
+    const valid = outputFor(fixture.id);
+    assert.deepEqual(fixture.score(valid), []);
+    const correction = fixture.id.endsWith("incorrect-origin");
+    const evidence = { ...valid, sectionResults: { todos: { status: "changes", changes: [{
+      action: correction ? "correct" : "revise", ref: "T1", requester: "assistant", dueChange: { mode: "keep" }, evidenceMessageIds: [8, 10],
+    }] } } };
+    assert.deepEqual(fixture.score(evidence), []);
+    const wrongOrigin = structuredClone(evidence);
+    wrongOrigin.sectionResults.todos.changes[0].requester = "user";
+    assert.ok(fixture.score(wrongOrigin).some(error => error.includes("requester")));
+    const inventedDate = structuredClone(evidence);
+    inventedDate.sectionResults.todos.changes[0].dueChange = { mode: "clear" };
+    assert.ok(fixture.score(inventedDate).some(error => error.includes("deadline")));
+    assert.ok(fixture.score({ ...valid, sectionResults: { todos: { status: "unable_to_decide" } } }).length);
+    if (correction) assert.ok(fixture.score({ ...valid, sectionResults: { todos: { status: "noop" } } }).length);
+  }
 });

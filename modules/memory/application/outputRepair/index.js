@@ -143,6 +143,14 @@ function latestRejectedOutput(stagePayload, feedback = null) {
   return selected?.available === true ? selected.output : undefined;
 }
 
+function repairContextForInput(stagePayload, inputVariant = "base") {
+  const feedback = stagePayload?.schemaRepairFeedback;
+  // Old feedback has no input binding. It remains usable for the base window,
+  // but must not be assumed to describe a later expanded invocation.
+  const repairFeedback = feedback && (feedback.inputVariant ?? "base") === inputVariant ? feedback : null;
+  return { repairFeedback, rejectedOutput: repairFeedback ? latestRejectedOutput(stagePayload, repairFeedback) : undefined };
+}
+
 module.exports = {
   ISSUE_CODES,
   OUTPUT_REPAIR_POLICY_VERSION,
@@ -161,6 +169,7 @@ module.exports = {
   renderRepairInstruction,
   renderRepairMessage,
   repairAttemptCount,
+  repairContextForInput,
   summarizeOutputShape,
   valueType,
 };

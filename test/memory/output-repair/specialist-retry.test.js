@@ -120,7 +120,7 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
   assert.equal(calls[3].proposer, "relationshipProposer");
   assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
   assert.equal(Object.hasOwn(calls[3].repairContext, "assistantOutput"), false);
-  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V9\]/);
+  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V10\]/);
   assert.match(calls[3].repairContext.userMessage, /JSON 完成前中止/);
   assert.match(calls[3].repairContext.userMessage, /sources 仅保留.*最少来源/);
   assert.match(calls[3].repairContext.userMessage, /section 才使用 noop/);

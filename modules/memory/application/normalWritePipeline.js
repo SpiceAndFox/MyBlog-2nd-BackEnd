@@ -243,6 +243,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return null;
       const payload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       payload.unableResult = structuredClone(output);
+      // A valid unable result ends this repair conversation. Keep rejected
+      // candidates and counters; the feedback history is retained in ops.
+      delete payload.schemaRepairFeedback;
       if (providerProtocol) payload.providerProtocol = structuredClone(providerProtocol);
       if (numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") > 0 && !payload.expandedArtifact) {
         payload.expandedArtifact = expandedArtifactFromEnvelope(envelope);
@@ -293,6 +296,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found during context expansion");
       const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      // Also covers older tasks interrupted after persisting unable.
+      delete stagePayload.schemaRepairFeedback;
       if (!stagePayload.expandedArtifact) {
         const expandedEnvelope = await buildExpandedEnvelope(envelope, client, stagePayload.normalContextWindow);
         stagePayload.expandedArtifact = expandedArtifactFromEnvelope(expandedEnvelope);

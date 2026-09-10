@@ -256,3 +256,27 @@ test("Memory task GUI HTTP API performs SELECT-only reads", async (context) => {
   const rejected = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST" });
   assert.equal(rejected.status, 405);
 });
+
+test("Memory task GUI keeps base rejection history but only replays feedback bound to expanded input", async () => {
+  const row = taskRow({ stage: "context_expanded", context_expansion_attempt: 1 });
+  const rejected = { changes: "base candidate" };
+  row.stage_payload = {
+    expandedArtifact: { publicInput: row.task_payload.artifact.publicInput, messageMeta: row.task_payload.artifact.messageMeta },
+    schemaRepairFeedback: { policyVersion: 9, attempt: 1, errors: [{ code: "CONTRACT_INVALID", path: "$.changes" }] },
+    schemaRejectedOutputs: [{ attempt: 0, available: true, output: rejected }],
+  };
+  const dependencies = { promptLoader: async () => "prompt", providerConfig: providerConfig() };
+  const oldTask = await hydrateTask(row, dependencies);
+  assert.equal(oldTask.input.repairFeedback, null);
+  assert.equal(oldTask.input.currentRepairPrompt, null);
+  assert.deepEqual(oldTask.input.providerRequests[0].body.messages.map(message => message.role), ["system", "user"]);
+  assert.deepEqual(oldTask.output.rejectedOutputs[0].output, rejected);
+
+  row.stage = "schema_invalid_retry";
+  row.stage_payload.schemaRepairFeedback.inputVariant = "expanded";
+  row.stage_payload.schemaRejectedOutputs[0].output = { changes: "expanded candidate" };
+  const currentTask = await hydrateTask(row, dependencies);
+  const messages = currentTask.input.providerRequests[0].body.messages;
+  assert.deepEqual(messages.map(message => message.role), ["system", "user", "assistant", "user"]);
+  assert.equal(messages[2].content, '{"changes":"expanded candidate"}');
+});

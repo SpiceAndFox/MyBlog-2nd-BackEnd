@@ -37,7 +37,23 @@ Safety invariants:
 Increment `OUTPUT_REPAIR_POLICY_VERSION` when a policy change can alter repair
 instructions, normalization, retry scope, or acceptance behavior.
 
-## Business and composite repair (policy v9)
+## Repair conversation lifetime (policy v10)
+
+- Normal-task repair feedback is bound to `inputVariant=base|expanded` when the
+  retry is reserved. `repairContextForInput` is shared by execution and the task
+  viewer; rejected-output history alone does not activate a repair conversation.
+- Persisting a valid `unable_to_decide` result ends active repair in the same
+  transaction. Context expansion also clears feedback for older interrupted
+  tasks. Candidate history, ops diagnostics and retry counters remain intact.
+  A new failure after expansion starts repair against the expanded input, using
+  the remaining task-wide allowance and surviving subsequent restarts.
+- Legacy feedback without an input binding can still repair the base input.
+  It is not replayed against expanded input: old rows do not reliably identify
+  which window produced it. Such history remains inspectable; budgets are not
+  reset. This conservative fallback may omit useful feedback from an old
+  expanded attempt, but never pairs an unbound candidate with a new window.
+
+## Business and composite repair
 
 - Domain validators use `writeIssue` / `rejectWriteIssues` to report a stable
   reason, a semantic path and bounded facts/constraints. `locateWriteError`
@@ -49,6 +65,10 @@ instructions, normalization, retry scope, or acceptance behavior.
   Register an entry in `renderBusinessRepair.js` only when a rule needs special
   advice. That entry owns the description, planned directive and rendered advice.
   Never put raw messages, credentials or arbitrary item dumps in issue metadata.
+- Todo prompts define requester as the original proposer of the action. Later
+  confirmation does not replace that origin. Requester-specific repair guidance
+  repeats this distinction; supported corrections remain subject to existing
+  state rules. The runtime does not infer requester from conversational keywords.
 - `providerBusinessRejection` maps both issue and related paths to the invocation
   wire format. Composite Profile output-repair failures store a bounded
   `specialist_bundle` of individual candidates, protocol metadata and pending

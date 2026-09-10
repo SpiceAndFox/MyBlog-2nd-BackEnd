@@ -72,6 +72,10 @@
 - Assistant 承诺自己：`actor=assistant`，`requester=assistant`。
 - 共同计划：`actor=both`，`requester` 使用实际提出方。
 
+已有事项的 `requester` 记录最初提出这项行动的一方。后续接受、催促、质疑、再次确认或重复请求，不改变提出方；执行者的变化也不能作为更改 requester 的依据。
+
+例如 Assistant 先说“我来整理采购清单”，用户随后说“那你整理好给我看看”，仍保留 `requester=assistant`。确认没有实质发展时使用 noop；确需更新其他内容或补充证据时，保留原 requester。只有可见证据证明旧 requester 从一开始就记录错误，才考虑用 correct 更正，并继续遵守该事项当前状态的操作限制。不得为了通过校验掩盖真实错误，也不得仅因出现了新的请求语句就重写提出方。
+
 同一句话包含两个可独立行动时，分别生成两个 todo；同一行动的步骤或条件不拆分。
 
 ## 日期理解与证据锚定

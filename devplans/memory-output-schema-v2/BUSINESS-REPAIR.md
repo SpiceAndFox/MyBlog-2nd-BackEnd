@@ -24,7 +24,7 @@
 
 Reducer 预检错误定位到具体 change 和字段。Provider Adapter 保留经过解析的原始 wire 输出，重试向模型回传原始 v2 候选及映射后的 v2 字段路径。生产调用不再把内部 Semantic IR 当作模型刚才的回答。注入式适配器缺少原始候选时，仅对合法 IR 做明确标记的重新编码。
 
-错误日志及持久化反馈标记 `validationLayer=business`，保留候选的协议、schema hash 和原始结构校验结果；拒绝记录另存 `outputKind`，区分原始 wire、重新编码与 Profile 的 `specialist_bundle`。错误反馈使用 repair policy v9，持久化恢复后仍可生成相同修复消息。
+错误日志及持久化反馈标记 `validationLayer=business`，保留候选的协议、schema hash 和原始结构校验结果；拒绝记录另存 `outputKind`，区分原始 wire、重新编码与 Profile 的 `specialist_bundle`。错误反馈使用 repair policy v10，持久化恢复后仍可生成相同修复消息。
 
 专用反馈覆盖逾期改期冲突、逾期恢复时更换参与者、来源超限、与已有条目重复，以及同一目标的操作冲突。常规 prompt 和受保护的 JSON 示例未修改。
 
@@ -53,6 +53,13 @@ Reducer 预检错误定位到具体 change 和字段。Provider Adapter 保留�
 这些反馈按已知错误生成修复方向，不替模型推断原始消息中不存在的事实，也不保证模型每次都能修复成功。
 
 ## 验证记录
+
+2026-09-10 补充：任务 `e723a77d-6af1-4070-a11c-d2bfb969a17a` 的业务拒绝来自修改逾期待办的 requester，随后返回 unable 并扩窗，最终记录输出截断。本轮只处理以下两点：
+
+- 两版 Todo prompt 明确 requester 为事项最初提出方，接受、催促、质疑和再次确认不会自动覆盖它；有证据证明原记录错误时仍可考虑 correct，并受原有状态规则约束。动态 requester 拒绝反馈同步说明。JSON 示例未修改，未增加基于对话关键词的自动字段改写。
+- 保存合法 unable 时原子地清除当前修复反馈；保留候选历史、ops 错误和重试计数。新的反馈绑定 base/expanded 输入，执行和任务查看器共用选择逻辑。旧反馈没有绑定时仅在 base 下兼容复用，expanded 下保留历史但不回传无法确认所属窗口的候选。新 expanded 错误仍能重试及跨重启恢复。
+
+新增 7 项离线测试后，架构检查和 527 项测试通过；另加入 3 个可用于真实 Provider 评估的合成 requester 场景（active 确认、overdue 确认、纠正原记录）。本轮验证了恢复流程与评估器评分，未调用真实 LLM，因此不声称已验证模型判断准确率的改善。没有调整输出预算、unable 原因分类或扩窗的信息增量检查，也没有重新执行失败任务。
 
 - 首轮修复：`npm.cmd run test:offline` 的架构检查和 501 项测试通过。
 - 业务反馈完善：`npm.cmd run test:offline` 的架构检查和 512 项测试通过，新增 11 项回归测试；`git diff --check` 通过。

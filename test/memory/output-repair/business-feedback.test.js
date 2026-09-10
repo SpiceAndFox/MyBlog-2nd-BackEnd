@@ -49,6 +49,19 @@ test("source-limit and duplicate rejections produce field-specific corrective in
   assert.doesNotMatch(message, /sectionResults|evidenceMessageIds/);
 });
 
+test("requester repair distinguishes the original proposer from later confirmation without freezing actor changes", () => {
+  const feedbackFor = field => createRepairFeedback({ validationLayer: "business", errors: [{
+    code: "TODO_OVERDUE_PARTICIPANT_CHANGE", path: `$.results.todos.changes[0].${field}.value`,
+    meta: { field, currentValue: "assistant", proposedValue: "user", currentStatus: "overdue" },
+  }] }, 1, TASK);
+  const message = renderRepairMessage(JSON.parse(JSON.stringify(feedbackFor("requester"))), TASK);
+  assert.match(message, /最初由谁提出/);
+  assert.match(message, /再次确认不会改变 requester/);
+  assert.match(message, /证据证明原记录错误才考虑 correct/);
+  assert.match(message, /更正仍须满足当前状态约束/);
+  assert.doesNotMatch(renderRepairMessage(feedbackFor("actor"), TASK), /最初由谁提出/);
+});
+
 test("injected adapters re-encode valid semantic fixtures explicitly and never send malformed IR as Todo v2", () => {
   const output = todoV2ToSemantic(WIRE, TASK);
   const validation = { errors: [{ path: "$.sectionResults.todos.changes[1].dueChange", message: "invalid_state_transition" }] };

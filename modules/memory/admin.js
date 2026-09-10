@@ -13,7 +13,7 @@ const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
 const { buildMigrationEvidence } = require("./application/migrationEvidence");
-const { latestRejectedOutput, createRepairFeedback } = require("./application/outputRepair");
+const { latestRejectedOutput, createRepairFeedback, repairContextForInput } = require("./application/outputRepair");
 const { buildNormalEnvelope, buildMaintenanceEnvelope } = require("./application/envelope");
 const {
   buildProposerTaskArtifact,
@@ -139,6 +139,7 @@ module.exports = Object.freeze({
   loadMemoryV2Config,
   loadProposerPrompt,
   latestRejectedOutput,
+  repairContextForInput,
   createRepairFeedback,
   runStructuredOutputPreflight,
   schemaRepairPrompt,

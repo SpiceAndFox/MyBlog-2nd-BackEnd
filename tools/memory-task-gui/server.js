@@ -9,7 +9,7 @@ const {
   schemaRepairPrompt,
   loadMemoryProviderConfig,
   buildProviderRequestPreviews,
-  latestRejectedOutput,
+  repairContextForInput,
 } = require("../../modules/memory/admin");
 
 const HOST = "127.0.0.1";
@@ -134,11 +134,10 @@ async function hydrateTask(row, dependencies = {}) {
   );
   const proposer = effectiveEnvelope?.task?.proposer || taskPayload?.task?.proposer || null;
   const targetSections = effectiveEnvelope?.task?.targetSections || taskPayload?.task?.targetSections || [];
-  const repairFeedback = stagePayload?.schemaRepairFeedback || null;
+  const { repairFeedback, rejectedOutput } = repairContextForInput(stagePayload, semanticInputVariant);
   const rejectedOutputs = Array.isArray(stagePayload?.schemaRejectedOutputs)
     ? stagePayload.schemaRejectedOutputs
     : [];
-  const rejectedOutput = latestRejectedOutput(stagePayload, repairFeedback);
   let currentPrompt = null;
   let currentRepairPrompt = null;
   let providerUserPayload = null;

@@ -21,6 +21,7 @@ const BUSINESS_REPAIR_RULES = Object.freeze({
     directive: "PRESERVE_OVERDUE_PARTICIPANTS",
     render: ({ meta, location, todoV2 }) => [
       `${location}：恢复逾期待办时不能同时更换 ${meta.field === "requester" ? "requester" : "actor"}；原值=${quoted(meta.currentValue)}，候选值=${quoted(meta.proposedValue)}。${todoV2 ? '该字段使用 {"mode":"keep"} 保留原值。' : "保留该字段原值。"}若原始消息确实要求更换责任归属，不能假装没有这项变化，也不能虚构新任务或终止动作；无法裁决时使用 unable_to_decide。`,
+      ...(meta.field === "requester" ? ["核对这项行动最初由谁提出。后续接受、催促、质疑或再次确认不会改变 requester；确认旧值正确时保留它。只有证据证明原记录错误才考虑 correct，更正仍须满足当前状态约束。"] : []),
     ],
   },
   [ISSUE_CODES.SOURCE_LIMIT_EXCEEDED]: {

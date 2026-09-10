@@ -4,6 +4,7 @@ const {
   isTransportRepairFailure,
   latestRejectedOutput,
   repairAttemptCount,
+  repairContextForInput,
   summarizeOutputShape,
 } = require("./outputRepair");
 const { providerBusinessRejection } = require("../infrastructure/providers/providerBusinessRejection");
@@ -246,6 +247,8 @@ function createNormalProviderRecovery({
         repairAttempt + 1,
         envelope.task,
       );
+      nextStagePayload.schemaRepairFeedback.inputVariant = numberValue(task, "context_expansion_attempt", "contextExpansionAttempt") > 0
+        ? "expanded" : "base";
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running",
         stage: "schema_invalid_retry",
@@ -270,8 +273,8 @@ function createNormalProviderRecovery({
       ? await repositories.runtime.getTask(envelope.task.taskId)
       : null;
     const persistedStagePayload = rowValue(persisted, "stage_payload", "stagePayload");
-    let repairFeedback = persistedStagePayload?.schemaRepairFeedback ?? null;
-    let rejectedOutput = latestRejectedOutput(persistedStagePayload, repairFeedback);
+    const inputVariant = numberValue(persisted, "context_expansion_attempt", "contextExpansionAttempt") > 0 ? "expanded" : "base";
+    let { repairFeedback, rejectedOutput } = repairContextForInput(persistedStagePayload, inputVariant);
     while (true) {
       const startedAt = monotonicNow();
       let result;
