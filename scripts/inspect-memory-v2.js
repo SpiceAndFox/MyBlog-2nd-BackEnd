@@ -94,7 +94,7 @@ function renderMemorySections({
     return marker ? `${marker}\n` : "";
   };
   const renderers = {
-    worldFacts: () => `[长期事实]\n${renderItems(state.longTerm.worldFacts)}`,
+    worldFacts: () => `[世界观设定]\n${renderItems(state.longTerm.worldFacts)}`,
     userProfile: () => `[User 核心档案]\n${renderItems(state.longTerm.userProfile)}`,
     assistantProfile: () => `[Assistant 核心档案]\n${renderItems(state.longTerm.assistantProfile)}`,
     relationship: () => `[关系模式]\n${renderItems(state.longTerm.relationship)}`,

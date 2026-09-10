@@ -42,7 +42,7 @@ Memory State + Raw Messages
 1. **语义与存储分离**：LLM 不输出 itemId、op、evidenceKind、quote、contentHash 或数据库字段。
 2. **受控写入**：Compiler 不写数据库；Proposer/Semantic 候选只能经 Validator/Reducer 写入。Source-generation reset、privacy purge 与 deterministic system cleanup 是由各自算法约束的受控系统路径。
 3. **证据可追溯**：当前 Memory 的每个 item/scene field 可追溯到 raw `messageId + contentHash`。
-4. **状态分层**：Scene、Todo、持续约定、近期经历、里程碑、世界事实、两个 Profile 和关系记忆独立维护。
+4. **状态分层**：Scene、Todo、持续约定、近期经历、里程碑、世界观设定、两个 Profile 和关系记忆独立维护。
 5. **低漂移**：状态只做局部增删改；不把 LLM 的全文摘要作为 authority。
 6. **可恢复**：durable task、compiled proposal、event、snapshot、cursor 和 sourceGeneration 支持 crash recovery/rebuild。
 7. **可渲染**：主聊天实时读取结构化状态并生成稳定文本。

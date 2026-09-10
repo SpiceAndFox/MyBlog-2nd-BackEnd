@@ -68,7 +68,7 @@ function renderMemory({ state, lifecycleAnchors = {}, requestNow, config, target
   const view = effective.view;
   const sections = [
     "[长期核心记忆]",
-    `${markerLine("worldFacts", targetStatuses, diagnostics)}[长期事实]\n${renderItems(view.longTerm.worldFacts)}`,
+    `${markerLine("worldFacts", targetStatuses, diagnostics)}[世界观设定]\n${renderItems(view.longTerm.worldFacts)}`,
     `${markerLine("profileRelationship", targetStatuses, diagnostics)}[User 核心档案]\n${renderItems(view.longTerm.userProfile)}`,
     `[Assistant 核心档案]\n${renderItems(view.longTerm.assistantProfile)}`,
     `[关系模式]\n${renderItems(view.longTerm.relationship)}`,

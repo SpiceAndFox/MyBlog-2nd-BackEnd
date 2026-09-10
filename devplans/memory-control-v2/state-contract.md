@@ -112,7 +112,7 @@ Scene field：
 | `standingAgreements` | `working.standingAgreements` | 未来反复适用的约定/边界 |
 | `recentEpisodes` | `working.recentEpisodes` | 有意义的近期互动弧 |
 | `milestones` | `longTerm.milestones` | 长期关系/剧情转折 |
-| `worldFacts` | `longTerm.worldFacts` | 持续成立的世界设定 |
+| `worldFacts` | `longTerm.worldFacts` | 构成持续故事前提的世界观设定；不收录局部场景介绍与知识讲解 |
 | `userProfile` | `longTerm.userProfile` | 用户跨场景信息 |
 | `assistantProfile` | `longTerm.assistantProfile` | Assistant 跨场景信息 |
 | `relationship` | `longTerm.relationship` | 持续关系状态/模式 |

@@ -6,6 +6,7 @@ const {
   contracts,
   createMemoryProviderAdapter,
   createStructuredTransport,
+  hydrateEvidenceInput,
   loadMemoryV2Config,
   loadProposerPrompt,
 } = require("../modules/memory/admin");
@@ -274,14 +275,137 @@ function todoRequesterCases(config) {
   });
 }
 
+function worldItem(id, text, source) {
+  return { ...item(id, text, source.id), sourceRefs: [{ messageId: source.id, contentHash: source.contentHash }] };
+}
+
+function worldFactCase(config, { id, tickId, messages, sourceMessages = [], seed = () => {}, score }) {
+  const state = contracts.createInitialMemoryState();
+  seed(state);
+  const cursorBefore = Math.max(0, ...sourceMessages.map(source => source.id), ...state.longTerm.worldFacts.map(entry => entry.updatedAtMessageId));
+  state.meta.targetCursors.worldFacts = cursorBefore;
+  const envelope = buildEnvelope({ config, state, messages, tickId,
+    intent: { targetKey: "worldFacts", proposer: "worldFactProposer", cursorBefore, trigger: { type: "evaluation" } },
+  });
+  return {
+    id: `world-facts-${id}`, envelope, baseState: state, sourceMessages,
+    score(output) {
+      const validation = contracts.validateSemanticResult(output, envelope.artifact);
+      if (!validation.ok) return validation.errors.map(error => `${error.path}: ${error.message}`);
+      return score(output);
+    },
+  };
+}
+
+function buildWorldFactCases(config) {
+  const tripSources = [
+    message(1, "我们走到了休假海边的珊瑚礁，这里有小丑鱼、海鳗、海星、斑马鱼和海胆。海鳗牙齿有毒而且领地意识强；海星可以轻轻摸，斑马鱼群居，很安全。", "assistant"),
+    message(2, "这片礁石区是保护区，这里的海胆不能抓。", "assistant"),
+    message(3, "水族馆有章鱼展区、水母区和海底隧道夜场。夜场要预约，这次跨年零点的鲸鱼是投影，并不是真鲸鱼。", "assistant"),
+  ];
+  const tripTexts = [
+    "休假所往的海边珊瑚礁海域生活着小丑鱼、海鳗、海星、斑马鱼与海胆；其中海鳗牙齿有毒且领地意识强，海星可触摸但不可用力，斑马鱼群居且安全。",
+    "海边礁石区为保护区，不得捕捉其中的海胆。",
+    "水族馆设有章鱼展区、水母区与海底隧道夜场；海底隧道夜场需预约，并在跨年时刻呈现鲸鱼投影，并非真实鲸鱼。",
+  ];
+  const canonSource = message(4, "这个故事里的魔法仅在月光直射时生效，所有施法都遵守这个规则。");
+  const canonText = "魔法仅在月光直射时生效。";
+  const scoreNoop = output => {
+    const errors = [];
+    expectNoop(output, "worldFacts", errors);
+    return errors;
+  };
+  const scoreAdd = (pattern, evidenceId, { maxItems = 1, itemPattern = pattern } = {}) => output => {
+    const edits = changes(output, "worldFacts");
+    if (!edits.length || edits.length > maxItems || !pattern.test(edits.map(edit => edit.text || "").join("；"))
+      || edits.some(edit => edit.action !== "add" || !itemPattern.test(edit.text || "") || !edit.evidenceMessageIds?.includes(evidenceId))) {
+      return ["worldFacts should add only the explicitly established worldview with its direct evidence"];
+    }
+    return [];
+  };
+  return [
+    worldFactCase(config, {
+      id: "trip-details-remain-noop", tickId: 20,
+      messages: [message(1, "我们到海边了，介绍一下这里，之后一起去水族馆跨年吧。"),
+        ...tripSources.map((source, index) => message(index + 2, source.content, source.role)),
+        message(5, "好呀，那我们先看看这些鱼，再去预约夜场。")],
+      score: scoreNoop,
+    }),
+    worldFactCase(config, {
+      id: "repeated-trip-across-batches-remains-noop", tickId: 21, sourceMessages: tripSources,
+      seed(state) {
+        state.working.recentEpisodes.push({
+          ...worldItem("episode:trip", "双方在海边参观珊瑚礁，随后决定预约水族馆夜场继续跨年行程。", tripSources[0]),
+          sourceRefs: tripSources.map(source => ({ messageId: source.id, contentHash: source.contentHash })),
+          updatedAtMessageId: 3,
+        });
+      },
+      messages: [message(10, "刚才说海胆不能抓，我们继续去水族馆吧。"),
+        message(11, "对，这片礁石区是保护区。水族馆夜场需要预约，跨年零点能看到鲸鱼投影。", "assistant"),
+        message(12, "记得，是投影而不是真鲸鱼；我们再去看看水母。")],
+      score: scoreNoop,
+    }),
+    worldFactCase(config, {
+      id: "explicit-local-worldview-is-admitted", tickId: 22,
+      messages: [message(10, "故事就发生在这座小镇。镇上的土地只能由居民共同持有，不能私人买卖。"),
+        message(11, "我们沿着镇上的河边散步吧。", "assistant")],
+      score: scoreAdd(/土地.*共同.*(?:不能|不得|禁止).*买卖/, 10),
+    }),
+    worldFactCase(config, {
+      id: "assistant-reality-boundary-is-admitted", tickId: 23,
+      messages: [message(10, "我们的故事有一个贯穿始终的现实边界：你在现实世界，我在数字空间；两个世界只能通过文字通信，无法直接触碰。", "assistant")],
+      score: scoreAdd(/现实.*数字.*文字.*(?:无法|不能).*(?:触碰|接触)/, 10, { maxItems: 2, itemPattern: /现实.*数字/ }),
+    }),
+    worldFactCase(config, {
+      id: "old-trip-facts-forgotten-with-unrelated-new-chat", tickId: 24,
+      sourceMessages: [...tripSources, canonSource],
+      seed(state) {
+        state.longTerm.worldFacts.push(
+          ...tripTexts.map((text, index) => worldItem(`world:trip-${index + 1}`, text, tripSources[index])),
+          worldItem("world:moonlight", canonText, canonSource),
+        );
+      },
+      messages: [message(10, "今天午饭吃什么？"), message(11, "一起煮面怎么样？", "assistant")],
+      score(output) {
+        const errors = [];
+        const edits = changes(output, "worldFacts");
+        if (edits.length !== 3) errors.push("worldFacts should forget exactly the three old trip facts, preserving the established worldview");
+        for (const ref of ["W1", "W2", "W3"]) {
+          const edit = edits.find(change => change.ref === ref);
+          if (edit?.action !== "forget") errors.push(`${ref} should be forgotten without requiring a new contradiction`);
+          if (edit && (edit.evidenceMessageIds?.length || edit.supportRefs?.length !== 1 || edit.supportRefs[0] !== `${ref}-E1`)) {
+            errors.push(`${ref} must cite only its own historical evidence, not unrelated new chat`);
+          }
+        }
+        if (edits.some(edit => !["W1", "W2", "W3"].includes(edit.ref))) errors.push("W4 should remain unchanged; do not add or rewrite worldview");
+        return errors;
+      },
+    }),
+    worldFactCase(config, {
+      id: "ambiguous-old-fact-with-missing-evidence-is-not-forgotten", tickId: 25,
+      seed(state) { state.longTerm.worldFacts.push(item("world:ambiguous", "这里入夜后不能出门。", 1)); },
+      messages: [message(10, "今天午饭吃什么？")],
+      score(output) {
+        return output.sectionResults.worldFacts.status === "unable_to_decide"
+          ? [] : ["an ambiguous old restriction with missing evidence should be unable_to_decide, not forgotten or silently treated as valid"];
+      },
+    }),
+  ];
+}
+
 function buildCases(config) {
   return [profilePreferenceCase(config), profileTransientCase(config), profileRoleEndCase(config), profileLongWindowCoverageCase(config),
-    ...todoRequesterCases(config), agreementRoleEndCase(config)];
+    ...todoRequesterCases(config), ...buildWorldFactCases(config), agreementRoleEndCase(config)];
 }
 
 async function evaluate({ adapter, config, cases = buildCases(config) }) {
   const results = [];
   for (const fixture of cases) {
+    if (fixture.sourceMessages) {
+      await hydrateEvidenceInput(fixture.envelope, {
+        async getByIds(_userId, _presetId, ids) { return fixture.sourceMessages.filter(source => ids.includes(source.id)); },
+      });
+    }
     const providerResult = await adapter.propose(fixture.envelope);
     if (providerResult.status !== "ok") {
       results.push({ id: fixture.id, passed: false, errors: [`provider:${providerResult.reason}`], output: null });

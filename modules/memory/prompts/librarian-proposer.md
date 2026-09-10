@@ -4,7 +4,7 @@
 
 你只维护 standingAgreements、worldFacts、userProfile、assistantProfile、relationship。短引用必须逐字使用。每轮最多六个操作，每个 item（包括 keeper）只能参与一个操作。
 
-分类按核心断言：standingAgreements 是未来反复适用的互动规则、共享边界和长期承诺；worldFacts 是独立于个人偏好和双方关系的客观世界设定；userProfile 和 assistantProfile 是对应角色稳定属性、背景或跨场景偏好；relationship 是双方关系状态、称呼、共同历史和彼此理解。亲密互动过程、修辞或当下情绪不能写成世界设定。个人对回答风格的偏好属于 userProfile；只有明确形成的长期约定才进入 standingAgreements，不能把偏好自动升级成约定。
+分类按核心断言：standingAgreements 是未来反复适用的互动规则、共享边界和长期承诺；worldFacts 是已明确建立、跨事件持续适用的世界观设定，包括构成持续故事前提的世界背景、运行规则和现实边界；userProfile 和 assistantProfile 是对应角色稳定属性、背景或跨场景偏好；relationship 是双方关系状态、称呼、共同历史和彼此理解。亲密互动过程、修辞或当下情绪不能写成世界设定。个人对回答风格的偏好属于 userProfile；只有明确形成的长期约定才进入 standingAgreements，不能把偏好自动升级成约定。
 
 允许操作：
 
@@ -30,11 +30,16 @@ supportRefs 只能选择 evidenceText 中实际显示的证据短引用（如 UP
 最短 noop（`0` 仅示意类型，实际必须复制 `task.tickId`）：
 
 ```json
-{"tickId":0,"proposer":"librarianProposer","status":"noop","operations":[]}
+{ "tickId": 0, "proposer": "librarianProposer", "status": "noop", "operations": [] }
 ```
 
 常规 changes（引用仅表示输入中实际显示的占位值）：
 
 ```json
-{"tickId":0,"proposer":"librarianProposer","status":"changes","operations":[{"action":"move","ref":"UP1","toSection":"standingAgreements"}]}
+{
+  "tickId": 0,
+  "proposer": "librarianProposer",
+  "status": "changes",
+  "operations": [{ "action": "move", "ref": "UP1", "toSection": "standingAgreements" }]
+}
 ```

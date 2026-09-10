@@ -86,7 +86,7 @@ RAG chunk 可以继续保存 source refs，用于 generation一致性、来源�
 ```text
 [长期核心记忆]
 {health(worldFacts)}
-[长期事实]
+[世界观设定]
 {worldFacts || "(无)"}
 
 {health(profileRelationship)}

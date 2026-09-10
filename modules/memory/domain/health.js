@@ -1,10 +1,25 @@
 const { TARGET_KEYS } = require("../contracts/constants");
 
-const TARGET_LABELS = Object.freeze({ scene: "当前状态", todos: "待办", standingAgreements: "持续约定", episodes: "经历与里程碑", profileRelationship: "人物与关系", worldFacts: "长期事实" });
+const TARGET_LABELS = Object.freeze({
+  scene: "当前状态",
+  todos: "待办",
+  standingAgreements: "持续约定",
+  episodes: "经历与里程碑",
+  profileRelationship: "人物与关系",
+  worldFacts: "世界观设定",
+});
 
-function rowValue(row, camel, snake = camel) { return row?.[camel] ?? row?.[snake]; }
+function rowValue(row, camel, snake = camel) {
+  return row?.[camel] ?? row?.[snake];
+}
 
-function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projectionHealth = [], now = new Date(), alertDebounceMs = 0 } = {}) {
+function aggregateMemoryHealth({
+  targetStatuses = [],
+  diagnostics = [],
+  projectionHealth = [],
+  now = new Date(),
+  alertDebounceMs = 0,
+} = {}) {
   const alerts = [];
   let status = "healthy";
   const byTarget = new Map(targetStatuses.map((row) => [rowValue(row, "targetKey", "target_key"), row]));
@@ -18,16 +33,30 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     const row = byTarget.get(targetKey);
     if (!row) {
       if (status === "healthy") status = "degraded";
-      alerts.push({ subjectKind: "target", subjectKey: targetKey, status: "degraded", message: `${TARGET_LABELS[targetKey]}记忆健康状态不可用` });
+      alerts.push({
+        subjectKind: "target",
+        subjectKey: targetKey,
+        status: "degraded",
+        message: `${TARGET_LABELS[targetKey]}记忆健康状态不可用`,
+      });
       continue;
     }
-    const hasRebuildBoundary = rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== null && rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== undefined;
+    const hasRebuildBoundary =
+      rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== null &&
+      rowValue(row, "rebuildBoundaryMessageId", "rebuild_boundary_message_id") !== undefined;
     const internal = hasRebuildBoundary ? "rebuilding" : rowValue(row, "status");
     if (internal === "healthy") continue;
     const rebuilding = internal === "rebuilding";
     status = rebuilding ? "rebuilding" : status === "healthy" ? "degraded" : status;
     if (debounced(row)) continue;
-    alerts.push({ subjectKind: "target", subjectKey: targetKey, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${TARGET_LABELS[targetKey]}记忆正在重建` : `${TARGET_LABELS[targetKey]}记忆可能滞后${internal === "halted" ? "，需要服务器维护" : ""}` });
+    alerts.push({
+      subjectKind: "target",
+      subjectKey: targetKey,
+      status: rebuilding ? "rebuilding" : "degraded",
+      message: rebuilding
+        ? `${TARGET_LABELS[targetKey]}记忆正在重建`
+        : `${TARGET_LABELS[targetKey]}记忆可能滞后${internal === "halted" ? "，需要服务器维护" : ""}`,
+    });
   }
   const queryProjectionKeys = new Set(projectionHealth.filter(Boolean).map((row) => row.projectionKey));
   for (const diagnostic of diagnostics.filter((row) => rowValue(row, "resolved") !== true)) {
@@ -39,23 +68,40 @@ function aggregateMemoryHealth({ targetStatuses = [], diagnostics = [], projecti
     if (rebuilding) status = "rebuilding";
     else if (status === "healthy") status = "degraded";
     if (debounced(diagnostic)) continue;
-    const degradedMessage = diagnosticType === "scene_capacity_exceeded"
-      ? "当前状态：最近一次更新因长度超限未写入，记忆可能滞后"
-      : kind === "target" ? `${TARGET_LABELS[key] || key}：部分早期对话未在上下文中` : `${key}：部分早期对话未在上下文中`;
-    alerts.push({ subjectKind: kind, subjectKey: key, status: rebuilding ? "rebuilding" : "degraded", message: rebuilding ? `${key} 上下文正在重建` : degradedMessage });
+    const degradedMessage =
+      diagnosticType === "scene_capacity_exceeded"
+        ? "当前状态：最近一次更新因长度超限未写入，记忆可能滞后"
+        : kind === "target"
+          ? `${TARGET_LABELS[key] || key}：部分早期对话未在上下文中`
+          : `${key}：部分早期对话未在上下文中`;
+    alerts.push({
+      subjectKind: kind,
+      subjectKey: key,
+      status: rebuilding ? "rebuilding" : "degraded",
+      message: rebuilding ? `${key} 上下文正在重建` : degradedMessage,
+    });
   }
   for (const projection of projectionHealth) {
     if (!projection || projection.queryHealth === "healthy") continue;
     if (projection.queryHealth === "rebuilding") status = "rebuilding";
     else if (status === "healthy") status = "degraded";
-    const persistedDiagnostic = diagnostics.find((row) => (
-      rowValue(row, "resolved") !== true
-      && rowValue(row, "subjectKind", "subject_kind") === "projection"
-      && rowValue(row, "subjectKey", "subject_key") === projection.projectionKey
-      && rowValue(row, "diagnosticType", "diagnostic_type") === "projection_lag"
-    ));
+    const persistedDiagnostic = diagnostics.find(
+      (row) =>
+        rowValue(row, "resolved") !== true &&
+        rowValue(row, "subjectKind", "subject_kind") === "projection" &&
+        rowValue(row, "subjectKey", "subject_key") === projection.projectionKey &&
+        rowValue(row, "diagnosticType", "diagnostic_type") === "projection_lag",
+    );
     if (persistedDiagnostic && debounced(persistedDiagnostic)) continue;
-    alerts.push({ subjectKind: "projection", subjectKey: projection.projectionKey, status: projection.queryHealth, message: projection.queryHealth === "rebuilding" ? `${projection.projectionKey} 上下文正在重建` : `${projection.projectionKey}：部分早期对话未在上下文中` });
+    alerts.push({
+      subjectKind: "projection",
+      subjectKey: projection.projectionKey,
+      status: projection.queryHealth,
+      message:
+        projection.queryHealth === "rebuilding"
+          ? `${projection.projectionKey} 上下文正在重建`
+          : `${projection.projectionKey}：部分早期对话未在上下文中`,
+    });
   }
   return { status, alerts, chatBlocked: false };
 }

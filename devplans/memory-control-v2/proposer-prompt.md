@@ -126,11 +126,12 @@ facet/canonicalKey/factBasis
 
 ## 9. worldFactProposer
 
-- 只保存对话世界中持续成立、后续必须一致的客观设定；
-- 普通常识、临时场景、观点、猜测、传闻、梦境、比喻、玩笑和互动约定应 noop；
-- Assistant 装饰性扩写不能自动成为 canon；
-- 与已有设定冲突但无法判断时使用 unable，而不是并列 add；
-- 允许 add/update/correct/forget，来源可以是 direct、support 或混合。
+- 只保存明确建立、跨事件持续适用的世界观：世界背景、运行规则、现实边界，以及构成持续故事前提的地理、制度和历史；世界观可以局部、日常，不要求宏大或超自然；
+- 客观存在、长期不变、语气确定或同一事件内反复提及均不足以准入；旅行与参观中的地点、物种、设施、预约、活动介绍及知识讲解默认排除；
+- User 与 Assistant 均可一次明确建立世界观；装饰性扩写、用户顺着场景继续聊天不自动构成确认；
+- 每轮复查全部可修改 worldFacts：旧条目及可见证据明确表明整条原本不符合准入时 forget，无需新消息否定或再次请求删除；可以只引用实际展示的本条历史证据，不能引用无关新消息；混合条目有充分证据时 correct，只保留原有合格设定；
+- 未提及、活动结束或历史原文缺失本身不构成删除理由；发现可能误收但证据不足以裁决时使用 unable_to_decide；无合格新增且旧项无需修改时 noop，允许为空；
+- 允许 add/revise/correct/forget，来源可以是 direct、support 或混合；Librarian 使用同一准入边界整理，reports 不触发自动清理，remove 仍仅允许删除重复项。
 
 ## 10. compactionProposer
 

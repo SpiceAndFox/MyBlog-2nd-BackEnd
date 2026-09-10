@@ -60,7 +60,7 @@ test("Memory v2 inspector renders non-profile sections with target health marker
     renderTodo: memoryDomain.renderTodo,
     renderScene: memoryDomain.renderScene,
   }), [
-    "[长期事实]\n- 项目使用 Node.js",
+    "[世界观设定]\n- 项目使用 Node.js",
     "[该类记忆可能滞后]\n[待办]\n- 整理测试（执行者: assistant；提出者: user）\n\n[已逾期待办]\n- 提交报告（执行者: user；提出者: assistant；期限: 2026-07-14T00:00:00Z）",
     "[当前状态]\n- 地点: 书房\n- 时间: 未知\n- 氛围: 未知\n- 备注: \n\n[已过期场景 / 上次已知场景]\n(无)",
   ].join("\n\n"));

@@ -24,7 +24,7 @@ const SECTION_LABELS = Object.freeze({
   standingAgreements: "持续约定",
   recentEpisodes: "最近经历",
   milestones: "重要里程碑",
-  worldFacts: "世界事实",
+  worldFacts: "世界观设定",
   userProfile: "User 档案",
   assistantProfile: "Assistant 档案",
   relationship: "关系记忆",
