@@ -1,3 +1,5 @@
+const { buildDeepSeekTodoSchema } = require("./deepSeekTodoSchema");
+
 const DROPPED_KEYWORDS = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 
 function constraintDescriptions(schema) {
@@ -109,6 +111,9 @@ function compileDeepSeekSchema(schema) {
 }
 
 function compileDeepSeekToolParameters(responseSchema) {
+  if (responseSchema.name === "memory_flat_todoProposer_v1") {
+    return compileDeepSeekSchema(buildDeepSeekTodoSchema(responseSchema.schema));
+  }
   if (responseSchema.name !== "memory_librarian_semantic") return compileDeepSeekSchema(responseSchema.schema);
   // Strict tools require one root object. Keep status/operations coupling in
   // local semantic validation; transport always emits reports (empty if none).
