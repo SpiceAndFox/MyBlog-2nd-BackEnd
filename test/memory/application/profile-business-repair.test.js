@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
-const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
+const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/output/validateProviderWireOutput");
 const { config: baseConfig, fixedNow, store: createStore } = require("../support/recovery-harness");
 const config = { ...baseConfig, targets: { ...baseConfig.targets, profileRelationship: { lagThreshold: 1, contextWindow: 2 } } };
 

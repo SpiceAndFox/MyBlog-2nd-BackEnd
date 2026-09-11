@@ -1,15 +1,7 @@
 const { LIBRARIAN_PROPOSER } = require("../contracts/constants");
 
-const ADAPTER_IDS = Object.freeze([
-  "openai-json-schema",
-  "deepseek-strict-tools",
-  "opencode-go-json-schema",
-  "opencode-go-json-object",
-]);
-const OPENCODE_GO_ADAPTER_IDS = new Set([
-  "opencode-go-json-schema",
-  "opencode-go-json-object",
-]);
+const { ADAPTER_IDS, normalizeProviderAdapter } = require("./providerAdapters");
+const { REASONING_EFFORT_VALUES, THINKING_MODE_VALUES } = require("./providerSettingValues");
 const PROPOSER_IDS = Object.freeze([
   "currentStateProposer",
   "todoProposer",
@@ -23,10 +15,7 @@ const PROPOSER_IDS = Object.freeze([
   "compactionProposer",
   LIBRARIAN_PROPOSER,
 ]);
-// 与 chat 模块 opencodeGoOpenai 的 REASONING_EFFORT_OPTIONS 全集保持一致。
-const REASONING_EFFORT_VALUES = Object.freeze(["max", "xhigh", "high", "medium", "low", "minimal", "none"]);
-const THINKING_MODE_VALUES = Object.freeze(["enabled", "disabled"]);
-// 三个 Profile 专家未单独覆盖时，继承 profileRelationshipProposer 的整条覆盖（model 与 reasoningEffort）。
+// 三个 Profile 专家未单独覆盖时，继承 profileRelationshipProposer 的整条覆盖。
 const PROFILE_INHERIT_PROPOSERS = Object.freeze(["userProfileProposer", "assistantProfileProposer", "relationshipProposer"]);
 
 function requiredString(env, name) {
@@ -62,7 +51,7 @@ function parseThinkingMode(label, value) {
 
 // 每个 proposer 的覆盖支持两种形态：
 //   "model-id"                                   —— 仅覆盖模型（向后兼容）
-//   { "model": "...", "reasoningEffort": "..." } —— 两者皆可单独省略
+//   { model, reasoningEffort, thinkingMode } —— 各项均可单独省略
 function parseProposerOverride(name, proposer, value, adapter) {
   if (typeof value === "string") {
     const model = value.trim();
@@ -73,7 +62,7 @@ function parseProposerOverride(name, proposer, value, adapter) {
     throw new Error(`Env ${name}.${proposer} must be a non-empty model id or an override object`);
   }
   for (const key of Object.keys(value)) {
-    if (!["model", "reasoningEffort"].includes(key)) {
+    if (!["model", "reasoningEffort", "thinkingMode"].includes(key)) {
       throw new Error(`Env ${name}.${proposer} contains unsupported key: ${key}`);
     }
   }
@@ -88,15 +77,19 @@ function parseProposerOverride(name, proposer, value, adapter) {
       const effort = String(value.reasoningEffort).trim();
       if (!["low", "high", "max"].includes(effort)) throw new Error("DeepSeek reasoning effort must be low, high or max");
       override.reasoningEffort = effort;
-    } else if (!OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
-      throw new Error(`Env ${name}.${proposer}.reasoningEffort requires an OpenCode Go adapter`);
     }
-    if (adapter !== "deepseek-strict-tools") override.reasoningEffort = parseReasoningEffort(`${name}.${proposer}.reasoningEffort`, value.reasoningEffort);
+    if (adapter !== "deepseek-strict-tools") override.reasoningEffort = value.reasoningEffort === null
+      ? null : parseReasoningEffort(`${name}.${proposer}.reasoningEffort`, value.reasoningEffort);
   }
-  if (!override.model && !override.reasoningEffort) {
-    throw new Error(`Env ${name}.${proposer} must override model, reasoningEffort, or both`);
+  if (value.thinkingMode !== undefined) {
+    if (adapter === "deepseek-strict-tools") throw new Error("DeepSeek proposer thinkingMode overrides are not supported");
+    override.thinkingMode = value.thinkingMode === null
+      ? null : parseThinkingMode(`${name}.${proposer}.thinkingMode`, value.thinkingMode);
   }
-  return override;
+  if (!Object.keys(override).length) {
+    throw new Error(`Env ${name}.${proposer} must override model, reasoningEffort, or thinkingMode`);
+  }
+  return Object.freeze(override);
 }
 
 function optionalProposerModels(env, adapter) {
@@ -140,17 +133,38 @@ function resolveMemoryProviderModel(providerConfig, proposer) {
 
 function resolveMemoryProviderReasoningEffort(providerConfig, proposer) {
   const override = proposerOverride(providerConfig, proposer);
-  const effort = typeof override === "string" ? undefined : override?.reasoningEffort;
-  return effort || providerConfig?.reasoningEffort;
+  if (override && typeof override === "object" && Object.hasOwn(override, "reasoningEffort")) {
+    return override.reasoningEffort ?? undefined;
+  }
+  return providerConfig?.reasoningEffort;
+}
+
+function resolveMemoryProviderThinkingMode(providerConfig, proposer) {
+  const override = proposerOverride(providerConfig, proposer);
+  if (override && typeof override === "object" && Object.hasOwn(override, "thinkingMode")) {
+    return override.thinkingMode ?? undefined;
+  }
+  return providerConfig?.thinkingMode;
+}
+
+// Advanced overrides are parsed as data here. Their rule vocabulary and model
+// compatibility are validated by the provider layer during initialization.
+function parsePolicyJson(raw, label) {
+  if (!String(raw ?? "").trim()) return Object.freeze({});
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error(`${label} must be valid JSON`); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return Object.freeze(value);
 }
 
 function loadMemoryProviderConfig(env = {}) {
-  const adapter = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_ADAPTER");
-  if (!ADAPTER_IDS.includes(adapter)) {
-    throw new Error(`Env CHAT_MEMORY_V2_PROVIDER_ADAPTER must be one of: ${ADAPTER_IDS.join(", ")}`);
-  }
+  const requestedAdapter = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_ADAPTER");
+  const { adapter, profile } = normalizeProviderAdapter({
+    adapter: requestedAdapter, profile: String(env.CHAT_MEMORY_V2_PROVIDER_PROFILE ?? "").trim(),
+  });
   const config = {
     adapter,
+    profile,
     baseUrl: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_BASE_URL"),
     apiKey: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_API_KEY"),
     model: requiredString(env, "CHAT_MEMORY_V2_PROVIDER_MODEL"),
@@ -168,12 +182,20 @@ function loadMemoryProviderConfig(env = {}) {
     if (!["low", "high", "max"].includes(effort)) throw new Error("DeepSeek reasoning effort must be low, high or max");
     config.reasoningEffort = effort;
   }
-  if (OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
-    config.reasoningEffort = parseReasoningEffort("CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT", env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT);
-    config.thinkingMode = parseThinkingMode(
-      "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
-      requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE"),
-    );
+  if (adapter !== "deepseek-strict-tools") {
+    config.policy = parsePolicyJson(env.CHAT_MEMORY_V2_PROVIDER_POLICY_JSON, "CHAT_MEMORY_V2_PROVIDER_POLICY_JSON");
+    config.modelRules = parsePolicyJson(env.CHAT_MEMORY_V2_PROVIDER_MODEL_RULES_JSON, "CHAT_MEMORY_V2_PROVIDER_MODEL_RULES_JSON");
+    // The former standard adapter never sent inference controls. Its alias keeps
+    // that behavior even when a shared environment contains DeepSeek settings.
+    if (requestedAdapter !== "openai-json-schema") {
+      for (const [field, suffix, parse] of [
+        ["reasoningEffort", "REASONING_EFFORT", parseReasoningEffort],
+        ["thinkingMode", "THINKING_MODE", parseThinkingMode],
+      ]) {
+        const name = `CHAT_MEMORY_V2_PROVIDER_${suffix}`;
+        if (String(env[name] ?? "").trim()) config[field] = parse(name, env[name]);
+      }
+    }
   }
   return Object.freeze(config);
 }
@@ -186,4 +208,5 @@ module.exports = {
   loadMemoryProviderConfig,
   resolveMemoryProviderModel,
   resolveMemoryProviderReasoningEffort,
+  resolveMemoryProviderThinkingMode,
 };

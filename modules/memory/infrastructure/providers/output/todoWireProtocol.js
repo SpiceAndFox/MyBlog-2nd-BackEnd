@@ -1,4 +1,4 @@
-const { sectionLimits } = require("../../contracts/sectionPolicy");
+const { sectionLimits } = require("../../../contracts/sectionPolicy");
 const { parseSourceTokens, messageSource, memorySource } = require("./flatWireProtocol");
 
 const TODO_SCHEMA_NAME = "memory_todo";

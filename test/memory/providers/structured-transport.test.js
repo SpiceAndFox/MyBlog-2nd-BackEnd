@@ -1,22 +1,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseToolArguments } = require("../../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
+const { parseToolArguments } = require("../../../modules/memory/infrastructure/providers/transport/deepSeekStrictToolsTransport");
 const {
-  compileOpencodeGoSchema,
-} = require("../../../modules/memory/infrastructure/providers/opencodeGoSchemaCompiler");
+  stripUniqueItems,
+} = require("../../../modules/memory/infrastructure/providers/transport/schemaPolicies");
 const {
   validateLocalJsonSchema,
-} = require("../../../modules/memory/infrastructure/providers/localJsonSchemaValidator");
+} = require("../../../modules/memory/infrastructure/providers/output/localJsonSchemaValidator");
 const {
   createStructuredTransport,
 } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
-const { buildStructuredMessages } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
-const { parseJsonObjectContent } = require("../../../modules/memory/infrastructure/providers/structuredJsonContent");
+const { buildStructuredMessages } = require("../../../modules/memory/infrastructure/providers/transport/structuredHttpRequest");
+const { parseJsonObjectContent } = require("../../../modules/memory/infrastructure/providers/transport/structuredJsonContent");
 
 test("DeepSeek thinking stays enabled for initial and repair requests with per-proposer effort", () => {
   const {
     buildDeepSeekHttpRequest,
-  } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
+  } = require("../../../modules/memory/infrastructure/providers/transport/structuredHttpRequest");
   const config = {
     baseUrl: "https://api.deepseek.com/beta",
     model: "deepseek-flash",
@@ -301,7 +301,8 @@ test("OpenAI-compatible transport distinguishes aborted incomplete JSON from ord
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
       reasoningEffort: "none",
-      adapter: "opencode-go-json-schema",
+      adapter: "openai-compatible-json-schema",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "key",
       model: "model",
@@ -406,7 +407,8 @@ test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables r
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
       reasoningEffort: "none",
-      adapter: "opencode-go-json-schema",
+      adapter: "openai-compatible-json-schema",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "hy3",
@@ -465,7 +467,8 @@ test("OpenCode Go JSON object adapter puts the bound schema in the prompt and pa
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
       reasoningEffort: "none",
-      adapter: "opencode-go-json-object",
+      adapter: "openai-compatible-json-object",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "mimo-v2.5-pro",
@@ -586,7 +589,7 @@ test("OpenCode Go JSON object parser never hides ambiguous or schema-invalid out
 });
 
 test("OpenCode Go schema compiler strips nested uniqueItems without touching supported keywords", () => {
-  const compiled = compileOpencodeGoSchema({
+  const compiled = stripUniqueItems({
     type: "object",
     properties: {
       changes: {
@@ -619,7 +622,8 @@ test("OpenCode Go adapter routes model and reasoning effort by proposer with pro
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
       reasoningEffort: "none",
-      adapter: "opencode-go-json-schema",
+      adapter: "openai-compatible-json-schema",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "hy3",
@@ -657,7 +661,8 @@ test("OpenCode Go inference controls follow the effective proposer model", async
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
       reasoningEffort: "none",
-      adapter: "opencode-go-json-object",
+      adapter: "openai-compatible-json-object",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "hy3",

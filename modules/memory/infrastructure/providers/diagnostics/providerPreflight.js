@@ -4,18 +4,18 @@ const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
   LIBRARIAN_TARGET_KEY,
-} = require("../../contracts");
-const { validateSemanticResult } = require("../../contracts/semantic");
-const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
-const { semanticToTodoWire, todoWireToSemantic } = require("./todoWireProtocol");
-const { validateProviderWireOutput } = require("./validateProviderWireOutput");
-const { buildOutputSchema } = require("./outputSchema");
-const { bindOutputSchema } = require("./bindOutputSchema");
-const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
+} = require("../../../contracts");
+const { validateSemanticResult } = require("../../../contracts/semantic");
+const { usesTodoWireProtocol } = require("../../../contracts/outputProtocol");
+const { semanticToTodoWire, todoWireToSemantic } = require("../output/todoWireProtocol");
+const { validateProviderWireOutput } = require("../output/validateProviderWireOutput");
+const { buildOutputSchema } = require("../output/outputSchema");
+const { bindOutputSchema } = require("../output/bindOutputSchema");
+const { isSafetySignal, isTruncationSignal } = require("../transport/providerProtocol");
 const {
   flatWireToSemanticOutput,
   semanticOutputToFlatWire,
-} = require("./flatWireProtocol");
+} = require("../output/flatWireProtocol");
 
 const PROFILE_SPECIALISTS = Object.freeze([
   Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),

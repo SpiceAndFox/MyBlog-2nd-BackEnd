@@ -1,7 +1,7 @@
 const contracts = require("./contracts");
 const domain = require("./domain");
-const { loadMemoryV2Config } = require("./config/loadConfig");
-const { loadMemoryProviderConfig, resolveMemoryProviderModel } = require("./config/loadProviderConfig");
+const { loadMemoryV2Config, loadMemoryProviderConfig } = require("./configuration");
+const { resolveMemoryProviderModel } = require("./config/loadProviderConfig");
 const { createRepositorySet } = require("./moduleFactory");
 const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
@@ -28,9 +28,9 @@ const {
   schemaRepairRequest,
 } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
-const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
-const { buildOutputSchema } = require("./infrastructure/providers/outputSchema");
-const { buildProviderRequestPreviews } = require("./infrastructure/providers/providerRequestPreview");
+const { runStructuredOutputPreflight } = require("./infrastructure/providers/diagnostics/providerPreflight");
+const { buildOutputSchema } = require("./infrastructure/providers/output/outputSchema");
+const { buildProviderRequestPreviews } = require("./infrastructure/providers/diagnostics/providerRequestPreview");
 const { loadProposerPrompt } = require("./prompts");
 
 function createMemoryAdministration({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {

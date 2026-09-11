@@ -1,11 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { providerBusinessRejection } = require("../../../modules/memory/infrastructure/providers/providerBusinessRejection");
-const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocol");
+const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/output/todoWireProtocol");
 const { createRepairFeedback, renderRepairMessage, appendRejectedOutputAttempt, latestRejectedOutput } = require("../../../modules/memory/application/outputRepair");
 const { testWriteLimits } = require("../support/memory-builders");
 const { writeIssue, rejectWrite, locateWriteError } = require("../../../modules/memory/domain/writeGuards");
-const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
+const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/output/flatWireProtocol");
 
 const TASK = { proposer: "todoProposer", tickId: 1, targetKey: "todos", targetSections: ["todos"], writeLimits: testWriteLimits() };
 const WIRE = { results: { todos: { status: "changes", changes: [

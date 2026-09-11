@@ -8,9 +8,9 @@ const { buildNormalEnvelope } = require("../../../modules/memory/application/env
 const { compileSemanticResult } = require("../../../modules/memory/domain/semanticCompiler");
 const { reduceCompiledProposal } = require("../../../modules/memory/domain/compiledReducer");
 const { buildDeterministicExactMergeOutput } = require("../../../modules/memory/domain/itemDeduplication");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
-const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/bindOutputSchema");
+const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/output/validateProviderWireOutput");
 
 const NOW = "2026-09-10T00:00:00.000Z";
 const source = messageId => ({ messageId, contentHash: sha256(`message-${messageId}`) });

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildDueAtSchema, validateDueAtExpression } = require("../../../modules/memory/contracts/dueAt");
-const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/transport/deepSeekSchemaCompiler");
 
 function matchesSchema(schema, value) {
   if (schema.oneOf) return schema.oneOf.filter((branch) => matchesSchema(branch, value)).length === 1;

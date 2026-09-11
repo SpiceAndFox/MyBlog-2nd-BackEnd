@@ -1,14 +1,14 @@
-const { buildOutputSchema } = require("./outputSchema");
+const { buildOutputSchema } = require("../output/outputSchema");
 const {
   buildProposerUserPayload,
   schemaRepairRequest,
-} = require("./memoryProviderAdapter");
+} = require("../memoryProviderAdapter");
 const {
   bindOutputSchema,
   bindSpecialistSchema,
-} = require("./bindOutputSchema");
-const { buildStructuredHttpRequest } = require("./structuredHttpRequest");
-const { providerProtocolMetadata, providerWireSchemaMetadata } = require("./providerProtocolMetadata");
+} = require("../output/bindOutputSchema");
+const { buildStructuredHttpRequest } = require("../transport/structuredHttpRequest");
+const { providerProtocolMetadata, providerWireSchemaMetadata } = require("../output/providerProtocolMetadata");
 
 const PROFILE_SPECIALISTS = Object.freeze([
   Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),
@@ -45,6 +45,7 @@ function previewEntry(providerConfig, semanticRequest, { phase, section = null }
     method: httpRequest.method,
     endpoint: httpRequest.endpoint,
     body: httpRequest.body,
+    ...(httpRequest.providerPolicy ? { providerPolicy: httpRequest.providerPolicy } : {}),
     ...(httpRequest.schemaDiagnostics ? { schemaDiagnostics: httpRequest.schemaDiagnostics } : {}),
     ...(semanticRequest.protocol ? { protocol: { ...semanticRequest.protocol, ...providerWireSchemaMetadata(httpRequest.body) } } : {}),
   };

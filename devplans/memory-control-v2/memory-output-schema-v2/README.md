@@ -143,7 +143,7 @@ actor、requester 各自在自己的字段内定义同样的联合，value 使�
 
 ## 3. 离线对比
 
-复现命令：`node devplans/memory-output-schema-v2/prototype.cjs --write`。
+依赖旧版 flat Todo schema 的实验脚本已删除。下述数字和本目录 JSON 文件仅保留为历史设计记录，不能直接用当前生产代码重跑；正式实现及验证入口见 [IMPLEMENTATION.md](IMPLEMENTATION.md)。
 
 所有数字是同一组合成 binding 下 compact JSON 的 UTF-8 字节数。没有请求 DeepSeek，不是 API token、延迟、计费或模型效果数据。原型 refs 复用是简单去重启发式，不宣称最优压缩；也不保证不同输入规模下压缩率单调。
 
@@ -260,8 +260,7 @@ wireVersion、promptVersion、compilerVersion、schemaHash 在应用侧固定，
 
 ## 文件
 
-- `prototype.cjs`：离线 schema 对比与协议往返检查，只有 `--write` 才写本目录产物。
-- `measurements.json`：可重现的字节数与检查结果。
+- `measurements.json`：历史实验的字节数与检查结果。
 - `todo-v2.schema.json`：完整本地候选 schema。
 - `todo-v2.deepseek.schema.json`：无 refs 的 DeepSeek 子集候选。
 - `todo-v2.deepseek-shared.schema.json`：使用文档 `$def` 方言的实验候选。

@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 const contracts = require("../../../modules/memory/contracts");
 const { buildProposerTaskArtifact } = require("../../../modules/memory/application/proposerTaskRenderer");
 const { createSemanticCompiler } = require("../../../modules/memory/application/semanticCompiler");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
 
 function hash(content) { return `sha256:${crypto.createHash("sha256").update(content).digest("hex")}`; }
 function message(id, content) {

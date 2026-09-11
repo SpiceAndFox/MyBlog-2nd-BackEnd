@@ -1,4 +1,4 @@
-const { loadMemoryV2Config } = require("./config/loadConfig");
+const { loadMemoryV2Config } = require("./configuration");
 const { createMemoryModule } = require("./moduleFactory");
 
 // Runtime callers receive only the composition factory and configuration loader.

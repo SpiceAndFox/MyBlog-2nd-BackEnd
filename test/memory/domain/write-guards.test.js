@@ -10,8 +10,8 @@ const { mapEventToRow } = require("../../../modules/memory/application/eventMapp
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
 const { memoryExampleEnv } = require("../support/memory-builders");
 const { loadMemoryV2Config } = require("../../../modules/memory/config/loadConfig");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/bindOutputSchema");
 
 const config = createMemoryTestConfig();
 const source = (messageId) => ({ messageId, contentHash: sha256(`message-${messageId}`) });

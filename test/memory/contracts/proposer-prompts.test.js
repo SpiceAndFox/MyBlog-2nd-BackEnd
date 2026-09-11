@@ -6,10 +6,10 @@ const path = require("node:path");
 const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
 const { TARGETS } = require("../../../modules/memory/contracts");
 const { validateSemanticResult } = require("../../../modules/memory/contracts/semantic");
-const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
-const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/todoWireProtocol");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
+const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/output/flatWireProtocol");
+const { todoWireToSemantic } = require("../../../modules/memory/infrastructure/providers/output/todoWireProtocol");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/output/validateProviderWireOutput");
 
 const PROMPT_SECTIONS = Object.freeze({
   currentStateProposer: TARGETS.scene.sections,

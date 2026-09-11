@@ -8,7 +8,7 @@ const { reduceCompiledProposal } = require("../domain/compiledReducer");
 const { createSemanticCompiler } = require("./semanticCompiler");
 const { isSemanticTaskEnvelope } = require("./envelope");
 const { createRepairFeedback, isTransportRepairFailure } = require("./outputRepair");
-const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
+const { buildOutputSchema } = require("../infrastructure/providers/output/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
 const { outputProtocolForProposer } = require("../contracts/outputProtocol");
@@ -165,6 +165,9 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
       provenance: {
         outputProtocol: outputProtocolForProposer(envelope.task.proposer),
         adapter: config.provider.adapter,
+        profile: config.provider.profile ?? null,
+        policy: config.provider.policy ?? null,
+        modelRules: config.provider.modelRules ?? null,
         requestedModel,
         thinkingMode: config.provider.thinkingMode ?? null,
         promptHash: sha256(prompt),

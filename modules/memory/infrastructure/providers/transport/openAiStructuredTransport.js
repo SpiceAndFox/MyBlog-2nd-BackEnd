@@ -4,8 +4,8 @@ const {
 } = require("./providerProtocol");
 const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
 const { parseStrictJsonContent } = require("./structuredJsonContent");
-const { validateProviderWireOutput } = require("./validateProviderWireOutput");
-const { providerWireSchemaMetadata } = require("./providerProtocolMetadata");
+const { validateProviderWireOutput } = require("../output/validateProviderWireOutput");
+const { providerWireSchemaMetadata } = require("../output/providerProtocolMetadata");
 
 function createOpenAiStructuredTransport({
   baseUrl,
@@ -29,7 +29,7 @@ function createOpenAiStructuredTransport({
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
   const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens };
   return async function invokeStructured(request) {
-    const { endpoint, body } = httpRequestBuilder(providerConfig, request, {
+    const { endpoint, body, providerPolicy } = httpRequestBuilder(providerConfig, request, {
       compileSchema,
       extraBody,
     });
@@ -84,6 +84,7 @@ function createOpenAiStructuredTransport({
       }
       return {
         output,
+        ...(providerPolicy ? { providerPolicy } : {}),
         outputChannel: "content",
         ...providerWireSchemaMetadata(body),
         rawSchemaValid: outputSchemaValidation?.rawSchemaValid ?? false,

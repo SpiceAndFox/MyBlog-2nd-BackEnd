@@ -3,13 +3,13 @@ const {
   FLAT_WIRE_STATUSES,
   flatWireSections,
   isFlatWireProposer,
-} = require("../../contracts/flatWire");
+} = require("../../../contracts/flatWire");
 
 const FLAT_WIRE_SOURCE_PREFIXES = Object.freeze({
   message: "message:",
   memory: "memory:",
 });
-const { SECTION_ACTIONS, sectionLimits } = require("../../contracts/sectionPolicy");
+const { SECTION_ACTIONS, sectionLimits } = require("../../../contracts/sectionPolicy");
 const BASE_CHANGE_FIELDS = Object.freeze(["section", "action", "target", "text", "sources"]);
 
 function isPlainObject(value) {

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { runStructuredOutputPreflight } = require("../../../modules/memory/infrastructure/providers/providerPreflight");
+const { runStructuredOutputPreflight } = require("../../../modules/memory/infrastructure/providers/diagnostics/providerPreflight");
 const { loadProposerPrompt } = require("../../../modules/memory/prompts");
 
 test("provider preflight exercises every normal proposer and both maintenance schemas", async () => {

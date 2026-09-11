@@ -20,6 +20,9 @@ async function main(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify({
     status: "supported",
     adapter: config.adapter,
+    profile: config.profile,
+    policy: config.policy,
+    modelRules: config.modelRules,
     defaultModel: config.model,
     proposerModels: config.proposerModels,
     probes,

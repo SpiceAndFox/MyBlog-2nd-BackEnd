@@ -1,8 +1,8 @@
 const { testWriteLimits } = require("../support/memory-builders");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/bindOutputSchema");
 const { sceneEnvelope } = require("../support/provider-envelopes");
 
 test("generic schema binding restricts flat targets and sources to the rendered artifact", () => {

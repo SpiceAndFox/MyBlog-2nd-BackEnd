@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { providerBusinessRejection } = require("../../../modules/memory/infrastructure/providers/providerBusinessRejection");
-const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/validateProviderWireOutput");
+const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/output/validateProviderWireOutput");
 const { createRepairFeedback, appendRejectedOutputAttempt, latestRejectedOutput } = require("../../../modules/memory/application/outputRepair");
 const { profileEnvelope } = require("../support/provider-envelopes");
 

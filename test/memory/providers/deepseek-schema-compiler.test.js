@@ -1,9 +1,9 @@
 const { testWriteLimits } = require("../support/memory-builders");
-const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
+const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/bindOutputSchema");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/transport/deepSeekSchemaCompiler");
 const { FLAT_WIRE_PROPOSER_SECTIONS } = require("../../../modules/memory/contracts/flatWire");
 
 test("ordinary flat proposer schemas stay within the measured optional-field expansion budget", () => {
@@ -91,7 +91,7 @@ test("DeepSeek compiler preserves Librarian status branches and target text limi
 
 
 test("DeepSeek Librarian tool parameters use one nonempty root object and retain local status validation", () => {
-  const { compileDeepSeekToolParameters } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+  const { compileDeepSeekToolParameters } = require("../../../modules/memory/infrastructure/providers/transport/deepSeekSchemaCompiler");
   const tool = compileDeepSeekToolParameters(buildOutputSchema("librarianProposer"));
   assert.equal(tool.type, "object");
   assert.equal(tool.anyOf, undefined);

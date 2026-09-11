@@ -2,7 +2,7 @@ const { buildTodoOutputSchema } = require("./todoWireProtocol");
 const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
-} = require("../../contracts/constants");
+} = require("../../../contracts/constants");
 const {
   buildFlatWireOutputSchema,
   isFlatWireProposer,
@@ -72,7 +72,7 @@ function buildTextItemSemanticOutputSchema(proposer, sections, { maxItemsBySecti
           additionalProperties: false,
           required: sections,
           properties: Object.fromEntries(sections.map((section) => [section, semanticTextItemResultSchema({
-            actions: require("../../contracts/sectionPolicy").SECTION_ACTIONS[section],
+            actions: require("../../../contracts/sectionPolicy").SECTION_ACTIONS[section],
             maxItems: maxItemsBySection[section],
             maxTextLength: maxTextLengthBySection[section],
           })])),

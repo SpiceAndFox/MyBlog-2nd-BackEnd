@@ -3,12 +3,12 @@ const {
   validateRendererArtifact,
   validateSemanticResult,
 } = require("../../contracts");
-const { buildOutputSchema } = require("./outputSchema");
+const { buildOutputSchema } = require("./output/outputSchema");
 const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
-const { providerProtocolMetadata } = require("./providerProtocolMetadata");
-const { todoWireToSemantic, semanticToTodoWire, todoWireRepairErrors } = require("./todoWireProtocol");
-const { validateProviderWireOutput } = require("./validateProviderWireOutput");
-const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
+const { providerProtocolMetadata } = require("./output/providerProtocolMetadata");
+const { todoWireToSemantic, semanticToTodoWire, todoWireRepairErrors } = require("./output/todoWireProtocol");
+const { validateProviderWireOutput } = require("./output/validateProviderWireOutput");
+const { isSafetySignal, isTruncationSignal } = require("./transport/providerProtocol");
 const {
   ISSUE_CODES,
   createRepairFeedback,
@@ -17,11 +17,11 @@ const {
   renderRepairMessage,
   summarizeOutputShape,
 } = require("../../application/outputRepair");
-const { bindOutputSchema, bindSpecialistSchema } = require("./bindOutputSchema");
+const { bindOutputSchema, bindSpecialistSchema } = require("./output/bindOutputSchema");
 const {
   flatWireRepairErrors,
   flatWireToSemanticOutput,
-} = require("./flatWireProtocol");
+} = require("./output/flatWireProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
@@ -29,6 +29,7 @@ const { profileInputHash, profileRepairBundle, profileOutputsForRetry, specialis
 
 function completedProtocol(metadata, response) {
   return { ...metadata, outputChannel: response?.outputChannel ?? "adapter",
+    ...(response?.providerPolicy ? { providerPolicy: response.providerPolicy } : {}),
     wireSchemaHash: response?.wireSchemaHash ?? null, wireSchemaBytes: response?.wireSchemaBytes ?? null,
     schemaDiagnostics: response?.schemaDiagnostics ?? [], rawSchemaValid: response?.rawSchemaValid ?? null,
     normalizations: response?.wireNormalizations || [], transportRecovery: response?.transportRecovery ?? null };

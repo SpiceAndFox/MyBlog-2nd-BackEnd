@@ -4,7 +4,7 @@ const {
   flatWireRepairErrors,
   flatWireToSemanticOutput,
   semanticOutputToFlatWire,
-} = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
+} = require("../../../modules/memory/infrastructure/providers/output/flatWireProtocol");
 
 const PROFILE_TASK = Object.freeze({
   tickId: 42,

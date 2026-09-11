@@ -51,7 +51,6 @@ async function main() {
   require("dotenv").config({ quiet: true });
   const config = loadMemoryV2Config({ ...process.env, CHAT_MEMORY_V2_ENABLED: "true" });
   const provider = config.provider;
-  if (provider.adapter !== "deepseek-strict-tools" || provider.thinkingMode !== "enabled") throw new Error("This evaluation requires DeepSeek with thinking enabled");
   const adapter = createMemoryProviderAdapter({ invokeStructured: createStructuredTransport(provider), promptLoader: loadProposerPrompt });
   const results = [];
   const filter = process.argv[2] || "";
@@ -85,7 +84,9 @@ async function main() {
     results.push({ ...entry, attempts, durationMs: Date.now() - started });
     process.stdout.write(JSON.stringify({ name: entry.name, mechanical: entry.mechanical, quality: entry.quality, attempts: attempts.length }) + "\n");
   }
-  const report = { at: new Date().toISOString(), model: provider.model, thinkingMode: provider.thinkingMode, reasoningEffort: provider.reasoningEffort, sampleKind: "synthetic", results };
+  const report = { at: new Date().toISOString(), adapter: provider.adapter, profile: provider.profile,
+    policy: provider.policy, modelRules: provider.modelRules, proposerModels: provider.proposerModels,
+    model: provider.model, thinkingMode: provider.thinkingMode, reasoningEffort: provider.reasoningEffort, sampleKind: "synthetic", results };
   await fs.mkdir("reports", { recursive: true });
   await fs.writeFile("reports/memory-integrity-live.json", JSON.stringify(report, null, 2));
   if (results.some(r => r.mechanical !== "passed" || r.quality !== "passed")) process.exitCode = 1;

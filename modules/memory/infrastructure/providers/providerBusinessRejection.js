@@ -1,7 +1,7 @@
 const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
 const { validateSemanticResult } = require("../../contracts/semantic");
-const { semanticToTodoWire, todoWireRepairErrors } = require("./todoWireProtocol");
-const { semanticOutputToFlatWire, flatWireRepairErrors } = require("./flatWireProtocol");
+const { semanticToTodoWire, todoWireRepairErrors } = require("./output/todoWireProtocol");
+const { semanticOutputToFlatWire, flatWireRepairErrors } = require("./output/flatWireProtocol");
 const { PROFILE_SPECIALISTS } = require("./profileSpecialists");
 const { createRepairFeedback } = require("../../application/outputRepair");
 const { profileRepairBundle } = require("./profileRepairState");

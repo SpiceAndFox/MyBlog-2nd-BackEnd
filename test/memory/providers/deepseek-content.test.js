@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   createDeepSeekStrictToolsTransport,
-} = require("../../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
+} = require("../../../modules/memory/infrastructure/providers/transport/deepSeekStrictToolsTransport");
 
 const responseSchema = {
   name: "memory_result",

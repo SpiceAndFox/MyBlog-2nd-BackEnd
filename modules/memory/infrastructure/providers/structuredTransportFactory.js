@@ -1,19 +1,16 @@
-const { createOpenAiStructuredTransport } = require("./openAiStructuredTransport");
-const { createDeepSeekStrictToolsTransport } = require("./deepSeekStrictToolsTransport");
-const { createOpencodeGoStructuredTransport } = require("./opencodeGoStructuredTransport");
-const { createOpencodeGoJsonObjectTransport } = require("./opencodeGoJsonObjectTransport");
+const { initializeProviderConfig } = require("./policies/resolveProviderPolicy");
+const { createOpenAiCompatibleTransport } = require("./transport/openAiCompatibleTransport");
+const { createDeepSeekStrictToolsTransport } = require("./transport/deepSeekStrictToolsTransport");
 
 const FACTORIES = Object.freeze({
-  "openai-json-schema": createOpenAiStructuredTransport,
+  "openai-compatible-json-schema": createOpenAiCompatibleTransport,
+  "openai-compatible-json-object": createOpenAiCompatibleTransport,
   "deepseek-strict-tools": createDeepSeekStrictToolsTransport,
-  "opencode-go-json-schema": createOpencodeGoStructuredTransport,
-  "opencode-go-json-object": createOpencodeGoJsonObjectTransport,
 });
 
 function createStructuredTransport(config, overrides = {}) {
-  const factory = FACTORIES[config?.adapter];
-  if (!factory) throw new Error(`Unsupported Memory Provider adapter: ${config?.adapter || "<missing>"}`);
-  return factory({ ...config, ...overrides });
+  const normalized = initializeProviderConfig({ ...config, ...overrides });
+  return FACTORIES[normalized.adapter](normalized);
 }
 
 module.exports = { createStructuredTransport };

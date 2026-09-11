@@ -1,6 +1,6 @@
-const { constraintDescriptions } = require("./schemaConstraintDescriptions");
+const { constraintDescriptions } = require("../output/schemaConstraintDescriptions");
 const { compileDeepSeekTodoSchema } = require("./deepSeekTodoSchemaCompiler");
-const { TODO_SCHEMA_NAME } = require("./todoWireProtocol");
+const { TODO_SCHEMA_NAME } = require("../output/todoWireProtocol");
 
 const DROPPED_KEYWORDS = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 

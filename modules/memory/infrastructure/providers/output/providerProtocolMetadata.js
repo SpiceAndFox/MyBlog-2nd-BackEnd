@@ -1,5 +1,5 @@
 const { createHash } = require("node:crypto");
-const { outputProtocolForProposer } = require("../../contracts/outputProtocol");
+const { outputProtocolForProposer } = require("../../../contracts/outputProtocol");
 
 function providerProtocolMetadata(task, responseSchema) {
   return {

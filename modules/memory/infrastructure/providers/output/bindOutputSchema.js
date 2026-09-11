@@ -1,4 +1,4 @@
-const { sectionLimits } = require("../../contracts/sectionPolicy");
+const { sectionLimits } = require("../../../contracts/sectionPolicy");
 const { TODO_SCHEMA_NAME, buildTodoOutputSchema } = require("./todoWireProtocol");
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));

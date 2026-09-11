@@ -5,8 +5,8 @@ const {
 } = require("./providerProtocol");
 const { buildDeepSeekHttpRequest, normalizeBaseUrl } = require("./structuredHttpRequest");
 const { parseStrictJsonContent } = require("./structuredJsonContent");
-const { validateProviderWireOutput } = require("./validateProviderWireOutput");
-const { providerWireSchemaMetadata } = require("./providerProtocolMetadata");
+const { validateProviderWireOutput } = require("../output/validateProviderWireOutput");
+const { providerWireSchemaMetadata } = require("../output/providerProtocolMetadata");
 
 function parseToolArguments(value) {
   if (value && typeof value === "object") return { output: value, recovery: null, error: null };

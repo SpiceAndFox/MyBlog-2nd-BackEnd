@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
-const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/outputSchema");
-const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/deepSeekSchemaCompiler");
+const { buildOutputSchema } = require("../../../modules/memory/infrastructure/providers/output/outputSchema");
+const { compileDeepSeekSchema } = require("../../../modules/memory/infrastructure/providers/transport/deepSeekSchemaCompiler");
 const { sceneEnvelope } = require("../support/provider-envelopes");
 
 test("output schema is target-specific and requires every joint section", () => {

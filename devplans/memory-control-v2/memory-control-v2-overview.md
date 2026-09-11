@@ -13,6 +13,7 @@
 - [渲染与上下文接入](rendering-and-context.md)：主聊天 Renderer、Memory segment、RAG 与 raw source 边界；
 - [Proposer Prompt 契约](proposer-prompt.md)：各 Semantic Proposer 的语义准入与输出权限；
 - [Harness 验收契约](harness.md)：Compiler/Reducer/Renderer/pipeline fixtures 与恢复测试。
+- [Provider adapter 配置](provider-adapters.md)：网关与模型规则、通用 adapter、配置迁移及接入验证。
 
 Memory Control 2.01 是对原 v2 语义写入协议的替换，不兼容旧 v2 state/task/proposal/event/snapshot。当前使用可重建的开发数据库，切换时直接清理旧 v2 派生数据并从 raw messages rebuild，不设计双读、backfill 或兼容 schema。
 

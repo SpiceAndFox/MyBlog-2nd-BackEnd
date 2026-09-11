@@ -1,4 +1,4 @@
-const { constraintDescriptions } = require("./schemaConstraintDescriptions");
+const { constraintDescriptions } = require("../output/schemaConstraintDescriptions");
 
 const LOCAL_ONLY = new Set(["minLength", "maxLength", "minItems", "maxItems", "uniqueItems"]);
 const SUPPORTED = new Set(["type", "properties", "required", "additionalProperties", "description", "enum", "anyOf", "items", "pattern", "minimum", "maximum"]);

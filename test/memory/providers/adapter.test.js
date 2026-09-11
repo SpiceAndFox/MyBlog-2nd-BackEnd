@@ -38,7 +38,8 @@ test("JSON object transport validates the parsed output locally", async () => {
     {
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
-      adapter: "opencode-go-json-object",
+      adapter: "openai-compatible-json-object",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "mimo-v2.5-pro",
@@ -76,7 +77,8 @@ test("JSON object transport rejects malformed flat wire entries before Semantic 
     {
       maxOutputTokens: 1024,
       thinkingMode: "disabled",
-      adapter: "opencode-go-json-object",
+      adapter: "openai-compatible-json-object",
+      profile: "opencode-go",
       baseUrl: "https://opencode.test/v1/",
       apiKey: "test-key",
       model: "mimo-v2.5-pro",
