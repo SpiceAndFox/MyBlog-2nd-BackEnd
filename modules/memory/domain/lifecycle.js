@@ -2,6 +2,12 @@ const { createEmptyScene } = require("../contracts/state");
 const { measureSection, itemRenderedChars } = require("./capacity");
 
 function clone(value) { return structuredClone(value); }
+// Deadline classification is independent of how/when a fact was learned.
+// active means open and not currently overdue, not a renewed commitment.
+function classifyTodoDeadline(dueAt, nowMs) {
+  const overdue = dueAt !== null && new Date(dueAt).getTime() <= nowMs;
+  return { status: overdue ? "overdue" : "active", becameOverdueAt: overdue ? dueAt : null };
+}
 function cleanup(section, targetKey, cleanupKind, details = {}) {
   return {
     eventKind: "system_cleanup",
@@ -46,9 +52,9 @@ function normalizeLifecycle(memoryState, anchors, now, config, { targetKeys = ["
   }
 
   for (const todo of targetKeys.includes("todos") ? state.working.todos : []) {
-    if (todo.status === "active" && todo.dueAt && timestamp >= new Date(todo.dueAt).getTime()) {
-      todo.status = "overdue";
-      todo.becameOverdueAt = todo.dueAt;
+    const deadlineState = classifyTodoDeadline(todo.dueAt, timestamp);
+    if (todo.status === "active" && deadlineState.status === "overdue") {
+      Object.assign(todo, deadlineState);
       events.push(cleanup("todos", "todos", "todo_became_overdue", { itemId: todo.id, becameOverdueAt: todo.dueAt }));
     }
   }
@@ -65,4 +71,4 @@ function buildEffectiveMemoryView(memoryState, anchors, requestNow, config) {
   return { view: result.state, needsHousekeeping: result.changed, cleanupEvents: result.events };
 }
 
-module.exports = { normalizeLifecycle, buildEffectiveMemoryView };
+module.exports = { normalizeLifecycle, buildEffectiveMemoryView, classifyTodoDeadline };

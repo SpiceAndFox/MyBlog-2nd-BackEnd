@@ -254,11 +254,12 @@ test("incompatible Todo repair state halts without provider calls, counter reset
   }
 });
 
-for (const participantConflict of [false, true]) test(`Todo business rejection repairs ${participantConflict ? "combined constraints during force drain" : "the date conflict"} before evidence-only commit`, async () => {
+for (const forceDrain of [false, true]) for (const requesterConflict of [false, true]) test(
+  `Todo historical edits commit without invented future dates (forceDrain=${forceDrain}, requesterRepair=${requesterConflict})`, async () => {
   const store = fakes();
   const messages = [
     { ...message, id: 1, createdAt: "2026-01-01T12:00:00.000Z" },
-    { ...message, id: 2, createdAt: "2026-01-02T12:00:00.000Z", content: "只是再次确认原计划，没有改期", contentHash: sha256("只是再次确认原计划，没有改期") },
+    { ...message, id: 2, createdAt: "2026-01-02T12:00:00.000Z", content: "改为明天归还图书，由 Alice 去还，还是我提出的计划。", contentHash: sha256("改为明天归还图书，由 Alice 去还，还是我提出的计划。") },
   ];
   store.repositories.source.getObservedWindow = async () => messages;
   store.repositories.source.getByIds = async (_u, _p, ids) => messages.filter(m => ids.includes(m.id)).map(m => ({ ...m, userId: 1, presetId: "default" }));
@@ -268,57 +269,45 @@ for (const participantConflict of [false, true]) test(`Todo business rejection r
     status: "overdue", dueAt, becameOverdueAt: dueAt, sourceRefs: [{ messageId: 1, contentHash: message.contentHash }],
     createdAtMessageId: 1, updatedAtMessageId: 1 });
   const candidate = { results: { todos: { status: "changes", changes: [{ action: "revise", target: "T1", sources: ["message:1", "message:2"],
-    text: { mode: "keep" }, actor: { mode: "keep" }, requester: { mode: "keep" },
+    text: { mode: "set", value: "归还图书" }, actor: { mode: "set", value: "assistant" },
+    requester: requesterConflict ? { mode: "set", value: "assistant" } : { mode: "keep" },
     due: { mode: "relativeDays", offset: 1, anchorSource: "message:2" },
   }] } } };
-  if (participantConflict) candidate.results.todos.changes[0].actor = { mode: "set", value: "assistant" };
   const repaired = structuredClone(candidate);
-  repaired.results.todos.changes[0].due = { mode: "keep" };
-  repaired.results.todos.changes[0].actor = { mode: "keep" };
+  repaired.results.todos.changes[0].requester = { mode: "keep" };
   const requests = [];
   const providerAdapter = createMemoryProviderAdapter({ promptLoader: loadProposerPrompt, invokeStructured: async request => {
     requests.push(request);
     if (requests.length === 2) {
       assert.deepEqual(request.repairContext.assistantOutput, candidate);
       const instruction = request.repairContext.userMessage;
-      for (const value of ["$.results.todos.changes[0].due", "T1", dueAt, "2026-01-04T00:00:00.000Z", "2026-09-10T00:00:00.000Z"]) assert.ok(instruction.includes(value), value);
-      assert.match(instruction, /不得为了通过校验编造未来日期/);
-      assert.match(instruction, /若只补充证据/);
-      if (participantConflict) {
-        assert.match(instruction, /TODO_OVERDUE_PARTICIPANT_CHANGE/);
-        assert.match(instruction, /\$\.results\.todos\.changes\[0\]\.actor\.value/);
-      }
-      assert.doesNotMatch(instruction, /sectionResults|dueChange|todo:old/);
+      for (const value of ["$.results.todos.changes[0].requester.value", "T1", "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION", "最初提出方"]) assert.ok(instruction.includes(value), value);
+      assert.doesNotMatch(instruction, /sectionResults|dueChange|todo:old|必须严格晚于|恢复逾期待办时不能/);
     }
-    return { output: requests.length === 1 ? candidate : repaired, model: "test", outputChannel: "tool_arguments",
-      usage: { prompt_tokens: 100, completion_tokens: 30 }, transportRecovery: "test-recovery" };
+    return { output: requests.length === 1 ? candidate : repaired, model: "test", outputChannel: "content",
+      usage: { prompt_tokens: 100, completion_tokens: 30 } };
   } });
   const pipeline = createNormalWritePipeline({ observer: {}, config, repositories: store.repositories, providerAdapter,
     now: () => new Date("2026-09-10T00:00:00.000Z") });
   const result = await pipeline.processIntent(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], cursorBefore: 1,
-    ...(participantConflict ? { trigger: { type: "forceDrain" } } : {}) });
+    ...(forceDrain ? { trigger: { type: "forceDrain" } } : {}) });
   assert.equal(result.status, "committed");
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0].systemPrompt, await loadProposerPrompt("todoProposer"));
-  assert.equal(requests[0].systemPrompt, requests[1].systemPrompt, "business repair adds no persistent prompt rules");
+  assert.equal(requests.length, requesterConflict ? 2 : 1);
   const row = [...store.inspect.tasks.values()][0];
-  const rejected = row.stage_payload.schemaRejectedOutputs[0];
-  assert.equal(rejected.outputKind, "provider_wire");
-  assert.deepEqual(rejected.output, candidate);
-  assert.equal(rejected.protocol.rawSchemaValid, true);
-  assert.equal(rejected.protocol.transportRecovery, "test-recovery");
-  assert.equal(rejected.protocol.schemaHash, row.stage_payload.providerProtocol.schemaHash);
-  const issue = row.stage_payload.schemaRepairFeedback.errors[0];
-  assert.equal(issue.code, "TODO_OVERDUE_REQUIRES_FUTURE_DUE");
-  assert.equal(issue.path, "$.results.todos.changes[0].due");
-  assert.equal(issue.meta.target, "T1");
-  assert.equal(issue.meta.currentDueAt, dueAt);
-  assert.equal(row.stage_payload.schemaRepairFeedback.errors.length, participantConflict ? 2 : 1);
+  if (requesterConflict) {
+    const rejected = row.stage_payload.schemaRejectedOutputs[0];
+    assert.equal(rejected.outputKind, "provider_wire");
+    assert.deepEqual(rejected.output, candidate);
+    assert.equal(rejected.protocol.rawSchemaValid, true);
+    assert.equal(row.stage_payload.schemaRepairFeedback.errors[0].code, "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION");
+  } else assert.equal(row.stage_payload.schemaInvalidAttempts, undefined);
   const todo = store.inspect.state.working.todos[0];
   assert.equal(todo.status, "overdue");
-  assert.equal(todo.dueAt, dueAt);
-  assert.equal(todo.becameOverdueAt, dueAt);
-  assert.equal(todo.actor, "user");
+  assert.equal(todo.text, "归还图书");
+  assert.equal(todo.dueAt, "2026-01-04T00:00:00.000Z");
+  assert.equal(todo.becameOverdueAt, todo.dueAt);
+  assert.equal(todo.actor, "assistant");
+  assert.equal(todo.requester, "user");
   assert.deepEqual(todo.sourceRefs.map(ref => ref.messageId), [1, 2]);
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });

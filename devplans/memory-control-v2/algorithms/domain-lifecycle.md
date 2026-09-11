@@ -28,39 +28,36 @@ Scene TTL 基于 scene 四个非 null 字段中最大的 `updatedAtMessageId` �
 5. 若覆盖了非 null 的旧 `previousScene`，同一 cleanup revision/event group 还必须写 `system_cleanup: expired_scene_evicted`；
 6. `previousScene` 是单值字段，新 scene 到期时直接替换旧值，不调用 compactionProposer，也不参与 scene 的 `maxRenderedChars` 容量门。
 
-## 3. Todo 状态机
+## 3. Todo 状态与事实编辑
 
-Todo `addItem` 必须提供 `actor` 与 `requester`，Reducer 强制初始化 `status="active"`、`becameOverdueAt=null`；Proposer 不得输出或直接修改这两个 lifecycle 字段。
+Todo 的事实编辑与期限分类相互独立。active 表示未结束且当前未逾期，不表示用户作出了一次新承诺；overdue 表示未结束且当前期限已过，不冻结事项。
 
-Todo status × op 合法操作表：
+有来源支持、属于同一事项的 reviseItem/correctItem 可以修改文本、执行者和期限，不因任务积压、历史 rebuild 或处理时已经逾期而拒绝。系统不得为了接受事实而编造未来日期或把处理时间用作日期锚点。
 
-| 当前状态 | 操作 | 结果 |
+| 操作 | 事实处理 | 期限分类 |
 | --- | --- | --- |
-| active | updateItem (keep/clear/set) | 仍 active；set 到已过期 dueAt 时由 lifecycle 归一化原位变 overdue |
-| active | completeTodo / cancelTodo / expireTodo / forgetItem | 从数组移除 |
-| active | mergeItems | 合并（需 actor/requester/dueAt 分别相同） |
-| overdue | completeTodo / cancelTodo / forgetItem | 从数组移除 |
-| overdue | updateItem + set future dueAt | 原位变回 active，清空 becameOverdueAt，写 `todo_revived_from_overdue` |
-| overdue | updateItem + keep / clear / set past dueAt | 拒绝，reason=`invalid_state_transition`；overdue todo 不允许清除或保持已过期 dueAt，如需清除期限应先 complete/cancel |
-| overdue | expireTodo | 拒绝，reason=`invalid_state_transition`；overdue 已过期，"自然失效"语义不适用，应使用 cancelTodo |
-| overdue | mergeItems | 拒绝，reason=`invalid_state_transition` |
+| addItem | 新建，必须提供 actor/requester | 初始化后由同次 lifecycle 按期限分类 |
+| reviseItem/correctItem + keep | 保留期限，接受其他有证据的字段修改 | 按原期限判断 |
+| reviseItem/correctItem + set | 接受有证据的新期限，包括过去期限 | dueAt <= now 为 overdue，否则 active |
+| reviseItem/correctItem + clear | 仅在明确取消期限且事项仍成立时清除 | active，无期限 |
+| completeTodo/cancelTodo/expireTodo/forgetItem | 有对应语义证据时移除 | 不要求未来期限，不因 overdue 禁止 |
+| mergeItems | 仅维护模式合并相同 actor/requester/dueAt 的 active 项 | 保持既有维护边界 |
 
-当 active todo 满足 `now >= dueAt`：
+期限分类由纯函数 classifyTodoDeadline 统一计算：dueAt 非 null 且 dueAt <= now 时为 overdue，becameOverdueAt=dueAt；否则 active，becameOverdueAt=null。过去期限改成另一个过去期限时，两个日期字段同时更新。becameOverdueAt 表示当前期限对应的逾期起点，历史期限仍可从审计记录追溯。
 
-1. 在 `working.todos` 内原位设 `status="overdue"`；
-2. 令 `becameOverdueAt=dueAt`；
-3. 保留 itemId、actor、requester、dueAt 和全部 provenance；
-4. 写 `system_cleanup: todo_became_overdue`；
-5. 重复 housekeeping 必须 noop，不能重写首次时间。
+普通 revise 必须保留 requester（最初提出方）；只有可见证据证明原记录从一开始就错误时才用 correct 更正，Reducer 不代替模型验证自然语言证据。actor 有明确转交事实可以 revise，录错可以 correct。这些规则与 active/overdue 无关。不得为绕过 requester 校验把没有纠错依据的 revise 改名为 correct。
 
-当 overdue todo 的 `updateItem` 设置 `dueChange.mode=set` 且新 dueAt 在未来：
+未再次提及日期不代表取消期限，必须 keep。expire 表示有直接证据说明行动机会或成立条件消失，不等于期限已到；纯时间推移只标记 overdue，不自动移除事项。
 
-1. 原位设 `status="active"`；
-2. 令 `becameOverdueAt=null`；
-3. 保留 itemId、actor、requester、dueAt（新值）和全部 provenance；
-4. 写 `system_cleanup: todo_revived_from_overdue`。
+完全相同的业务字段和来源输出审计 noop；仅来源变化替换证据并保留业务字段。来源、长度、同目标冲突及原子提交约束保持有效。
 
-`todos.maxItems/maxRenderedChars` 只统计并约束 `status=active` 的 items。overdue items 不占 active 容量、不触发 compaction；Renderer 对 overdue 子集使用独立的 `maxRenderedItems + maxRenderedChars` 配置。Todo merge 只允许合并 `status=active` 且 `actor`、`requester`、`dueAt` 三者分别相同的 items。
+事实编辑在 accepted reviseItem/correctItem 的 normalizedOperation.value 中保存完整的修改后状态，供事件重放恢复；不再为编辑输出 todo_revived_from_overdue，以免把期限纠错、取消期限或普通修改误记为重新承诺。历史 todo_revived_from_overdue 事件继续支持读取和重放，不重写历史日志。
+
+时钟推进导致 active 到期时，housekeeping/effective view 仍复用该分类函数，写 system_cleanup: todo_became_overdue（becameOverdueAt=dueAt）；重复 housekeeping 为 noop。
+
+todos.maxItems/maxRenderedChars 只统计 active。清除期限或改到未来使事项重新占用 active 容量时，保留原 createdAtMessageId，遵循既有 FIFO 淘汰；不得以编辑刷新创建顺序。overdue 使用独立渲染预算。
+
+本次不引入历史时钟或叙事时间。消息时间负责日期锚定，task.now 负责当前状态判断；二者不能互相替代。是否将整个 rebuild 改为历史时间重放需要另外评估 Scene TTL、跨 target cleanup、容量与最终状态结算。
 
 ## 4. Recent Episodes 滑动窗口
 
@@ -68,7 +65,7 @@ Todo status × op 合法操作表：
 
 ## 5. Proposal 内归一化与后台 Housekeeping
 
-若 lifecycle 变化由一个 proposal 的模拟 post-state 直接触发（例如新增已到 deadline 的 todo，overdue todo 设置未来 dueAt，或 recentEpisodes apply 后超窗口），对应 `system_cleanup` events 与 proposal decisions 共用该 proposal event group、revision 和完整 snapshot，保证最终 post-state 原子满足 lifecycle/容量规则。
+若 lifecycle 变化由一个 proposal 的模拟 post-state 直接触发（例如新增已到 deadline 的 todo，或 recentEpisodes apply 后超窗口），对应 `system_cleanup` events 与 proposal decisions 共用该 proposal event group、revision 和完整 snapshot，保证最终 post-state 原子满足 lifecycle/容量规则。
 
 没有 proposal 的后台 housekeeping 才创建 `group_kind=system_cleanup` 的独立 revision/group。两种路径都复用同一纯代码 lifecycle 函数；无变化不创建空 revision。
 

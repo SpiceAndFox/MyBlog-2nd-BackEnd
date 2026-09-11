@@ -16,15 +16,15 @@ const WIRE = { results: { todos: { status: "changes", changes: [
 test("business feedback maps later changes and participant values to Todo wire fields and survives persisted retry", () => {
   const result = { output: todoWireToSemantic(WIRE, TASK), wireOutput: WIRE, protocol: { outputProtocol: "todo", rawSchemaValid: true, schemaHash: "hash" } };
   const mapped = providerBusinessRejection(result, { validationLayer: "business", errors: [{
-    code: "TODO_OVERDUE_PARTICIPANT_CHANGE", path: "$.sectionResults.todos.changes[1].actor", message: "invalid_state_transition",
-    meta: { field: "actor", currentValue: "assistant", proposedValue: "user", currentStatus: "overdue", secret: "must-not-leak" },
+    code: "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION", path: "$.sectionResults.todos.changes[1].requester", message: "requester_change_requires_correction",
+    meta: { field: "requester", currentValue: "assistant", proposedValue: "user", currentStatus: "overdue", secret: "must-not-leak" },
   }] }, TASK);
   const feedback = createRepairFeedback({ ...mapped, validationLayer: "business" }, 1, TASK);
-  assert.equal(feedback.errors[0].path, "$.results.todos.changes[1].actor.value");
+  assert.equal(feedback.errors[0].path, "$.results.todos.changes[1].requester.value");
   assert.equal(feedback.errors[0].meta.target, "T9");
-  assert.deepEqual(feedback.plan.directives, ["RETURN_COMPLETE_REPLACEMENT", "PRESERVE_OVERDUE_PARTICIPANTS"]);
+  assert.deepEqual(feedback.plan.directives, ["RETURN_COMPLETE_REPLACEMENT", "PRESERVE_OR_CORRECT_ORIGINAL_REQUESTER"]);
   const message = renderRepairMessage(feedback, TASK);
-  for (const text of ['target="T9"', '原值="assistant"', '候选值="user"', '{"mode":"keep"}']) assert.ok(message.includes(text), text);
+  for (const text of ['target="T9"', '原值="assistant"', '候选值="user"', 'keep']) assert.ok(message.includes(text), text);
   assert.doesNotMatch(message, /sectionResults|must-not-leak/);
   const stored = appendRejectedOutputAttempt({}, { ...result, ...mapped }, 0, 2);
   const restored = JSON.parse(JSON.stringify({ stored, feedback }));
@@ -49,17 +49,25 @@ test("source-limit and duplicate rejections produce field-specific corrective in
   assert.doesNotMatch(message, /sectionResults|evidenceMessageIds/);
 });
 
-test("requester repair distinguishes the original proposer from later confirmation without freezing actor changes", () => {
+test("historical overdue rejection feedback is rendered with current rules without mutating persisted data", () => {
   const feedbackFor = field => createRepairFeedback({ validationLayer: "business", errors: [{
     code: "TODO_OVERDUE_PARTICIPANT_CHANGE", path: `$.results.todos.changes[0].${field}.value`,
     meta: { field, currentValue: "assistant", proposedValue: "user", currentStatus: "overdue" },
   }] }, 1, TASK);
   const message = renderRepairMessage(JSON.parse(JSON.stringify(feedbackFor("requester"))), TASK);
-  assert.match(message, /最初由谁提出/);
-  assert.match(message, /再次确认不会改变 requester/);
-  assert.match(message, /证据证明原记录错误才考虑 correct/);
-  assert.match(message, /更正仍须满足当前状态约束/);
-  assert.doesNotMatch(renderRepairMessage(feedbackFor("actor"), TASK), /最初由谁提出/);
+  assert.match(message, /旧版逾期参与者限制/);
+  assert.match(message, /revise 保持 requester/);
+  assert.match(message, /证据证明原记录错误才用 correct/);
+  assert.match(renderRepairMessage(feedbackFor("actor"), TASK), /actor 有明确转交事实时可以 revise/);
+  const legacy = { policyVersion: 10, attempt: 2, errors: [{ code: "TODO_OVERDUE_REQUIRES_FUTURE_DUE",
+    path: "$.results.todos.changes[0].due", message: "changing an overdue Todo requires a future date" }],
+    plan: { directives: ["RESOLVE_OVERDUE_DUE_CONFLICT"] } };
+  const before = structuredClone(legacy);
+  const rendered = renderRepairMessage(legacy, TASK);
+  assert.match(rendered, /该限制已取消/);
+  assert.match(rendered, /过去日期改期/);
+  assert.doesNotMatch(rendered, /requires a future date|必须严格晚于/);
+  assert.deepEqual(legacy, before);
 });
 
 test("injected adapters re-encode valid semantic fixtures explicitly and never send malformed IR as Todo", () => {

@@ -129,7 +129,7 @@ Todo 在公共 item 字段之外固定包含：
 }
 ```
 
-`status/becameOverdueAt` 只由 Reducer lifecycle 写入。`previousScene` 和 overdue 不是独立 section，不拥有 cursor。
+`status/becameOverdueAt` 只由 Reducer 的期限分类与 lifecycle 写入。`previousScene` 和 overdue 不是独立 section，不拥有 cursor。
 
 ## 4. Target
 

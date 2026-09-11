@@ -5,6 +5,7 @@ const { captureWriteLimits } = require("../../../modules/memory/contracts/sectio
 const { reduceCompiledProposal } = require("../../../modules/memory/domain/compiledReducer");
 const { replayEventGroups } = require("../../../modules/memory/domain/eventReplay");
 const { mapEventToRow } = require("../../../modules/memory/application/eventMapper");
+const { normalizeLifecycle } = require("../../../modules/memory/domain/lifecycle");
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
 
 const config = createMemoryTestConfig();
@@ -40,7 +41,7 @@ function replay(f, result) {
   assert.deepEqual(replayEventGroups(f.state, [group], rows, { userId: 1, presetId: "test" }), result.state);
 }
 
-test("reviving an old Todo at capacity preserves FIFO order and replays revival followed by eviction", () => {
+test("rescheduling an old Todo at capacity records its classified update before FIFO eviction", () => {
   const f = fixture();
   f.state.working.todos.push({ ...structuredClone(f.state.working.todos[0]), id: "todo:newer", text: "新约定",
     createdAtMessageId: 2, status: "active", dueAt: FUTURE, becameOverdueAt: null });
@@ -48,8 +49,18 @@ test("reviving an old Todo at capacity preserves FIFO order and replays revival 
   const result = reduce(f, [patch({ dueChange: { mode: "set", dueAt: FUTURE } })], capacityConfig);
   assert.equal(result.outcome, "committable");
   assert.deepEqual(result.state.working.todos.map(item => item.id), ["todo:newer"]);
-  assert.deepEqual(result.cleanupEvents.map(event => event.cleanupKind), ["todo_revived_from_overdue", "todo_capacity_evicted"]);
+  assert.equal(result.events[0].normalizedOperation.value.status, "active");
+  assert.deepEqual(result.cleanupEvents.map(event => event.cleanupKind), ["todo_capacity_evicted"]);
   replay(f, result);
+});
+
+test("legacy revival cleanup events remain replayable after deadline classification changes", () => {
+  const f = fixture();
+  const result = reduce(f, [patch({ dueChange: { mode: "set", dueAt: FUTURE } })]);
+  const legacy = { eventKind: "system_cleanup", section: "todos", targetKey: "todos", decision: "system_cleanup",
+    cleanupKind: "todo_revived_from_overdue",
+    normalizedOperation: { cleanupKind: "todo_revived_from_overdue", itemId: "todo:1", dueAt: FUTURE } };
+  replay(f, { ...result, events: [...result.events, legacy] });
 });
 
 test("exact Todo revisions are auditable noops with cursor progress and unchanged item metadata", () => {
@@ -83,40 +94,77 @@ test("evidence-only Todo revisions replace sources without reviving or changing 
   }
 });
 
-test("overdue Todo rescheduling still requires a strictly future date and unchanged participants", () => {
-  const f = fixture();
-  for (const dueChange of [{ mode: "clear" }, { mode: "keep" }, { mode: "set", dueAt: "2026-01-03T00:00:00.000Z" }, { mode: "set", dueAt: NOW }]) {
-    assert.throws(() => reduce(f, [patch({ text: "修改了行动内容", dueChange }, [source(3)])]), error => {
-      const issue = error.validationErrors[0];
-      assert.equal(issue.code, "TODO_OVERDUE_REQUIRES_FUTURE_DUE");
-      assert.equal(issue.path, "$.sectionResults.todos.changes[0].dueChange");
-      assert.equal(issue.meta.currentDueAt, PAST);
-      assert.equal(issue.meta.referenceTime, NOW);
+test("Todo edits classify deadlines independently of prior status and revise/correct semantics", () => {
+  for (const status of ["active", "overdue"]) for (const op of ["reviseItem", "correctItem"]) {
+    for (const [dueChange, deadline, expected] of [
+      [{ mode: "keep" }, status === "active" ? FUTURE : PAST, status],
+      [{ mode: "clear" }, null, "active"],
+      [{ mode: "set", dueAt: "2026-01-03T00:00:00.000Z" }, "2026-01-03T00:00:00.000Z", "overdue"],
+      [{ mode: "set", dueAt: NOW }, NOW, "overdue"],
+      [{ mode: "set", dueAt: FUTURE }, FUTURE, "active"],
+    ]) {
+      const f = fixture(status);
+      const result = reduce(f, [{ ...patch({ text: "修改了行动内容", actor: "both", dueChange }, [source(3)]), op }]);
+      const item = result.state.working.todos[0];
+      assert.equal(item.text, "修改了行动内容");
+      assert.equal(item.actor, "both");
+      assert.equal(item.requester, "assistant");
+      assert.equal(item.dueAt, deadline);
+      assert.equal(item.status, expected);
+      assert.equal(item.becameOverdueAt, expected === "overdue" ? deadline : null);
+      assert.equal(result.events[0].op, op);
+      assert.equal(result.cleanupEvents.length, 0, "the accepted edit contains its classified post-state, not a new commitment event");
+      replay(f, result);
+      assert.equal(normalizeLifecycle(result.state, {}, NOW, config).changed, false);
+    }
+  }
+});
+
+test("requester is immutable under revise in either status but can be corrected", () => {
+  for (const status of ["active", "overdue"]) {
+    const f = fixture(status);
+    assert.throws(() => reduce(f, [patch({ requester: "user" })]), error => {
+      assert.equal(error.validationErrors[0].code, "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION");
+      assert.equal(error.validationErrors[0].path, "$.sectionResults.todos.changes[0].requester");
       return true;
     });
+    const result = reduce(f, [{ ...patch({ requester: "user" }), op: "correctItem" }]);
+    assert.equal(result.state.working.todos[0].requester, "user");
+    assert.equal(result.state.working.todos[0].status, status);
+    replay(f, result);
   }
-  for (const field of ["actor", "requester"]) {
-    assert.throws(() => reduce(f, [patch({ [field]: "user", dueChange: { mode: "set", dueAt: FUTURE } })]), error => {
-      assert.equal(error.validationErrors[0].code, "TODO_OVERDUE_PARTICIPANT_CHANGE");
-      assert.equal(error.validationErrors[0].path, `$.sectionResults.todos.changes[0].${field}`);
-      assert.equal(error.validationErrors[0].meta.currentValue, "assistant");
-      assert.equal(error.validationErrors[0].meta.proposedValue, "user");
-      return true;
-    });
+});
+
+test("identical facts remain writable after delayed processing and agree at the same observation time", () => {
+  for (const dueChange of [{ mode: "keep" }, { mode: "clear" }, { mode: "set", dueAt: "2026-01-03T00:00:00.000Z" }]) {
+    const onTime = fixture("active");
+    onTime.state.working.todos[0].dueAt = PAST;
+    onTime.task.now = "2026-01-01T00:00:00.000Z";
+    const delayed = fixture("overdue");
+    const edits = [patch({ text: "重新准备早餐", actor: "both", dueChange })];
+    const early = reduce(onTime, edits);
+    const late = reduce(delayed, edits);
+    assert.deepEqual(normalizeLifecycle(early.state, {}, NOW, config).state, late.state);
+    replay(onTime, early);
+    replay(delayed, late);
   }
-  const result = reduce(f, [patch({ dueChange: { mode: "set", dueAt: FUTURE } })]);
-  assert.equal(result.state.working.todos[0].status, "active");
-  assert.equal(result.state.working.todos[0].becameOverdueAt, null);
-  assert.equal(result.cleanupEvents.filter(e => e.cleanupKind === "todo_revived_from_overdue").length, 1);
-  replay(f, result);
+});
+
+test("terminal actions can close overdue items without fabricating a future deadline", () => {
+  for (const status of ["active", "overdue"]) for (const op of ["completeTodo", "cancelTodo", "expireTodo", "forgetItem"]) {
+    const f = fixture(status);
+    const result = reduce(f, [{ op, itemId: "todo:1", sourceRefs: [source(3)] }]);
+    assert.equal(result.state.working.todos.length, 0);
+    replay(f, result);
+  }
 });
 
 test("same due date does not suppress actual text or participant changes on active Todos", () => {
   const f = fixture("active");
-  const result = reduce(f, [patch({ text: "做素食三明治", actor: "both", requester: "user", dueChange: { mode: "set", dueAt: FUTURE } })]);
+  const result = reduce(f, [patch({ text: "做素食三明治", actor: "both", dueChange: { mode: "set", dueAt: FUTURE } })]);
   assert.equal(result.state.working.todos[0].text, "做素食三明治");
   assert.equal(result.state.working.todos[0].actor, "both");
-  assert.equal(result.state.working.todos[0].requester, "user");
+  assert.equal(result.state.working.todos[0].requester, "assistant");
   assert.equal(result.events[0].decision, "accepted");
   replay(f, result);
 });
@@ -143,7 +191,7 @@ test("redundant Todo edits still participate in conflict checks; failures never 
   assert.deepEqual(f.state, before);
 });
 
-test("Todo validation reports limits, dates and both participant conflicts before any mutation", () => {
+test("Todo validation aggregates limits and requester errors before any mutation", () => {
   const f = fixture();
   f.task.writeLimits.todos.maxItemChars = 3;
   f.task.writeLimits.todos.maxSourceRefs = 1;
@@ -151,11 +199,10 @@ test("Todo validation reports limits, dates and both participant conflicts befor
   assert.throws(() => reduce(f, [patch({ text: "必须完整保留的任务内容", actor: "user", requester: "user",
     dueChange: { mode: "set", dueAt: NOW } })]), error => {
     assert.deepEqual(error.validationErrors.map(issue => issue.code), [
-      "TEXT_LENGTH_EXCEEDED", "SOURCE_LIMIT_EXCEEDED", "TODO_OVERDUE_REQUIRES_FUTURE_DUE",
-      "TODO_OVERDUE_PARTICIPANT_CHANGE", "TODO_OVERDUE_PARTICIPANT_CHANGE",
+      "TEXT_LENGTH_EXCEEDED", "SOURCE_LIMIT_EXCEEDED", "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION",
     ]);
     assert.deepEqual(error.validationErrors.map(issue => issue.path.split("].")[1]), [
-      "text", "evidenceMessageIds", "dueChange", "actor", "requester",
+      "text", "evidenceMessageIds", "requester",
     ]);
     return true;
   });
@@ -167,16 +214,15 @@ test("independent Todo changes report together while dependent changes identify 
   f.state.working.todos.push({ ...structuredClone(f.state.working.todos[0]), id: "todo:2", text: "另一项任务" });
   const before = structuredClone(f.state);
   assert.throws(() => reduce(f, [
-    patch({ actor: "user" }),
+    patch({ requester: "user" }),
     { ...patch({ requester: "user" }), itemId: "todo:2" },
     { op: "completeTodo", itemId: "todo:1", sourceRefs: [source(3)] },
   ]), error => {
     assert.deepEqual(error.validationErrors.map(issue => issue.code), [
-      "TODO_OVERDUE_REQUIRES_FUTURE_DUE", "TODO_OVERDUE_PARTICIPANT_CHANGE",
-      "TODO_OVERDUE_REQUIRES_FUTURE_DUE", "TODO_OVERDUE_PARTICIPANT_CHANGE", "CHANGE_TARGET_CONFLICT",
+      "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION", "TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION", "CHANGE_TARGET_CONFLICT",
     ]);
-    assert.equal(error.validationErrors[4].path, "$.sectionResults.todos.changes[2]");
-    assert.equal(error.validationErrors[4].meta.relatedPath, "$.sectionResults.todos.changes[0]");
+    assert.equal(error.validationErrors[2].path, "$.sectionResults.todos.changes[2]");
+    assert.equal(error.validationErrors[2].meta.relatedPath, "$.sectionResults.todos.changes[0]");
     return true;
   });
   assert.deepEqual(f.state, before);

@@ -2,6 +2,16 @@
 
 日期：2026-09-10。本文件仅记录实现，不由运行时代码或测试加载。
 
+## 2026-09-11：当前 Todo 编辑规则（repair policy v11）
+
+逾期事实编辑与重新承诺已解耦，统一规则见 [领域生命周期](../algorithms/domain-lifecycle.md)。允许逾期文本修改、过去日期改期、明确清除期限和责任归属纠错；按修改后期限确定状态。普通 revise 保留最初 requester，correct 才可更正；actor 的转交不受逾期状态限制。
+
+修改后的完整期限分类写入 accepted 操作，不再产生含义容易误解的 revival cleanup；旧 cleanup 仍可重放。新错误 TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION 提供字段级修复方向。持久化的两个旧 overdue 错误码保留为诊断历史，重新生成反馈时明确使用现行规则，不再要求编造未来期限；不会重置重试次数或修改已有任务。
+
+Todo prompt 的 JSON 示例和输出 schema 未改。没有扩大输入窗口或改变日期锚点、task.now；prompt 明确区分消息时间与处理时的期限状态。
+
+以下章节记录旧版修复背景，关于“逾期编辑必须未来期限、禁止参与者变化”的规则已由上述规则取代。
+
 ## 触发场景
 
 最初修复来自 `npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --user 1 --preset Alice --report reports/memory-v201-user1-Alice-cutover-01.json`。

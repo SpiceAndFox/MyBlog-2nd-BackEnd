@@ -49,7 +49,7 @@ function exactDuplicate(items, text, excludeItemId = null) {
   return normalized && items.some((item) => item.id !== excludeItemId && normalizeItemText(item.text) === normalized);
 }
 
-function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, task }) {
+function applyPatch(state, section, patch, { idFactory, nowMs, task }) {
   const boundary = task.targetMessageId;
   if (["setField", "correctField"].includes(patch.op)) {
     const sourceRefs = structuredClone(patch.sourceRefs);
@@ -122,11 +122,8 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents, ta
   if (section === "todos") {
     const todo = applyTodoRevision(item, patch, nowMs, task);
     if (todo.noop) return { noopReason: "unchanged_todo" };
-    if (todo.revived) cleanupEvents.push({
-      eventKind: "system_cleanup", section: "todos", targetKey: "todos", decision: "system_cleanup",
-      cleanupKind: "todo_revived_from_overdue",
-      normalizedOperation: { cleanupKind: "todo_revived_from_overdue", itemId: item.id, dueAt: item.dueAt },
-    });
+    // Deadline reclassification is captured in this decision's full value.
+    // Legacy revival cleanup events remain supported by eventReplay.
     return { normalizedOperation: { op: patch.op, itemId: item.id, value: structuredClone(item), sourceRefs: structuredClone(patch.sourceRefs) } };
   }
   let nextText = patch.value.text ?? item.text;
@@ -172,7 +169,6 @@ function reduceCompiledProposal({
   const original = structuredClone(state);
   const working = structuredClone(state);
   const events = [];
-  const cleanupEvents = [];
   const seen = new Map();
   const businessIssues = [];
   const protectedIds = new Set(protectedItemIds);
@@ -217,7 +213,7 @@ function reduceCompiledProposal({
           continue;
         }
         const previousScene = section === "scene" ? structuredClone(working.current.scene[patch.path]) : null;
-        const applied = applyPatch(working, section, patch, { idFactory, nowMs, cleanupEvents, task });
+        const applied = applyPatch(working, section, patch, { idFactory, nowMs, task });
         if (applied.rejectReason) {
           reject(base, applied.rejectReason);
           continue;
@@ -264,7 +260,7 @@ function reduceCompiledProposal({
   finalState.meta.revision = state.meta.revision + 1;
   if (task.mode !== "maintenance") finalState.meta.targetCursors[task.targetKey] = task.targetMessageId;
   assertMemoryState(finalState);
-  const allCleanupEvents = [...cleanupEvents, ...lifecycle.events];
+  const allCleanupEvents = lifecycle.events;
   return {
     outcome: "committable",
     state: finalState,

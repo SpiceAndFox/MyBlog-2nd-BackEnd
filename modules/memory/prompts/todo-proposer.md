@@ -22,7 +22,7 @@ task.writeLimits 中 maxSourceRefs 为 null 表示不限制来源数量，无需
 最短 noop：
 
 ```json
-{"results":{"todos":{"status":"noop"}}}
+{ "results": { "todos": { "status": "noop" } } }
 ```
 
 常规 changes——相对日期（token 仅表示 schema 中实际显示的枚举值）：
@@ -43,9 +43,7 @@ task.writeLimits 中 maxSourceRefs 为 null 表示不限制来源数量，无需
             "offset": 1,
             "anchorSource": "message:101"
           },
-          "sources": [
-            "message:101"
-          ]
+          "sources": ["message:101"]
         }
       ]
     }
@@ -61,7 +59,8 @@ task.writeLimits 中 maxSourceRefs 为 null 表示不限制来源数量，无需
 - 已有明确产出、交付、使用或验收时用 `complete`，不要求消息出现“完成”。
 - 主动决定不再执行用 `cancel`；明确要求删除记忆用 `forget`。
 - 只有消息直接表明行动机会或成立条件已经自然消失，且事项仍未完成时才用 `expire`；没有这类明确消息时，不能仅根据可见期限推断失效。
-- 已逾期事项不能再次 `expire`；可以 `complete`、`cancel`，或通过 `revise` 重新设定未来期限。
+- 逾期仅表示事项未结束且期限已过，不冻结事项，也不代表行动机会已经消失。有证据的描述修改、转交、日期调整与纠错均可作用于逾期事项；系统按修改后的期限计算 active/overdue，修改不自动代表重新承诺。
+- 已逾期事项同样可以 complete、cancel、forget；只有消息明确表明行动机会或成立条件消失才使用 expire，不能仅因期限已过而 expire。
 - 修改已有事项时，目标必须实际显示且能够唯一定位；否则使用 `unable_to_decide`，不猜测 target。
 
 ## 责任归属与任务拆分
@@ -76,7 +75,11 @@ task.writeLimits 中 maxSourceRefs 为 null 表示不限制来源数量，无需
 
 已有事项的 `requester` 记录最初提出这项行动的一方。后续接受、催促、质疑、再次确认或重复请求，不改变提出方；执行者的变化也不能作为更改 requester 的依据。
 
-例如 Assistant 先说“我来整理采购清单”，用户随后说“那你整理好给我看看”，仍保留 `requester=assistant`。确认没有实质发展时使用 noop；确需更新其他内容或补充证据时，保留原 requester。只有可见证据证明旧 requester 从一开始就记录错误，才考虑用 correct 更正，并继续遵守该事项当前状态的操作限制。不得为了通过校验掩盖真实错误，也不得仅因出现了新的请求语句就重写提出方。
+例如 Assistant 先说“我来整理采购清单”，用户随后说“那你整理好给我看看”，仍保留 `requester=assistant`。
+
+确认没有实质发展时使用 noop；确需更新其他内容或补充证据时，revise 保留原 requester。只有可见证据证明旧 requester 从一开始就记录错误，才用 correct 更正；是否逾期不影响该纠错。不得为了通过校验掩盖真实错误，也不得仅因出现了新的请求语句就重写提出方。
+
+actor 表示当前执行者：有明确转交或共同承担事实时可以 revise，原记录错误时可以 correct。修改仍须对应同一事项，不因执行者变化而改写最初提出方，也不把新的独立行动塞进旧事项。
 
 同一句话包含两个可独立行动时，分别生成两个 todo；同一行动的步骤或条件不拆分。
 
@@ -89,6 +92,7 @@ task.writeLimits 中 maxSourceRefs 为 null 表示不限制来源数量，无需
 - 相对日期与 dayOfMonth 必须提供 due.anchorSource，且同一 message token 必须同时属于该 change.sources。只有辅助 Memory 来源时不能创建这两类日期。absolute 不带 anchorSource。
 - add 未设定期限使用 `{"mode":"none"}`；revise/correct 保留或移除期限分别使用 `{"mode":"keep"}` / `{"mode":"clear"}`。这些模式只有 mode，不携带额外字段。
 - revise/correct 即使只修改其他字段，也明确使用 due.keep。新期限使用 absolute、relativeDays、relativeMonths、relativeYears 或 dayOfMonth 对象。
+- 历史中有证据的期限变化仍需记录，即使新期限相对于处理时间已经过去；不要为了让事项变 active 编造未来日期。只有明确取消期限且事项仍然成立才使用 due.clear；未再次提及日期不等于取消期限。
 - 不使用 task.now、Provider 调用时间或现实日期补全期限。承接回答可以继承相邻消息中明确的日期，但必须把实际日期来源消息作为直接证据。
 - 仍无法可靠结构化的日期表达保留在 text 中；新增使用 due.none，修改已有事项使用 due.keep，不猜测日期。
 

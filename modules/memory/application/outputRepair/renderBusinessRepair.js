@@ -6,22 +6,29 @@ const quoted = value => JSON.stringify(value ?? null).replaceAll("<", "\\u003c")
 // New domain constraints still receive generic feedback without a new entry.
 const BUSINESS_REPAIR_RULES = Object.freeze({
   [ISSUE_CODES.TODO_OVERDUE_REQUIRES_FUTURE_DUE]: {
-    message: "changing an overdue Todo's business fields requires a supported future due date",
-    directive: "RESOLVE_OVERDUE_DUE_CONFLICT",
-    render: ({ meta, location, todoWire }) => [
-        `${location}：目标已经逾期；原截止时刻=${quoted(meta.currentDueAt)}，候选解析后的截止时刻=${quoted(meta.proposedDueAt)}，本次状态判断时间=${quoted(meta.referenceTime)}。修改业务字段并恢复待办时，新的截止时刻必须严格晚于该判断时间。以上是 UTC 截止时刻，不是让你复制到日期字段的值。`,
-        todoWire
-          ? '核对 due 的模式、数值和日期来源消息；只能依据原始消息改期，不得为了通过校验编造未来日期或用本次判断时间重新解释历史消息。若只补充证据，text、actor、requester 使用 keep，due 使用 {"mode":"keep"}，仅更新 sources；其他业务字段确实需要修改时，不能用 keep 掩盖该修改。'
-          : "核对日期模式、数值和日期来源消息；只能依据原始消息改期，不得为了通过校验编造未来日期或用本次判断时间重新解释历史消息。若只补充证据，保留所有业务字段和原期限，仅更新来源。",
-        "无法合法裁决时使用 unable_to_decide；确认只是重复表达且没有变化时才使用 noop。不得伪造 complete、cancel、forget 等动作绕过冲突。",
+    // Historical tasks may retain these codes. Re-render using today's rules
+    // without rewriting their diagnostics or resetting their retry allowance.
+    message: "legacy overdue edit restriction has been superseded; recheck the supported facts",
+    directive: "RECHECK_TODO_FACTS",
+    render: ({ location }) => [
+      `${location}：这是旧版逾期编辑规则的拒绝记录，该限制已取消。允许有证据的文本修改、过去日期改期与日期更正；系统按修改后的期限计算 active/overdue，修改不代表重新承诺。`,
+      "期限没有变化时使用 keep；只有明确取消期限且事项仍成立才使用 clear。不得编造未来日期，不得用处理时间重新解释历史消息。依据当前输入重新给出完整结果，不必修改原本有证据支持的合法字段。",
     ],
   },
   [ISSUE_CODES.TODO_OVERDUE_PARTICIPANT_CHANGE]: {
-    message: "reactivating an overdue Todo must preserve actor and requester",
-    directive: "PRESERVE_OVERDUE_PARTICIPANTS",
-    render: ({ meta, location, todoWire }) => [
-      `${location}：恢复逾期待办时不能同时更换 ${meta.field === "requester" ? "requester" : "actor"}；原值=${quoted(meta.currentValue)}，候选值=${quoted(meta.proposedValue)}。${todoWire ? '该字段使用 {"mode":"keep"} 保留原值。' : "保留该字段原值。"}若原始消息确实要求更换责任归属，不能假装没有这项变化，也不能虚构新任务或终止动作；无法裁决时使用 unable_to_decide。`,
-      ...(meta.field === "requester" ? ["核对这项行动最初由谁提出。后续接受、催促、质疑或再次确认不会改变 requester；确认旧值正确时保留它。只有证据证明原记录错误才考虑 correct，更正仍须满足当前状态约束。"] : []),
+    message: "legacy overdue participant restriction has been superseded; apply field-specific rules",
+    directive: "RECHECK_TODO_FACTS",
+    render: ({ location }) => [
+      `${location}：这是旧版逾期参与者限制的拒绝记录。actor 有明确转交事实时可以 revise，录错时可以 correct；是否逾期不限制有证据的修改。`,
+      "requester 表示最初提出方；revise 保持 requester，只有证据证明原记录错误才用 correct 更正。不得为通过校验虚构转交、更正或新事项。",
+    ],
+  },
+  [ISSUE_CODES.TODO_REQUESTER_CHANGE_REQUIRES_CORRECTION]: {
+    message: "revise must preserve the original requester; only an evidenced correction may change it",
+    directive: "PRESERVE_OR_CORRECT_ORIGINAL_REQUESTER",
+    render: ({ meta, location }) => [
+      `${location}：requester 是最初提出方，原值=${quoted(meta.currentValue)}，候选值=${quoted(meta.proposedValue)}。后续接受、催促、再次确认或转交执行者不会改变 requester；普通 revise 使用 keep 保留原值。`,
+      "只有可见证据证明原记录从一开始就错误时才使用 correct 并更正 requester；不得仅为绕过校验把 revise 改名为 correct。证据不足时使用 unable_to_decide；其他有证据的修改仍应保留。",
     ],
   },
   [ISSUE_CODES.SOURCE_LIMIT_EXCEEDED]: {
