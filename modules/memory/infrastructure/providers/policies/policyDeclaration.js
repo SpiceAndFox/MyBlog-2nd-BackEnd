@@ -16,6 +16,7 @@ const DEFAULT_POLICY = deepFreeze({
   outputModes: ["json_schema", "json_object"],
   outputTokenField: "max_tokens",
   repairRole: "assistant",
+  headerPolicy: "none",
 });
 
 const ENUM_FIELDS = {
@@ -23,6 +24,7 @@ const ENUM_FIELDS = {
   schemaPolicy: ["preserve", "strip-unique-items"],
   outputTokenField: ["max_tokens", "max_completion_tokens"],
   repairRole: ["assistant", "user-diagnostic"],
+  headerPolicy: ["none", "opencode-session"],
 };
 const ARRAY_FIELDS = {
   reasoningEfforts: REASONING_EFFORT_VALUES,

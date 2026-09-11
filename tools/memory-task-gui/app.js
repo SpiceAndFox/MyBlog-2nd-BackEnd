@@ -468,6 +468,7 @@ function providerView(task) {
         value: {
           method: request.method,
           endpoint: request.endpoint,
+          ...(request.headers ? { headers: request.headers } : {}),
           body: request.body,
         },
       }));

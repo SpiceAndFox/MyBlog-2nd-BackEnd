@@ -152,13 +152,13 @@ function profileRoleEndCase(config) {
       const userChanges = changes(output, "userProfile");
       const relationshipChanges = changes(output, "relationship");
       if (!userChanges.some((change) => change.ref === "UP1"
-        && ["update", "correct"].includes(change.action)
+        && ["revise", "correct"].includes(change.action)
         && /测试|角色扮演/.test(String(change.text || ""))
         && /不喜欢|并非.*偏好|非.*偏好/.test(String(change.text || "")))) {
         errors.push("userProfile should turn UP1 into a time-qualified evolution fact instead of deleting or preserving the old preference");
       }
       if (!relationshipChanges.some((change) => change.ref === "R1"
-        && ["update", "correct"].includes(change.action)
+        && ["revise", "correct"].includes(change.action)
         && /曾|当时|过去|角色/.test(String(change.text || ""))
         && /当前|现在|普通对话/.test(String(change.text || "")))) {
         errors.push("relationship should preserve the role-to-current transition with explicit time semantics");

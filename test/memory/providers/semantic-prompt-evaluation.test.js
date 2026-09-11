@@ -62,7 +62,7 @@ function outputFor(fixtureId) {
       sectionResults: {
         userProfile: { status: "changes", changes: [{ action: "correct", ref: "UP1", text: "用户曾以航海船长角色进行 API 测试，但这并非其稳定角色扮演偏好。", evidenceMessageIds: [10] }] },
         assistantProfile: { status: "noop" },
-        relationship: { status: "changes", changes: [{ action: "update", ref: "R1", text: "双方曾以船长与大副身份进行测试；当前采用普通对话模式。", evidenceMessageIds: [10] }] },
+        relationship: { status: "changes", changes: [{ action: "revise", ref: "R1", text: "双方曾以船长与大副身份进行测试；当前采用普通对话模式。", evidenceMessageIds: [10] }] },
       },
     };
   }
@@ -130,6 +130,27 @@ test("semantic prompt evaluator scores capture, noop, invalidation, and scoped c
   };
   const results = await evaluate({ adapter, cases });
   assert.equal(results.every((result) => result.passed), true, JSON.stringify(results.filter(result => !result.passed)));
+});
+
+test("role-end evaluation accepts current revise/correct actions but requires the relationship transition", () => {
+  const id = "profile-explicit-role-end-invalidates-dependent-memory";
+  const fixture = buildCases(createMemoryTestConfig()).find(entry => entry.id === id);
+  for (const section of ["userProfile", "relationship"]) {
+    for (const action of ["revise", "correct"]) {
+      const output = outputFor(id);
+      output.sectionResults[section].changes[0].action = action;
+      assert.equal(contracts.validateSemanticResult(output, fixture.envelope.artifact).ok, true);
+      assert.deepEqual(fixture.score(output), []);
+    }
+    for (const action of ["update", "forget"]) {
+      const output = outputFor(id);
+      output.sectionResults[section].changes[0].action = action;
+      assert.ok(fixture.score(output).length > 0, `${section}/${action}`);
+    }
+  }
+  const lostTransition = outputFor(id);
+  lostTransition.sectionResults.relationship.changes[0].text = "双方仍以船长与大副身份互动。";
+  assert.ok(fixture.score(lostTransition).some(error => /relationship/.test(error)));
 });
 
 test("semantic prompt evaluator reports over-broad cancellation", async () => {

@@ -4,6 +4,7 @@ const {
   validateSemanticResult,
 } = require("../../contracts");
 const { buildOutputSchema } = require("./output/outputSchema");
+const { buildProviderRequestContext } = require("./providerRequestContext");
 const { usesTodoWireProtocol } = require("../../contracts/outputProtocol");
 const { providerProtocolMetadata } = require("./output/providerProtocolMetadata");
 const { todoWireToSemantic, semanticToTodoWire, todoWireRepairErrors } = require("./output/todoWireProtocol");
@@ -251,6 +252,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               specialistFeedback ? (hasBundle ? stored?.output : rejectedOutput ?? stored?.output) : undefined,
             );
             const specialistResponse = await invokeStructured({
+              requestContext: buildProviderRequestContext(task),
               proposer: specialist.proposer,
               systemPrompt: repair.systemPrompt,
               userPayload: specialistPayload,
@@ -364,6 +366,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             rejectedOutput,
           );
           response = await invokeStructured({
+            requestContext: buildProviderRequestContext(task),
             proposer: task.proposer,
             systemPrompt: repair.systemPrompt,
             userPayload,

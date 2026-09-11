@@ -13,6 +13,9 @@ test("gateway catalog registers defaults and exact model exceptions from source 
   assert.equal(Object.hasOwn(opencode.models, "vendor/mimo-v2.5"), false);
   assert.equal(Object.hasOwn(gatewayRegistry.get("openrouter").models, "mimo-v2.5"), false);
   assert.deepEqual(gatewayRegistry.get("generic").defaults, {});
+  assert.deepEqual(gatewayRegistry.get("bai").defaults, {});
+  assert.equal(gatewayRegistry.get("bai").models["glm-5.3-flash"].reasoningEncoding, "reasoning-effort");
+  assert.equal(Object.hasOwn(gatewayRegistry.get("generic").models, "glm-5.3-flash"), false);
 });
 
 test("duplicate gateway and model registrations fail; the same ID across gateways is valid", () => {

@@ -1,6 +1,7 @@
 const generic = require("./generic/profile");
 const opencodeGo = require("./opencodeGo/profile");
 const openrouter = require("./openrouter/profile");
+const bai = require("./bai/profile");
 const { validatePolicyDeclaration } = require("../policies/policyDeclaration");
 
 function assertId(id, label) {
@@ -39,5 +40,5 @@ function createGatewayRegistry(profiles) {
   });
 }
 
-const gatewayRegistry = createGatewayRegistry([generic, opencodeGo, openrouter]);
+const gatewayRegistry = createGatewayRegistry([generic, opencodeGo, openrouter, bai]);
 module.exports = { gatewayRegistry, createGatewayRegistry };

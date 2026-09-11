@@ -7,7 +7,7 @@ Memory 使用独立 provider 配置。Adapter 负责协议和输出通道，prof
 | 配置项 | 用途 |
 | --- | --- |
 | `CHAT_MEMORY_V2_PROVIDER_ADAPTER` | `openai-compatible-json-schema`、`openai-compatible-json-object` 或 `deepseek-strict-tools` |
-| `CHAT_MEMORY_V2_PROVIDER_PROFILE` | 兼容 adapter 的 `generic`（默认）、`opencode-go` 或 `openrouter`；不根据域名推断 |
+| `CHAT_MEMORY_V2_PROVIDER_PROFILE` | 兼容 adapter 的 `generic`（默认）、`opencode-go`、`openrouter` 或 `bai`；不根据域名推断 |
 | `CHAT_MEMORY_V2_PROVIDER_BASE_URL` | 网关 API 基础地址；兼容 adapter 也接受完整 `/chat/completions` 地址，不重复追加路径 |
 | `CHAT_MEMORY_V2_PROPOSER_MODELS_JSON` | 保留模型字符串格式；对象格式支持 `model`、`reasoningEffort`、`thinkingMode` |
 
@@ -30,6 +30,7 @@ Profile 三个专家未单独配置时，继承 `profileRelationshipProposer` �
 | `outputModes` | 允许的模式数组，默认 `json_schema/json_object` |
 | `outputTokenField` | `max_tokens`（默认）或 `max_completion_tokens` |
 | `repairRole` | `assistant`（默认）或 `user-diagnostic`；后者把修复候选作为 user 中的引用诊断文本，适用于不接受缺失思考历史的 assistant 消息的模型 |
+| `headerPolicy` | `none`（默认）或 `opencode-session`；后者发送本系统 User-Agent 和稳定会话标识，不接受任意请求头 JSON |
 
 `none` 编码不发送推理参数；如配置了推理设置，会报错提示声明编码。`reasoning-effort` 只消费 effort，`thinking` 只消费 thinkingMode；允许全局同时提供两者，以支持混合模型。未消费的设置不会发往 API。前者通过 effort=`none` 关闭推理，后者通过 thinkingMode=`disabled` 关闭。
 
@@ -37,22 +38,49 @@ Profile 三个专家未单独配置时，继承 `profileRelationshipProposer` �
 
 OpenRouter 编码依据[官方推理参数文档](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。网关协议默认值不是对每个模型或动态上游的能力保证；配置之后应执行 probe。当前不自动获取或缓存远端模型列表，也不根据一次失败修改规则。
 
-`opencode-go` 保留原 memory 网关行为：默认 `reasoning-effort` 和 `strip-unique-items`；`mimo-v2.5`、`mimo-v2.5-pro` 精确匹配后使用 `thinking`。这些规则属于 OpenCode 网关，不表示支持小米直连接口，也不会自动用于其他网关。
+`opencode-go` 保留默认 `reasoning-effort` 和 `strip-unique-items`；`mimo-v2.5`、`mimo-v2.5-pro` 精确匹配后使用 `thinking`。GLM-5.3-Flash 精确匹配后只接受 `low/high/max`，当前集成启用已验证的 `json_object`。这些规则属于 OpenCode 网关，不会自动用于其他网关。
+
+依据 [OpenCode Go 客户端要求](https://opencode.ai/docs/go/#where-can-i-use-it)，该 profile 默认使用 `headerPolicy: "opencode-session"`。正式请求发送 `User-Agent: BlogBackEnd-memory/1.0` 和 `x-opencode-session`，不是冒用 OpenCode 客户端名称。旧 adapter 别名也会继承该策略；B.AI、generic、OpenRouter 及独立 DeepSeek adapter 不自动添加这些头。
+
+会话标识按 memory 已有的 `(userId, presetId)` scope 保持稳定，因此正常写入、各 proposer、Profile 专家、重试、重建和 Librarian 在同一 scope 内复用标识，不随 taskId 或 proposer 变化。使用 API key 对带版本的 scope 元组做 HMAC-SHA256，不将用户/预设标识直接发送到网关；更换 key 时会话标识随之变化。缺少 scope 的直接调用优先使用 taskId；完全没有业务上下文的合成 probe 使用进程内统一的诊断会话，进程重启后更新。
+
+隔离边界：`providerRequestContext.js` 只从现有任务提取通用 scope/taskId 元数据，adapter 和诊断预览复用它；元数据不进入 LLM 输入或 memory schema。`transport/providerHeaders.js` 才解释网关策略并生成头；业务 application、domain、数据库和 Chat provider 无需知道 OpenCode 的头名称或编码。统一请求构建器同时服务发送和 GUI 预览，预览显示生成的网关头且不含 Authorization。生成的网关头会按大小写不敏感规则替换旧的同名 `extraHeaders`。
 
 ## 接入示例
 
-普通 OpenAI 兼容网关（例如 B.AI），先使用不附加推理控制的配置。以下输出模式需由所选模型的 probe 结果验证：
+OpenCode Go 的 GLM-5.3-Flash：
 
 ```dotenv
 CHAT_MEMORY_V2_PROVIDER_ADAPTER=openai-compatible-json-object
-CHAT_MEMORY_V2_PROVIDER_PROFILE=generic
-CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.b.ai/v1
+CHAT_MEMORY_V2_PROVIDER_PROFILE=opencode-go
+CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://opencode.ai/zen/go/v1
+CHAT_MEMORY_V2_PROVIDER_MODEL=glm-5.3-flash
 CHAT_MEMORY_V2_PROVIDER_THINKING_MODE=
-CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT=
+CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT=low
 CHAT_MEMORY_V2_PROPOSER_MODELS_JSON={}
 ```
 
-另外配置该网关的 API key 和有效模型 ID。切换时检查所有 proposer 覆盖，避免沿用旧网关模型。
+将 `CHAT_MEMORY_V2_PROVIDER_API_KEY` 设置为 OpenCode Go 专用密钥，并保留必填超时和 token 预算。`OPENCODE_GO_API_KEY` 不会自动覆盖 memory 专用 key。请求头由 profile 自动生成，不需要新增环境变量；切换时清除旧的高级 JSON 规则覆盖。
+
+B.AI 的 GLM-5.3-Flash 使用以下配置；另将 `CHAT_MEMORY_V2_PROVIDER_API_KEY` 设置为 B.AI 专用密钥，不能沿用旧网关密钥：
+
+```dotenv
+CHAT_MEMORY_V2_PROVIDER_ADAPTER=openai-compatible-json-object
+CHAT_MEMORY_V2_PROVIDER_PROFILE=bai
+CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.b.ai/v1
+CHAT_MEMORY_V2_PROVIDER_MODEL=glm-5.3-flash
+CHAT_MEMORY_V2_PROVIDER_THINKING_MODE=
+CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT=low
+CHAT_MEMORY_V2_PROPOSER_MODELS_JSON={}
+```
+
+保留必填的超时和输入/输出预算配置。`BAI_API_KEY` 不是运行时自动读取的别名，实际运行使用 `CHAT_MEMORY_V2_PROVIDER_API_KEY`。
+
+依据 [B.AI 模型文档](https://docs.b.ai/llmservice/models/glm-5-3-flash/)，该模型始终开启思考，`reasoning_effort` 支持 `low/high/max`，上游默认 `max`。内置规则要求显式选择 effort，避免意外使用默认高预算。`THINKING_MODE` 留空表示不发送该字段，不是关闭思考；与其他 reasoning-effort 模型一致，该编码只消费 effort，混合配置中未消费的 thinkingMode 会被忽略。
+
+当前内置集成仅启用 `json_object`，由现有请求构建器注入完整 schema，并在本地验证输出。[B.AI API 文档](https://docs.b.ai/llmservice/api/) 列出 JSON Schema 接口参数，但不保证 GLM-5.3-Flash 支持项目的完整严格 schema；只有验证后才扩展模型的 `outputModes`，不自动降级。修复请求先使用默认 assistant 角色；若网关实测要求思考历史，可使用已有 `repairRole: "user-diagnostic"` 声明。
+
+`bai` 的默认规则为空，GLM 能力只精确匹配 `glm-5.3-flash`，不会自动应用于其他 B.AI 模型或其他网关。普通未声明模型可使用 `generic` 并留空推理设置，再通过 probe 验证。切换时检查所有 proposer 覆盖和高级 JSON 规则，避免沿用旧网关模型或遮蔽内置规则。
 
 ## 新增网关或模型规则
 

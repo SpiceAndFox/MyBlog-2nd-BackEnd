@@ -29,18 +29,25 @@ function createOpenAiStructuredTransport({
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
   const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens };
   return async function invokeStructured(request) {
-    const { endpoint, body, providerPolicy } = httpRequestBuilder(providerConfig, request, {
+    const { endpoint, body, headers: gatewayHeaders, providerPolicy } = httpRequestBuilder(providerConfig, request, {
       compileSchema,
       extraBody,
     });
     assertStructuredRequestLimits({ ...body, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...extraHeaders };
+    for (const [key, value] of Object.entries(gatewayHeaders || {})) {
+      for (const existing of Object.keys(headers)) {
+        if (existing.toLowerCase() === key.toLowerCase()) delete headers[existing];
+      }
+      headers[key] = value;
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
     try {
       const response = await fetchImpl(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...extraHeaders },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });

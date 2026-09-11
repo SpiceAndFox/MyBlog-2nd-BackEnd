@@ -8,6 +8,7 @@ const {
   bindSpecialistSchema,
 } = require("../output/bindOutputSchema");
 const { buildStructuredHttpRequest } = require("../transport/structuredHttpRequest");
+const { buildProviderRequestContext } = require("../providerRequestContext");
 const { providerProtocolMetadata, providerWireSchemaMetadata } = require("../output/providerProtocolMetadata");
 
 const PROFILE_SPECIALISTS = Object.freeze([
@@ -44,6 +45,7 @@ function previewEntry(providerConfig, semanticRequest, { phase, section = null }
     section,
     method: httpRequest.method,
     endpoint: httpRequest.endpoint,
+    ...(httpRequest.headers ? { headers: httpRequest.headers } : {}),
     body: httpRequest.body,
     ...(httpRequest.providerPolicy ? { providerPolicy: httpRequest.providerPolicy } : {}),
     ...(httpRequest.schemaDiagnostics ? { schemaDiagnostics: httpRequest.schemaDiagnostics } : {}),
@@ -76,6 +78,7 @@ async function buildProviderRequestPreviews({
       rejectedOutput,
     );
     return [previewEntry(providerConfig, {
+      requestContext: buildProviderRequestContext(envelope.task),
       proposer: envelope.task.proposer,
       systemPrompt: repair.systemPrompt,
       userPayload,
@@ -109,6 +112,7 @@ async function buildProviderRequestPreviews({
       feedback ? rejectedOutput : undefined,
     );
     return previewEntry(providerConfig, {
+      requestContext: buildProviderRequestContext(envelope.task),
       proposer: specialist.proposer,
       systemPrompt: repair.systemPrompt,
       userPayload: payload,
