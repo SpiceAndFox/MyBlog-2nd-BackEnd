@@ -51,13 +51,13 @@ CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS=120000
 
 三个前台命令均不再接受 `--wait-timeout-ms`，没有默认无进展等待期限，也没有 `CHAT_MEMORY_V2_CLI_WAIT_TIMEOUT_MS` 配置。自动调用由重试预算限制；队列等待和调度检查不扣预算。
 
-stderr 的结构化日志区分：
+stderr 使用简短的单行提示，区分：
 
-- `memory_waiting`：进入等待，包含 scope、阶段、任务、原因、`notBefore`。
-- `memory_wait_finished`：期限已到，即将继续调度，不表示 provider 或持久化进度已经恢复。
-- `memory_progress_resumed`：确认 revision、cursor 或 checkpoint 推进后记录。
+- `[等待 N]`：包含 scope、阶段、当前阻塞任务的 ID 前 8 位、原因及本机时区的下次执行时间；不展开整轮执行历史。
+- `[继续调度]`：期限已到，即将继续调度，不表示 provider 或持久化进度已经恢复。
+- `[进度已推进]`：确认 revision、cursor 或 checkpoint 推进后记录。
 
-`waitCount` 是连续等待次数，确认持久化进度后归零，再次阻塞从 1 开始。`totalWaitCount` 是当前阶段等待器的累计统计。两者都不参与执行预算。
+提示中的 N 来自 `waitCount`，确认持久化进度后归零，再次阻塞从 1 开始。`totalWaitCount` 仍保留在执行结果中，但不在等待提示中重复显示。两者都不参与执行预算，完整任务 ID 与审计历史仍保留在原有记录中。
 
 Ctrl+C 停止后续调度和输出修复重试；已发出的请求结束或达到自身超时后，关闭数据库连接，退出码为 130。已保存的任务、退避时间和 checkpoint 保留，重新执行原命令即可在原进度上获得新的预算。
 
