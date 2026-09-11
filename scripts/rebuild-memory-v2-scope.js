@@ -99,7 +99,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (require.main === module) {
-  const control = createCommandControl({ name: "rebuild:memory-v2" });
+  const control = createCommandControl();
   let context;
   control.run(async () => {
     context = require("../app/composition/commandContext").createCommandContext();

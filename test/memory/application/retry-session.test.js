@@ -13,6 +13,58 @@ const invalid = () => ({ status: "error", reason: "output_schema_invalid", rejec
 const noop = envelope => ({ status: "ok", output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer,
   sectionResults: { todos: { status: "noop" } } } });
 
+test("a late provider response recognizes a concurrent commit instead of reporting cursor mismatch", async () => {
+  const data = store(); let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const pending = new Promise(resolve => { release = resolve; });
+  const options = { observer: {}, repositories: data.repositories, config, now: () => fixedNow };
+  const slow = createNormalWritePipeline({ ...options, providerAdapter: { async propose(envelope) {
+    started(); await pending; return noop(envelope);
+  } } });
+  const fast = createNormalWritePipeline({ ...options, providerAdapter: { propose: async envelope => noop(envelope) } });
+  const envelope = await slow.createTask(1, "default", intent);
+  const late = slow.prepareEnvelope(envelope);
+  await ready;
+  assert.equal((await fast.processEnvelope(envelope)).status, "committed");
+  release();
+  const result = await late;
+  assert.equal(result.status, "committed");
+  assert.equal(result.duplicate, true);
+  assert.equal(data.inspect.state.meta.revision, 1);
+  assert.equal(data.inspect.tasks.get(envelope.task.taskId).status, "succeeded");
+  assert.equal(data.inspect.ops.some(op => op.outcome === "stale_result"), false);
+});
+
+test("late responses cannot reopen cancelled work or hide a genuine cursor conflict", async () => {
+  for (const cancelled of [true, false]) {
+    const data = store();
+    const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => fixedNow,
+      providerAdapter: { async propose(envelope) {
+        if (cancelled) data.inspect.tasks.get(envelope.task.taskId).status = "cancelled";
+        else {
+          const state = structuredClone(data.inspect.state); state.meta.targetCursors.todos = 99;
+          await data.repositories.state.writeState(1, "default", state);
+        }
+        return noop(envelope);
+      } } });
+    const envelope = await pipeline.createTask(1, "default", intent);
+    const result = await pipeline.processEnvelope(envelope);
+    assert.equal(result.status, cancelled ? "cancelled" : "stale");
+    if (!cancelled) assert.equal(result.reason, "cursor_mismatch");
+    assert.equal(data.inspect.state.meta.revision, 0);
+  }
+});
+
+test("rebasing a prepared wave cannot clear a target halt", async () => {
+  const h = harness(noop);
+  const envelope = await h.pipeline.createTask(1, "default", intent);
+  await h.pipeline.prepareEnvelope(envelope);
+  h.inspect.statuses.get("todos").status = "halted";
+  await h.pipeline.cancelPreparedWave([envelope], "wave_baseline_mismatch");
+  assert.equal(h.inspect.statuses.get("todos").status, "halted");
+  assert.equal(h.inspect.state.meta.targetCursors.todos ?? 0, 0);
+});
+
 function harness(propose, recovery = {}) {
   const data = store();
   const retryBudget = createRetryBudget();

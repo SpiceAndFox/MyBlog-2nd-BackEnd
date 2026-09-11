@@ -188,7 +188,7 @@ if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const { createChatRagComposition } = require("../app/composition/chatRag");
-  const control = createCommandControl({ name: "migrate:memory-v2-data" });
+  const control = createCommandControl();
   let db;
   control.run(async () => {
     const context = createCommandContext();

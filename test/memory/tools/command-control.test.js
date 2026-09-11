@@ -43,8 +43,8 @@ test("dispatch and durable progress use distinct brief messages", () => {
   ]);
   const lines = text.trim().split("\n");
   assert.match(lines[0], /容量维护 · 任务 task · 请求队列已满/);
-  assert.equal(lines[1], `[PID ${process.pid}] [继续调度] 1/default · 记忆 · 容量维护 · 任务 task`);
-  assert.equal(lines[2], `[PID ${process.pid}] [进度已推进] 1/default · 记忆`);
+  assert.equal(lines[1], "[继续调度] 1/default · 记忆 · 容量维护 · 任务 task");
+  assert.equal(lines[2], "[进度已推进] 1/default · 记忆");
 });
 
 test("nested projection barriers retain an actionable HTTP failure", () => {
@@ -55,115 +55,35 @@ test("nested projection barriers retain an actionable HTTP failure", () => {
   assert.match(text, /检索索引 · 服务请求失败（HTTP 429）/);
 });
 
-function commandHarness() {
-  const { EventEmitter } = require("node:events");
-  const { createCommandControl } = require("../../../scripts/memory-command-control");
-  const runtime = new EventEmitter(); runtime.pid = 1234;
-  const lines = [];
-  const control = createCommandControl({ name: "rebuild:memory-v2", runtime,
-    write: text => lines.push(text), writeExit: text => lines.push(text) });
-  return { control, runtime, lines };
-}
 
-test("cancellation waits for the request and cleanup, then reports actual exit without a stack", async () => {
-  const { control, runtime, lines } = commandHarness();
-  let finishRequest, finishCleanup;
-  const request = new Promise(resolve => { finishRequest = resolve; });
-  const cleanup = new Promise(resolve => { finishCleanup = resolve; });
-  let closing = false;
-  const running = control.run(async () => {
-    await request;
-    control.onWait({ event: "memory_progress_resumed" });
-    throw Object.assign(new Error("Memory force drain did not complete: interrupted"), {
-      migrationDetail: { status: "interrupted", reason: "cancelled" },
-    });
-  }, async () => { closing = true; await cleanup; });
-  runtime.emit("SIGINT"); runtime.emit("SIGINT");
-  assert.equal(control.signal.aborted, true);
-  assert.equal(closing, false);
-  assert.equal(lines.filter(line => line.includes("正在停止")).length, 1);
-  finishRequest(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(closing, true);
-  assert.doesNotMatch(lines.join(""), /已退出 130|Error:|进度已推进/);
-  runtime.emit("SIGTERM");
-  finishCleanup(); await running;
-  assert.equal(runtime.exitCode, 130);
-  assert.doesNotMatch(lines.join(""), /\[已退出/);
-  runtime.emit("exit", runtime.exitCode);
-  assert.match(lines.at(-1), /\[PID 1234\] \[已退出 130\].*可重新执行/);
-  assert.ok(lines.every(line => line.startsWith("[PID 1234]")));
-  assert.doesNotMatch(lines.join(""), /Memory force drain|Error:|sourceGeneration/);
-  control.dispose();
-  assert.equal(runtime.listenerCount("SIGINT"), 0);
-  assert.equal(runtime.listenerCount("SIGTERM"), 0);
-});
-
-test("real execution or cleanup failures are not hidden by a concurrent cancellation", async () => {
-  for (const duringCleanup of [false, true]) {
-    const { control, runtime, lines } = commandHarness();
-    await control.run(async () => {
-      runtime.emit("SIGINT");
-      if (!duringCleanup) throw new Error("database unavailable");
-    }, async () => { if (duringCleanup) throw new Error("database close failed"); });
-    assert.equal(runtime.exitCode, 1);
-    assert.match(lines.join(""), duringCleanup ? /database close failed/ : /database unavailable/);
-    runtime.emit("exit", 1);
-    assert.doesNotMatch(lines.at(-1), /可重新执行/);
-    control.dispose();
-  }
-});
-
-test("interrupted migration reports retain cancellation exit status", async () => {
-  const { control, runtime, lines } = commandHarness();
-  await control.run(async () => {
-    runtime.emit("SIGINT");
-    runtime.exitCode = 2;
-    return { status: "failed", error: { detail: { status: "interrupted" } } };
-  }, async () => {});
-  assert.equal(runtime.exitCode, 130);
-  runtime.emit("exit", 130);
-  assert.match(lines.at(-1), /已停止/);
-  control.dispose();
-});
-
-test("successful completion announces exit only from the exit event", async () => {
-  const { control, runtime, lines } = commandHarness();
-  await control.run(async () => ({ status: "completed" }), async () => {});
-  assert.equal(lines.length, 1);
-  runtime.emit("exit", 0);
-  assert.equal(lines.at(-1), "[PID 1234] [已退出 0] 命令已结束。\n");
-  control.dispose();
-});
-
-test("a real failed migration report remains a failure even when Ctrl+C was received", async () => {
-  const { control, runtime, lines } = commandHarness();
-  await control.run(async () => {
-    runtime.emit("SIGINT");
-    return { status: "failed", error: { message: "database unavailable" } };
-  }, async () => { runtime.emit("SIGTERM"); });
-  assert.equal(runtime.exitCode, 2);
-  runtime.emit("exit", 2);
-  assert.match(lines.at(-1), /执行或收尾失败/);
-  control.dispose();
-});
-
-test("a real Node process drains cleanup before printing its cancellation exit message", () => {
+for (const signal of ["SIGINT", "SIGTERM"]) test(signal + " exits immediately and silently while a request is pending", () => {
   const { spawnSync } = require("node:child_process");
   const file = require.resolve("../../../scripts/memory-command-control");
-  const source = `
-    const { createCommandControl } = require(${JSON.stringify(file)});
-    const control = createCommandControl({ name: "offline cancellation fixture" });
-    control.run(async () => {
-      process.emit("SIGINT");
-      throw Object.assign(new Error("interrupted"), { librarianResult: { status: "interrupted" } });
-    }, async () => {
-      await new Promise(resolve => setTimeout(resolve, 20));
-      process.stderr.write("cleanup complete\\n");
-    });
-  `;
+  const source = [
+    "const {createCommandControl} = require(" + JSON.stringify(file) + ");",
+    "const control = createCommandControl();",
+    "setInterval(() => {}, 1000);", // An outstanding request must not hold up exit.
+    "control.run(async () => { await new Promise(() => {}); }, async () => { console.error('must not wait for cleanup'); });",
+    "setImmediate(() => process.emit(" + JSON.stringify(signal) + "));",
+  ].join("\n");
   const child = spawnSync(process.execPath, ["-e", source], { encoding: "utf8", timeout: 5000, windowsHide: true });
   assert.equal(child.error, undefined);
   assert.equal(child.status, 130);
-  assert.match(child.stderr, /cleanup complete\n\[PID \d+\] \[已退出 130\]/);
-  assert.doesNotMatch(child.stderr, /Error:|at Object/);
+  assert.equal(child.stdout, "");
+  assert.equal(child.stderr, "");
+});
+
+test("normal completion stays quiet and real failures still close the database and report errors", async () => {
+  const { EventEmitter } = require("node:events");
+  const { createCommandControl } = require("../../../scripts/memory-command-control");
+  for (const fail of [false, true]) {
+    const runtime = new EventEmitter(); const lines = []; let closed = false;
+    const control = createCommandControl({ runtime, write: text => lines.push(text) });
+    await control.run(async () => { if (fail) throw new Error("database unavailable"); }, async () => { closed = true; });
+    assert.equal(closed, true);
+    if (fail) { assert.equal(runtime.exitCode, 1); assert.match(lines.join(""), /database unavailable/); }
+    else assert.deepEqual(lines, []);
+    assert.equal(runtime.listenerCount("exit"), 0);
+    control.dispose();
+  }
 });

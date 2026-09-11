@@ -386,6 +386,13 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task not found while compiling Semantic result");
+      // Another execution can commit while this execution is waiting for its provider.
+      // Resolve the durable terminal state before comparing the old input cursor.
+      if (TERMINAL_TASK_STATUSES.has(task.status)) return {
+        status: task.status === "succeeded" ? "committed" : task.status,
+        taskId: envelope.task.taskId, revision: Number(rowValue(task, "result_revision", "resultRevision")) || null,
+        duplicate: true,
+      };
       const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId, { client, forUpdate: true });
       if (state.meta.sourceGeneration !== envelope.task.sourceGeneration) return { status: "stale", reason: "generation_mismatch", taskId: envelope.task.taskId };
       if ((state.meta.targetCursors[envelope.task.targetKey] ?? 0) !== envelope.task.cursorBefore) return { status: "stale", reason: "cursor_mismatch", taskId: envelope.task.taskId };
@@ -851,7 +858,8 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
           envelope.task.targetKey,
           { client, forUpdate: true },
         );
-        if (Number(rowValue(target, "source_generation", "sourceGeneration")) === envelope.task.sourceGeneration) {
+        if (Number(rowValue(target, "source_generation", "sourceGeneration")) === envelope.task.sourceGeneration
+          && rowValue(target, "status", "status") !== "halted") {
           await repositories.runtime.upsertTargetStatus(envelope.task.userId, envelope.task.presetId, {
             targetKey: envelope.task.targetKey,
             sourceGeneration: envelope.task.sourceGeneration,

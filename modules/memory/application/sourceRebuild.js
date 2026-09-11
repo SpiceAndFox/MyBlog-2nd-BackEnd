@@ -391,7 +391,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         };
         throw error;
       }
-      const incompleteIndex = prepared.findIndex((result) => result.status !== "prepared");
+      const incompleteIndex = prepared.findIndex((result) => !["prepared", "committed"].includes(result.status));
       if (incompleteIndex >= 0) {
         const result = prepared[incompleteIndex];
         results.push(...prepared);
@@ -403,6 +403,13 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           result,
           results,
         };
+      }
+      if (prepared.some(result => result.status === "committed")) {
+        // A previous execution completed while this wave was preparing. Reload the
+        // persisted cursor instead of applying this wave against its old baseline.
+        results.push(...prepared.filter(result => result.status === "committed"));
+        await normalWritePipeline.cancelPreparedWave(envelopes.filter((_, index) => prepared[index].status === "prepared"), "wave_baseline_mismatch");
+        continue;
       }
       const committed = await normalWritePipeline.commitPreparedWave(prepared);
       if (committed.status === "capacity_deferred") {
