@@ -2,6 +2,105 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createInitialMemoryState, TARGET_KEYS, SCHEMA_VERSION } = require("../../../modules/memory/contracts");
 const { createMemoryMigration } = require("../../../modules/memory/application/migration");
+const { createOperationRunner } = require("../../../modules/memory/application/operationRunner");
+
+function waitingHarness(onSleep = () => {}) {
+  let time = Date.parse("2026-07-13T00:00:00Z");
+  const runner = createOperationRunner({ now: () => time, sleepUntilNext: async ms => { time += ms; await onSleep(); } });
+  return { ...makeHarness({ operationRunner: runner, now: () => new Date(time) }), time: () => time };
+}
+
+test("foreground migration waits through normal, capacity and final Librarian deferrals in one generation", async () => {
+  const h = waitingHarness(); const complete = h.sourceRebuild.forceDrainTo; const optionsSeen = []; let calls = 0;
+  h.sourceRebuild.forceDrainTo = async (_u, _p, options) => {
+    optionsSeen.push(options); calls++;
+    const pending = { status: "retry_wait", reason: "llm_call_failed", taskId: `task-${calls}`, notBefore: new Date(h.time() + 60_000).toISOString() };
+    if (calls === 1) return { status: "incomplete", results: [{ ...pending, status: "error", halted: false }] };
+    if (calls === 2) return { status: "incomplete", result: pending, results: [{ status: "capacity_deferred" }, pending] };
+    if (calls === 3) return { status: "incomplete", reason: "librarian_final_not_terminal", result: { status: "incomplete", results: [pending] } };
+    return complete();
+  };
+  const report = await h.migration.run();
+  assert.equal(report.status, "completed"); assert.equal(calls, 4); assert.equal(h.getInitializeCount(), 1);
+  assert.ok(optionsSeen.every(options => options.sourceGeneration === 1 && options.boundaryMessageId === 20));
+  assert.deepEqual(report.results[0].verification.healthyProjections, ["rag"]);
+});
+
+test("foreground migration cancellation leaves the existing generation resumable", async () => {
+  const controller = new AbortController(); const h = waitingHarness(() => controller.abort()); const complete = h.sourceRebuild.forceDrainTo; let calls = 0;
+  h.sourceRebuild.forceDrainTo = async () => { calls++; return { status: "incomplete", result: { status: "retry_wait", reason: "llm_call_failed", notBefore: new Date(h.time() + 60_000).toISOString() } }; };
+  const first = await h.migration.run({ signal: controller.signal });
+  assert.equal(first.error.detail.status, "interrupted"); assert.equal(first.error.detail.resumable, true);
+  assert.equal(calls, 1); assert.equal(first.canStartService, false);
+  h.sourceRebuild.forceDrainTo = complete;
+  assert.equal((await h.migration.run()).status, "completed"); assert.equal(h.getInitializeCount(), 1);
+});
+
+test("foreground migration never automatically resumes halted or schema-invalid work", async () => {
+  for (const pending of [{ status: "halted", reason: "output_schema_invalid" }, { status: "error", halted: true, notBefore: "2026-07-13T00:01:00Z" }]) {
+    const h = waitingHarness(() => assert.fail("terminal failure must not wait")); let calls = 0;
+    h.sourceRebuild.forceDrainTo = async () => { calls++; return { status: "incomplete", result: pending }; };
+    assert.equal((await h.migration.run()).status, "failed"); assert.equal(calls, 1);
+  }
+});
+
+test("foreground migration aborts on cancellation or changed source before redispatch", async () => {
+  for (const mode of ["cancel", "boundary", "privacy"]) {
+    const controller = new AbortController(); let h; let calls = 0;
+    h = waitingHarness(() => {
+      if (mode === "cancel") controller.abort();
+      else if (mode === "boundary") h.repositories.source.getBoundary = async () => 21;
+      else h.repositories.privacy.hasIncompleteOperation = async () => true;
+    });
+    h.sourceRebuild.forceDrainTo = async () => { calls++; return { status: "incomplete", result: { status: "retry_wait", notBefore: new Date(h.time() + 60_000).toISOString() } }; };
+    const report = await h.migration.run({ signal: controller.signal });
+    assert.equal(report.status, "failed"); assert.equal(calls, 1);
+    if (mode === "cancel") assert.equal(report.error.detail.status, "interrupted");
+    else assert.match(report.error.message, mode === "boundary" ? /boundary changed/ : /privacy operation/);
+  }
+});
+
+test("RAG transient failures wait without repeating Memory drain; permanent errors stop", async () => {
+  for (const status of [503, 401]) {
+    const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0; let memoryCalls = 0;
+    const drain = h.sourceRebuild.forceDrainTo;
+    h.sourceRebuild.forceDrainTo = async (...args) => { memoryCalls++; return drain(...args); };
+    h.projectionDrains.rag.drain = async () => { if (++calls <= 4) throw Object.assign(new Error("embedding unavailable"), { status }); return complete(); };
+    const report = await h.migration.run();
+    assert.equal(report.status, status === 503 ? "completed" : "failed");
+    assert.equal(calls, status === 503 ? 5 : 1); assert.equal(memoryCalls, 1); assert.equal(h.getInitializeCount(), 1);
+  }
+});
+
+for (const [status, expectedCalls] of [[503, 6], [undefined, 3]]) {
+  test(`RAG ${status || "unknown"} failure budget stops one run and manual re-entry retains generation`, async () => {
+    const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0;
+    h.projectionDrains.rag.drain = async () => { calls++; throw Object.assign(new Error("embedding unavailable"), { status }); };
+    const failed = await h.migration.run();
+    assert.equal(failed.status, "failed");
+    assert.equal(calls, expectedCalls);
+    assert.match(JSON.stringify(failed.error), /retry_budget_exhausted/);
+    h.projectionDrains.rag.drain = complete;
+    assert.equal((await h.migration.run()).status, "completed");
+    assert.equal(h.getInitializeCount(), 1);
+  });
+}
+
+test("successful embedding requests reset RAG failures before the next failure even within a drain", async () => {
+  const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0;
+  h.projectionDrains.rag.drain = async () => {
+    if (++calls <= 8) throw Object.assign(new Error("partial batch failed"), { status: 503, providerSuccessCount: calls });
+    return complete();
+  };
+  assert.equal((await h.migration.run()).status, "completed");
+  assert.equal(calls, 9);
+});
+
+test("an already cancelled rebuild cannot initialize or purge", async () => {
+  const h = waitingHarness(); const controller = new AbortController(); controller.abort();
+  await assert.rejects(h.migration.rebuildScope(migrationScenario.scope, migrationScenario.history, { signal: controller.signal }), /did not complete/);
+  assert.equal(h.getInitializeCount(), 0); assert.deepEqual(h.getPurgeCounts(), { derivedPurges: 0, authorityPurges: 0 });
+});
 
 const migrationScenario = Object.freeze({
   scope: { userId: 7, presetId: "companion" },
@@ -10,7 +109,7 @@ const migrationScenario = Object.freeze({
   revision: 1,
 });
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, forceDrainStale = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false } = {}) {
+function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, forceDrainStale = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false, operationRunner, now = () => new Date("2026-07-13T00:00:00.000Z") } = {}) {
   let state = initialAuthority ? createInitialMemoryState() : null;
   let snapshots = [];
   let statuses = [];
@@ -39,7 +138,11 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       async getHistoryFingerprint() { return `sha256:${"f".repeat(64)}`; },
       async getBoundary() { return migrationScenario.history.boundaryMessageId + (verificationFailure === "boundary" ? 1 : 0); },
     },
-    runtime: { async getTargetStatuses() { return structuredClone(statuses); } },
+    runtime: {
+      async getTargetStatuses() { return structuredClone(statuses); },
+      async listTasksForTarget() { return []; },
+      async getTargetStatus() { return null; },
+    },
     audit: {
       async getSnapshot(_u, _p, revision) { return structuredClone(snapshots.find((entry) => entry.revision === revision) || null); },
       async listSnapshots() { return structuredClone(snapshots); },
@@ -119,8 +222,8 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       return { status: "healthy" };
     },
   }]));
-  const migration = createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now: () => new Date("2026-07-13T00:00:00.000Z"), monotonicNow: () => (clock += 5) });
-  return { migration, getInitializeCount: () => initializeCount, getPurgeCounts: () => ({ derivedPurges, authorityPurges }) };
+  const migration = createMemoryMigration({ providerRecovery: { retryMax: 2, transientRetryMax: 5, backoffBaseMs: 30000, backoffMaxMs: 120000 }, repositories, sourceRebuild, projectionDrains, providerTelemetry, now, operationRunner, monotonicNow: () => (clock += 5) });
+  return { migration, repositories, sourceRebuild, projectionDrains, getInitializeCount: () => initializeCount, getPurgeCounts: () => ({ derivedPurges, authorityPurges }) };
 }
 
 test("migration rehearsal rebuilds every raw-history scope", async () => {

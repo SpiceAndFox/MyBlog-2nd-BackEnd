@@ -1,3 +1,4 @@
+const { providerTimeoutError, providerHttpError, readProviderJson } = require("./providerFailure");
 const {
   assertStructuredRequestLimits,
   isAbortedIncompleteJson,
@@ -45,7 +46,7 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
     assertStructuredRequestLimits({ ...body, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(providerTimeoutError()), timeoutMs);
     try {
       const response = await fetchImpl(endpoint, {
         method: "POST",
@@ -53,14 +54,12 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const data = await response.json().catch(() => null);
+      const data = await readProviderJson(response);
       if (!response.ok) {
         if (isSafetySignal(data?.error?.code, data?.error?.type, data?.error?.message)) {
           return { safetyBlocked: true, finishReason: data?.error?.code ?? "input_rejected", model: data?.model ?? requestedModel, usage: data?.usage ?? null };
         }
-        const error = new Error(data?.error?.message || `Memory Provider HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
+        throw providerHttpError(response, data);
       }
       const choice = data?.choices?.[0];
       const finishReason = choice?.finish_reason ?? choice?.stop_reason;
@@ -118,6 +117,8 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
         transportError: parsed.error,
         transportRecovery: parsed.recovery,
       };
+    } catch (error) {
+      throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       clearTimeout(timeout);
     }

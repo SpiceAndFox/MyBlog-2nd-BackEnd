@@ -132,16 +132,26 @@ async function createEmbeddings({ texts, signal } = {}) {
       const error = new Error(pickErrorMessage({ status: response.status, json, text }));
       error.status = response.status;
       error.upstream = "embedding";
+      const retryAfter = response.headers?.get?.("retry-after");
+      if (retryAfter !== undefined && retryAfter !== null && String(retryAfter).trim()) {
+        const seconds = Number(retryAfter);
+        const deadline = Number.isFinite(seconds) && seconds >= 0 ? Date.now() + seconds * 1000 : Date.parse(retryAfter);
+        if (Number.isFinite(deadline) && deadline >= 0 && deadline <= 8.64e15) error.retryAfterAt = new Date(deadline).toISOString();
+      }
       throw error;
     }
 
-    const data = await response.json();
+    const data = await response.json().catch(error => {
+      if (error instanceof SyntaxError) error.retryable = false;
+      throw error;
+    });
     const rows = Array.isArray(data?.data) ? data.data : [];
     if (rows.length !== list.length) {
-      throw new Error(`Embedding response count mismatch: expected ${list.length}, got ${rows.length}`);
+      throw Object.assign(new Error(`Embedding response count mismatch: expected ${list.length}, got ${rows.length}`), { retryable: false });
     }
 
-    return rows.map((row, index) => validateEmbedding(row?.embedding, { index }));
+    try { return rows.map((row, index) => validateEmbedding(row?.embedding, { index })); }
+    catch (error) { error.retryable = false; throw error; }
   } catch (error) {
     if (error?.upstream === "embedding") throw error;
 
@@ -149,7 +159,8 @@ async function createEmbeddings({ texts, signal } = {}) {
     wrapped.name = error?.name || "EmbeddingNetworkError";
     wrapped.cause = error;
     wrapped.upstream = "embedding";
-    wrapped.retryable = true;
+    // Invalid vectors/JSON are output failures, not a provider connectivity outage.
+    wrapped.retryable = error?.retryable ?? true;
     wrapped.url = url;
     throw wrapped;
   } finally {

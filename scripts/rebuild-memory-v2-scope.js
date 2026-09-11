@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const { logWait, createCommandControl } = require("./memory-command-control");
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -60,7 +61,7 @@ function createScopedMigration({ database, config, logger, chatLlm, chatRagProje
   });
 }
 
-async function rebuildScope({ db, migration, userId, presetId, mode = "resume" }) {
+async function rebuildScope({ db, migration, userId, presetId, mode = "resume", ...executionOptions }) {
   const { rows } = await db.query(`
     SELECT 1
     FROM chat_prompt_presets
@@ -71,7 +72,7 @@ async function rebuildScope({ db, migration, userId, presetId, mode = "resume" }
   const scope = { userId, presetId };
   const inventory = await migration.inventory([scope]);
   if (inventory.length !== 1) throw new Error(`Memory scope inventory failed: userId=${userId}, presetId=${presetId}`);
-  const result = await migration.rebuildScope(scope, inventory[0], { forceNewGeneration: mode !== "resume" });
+  const result = await migration.rebuildScope(scope, inventory[0], { forceNewGeneration: mode !== "resume", ...executionOptions });
   return { status: "completed", ...result };
 }
 
@@ -91,19 +92,22 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     logger: context.logger,
     chatLlm: context.chatLlm,
   });
-  const result = await rebuildScope({ db, migration, ...options });
+  const { help: _help, ...scopeOptions } = options;
+  const result = await rebuildScope({ db, migration, ...scopeOptions, signal: dependencies.signal, onWait: dependencies.onWait || logWait });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }
 
 if (require.main === module) {
   const context = require("../app/composition/commandContext").createCommandContext();
-  main(process.argv.slice(2), { context }).catch((error) => {
+  const control = createCommandControl();
+  main(process.argv.slice(2), { context, ...control }).catch((error) => {
     const detail = error?.migrationDetail ? `\n${JSON.stringify(error.migrationDetail, null, 2)}\n` : "";
     process.stderr.write(`${error?.stack || error}${detail}\n`);
-    process.exitCode = 1;
+    process.exitCode = control.signal.aborted ? 130 : 1;
   }).finally(async () => {
     await context.database.end();
+    control.dispose();
   });
 }
 

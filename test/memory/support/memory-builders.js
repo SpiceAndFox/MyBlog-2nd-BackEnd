@@ -32,6 +32,7 @@ function createMemoryTestConfig(overrides = {}) {
     compaction: { retryMax: 1 },
     providerRecovery: {
       retryMax: 1,
+      transientRetryMax: 5,
       transportInvalidRetryMax: 1,
       schemaInvalidRetryMax: 1,
       backoffBaseMs: 1,

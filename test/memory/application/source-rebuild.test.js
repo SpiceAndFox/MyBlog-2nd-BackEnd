@@ -96,6 +96,37 @@ function makeRebuildHarness() {
   return { data, repositories, normalWritePipeline };
 }
 
+test("force drain resumes the blocked normal parent when maintenance shares its source window", async () => {
+  const h = makeRebuildHarness();
+  const generation = h.data.state.meta.sourceGeneration;
+  h.data.statuses.todos = { sourceGeneration: generation, status: "retry_wait", rebuildBoundaryMessageId: 20 };
+  h.repositories.source.getForceDrainWindow = async () => [{ id: 20 }];
+  const parent = { task_id: "parent", task_type: "normal", source_generation: generation,
+    cursor_before: 9, target_message_id: 20, status: "running", stage: "capacity_blocked",
+    task_payload: { task: { taskId: "parent", targetKey: "todos", baseRevision: 5 } } };
+  const child = { ...parent, task_id: "child", task_type: "maintenance", stage: "resumed",
+    task_payload: { task: { taskId: "child", targetKey: "todos", baseRevision: 5 } } };
+  h.repositories.runtime.listTasksForTarget = async () => [child, parent];
+  let resolved = 0;
+  const rebuild = createMemorySourceRebuild({ repositories: h.repositories,
+    config: { targets: { todos: { lagThreshold: 1, contextWindow: 2 } } },
+    normalWritePipeline: { ...h.normalWritePipeline,
+      async prepareEnvelope() { assert.fail("must reuse the saved parent proposal"); },
+      async commitPreparedWave() { assert.fail("maintenance has not completed"); },
+      async cancelPreparedWave() { assert.fail("waiting must retain the parent"); },
+      async resolvePreparedWaveCapacity(envelope) {
+        assert.equal(envelope.task.taskId, "parent"); resolved++;
+        return { status: "retry_wait", taskId: "child", notBefore: "2026-09-11T00:01:00.000Z" };
+      },
+    } });
+  const result = await rebuild.forceDrainTargetsTo(7, "companion", { sourceGeneration: generation,
+    boundaryMessageId: 20, targetKeys: ["todos"], finalizeTargets: false });
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.result.status, "retry_wait");
+  assert.equal(resolved, 1);
+  assert.equal(h.data.state.meta.targetCursors.todos, 9);
+});
+
 test("source mutation atomically advances generation, preserves global revision, and enters rebuilding", async () => {
   const harness = makeRebuildHarness();
   const rebuild = createMemorySourceRebuild({ repositories: harness.repositories, normalWritePipeline: harness.normalWritePipeline, config: { targets: {} } });

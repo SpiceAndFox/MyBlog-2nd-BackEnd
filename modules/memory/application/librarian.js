@@ -12,6 +12,9 @@ const {
 } = require("../domain/librarianSchedule");
 
 const MAX_REVISION_REBASE_ATTEMPTS = 4;
+const { createOperationRunner } = require("./operationRunner");
+const { createRetryBudget } = require("./retryBudget");
+const { beginManualRetrySession } = require("./manualRetrySession");
 const TERMINAL_RUN_STATUSES = new Set(["committed", "noop", "completed"]);
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
@@ -24,6 +27,8 @@ function createMemoryLibrarian({
   now,
   idFactory,
   metrics,
+  operationRunner = createOperationRunner(),
+  retryBudget = createRetryBudget(),
 } = {}) {
   if (typeof repositories?.state?.getState !== "function"
     || typeof repositories?.source?.getBoundary !== "function"
@@ -32,6 +37,7 @@ function createMemoryLibrarian({
     throw new Error("Memory Librarian scheduling repositories are required");
   }
   const taskExecutor = createLibrarianTaskExecutor({
+    retryBudget,
     repositories,
     providerAdapter,
     config,
@@ -40,7 +46,7 @@ function createMemoryLibrarian({
     metrics,
   });
 
-  async function ensureBarrier(userId, presetId, sourceGeneration, boundaryMessageId, skipBarrier) {
+  async function ensureBarrier(userId, presetId, sourceGeneration, boundaryMessageId, skipBarrier, signal) {
     let result = { status: "completed" };
     if (!skipBarrier) {
       if (typeof drainBarrier !== "function") throw new Error("Memory Librarian boundary barrier is unavailable");
@@ -48,6 +54,7 @@ function createMemoryLibrarian({
         sourceGeneration,
         boundaryMessageId,
         targetKeys: LIBRARIAN_BARRIER_TARGETS,
+        signal,
       });
       if (result?.status !== "completed") {
         return { status: "incomplete", reason: "barrier_incomplete", barrier: result };
@@ -78,10 +85,14 @@ function createMemoryLibrarian({
     watermarkKind = "complete_turn",
     triggerType,
     skipBarrier = false,
+    resumeFailed = false,
+    signal,
   } = {}) {
-    const barrier = await ensureBarrier(userId, presetId, sourceGeneration, boundaryMessageId, skipBarrier);
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
+    const barrier = await ensureBarrier(userId, presetId, sourceGeneration, boundaryMessageId, skipBarrier, signal);
     if (barrier.status !== "completed") return barrier;
     for (let staleAttempt = 0; staleAttempt < MAX_REVISION_REBASE_ATTEMPTS; staleAttempt += 1) {
+      if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
       const state = await repositories.state.getState(userId, presetId);
       if (!state || state.meta.sourceGeneration !== sourceGeneration) {
         return { status: "stale", reason: "generation_mismatch" };
@@ -91,8 +102,9 @@ function createMemoryLibrarian({
         watermarkOrdinal,
         watermarkKind,
         triggerType,
+        resumeFailed,
       });
-      const result = await taskExecutor.processEnvelope(envelope);
+      const result = await taskExecutor.processEnvelope(envelope, { signal });
       if (result.status !== "stale") return result;
     }
     return { status: "incomplete", reason: "revision_churn" };
@@ -167,9 +179,14 @@ function createMemoryLibrarian({
     triggerType = "rebuild_final",
     skipBarrier = false,
     schedule = null,
+    sourceGeneration,
+    signal,
+    resumeFailed = false,
   } = {}) {
     const state = await repositories.state.getState(userId, presetId);
     if (!state) return { status: "skipped", reason: "state_missing" };
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
+    if (sourceGeneration !== undefined && sourceGeneration !== state.meta.sourceGeneration) return { status: "stale", reason: "generation_mismatch" };
     const turns = schedule?.boundaries || await repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId);
     const watermarkKind = schedule?.watermarkKind || "complete_turn";
     const ordinal = turns.length;
@@ -199,6 +216,8 @@ function createMemoryLibrarian({
       watermarkKind,
       triggerType,
       skipBarrier,
+      resumeFailed,
+      signal,
     });
     return {
       status: TERMINAL_RUN_STATUSES.has(result.status) ? "completed" : "incomplete",
@@ -211,9 +230,39 @@ function createMemoryLibrarian({
     return scheduleForBoundary(userId, presetId, boundary, { triggerType: "periodic" });
   }
 
-  async function runManual(userId, presetId) {
+  async function runManual(userId, presetId, options = {}) {
     const boundary = await repositories.source.getBoundary(userId, presetId);
-    return runFinal(userId, presetId, boundary, { triggerType: "manual" });
+    return runFinal(userId, presetId, boundary, { ...options, triggerType: "manual" });
+  }
+
+  async function runManualAndWait(userId, presetId, { signal, onWait, resumeFailed = false } = {}) {
+    const boundary = await repositories.source.getBoundary(userId, presetId);
+    const initial = await repositories.state.getState(userId, presetId);
+    if (!initial) return { status: "skipped", reason: "state_missing" };
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
+    await beginManualRetrySession(repositories, retryBudget, userId, presetId, initial.meta.sourceGeneration);
+    let first = true;
+    return operationRunner.run({ signal, onWait, scope: { userId, presetId }, phase: "librarian",
+      readProgress: async () => {
+        if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+          throw Object.assign(new Error("Librarian is blocked by an incomplete privacy operation"), { code: "MEMORY_PRIVACY_OPERATION_PENDING" });
+        }
+        const state = await repositories.state.getState(userId, presetId);
+        if (state?.meta.sourceGeneration !== initial.meta.sourceGeneration
+          || await repositories.source.getBoundary(userId, presetId) !== boundary) {
+          throw Object.assign(new Error("Librarian source generation or boundary changed while waiting"), { code: "MEMORY_REBUILD_STALE" });
+        }
+        const checkpoint = await repositories.runtime.getLibrarianCheckpoint(userId, presetId, initial.meta.sourceGeneration);
+        return { revision: state.meta.revision, cursors: state.meta.targetCursors,
+          boundary: rowValue(checkpoint, "boundary_message_id", "boundaryMessageId"),
+          ordinal: rowValue(checkpoint, "completed_ordinal", "completedOrdinal") };
+      },
+      step: () => {
+        const retryFailed = first && resumeFailed;
+        first = false;
+        return runFinal(userId, presetId, boundary, { triggerType: "manual", sourceGeneration: initial.meta.sourceGeneration, signal, resumeFailed: retryFailed });
+      },
+    });
   }
 
   return Object.freeze({
@@ -223,6 +272,7 @@ function createMemoryLibrarian({
     scheduleForBoundary,
     runFinal,
     runManual,
+    runManualAndWait,
   });
 }
 

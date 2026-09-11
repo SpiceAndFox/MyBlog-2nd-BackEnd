@@ -9,6 +9,16 @@ test("v2 config fails explicitly when enabled configuration is incomplete", () =
   assert.throws(() => loadMemoryV2Config({ CHAT_MEMORY_V2_ENABLED: "true" }), /Missing required env/);
 });
 
+test("transient retry allowance is explicit, allows zero, and rejects invalid values", () => {
+  const name = "CHAT_MEMORY_V2_PROVIDER_TRANSIENT_RETRY_MAX";
+  for (const value of [undefined, "", " ", "-1", "1.5", "Infinity", "9007199254740992"]) {
+    assert.throws(() => loadMemoryV2Config({ ...validEnv(), [name]: value }), new RegExp(name));
+  }
+  assert.equal(loadMemoryV2Config({ ...validEnv(), [name]: "0" }).providerRecovery.transientRetryMax, 0);
+  assert.equal(loadMemoryV2Config({ ...validEnv(), [name]: "5" }).providerRecovery.transientRetryMax, 5);
+  assert.throws(() => loadMemoryV2Config({ ...validEnv(), CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS: "1" }), /BACKOFF_MAX_MS/);
+});
+
 test("source-count limits default to enabled and can be disabled independently of text limits", () => {
   const env = validEnv();
   assert.equal(loadMemoryV2Config(env).sourceRefsLimitEnabled, true);
@@ -80,6 +90,7 @@ function validEnv() {
     CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS: "10", CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS: "1000",
     CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS: "10000", CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES: "10",
     CHAT_MEMORY_V2_PROVIDER_RETRY_MAX: "2",
+    CHAT_MEMORY_V2_PROVIDER_TRANSIENT_RETRY_MAX: "5",
     CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS: "1000", CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS: "10000",

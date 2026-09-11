@@ -82,8 +82,10 @@ function isTransportRepairFailure(detail) {
 }
 
 function repairAttemptCount(stagePayload) {
-  return Number(stagePayload?.schemaInvalidAttempts || 0)
-    + Number(stagePayload?.transportInvalidAttempts || 0);
+  // Monotonic repair history numbering, independent of execution allowances.
+  return Math.max(Number(stagePayload?.schemaRepairFeedback?.attempt || 0),
+    Number(stagePayload?.schemaInvalidAttempts || 0) + Number(stagePayload?.transportInvalidAttempts || 0),
+    ...(stagePayload?.schemaRejectedOutputs || []).map(entry => Number(entry.attempt) + 1));
 }
 
 function captureRejectedOutput(value) {

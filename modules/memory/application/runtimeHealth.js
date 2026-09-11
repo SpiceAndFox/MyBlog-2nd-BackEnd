@@ -39,22 +39,23 @@ function targetAlert(targetKey, row) {
 function createMemoryRuntimeHealth({
   config,
   repositories,
-  providerCircuit,
+  providerHealth,
+  resetRetryBudget,
   reconcileRebuilds,
   recovery,
 } = {}) {
   if (!config?.targets || !repositories?.state || !repositories?.runtime || !repositories?.sidecars) {
     throw new Error("Memory runtime health dependencies are required");
   }
-  if (!providerCircuit?.snapshot || !providerCircuit?.retryNow) {
-    throw new Error("Memory runtime health provider circuit is required");
+  if (!providerHealth?.snapshot) {
+    throw new Error("Memory runtime provider health is required");
   }
   if (typeof reconcileRebuilds !== "function" || typeof recovery?.resumeTarget !== "function") {
     throw new Error("Memory runtime health recovery dependencies are required");
   }
 
   async function getHealthSnapshot({ userId, presetId } = {}) {
-    const provider = providerCircuit.snapshot();
+    const provider = providerHealth.snapshot();
     const normalizedUserId = Number(userId);
     const normalizedPresetId = String(presetId || "").trim();
     if (!Number.isSafeInteger(normalizedUserId) || normalizedUserId <= 0 || !normalizedPresetId) {
@@ -107,15 +108,13 @@ function createMemoryRuntimeHealth({
             : "历史对话检索可能不完整",
         });
       }
-      if (["degraded", "needs_attention"].includes(provider.status)) {
+      if (provider.status === "degraded") {
         if (status === "healthy") status = "degraded";
         alerts.push({
           subjectKind: "provider",
           subjectKey: "memory",
           status: provider.status,
-          message: provider.status === "needs_attention"
-            ? "长期记忆更新已暂停，需要手动重试"
-            : "长期记忆更新暂不可用，将继续使用上次成功的记忆",
+          message: "最近一次记忆服务请求失败，已保存的记忆仍可使用",
         });
       }
       return {
@@ -154,19 +153,20 @@ function createMemoryRuntimeHealth({
   }
 
   async function retryProviderNow({ userId, presetId } = {}) {
-    const provider = providerCircuit.retryNow();
+    const provider = providerHealth.snapshot();
     const normalizedUserId = Number(userId);
     const normalizedPresetId = String(presetId || "").trim();
     if (!Number.isSafeInteger(normalizedUserId) || normalizedUserId <= 0 || !normalizedPresetId) {
       return { provider, attempted: false };
     }
+    resetRetryBudget?.(normalizedUserId, normalizedPresetId);
     const rebuilds = await reconcileRebuilds({
       resumeHalted: true,
       selectedScope: { userId: normalizedUserId, presetId: normalizedPresetId },
     });
     const scopeKey = `${normalizedUserId}:${normalizedPresetId}`;
     if (rebuilds[scopeKey] && rebuilds[scopeKey].status !== "skipped") {
-      return { provider: providerCircuit.snapshot(), attempted: true, rebuild: rebuilds[scopeKey] };
+      return { provider: providerHealth.snapshot(), attempted: true, rebuild: rebuilds[scopeKey] };
     }
     const statuses = await repositories.runtime.getTargetStatuses(normalizedUserId, normalizedPresetId);
     const halted = statuses.filter((row) => row.status === "halted");
@@ -180,7 +180,7 @@ function createMemoryRuntimeHealth({
       ));
     }
     return {
-      provider: providerCircuit.snapshot(),
+      provider: providerHealth.snapshot(),
       attempted: resumed.length > 0,
       resumed,
     };

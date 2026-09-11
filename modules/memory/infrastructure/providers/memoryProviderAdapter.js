@@ -205,13 +205,19 @@ function buildSpecialistArtifact(artifact, specialist) {
   };
 }
 
-function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
+function createMemoryProviderAdapter({ invokeStructured, promptLoader, requestControl } = {}) {
   if (typeof invokeStructured !== "function") throw new Error("invokeStructured is required");
   if (typeof promptLoader !== "function") throw new Error("promptLoader is required");
   const profileRepairCache = new WeakMap();
 
   return Object.freeze({
-    async propose(envelope, { repairFeedback = null, rejectedOutput } = {}) {
+    async propose(envelope, { repairFeedback = null, rejectedOutput, signal } = {}) {
+      let actualCallCount = 0;
+      const invoke = request => {
+        if (signal?.aborted) throw Object.assign(new Error("Memory operation interrupted"), { code: "MEMORY_OPERATION_INTERRUPTED" });
+        const call = input => { actualCallCount++; return invokeStructured(input); };
+        return requestControl ? requestControl(call, request, envelope.task) : call(request);
+      };
       let response;
       let responseSchema;
       let protocolMetadata;
@@ -251,7 +257,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               specialistPayload.task,
               specialistFeedback ? (hasBundle ? stored?.output : rejectedOutput ?? stored?.output) : undefined,
             );
-            const specialistResponse = await invokeStructured({
+            const specialistResponse = await invoke({
               requestContext: buildProviderRequestContext(task),
               proposer: specialist.proposer,
               systemPrompt: repair.systemPrompt,
@@ -262,7 +268,10 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             return { specialist, specialistArtifact, specialistResponse,
               protocol: completedProtocol(providerProtocolMetadata(specialistArtifact.publicInput.task, schema), specialistResponse) };
           }));
-          const rejected = settledRuns.find((run) => run.status === "rejected");
+          const failures = settledRuns.filter(run => run.status === "rejected");
+          const rejected = failures.find(run => run.reason?.providerDecision?.halted)
+            || failures.sort((left, right) => (Date.parse(right.reason?.providerDecision?.notBefore) || 0)
+              - (Date.parse(left.reason?.providerDecision?.notBefore) || 0))[0];
           if (rejected) throw rejected.reason;
           const specialistRuns = settledRuns.map((run) => run.value);
           const responses = specialistRuns.filter(run => !run.reused).map((run) => run.specialistResponse);
@@ -365,7 +374,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             userPayload.task,
             rejectedOutput,
           );
-          response = await invokeStructured({
+          response = await invoke({
             requestContext: buildProviderRequestContext(task),
             proposer: task.proposer,
             systemPrompt: repair.systemPrompt,
@@ -375,6 +384,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           });
         }
       } catch (error) {
+        if (error?.code === "MEMORY_OPERATION_INTERRUPTED") return { status: "deferred", reason: "operation_interrupted" };
         if (error?.code === "MEMORY_REPAIR_CONTEXT_INVALID") {
           return { status: "error", reason: "output_schema_invalid", detail: { code: error.code, ...error.detail } };
         }
@@ -382,10 +392,13 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         return {
           status: "error",
           reason: "llm_call_failed",
+          ...(error?.providerDecision ? { providerDecision: error.providerDecision, noProviderCall: actualCallCount === 0 } : {}),
+          callCount: actualCallCount,
           detail: {
-            code: error?.code ?? null,
+            code: error?.code ?? error?.cause?.code ?? null,
             status: Number.isSafeInteger(Number(error?.status)) ? Number(error.status) : null,
             retryable: error?.retryable ?? null,
+            ...(error?.retryAfterAt ? { retryAfterAt: error.retryAfterAt } : {}),
             message: error instanceof Error ? error.message : String(error),
             ...(error?.detail || {}),
           },

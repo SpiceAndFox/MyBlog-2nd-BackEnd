@@ -51,7 +51,8 @@ function admissionControlledAdapter(adapter, admission) {
   if (!admission?.run) throw new Error("Memory Provider admission is required");
   return Object.freeze({
     propose(envelope, options) {
-      return admission.tryRun(() => adapter.propose(envelope, options))
+      return admission.tryRun(() => options?.signal?.aborted
+        ? { status: "deferred", reason: "operation_interrupted" } : adapter.propose(envelope, options))
         || Promise.resolve({ status: "deferred", reason: "provider_queue_full" });
     },
   });

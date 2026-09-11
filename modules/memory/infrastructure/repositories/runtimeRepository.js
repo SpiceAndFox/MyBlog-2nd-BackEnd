@@ -24,6 +24,13 @@ async function getTask(taskId, { client } = {}) {
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE task_id=$1`, [taskId]);
   return rows[0] || null;
 }
+async function getLatestTaskForDedupeKey(userId, presetId, dedupeKey, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks
+    WHERE user_id=$1 AND preset_id=$2 AND (dedupe_key=$3 OR left(dedupe_key,char_length($3)+7)=$3||':retry:')
+    ORDER BY created_at DESC,task_id DESC LIMIT 1`, [scope.userId, scope.presetId, dedupeKey]);
+  return rows[0] || null;
+}
 async function updateTask(taskId, changes, { client } = {}) {
   const allowed = ["status", "stage", "stage_payload", "attempt", "context_expansion_attempt", "not_before", "last_error_reason", "result_revision"];
   const fields = Object.keys(changes);
@@ -150,7 +157,7 @@ async function initializeLibrarianRebuildSchedule(userId, presetId, sourceGenera
   `, [scope.userId, scope.presetId, sourceGeneration, schedule.watermarkKind, schedule]);
   return rows[0].rebuild_schedule;
 }
-return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime, getLibrarianCheckpoint, upsertLibrarianCheckpoint, initializeLibrarianRebuildSchedule });
+return Object.freeze({ createTask, getTask, getTaskForUpdate, getLatestTaskForDedupeKey, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime, getLibrarianCheckpoint, upsertLibrarianCheckpoint, initializeLibrarianRebuildSchedule });
 }
 
 module.exports = { createRuntimeRepository };

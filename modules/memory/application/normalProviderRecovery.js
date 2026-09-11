@@ -8,13 +8,10 @@ const {
   summarizeOutputShape,
 } = require("./outputRepair");
 const { providerBusinessRejection } = require("../infrastructure/providers/providerBusinessRejection");
+const { providerFailureDecision } = require("./providerRecoveryPolicy");
+const { createRetryBudget } = require("./retryBudget");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
-const RETRYABLE_ADAPTER_ERRORS = new Set([
-  "llm_call_failed",
-  "safety_policy_blocked",
-  "max_output_truncated",
-]);
 const ADAPTER_METRIC_RESULTS = new Set([
   "ok",
   "llm_call_failed",
@@ -54,6 +51,7 @@ function createNormalProviderRecovery({
   observeTaskAge,
   observedMessages,
   validateProviderOutput,
+  retryBudget = createRetryBudget(),
 } = {}) {
   async function recordAdapterError(envelope, adapterResult) {
     return repositories.withTransaction(async (client) => {
@@ -68,32 +66,17 @@ function createNormalProviderRecovery({
         envelope.task.targetKey,
         { client, forUpdate: true },
       );
-      const attempt = numberValue(task, "attempt", "attempt") + 1;
-      const consecutiveErrors = numberValue(
-        target,
-        "consecutive_errors",
-        "consecutiveErrors",
-      ) + 1;
-      const retryable = RETRYABLE_ADAPTER_ERRORS.has(adapterResult.reason);
-      const haltAfter = config.providerRecovery.haltAfterConsecutiveErrors;
-      const maintenanceLimitReached = envelope.task.mode === "maintenance"
-        && attempt > config.compaction.retryMax;
-      const normalLimitReached = envelope.task.mode !== "maintenance"
-        && attempt > config.providerRecovery.retryMax;
-      const halted = !retryable
-        || maintenanceLimitReached
-        || normalLimitReached
-        || (envelope.task.mode !== "maintenance" && consecutiveErrors >= haltAfter);
-      const delay = retryable && !halted
-        ? Math.min(
-          config.providerRecovery.backoffMaxMs,
-          config.providerRecovery.backoffBaseMs * (2 ** Math.max(0, attempt - 1)),
-        )
-        : null;
-      const retryAt = delay === null ? null : new Date(now().getTime() + delay).toISOString();
+      const attempt = numberValue(task, "attempt", "attempt") + (adapterResult.noProviderCall ? 0 : 1);
+      const counters = adapterResult.providerDecision?.counters || retryBudget.forTask(envelope.task);
+      const consecutiveErrors = counters.boundedFailures + 1;
+      const decision = adapterResult.providerDecision || providerFailureDecision({ counters, result: adapterResult, config: config.providerRecovery,
+        retryMax: envelope.task.mode === "maintenance" ? config.compaction.retryMax : config.providerRecovery.retryMax,
+        consecutiveErrors, haltAfter: envelope.task.mode === "maintenance" ? Infinity : config.providerRecovery.haltAfterConsecutiveErrors,
+        now: now() });
+      const { halted, notBefore: retryAt } = decision;
       const taskChanges = {
         status: halted ? "failed" : "retry_wait",
-        stage: "provider_error",
+        stage: decision.budgetExhausted || adapterResult.retryBudgetExhausted ? "retry_budget_exhausted" : "provider_error",
         attempt,
         not_before: retryAt,
         last_error_reason: adapterResult.reason,
@@ -101,7 +84,7 @@ function createNormalProviderRecovery({
       if (["output_schema_invalid", "semantic_schema_invalid"].includes(adapterResult.reason)) {
         const stagePayload = rowValue(task, "stage_payload", "stagePayload");
         taskChanges.stage_payload = appendRejectedOutputAttempt(
-          stagePayload,
+          taskChanges.stage_payload || stagePayload,
           adapterResult,
           repairAttemptCount(stagePayload),
           config.providerRecovery.schemaInvalidRetryMax
@@ -129,7 +112,7 @@ function createNormalProviderRecovery({
           targetKey: envelope.task.targetKey,
           sourceGeneration: envelope.task.sourceGeneration,
           status: targetStatus,
-          consecutiveErrors,
+          consecutiveErrors: counters.boundedFailures,
           lastErrorReason: adapterResult.reason,
           lastTaskId: envelope.task.taskId,
           nextRetryAt: retryAt,
@@ -151,16 +134,19 @@ function createNormalProviderRecovery({
         taskId: envelope.task.taskId,
         halted,
         attempt,
-        consecutiveErrors,
+        consecutiveErrors: counters.boundedFailures,
         notBefore: retryAt,
+        recoveryKind: decision.kind,
+        stage: taskChanges.stage,
+        mode: envelope.task.mode,
+        taskStatus: halted ? "failed" : "retry_wait",
       };
     });
   }
 
-  async function recordProviderCircuitDeferral(envelope, adapterResult) {
-    const providerHealth = adapterResult.providerHealth || {};
-    const needsAttention = providerHealth.status === "needs_attention";
-    const nextRetryAt = needsAttention ? null : providerHealth.nextRetryAt || null;
+  async function recordProviderAdmissionDeferral(envelope) {
+    const nextRetryAt = new Date(now().getTime() + config.providerRecovery.backoffBaseMs).toISOString();
+    const reason = "provider_queue_full";
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Memory task disappeared before provider deferral persistence");
@@ -177,13 +163,13 @@ function createNormalProviderRecovery({
         envelope.task.targetKey,
         { client, forUpdate: true },
       );
-      const taskStatus = needsAttention ? "failed" : "retry_wait";
-      const targetStatus = needsAttention ? "halted" : "retry_wait";
+      const taskStatus = "retry_wait";
+      const targetStatus = envelope.task.mode === "maintenance" ? "capacity_blocked" : "retry_wait";
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: taskStatus,
-        stage: "provider_circuit_open",
+        stage: "provider_queue_full",
         not_before: nextRetryAt,
-        last_error_reason: "provider_circuit_open",
+        last_error_reason: reason,
       }, { client });
       await repositories.runtime.upsertTargetStatus(
         envelope.task.userId,
@@ -193,7 +179,7 @@ function createNormalProviderRecovery({
           sourceGeneration: envelope.task.sourceGeneration,
           status: targetStatus,
           consecutiveErrors: numberValue(target, "consecutive_errors", "consecutiveErrors"),
-          lastErrorReason: "provider_circuit_open",
+          lastErrorReason: reason,
           lastTaskId: envelope.task.taskId,
           nextRetryAt,
         },
@@ -201,17 +187,16 @@ function createNormalProviderRecovery({
       );
       await appendOps(
         envelope,
-        "provider_circuit_open",
+        reason,
         numberValue(task, "attempt", "attempt"),
         {
-          providerStatus: providerHealth.status || "degraded",
           nextRetryAt,
         },
         client,
       );
       return {
-        status: needsAttention ? "halted" : "retry_wait",
-        outcome: "provider_circuit_open",
+        status: "retry_wait",
+        outcome: reason,
         taskId: envelope.task.taskId,
         notBefore: nextRetryAt,
       };
@@ -225,12 +210,13 @@ function createNormalProviderRecovery({
       if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return false;
       const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       const transportFailure = isTransportRepairFailure(adapterResult.detail);
-      const counter = transportFailure ? "transportInvalidAttempts" : "schemaInvalidAttempts";
-      const used = Number(stagePayload[counter] || 0);
+      const counters = retryBudget.forTask(envelope.task);
+      const counter = transportFailure ? "transportFailures" : "schemaFailures";
+      const used = counters[counter]++;
       const limit = transportFailure
         ? config.providerRecovery.transportInvalidRetryMax
         : config.providerRecovery.schemaInvalidRetryMax;
-      if (used >= limit) return false;
+      if (used >= limit) { adapterResult.retryBudgetExhausted = true; return false; }
       const attempt = numberValue(task, "attempt", "attempt") + 1;
       const repairAttempt = repairAttemptCount(stagePayload);
       const nextStagePayload = appendRejectedOutputAttempt(
@@ -241,7 +227,6 @@ function createNormalProviderRecovery({
           + config.providerRecovery.transportInvalidRetryMax
           + 1,
       );
-      nextStagePayload[counter] = used + 1;
       nextStagePayload.schemaRepairFeedback = createRepairFeedback(
         adapterResult.detail,
         repairAttempt + 1,
@@ -268,7 +253,7 @@ function createNormalProviderRecovery({
     });
   }
 
-  async function proposeWithSchemaRetry(envelope) {
+  async function proposeWithSchemaRetry(envelope, { signal } = {}) {
     const persisted = repositories.runtime.getTask
       ? await repositories.runtime.getTask(envelope.task.taskId)
       : null;
@@ -276,10 +261,14 @@ function createNormalProviderRecovery({
     const inputVariant = numberValue(persisted, "context_expansion_attempt", "contextExpansionAttempt") > 0 ? "expanded" : "base";
     let { repairFeedback, rejectedOutput } = repairContextForInput(persistedStagePayload, inputVariant);
     while (true) {
+      if (signal?.aborted) return { status: "deferred", reason: "operation_interrupted" };
+      if (retryBudget.exhausted(envelope.task, config)) return { status: "error", reason: "retry_budget_exhausted",
+        retryBudgetExhausted: true, noProviderCall: true, providerDecision: { halted: true, budgetExhausted: true,
+          notBefore: null, kind: "bounded", counters: retryBudget.forTask(envelope.task) } };
       const startedAt = monotonicNow();
       let result;
       try {
-        result = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
+        result = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput, signal });
       } finally {
         metrics?.observe(
           "memory_provider_latency_ms",
@@ -294,7 +283,13 @@ function createNormalProviderRecovery({
         });
         return result;
       }
-      const providerCallCount = Number.isSafeInteger(result.callCount) && result.callCount > 0
+      // Connectivity recovered even if the response still needs output repair.
+      // A different provider error is not a success and must not reset budgets.
+      if (result.status === "ok" || result.reason === "output_schema_invalid") {
+        retryBudget.providerSucceeded(envelope.task);
+        if (!isTransportRepairFailure(result.detail)) retryBudget.forTask(envelope.task).transportFailures = 0;
+      }
+      const providerCallCount = Number.isSafeInteger(result.callCount) && result.callCount >= 0
         ? result.callCount
         : 1;
       metrics?.increment(
@@ -371,7 +366,10 @@ function createNormalProviderRecovery({
       const retryableSchemaOutput = result.status === "error"
         && result.reason === "output_schema_invalid"
         && result.detail?.boundary === "output";
-      if (!retryableSchemaOutput) return result;
+      if (!retryableSchemaOutput) {
+        if (result.status === "ok") retryBudget.outputSucceeded(envelope.task);
+        return result;
+      }
       const reserved = await reserveSchemaInvalidRetry(envelope, result);
       if (!reserved) return result;
       repairFeedback = reserved.feedback;
@@ -381,7 +379,7 @@ function createNormalProviderRecovery({
 
   return Object.freeze({
     recordAdapterError,
-    recordProviderCircuitDeferral,
+    recordProviderAdmissionDeferral,
     proposeWithSchemaRetry,
   });
 }

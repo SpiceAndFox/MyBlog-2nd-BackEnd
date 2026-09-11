@@ -11,6 +11,8 @@ const { createProjectionDrain } = require("./application/projectionDrain");
 const { createMemoryMigration } = require("./application/migration");
 const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay");
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
+const { createProviderRequestControl } = require("./application/providerRequestRecovery");
+const { createProviderHealth } = require("../../shared/observability/providerHealth");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
 const { buildMigrationEvidence } = require("./application/migrationEvidence");
 const { latestRejectedOutput, createRepairFeedback, repairContextForInput } = require("./application/outputRepair");
@@ -32,6 +34,7 @@ const { runStructuredOutputPreflight } = require("./infrastructure/providers/dia
 const { buildOutputSchema } = require("./infrastructure/providers/output/outputSchema");
 const { buildProviderRequestPreviews } = require("./infrastructure/providers/diagnostics/providerRequestPreview");
 const { loadProposerPrompt } = require("./prompts");
+const { createRetryBudget } = require("./application/retryBudget");
 
 function createMemoryAdministration({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
   const repositories = createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader });
@@ -41,12 +44,16 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
   }
 
   function createLibrarianStack({ config, providerAdapter, decorateAdapter = (adapter) => adapter }) {
+    const retryBudget = createRetryBudget();
+    const health = createProviderHealth({ name: "memory" });
     const admission = createProviderAdmission(config.admission);
     const rawAdapter = providerAdapter || createMemoryProviderAdapter({
       invokeStructured: createStructuredTransport(config.provider),
       promptLoader: loadProposerPrompt,
+      requestControl: createProviderRequestControl({ health, retryBudget, config }),
     });
-    const adapter = admissionControlledAdapter(decorateAdapter(rawAdapter), admission);
+    const decorated = decorateAdapter(rawAdapter);
+    const adapter = admissionControlledAdapter(decorated, admission);
     const observer = createObserver({
       sourceRepository: repositories.source,
       stateRepository: repositories.state,
@@ -54,6 +61,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
       config,
     });
     const pipeline = createNormalWritePipeline({
+      retryBudget,
       observer,
       providerAdapter: adapter,
       repositories,
@@ -61,6 +69,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
     });
     let sourceRebuild;
     const librarian = createMemoryLibrarian({
+      retryBudget,
       repositories,
       providerAdapter: adapter,
       config,
@@ -73,12 +82,12 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
       librarian,
       config,
     });
-    return { librarian, sourceRebuild };
+    return { librarian, sourceRebuild, retryBudget };
   }
 
   function createMigration({ config, projectionDrains, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
     if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
-    const { sourceRebuild } = createLibrarianStack({
+    const { sourceRebuild, retryBudget } = createLibrarianStack({
       config,
       providerAdapter,
       decorateAdapter: (adapter) => providerTelemetry?.wrapAdapter
@@ -90,7 +99,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
         })
         : adapter,
     });
-    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow });
+    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow, retryBudget, providerRecovery: config.providerRecovery });
   }
 
   function createLibrarian({ config, providerAdapter } = {}) {
@@ -116,6 +125,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
 }
 
 module.exports = Object.freeze({
+  summarizeOperation: require("./application/operationRunner").summarizeOperation,
   buildMigrationEvidence,
   buildNormalEnvelope,
   buildMaintenanceEnvelope,

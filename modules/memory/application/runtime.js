@@ -14,8 +14,9 @@ const { createDiagnosticProjection } = require("./diagnosticProjection");
 const { createPrivacyHardDelete } = require("./privacyHardDelete");
 const { createMemoryRetention } = require("./retention");
 const { createProviderAdmission, admissionControlledAdapter } = require("./providerAdmission");
-const { createProviderCircuitBreaker } = require("../../../shared/resilience/providerCircuitBreaker");
-const { circuitControlledAdapter } = require("./providerCircuitAdapter");
+const { createProviderRequestControl } = require("./providerRequestRecovery");
+const { createProviderHealth } = require("../../../shared/observability/providerHealth");
+const { createRetryBudget } = require("./retryBudget");
 const { createMemoryRuntimeHealth } = require("./runtimeHealth");
 const { createMemoryLibrarian } = require("./librarian");
 
@@ -207,14 +208,13 @@ function createMemoryRuntime({
 
   const admission = createProviderAdmission(config.admission);
   const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
+  const providerHealth = createProviderHealth({ name: "memory" });
+  const retryBudget = createRetryBudget();
   const rawAdapter =
     providerAdapter ||
-    createMemoryProviderAdapter({ invokeStructured: rawInvokeStructured, promptLoader: loadProposerPrompt });
-  const providerCircuit = createProviderCircuitBreaker({ name: "memory" });
-  const circuitAdapter = providerAdapter
-    ? rawAdapter
-    : circuitControlledAdapter({ adapter: rawAdapter, circuit: providerCircuit });
-  const adapter = admissionControlledAdapter(circuitAdapter, admission);
+    createMemoryProviderAdapter({ invokeStructured: rawInvokeStructured, promptLoader: loadProposerPrompt,
+      requestControl: createProviderRequestControl({ health: providerHealth, retryBudget, config }) });
+  const adapter = admissionControlledAdapter(rawAdapter, admission);
   const observer = createObserver({
     sourceRepository: repositories.source,
     stateRepository: repositories.state,
@@ -222,9 +222,10 @@ function createMemoryRuntime({
     config,
     metrics,
   });
-  const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
+  const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics, retryBudget });
   let sourceRebuild;
   const librarian = createMemoryLibrarian({
+    retryBudget,
     repositories,
     providerAdapter: adapter,
     config,
@@ -551,7 +552,6 @@ function createMemoryRuntime({
           boundaryMessageId: boundaries[0],
           resumed: true,
         };
-        if (rebuilding.some((row) => row.status === "halted")) providerCircuit.retryNow();
         const drained = await sourceRebuild.forceDrainTo(userId, presetId, {
           ...initialized,
           resumeHalted: true,
@@ -631,6 +631,7 @@ function createMemoryRuntime({
   }
 
   async function resumeTarget(userId, presetId, targetKey) {
+    retryBudget.resetScope(userId, presetId, targetKey);
     const result = await enqueueByKey(`${userId}:${presetId}`, () =>
       recovery.resumeTarget(userId, presetId, targetKey, { run: false }),
     );
@@ -643,7 +644,8 @@ function createMemoryRuntime({
   const runtimeHealth = createMemoryRuntimeHealth({
     config,
     repositories,
-    providerCircuit,
+    providerHealth,
+    resetRetryBudget: (userId, presetId) => retryBudget.resetScope(userId, presetId),
     reconcileRebuilds,
     recovery,
   });
@@ -709,7 +711,7 @@ function createMemoryRuntime({
     getHealthSnapshot: runtimeHealth.getHealthSnapshot,
     metrics,
     getProviderAdmissionSnapshot: () => admission.snapshot(),
-    getProviderHealthSnapshot: () => providerCircuit.snapshot(),
+    getProviderHealthSnapshot: () => providerHealth.snapshot(),
     retryProviderNow: runtimeHealth.retryProviderNow,
     getMetricsSnapshot: () => metrics.snapshot(),
     recoverPending: (options) => runInBackground(() => recoverPending(options)),

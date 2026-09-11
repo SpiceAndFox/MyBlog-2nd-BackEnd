@@ -32,6 +32,11 @@ function store({ completeTurnCount = LIBRARIAN_INTERVAL_TURNS } = {}) {
   const ops = [];
   let checkpoint = null;
   const runtime = {
+    async listTasksForTarget(_u, _p, targetKey) { return [...tasks.values()].filter(task => task.target_key === targetKey); },
+    async getTargetStatus() { return null; },
+    async getLatestTaskForDedupeKey(_u, _p, key) {
+      return [...tasks.values()].reverse().find(task => task.dedupe_key === key || task.dedupe_key.startsWith(`${key}:retry:`)) || null;
+    },
     async createTask(row) {
       const duplicate = [...tasks.values()].find((task) => task.dedupe_key === row.dedupe_key);
       if (duplicate) return duplicate;
@@ -114,6 +119,7 @@ function config() {
     ...createMemoryTestConfig(),
     providerRecovery: {
       retryMax: 1,
+      transientRetryMax: 5,
       transportInvalidRetryMax: 1,
       schemaInvalidRetryMax: 1,
       backoffBaseMs: 10,
@@ -326,7 +332,7 @@ test("skipBarrier skips draining but still rejects misaligned Librarian input", 
   assert.equal(calls, 0);
 });
 
-test("schema repair allowance is persisted before the Librarian retry", async () => {
+test("schema repair feedback is persisted before the Librarian retry", async () => {
   const data = store();
   await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
   const repairFeedback = [];
@@ -372,14 +378,14 @@ test("schema repair allowance is persisted before the Librarian retry", async ()
   assert.equal(repairFeedback[0], null);
   assert.equal(repairFeedback[1].attempt, 1);
   assert.deepEqual(rejectedOutputs[1], rejectedOutput);
-  assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(task.stage_payload.schemaInvalidAttempts, undefined);
   assert.deepEqual(task.stage_payload.schemaRejectedOutputs[0].output, rejectedOutput);
   assert.doesNotMatch(JSON.stringify(data.inspect.ops), /"operations":"invalid"/);
   assert.equal(task.attempt, 1);
   assert.equal(data.inspect.ops.some((entry) => entry.outcome === "output_schema_invalid_retry"), true);
 });
 
-test("schema repair allowance survives an interrupted Librarian process", async () => {
+test("schema repair feedback survives an interrupted Librarian call", async () => {
   const data = store();
   await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
   const repairFeedback = [];
@@ -425,7 +431,7 @@ test("schema repair allowance survives an interrupted Librarian process", async 
   );
   const interrupted = data.inspect.tasks.get(envelope.task.taskId);
   assert.equal(interrupted.stage, "schema_invalid_retry");
-  assert.equal(interrupted.stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(interrupted.stage_payload.schemaInvalidAttempts, undefined);
 
   const result = await librarian.processEnvelope(envelope);
 
@@ -436,19 +442,20 @@ test("schema repair allowance survives an interrupted Librarian process", async 
   assert.equal(data.inspect.tasks.get(envelope.task.taskId).attempt, 1);
 });
 
-test("an open Provider circuit durably defers Librarian work", async () => {
+test("a full admission queue defers Librarian work without charging a retry", async () => {
   const data = store();
   await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
   const retryAt = new Date("2026-07-26T00:01:00.000Z");
+  const fixedTime = new Date(retryAt.getTime() - config().providerRecovery.backoffBaseMs);
   const librarian = createMemoryLibrarian({
     repositories: data.repositories,
     config: config(),
+    now: () => fixedTime,
     providerAdapter: {
       async propose() {
         return {
           status: "deferred",
-          reason: "provider_circuit_open",
-          providerHealth: { status: "degraded", nextRetryAt: retryAt },
+          reason: "provider_queue_full",
         };
       },
     },
@@ -465,7 +472,7 @@ test("an open Provider circuit durably defers Librarian work", async () => {
   const task = [...data.inspect.tasks.values()][0];
   assert.equal(result.status, "retry_wait");
   assert.equal(task.status, "retry_wait");
-  assert.equal(task.stage, "provider_circuit_open");
+  assert.equal(task.stage, "provider_queue_full");
   assert.equal(new Date(task.not_before).getTime(), retryAt.getTime());
 });
 
@@ -488,7 +495,7 @@ test("Librarian reducer failures enter bounded repair before semantic persistenc
   assert.equal(data.inspect.groups.length, 0);
   assert.equal(data.inspect.checkpoint, null);
   const task = [...data.inspect.tasks.values()][0];
-  assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(task.stage_payload.schemaInvalidAttempts, undefined);
   assert.equal(task.stage_payload.semanticResult, undefined);
 });
 
@@ -538,4 +545,89 @@ test("Librarian rolls back every commit write boundary and resumes its persisted
     assert.equal(data.inspect.groups.length, 1, method);
     assert.equal(calls, 1, method);
   }
+});
+
+test("Librarian outages reuse one task and preserve deadlines after executor restart", async () => {
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  let time = Date.parse("2026-09-11T00:00:00Z"); let calls = 0;
+  const settings = config(); settings.providerRecovery.backoffBaseMs = 30_000; settings.providerRecovery.backoffMaxMs = 120_000;
+  const make = () => createMemoryLibrarian({ repositories: data.repositories, config: settings, now: () => new Date(time),
+    providerAdapter: { async propose(envelope) {
+      if (++calls <= 4) return { status: "error", reason: "llm_call_failed", detail: { code: "MEMORY_PROVIDER_TIMEOUT" } };
+      return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "noop", operations: [] } };
+    } } });
+  const options = { sourceGeneration: 0, boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID, watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS, triggerType: "rebuild", skipBarrier: true };
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const result = await make().runAt(1, "default", options);
+    assert.equal(result.status, "retry_wait");
+    assert.equal((await make().runAt(1, "default", options)).taskId, result.taskId);
+    assert.equal(calls, attempt); assert.equal(data.inspect.tasks.size, 1);
+    assert.equal(data.inspect.checkpoint, null);
+    time = Date.parse(result.notBefore);
+  }
+  assert.equal((await make().runAt(1, "default", options)).status, "noop");
+  assert.equal(data.inspect.checkpoint.completed_ordinal, LIBRARIAN_INTERVAL_TURNS);
+});
+
+test("Librarian terminal schema failure is not automatically replaced; an explicit successor is reused", async () => {
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  let calls = 0; let outage = false;
+  const librarian = createMemoryLibrarian({ repositories: data.repositories, config: config(), now: () => new Date("2026-09-11T00:00:00Z"),
+    providerAdapter: { async propose() { calls++; return outage
+      ? { status: "error", reason: "llm_call_failed", detail: { status: 503 } }
+      : { status: "error", reason: "output_schema_invalid", detail: { boundary: "input" } }; } } });
+  const options = { sourceGeneration: 0, boundaryMessageId: PERIODIC_BOUNDARY_MESSAGE_ID, watermarkOrdinal: LIBRARIAN_INTERVAL_TURNS, triggerType: "rebuild", skipBarrier: true };
+  const failed = await librarian.runAt(1, "default", options);
+  assert.equal(failed.status, "failed");
+  await librarian.runAt(1, "default", options);
+  assert.equal(calls, 1); assert.equal(data.inspect.tasks.size, 1);
+  outage = true;
+  const successor = await librarian.runAt(1, "default", { ...options, resumeFailed: true });
+  assert.equal(successor.status, "retry_wait"); assert.notEqual(successor.taskId, failed.taskId);
+  assert.equal(data.inspect.tasks.get(successor.taskId).predecessor_task_id, failed.taskId);
+  for (let n = 0; n < 3; n++) assert.equal((await librarian.runAt(1, "default", options)).taskId, successor.taskId);
+  assert.equal(calls, 2); assert.equal(data.inspect.tasks.size, 2);
+});
+
+test("foreground manual Librarian waits on a frozen boundary while background manual run stays single-pass", async () => {
+  const { createOperationRunner } = require("../../../modules/memory/application/operationRunner");
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  let time = Date.parse("2026-09-11T00:00:00Z"); let calls = 0;
+  const librarian = createMemoryLibrarian({ repositories: data.repositories, config: config(), now: () => new Date(time),
+    operationRunner: createOperationRunner({ now: () => time, sleepUntilNext: async ms => { time += ms; } }),
+    drainBarrier: async () => ({ status: "completed" }),
+    providerAdapter: { async propose(envelope) { return ++calls === 1
+      ? { status: "error", reason: "llm_call_failed", detail: { status: 503 } }
+      : { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "noop", operations: [] } }; } } });
+  assert.equal((await librarian.runManual(1, "default")).status, "incomplete"); assert.equal(calls, 1);
+  assert.equal((await librarian.runManualAndWait(1, "default")).status, "completed"); assert.equal(calls, 2);
+  assert.equal(data.inspect.tasks.size, 1);
+  data.repositories.privacy = { hasIncompleteOperation: async () => true };
+  await assert.rejects(librarian.runManualAndWait(1, "default"), { code: "MEMORY_PRIVACY_OPERATION_PENDING" });
+  assert.equal(calls, 2);
+});
+
+test("a new foreground Librarian invocation reopens only budget exhaustion and retains its checkpoint", async () => {
+  const { createOperationRunner } = require("../../../modules/memory/application/operationRunner");
+  const data = store(); await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
+  let time = Date.parse("2026-09-11T00:00:00Z"); let calls = 0; let recovered = false;
+  const settings = config(); settings.providerRecovery.transientRetryMax = 1;
+  const librarian = createMemoryLibrarian({ repositories: data.repositories, config: settings, now: () => new Date(time),
+    operationRunner: createOperationRunner({ now: () => time, sleepUntilNext: async ms => { time += ms; } }),
+    drainBarrier: async () => ({ status: "completed" }), providerAdapter: { async propose(envelope) {
+      calls++;
+      return recovered ? { status: "ok", output: { tickId: envelope.task.tickId, proposer: "librarianProposer", status: "noop", operations: [] } }
+        : { status: "error", reason: "llm_call_failed", detail: { status: 503 } };
+    } } });
+  assert.equal((await librarian.runManualAndWait(1, "default")).status, "incomplete");
+  assert.equal(calls, 2);
+  const task = [...data.inspect.tasks.values()][0];
+  assert.equal(task.stage, "retry_budget_exhausted");
+  assert.equal(data.inspect.checkpoint, null);
+  recovered = true;
+  assert.equal((await librarian.runManualAndWait(1, "default")).status, "completed");
+  assert.equal(calls, 3);
+  assert.equal(data.inspect.tasks.size, 1);
+  assert.equal(task.attempt, 2);
+  assert.ok(data.inspect.checkpoint);
 });

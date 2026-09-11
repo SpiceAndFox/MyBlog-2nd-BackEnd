@@ -62,22 +62,15 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
   }
 
   function providerWarning(component, provider) {
-    if (!["degraded", "needs_attention"].includes(provider?.status)) return null;
-    const manual = provider.status === "needs_attention";
+    if (provider?.status !== "degraded") return null;
     return {
       component,
       status: provider.status,
       reason: provider.reason || "provider_unavailable",
       message: component === "embedding"
-        ? manual
-          ? "历史对话检索已暂停，需要手动重试"
-          : "历史对话检索暂不可用，本次聊天将跳过旧对话召回"
-        : manual
-          ? "长期记忆更新已暂停，需要手动重试"
-          : "长期记忆更新暂不可用，将继续使用上次成功的记忆",
+        ? "最近一次历史对话检索请求失败，后续请求仍会正常尝试"
+        : "最近一次记忆服务请求失败，已保存的记忆仍可使用",
       since: provider.lastFailureAt || null,
-      nextRetryAt: provider.nextRetryAt || null,
-      retryMode: provider.retryMode || null,
     };
   }
 
@@ -154,12 +147,10 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
             : { attempted: false, reason: "retry_unavailable" };
           return res.status(202).json({ component, result });
         }
-        const provider = typeof rag?.retryEmbeddingProvider === "function"
-          ? rag.retryEmbeddingProvider()
-          : null;
         const projection = typeof memory.drainProjections === "function"
           ? await memory.drainProjections(req.user?.id, presetId)
           : null;
+        const provider = (await rag?.getHealthSnapshot?.())?.embeddingProvider ?? null;
         return res.status(202).json({ component, result: { provider, projection } });
       } catch (error) {
         return sendFailure(req, res, "chat_health_retry_failed", error);

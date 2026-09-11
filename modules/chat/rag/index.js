@@ -5,7 +5,7 @@ const { createChatRagRetriever } = require("./retriever");
 const { createChatRagIndexer } = require("./indexer");
 const { createChatRagProjectionAdapter } = require("./projectionAdapters");
 const { createEmbeddingClient } = require("./infrastructure/embeddings");
-const { createCircuitProtectedEmbeddingClient } = require("./infrastructure/circuitProtectedEmbeddings");
+const { createProviderHealth } = require("../../../shared/observability/providerHealth");
 const { createRerankerClient } = require("./infrastructure/reranker");
 
 function createChatRagModule({ config, database, logger, llm, infrastructure = {} } = {}) {
@@ -14,20 +14,27 @@ function createChatRagModule({ config, database, logger, llm, infrastructure = {
   if (!logger || typeof logger !== "object") throw new Error("Chat RAG logger is required");
   if (typeof llm?.complete !== "function") throw new Error("Chat RAG completion port is required");
 
-  const rawEmbeddingClient = infrastructure.embeddingClient || createEmbeddingClient({
+  const embeddingClient = infrastructure.embeddingClient || createEmbeddingClient({
     config: config.rag,
     fetchImpl: infrastructure.fetchImpl,
     openRouterAttribution: infrastructure.openRouterAttribution,
   });
-  const embeddingClient = createCircuitProtectedEmbeddingClient({
-    embeddingClient: rawEmbeddingClient,
-    circuit: infrastructure.embeddingCircuit,
-  });
+  const embeddingHealth = createProviderHealth({ name: "embedding" });
   const rerankerClient = infrastructure.rerankerClient || createRerankerClient({
     config: config.rag,
     fetchImpl: infrastructure.fetchImpl,
   });
-  const { createEmbeddings } = embeddingClient;
+  async function createEmbeddings(options) {
+    try {
+      const result = await embeddingClient.createEmbeddings(options);
+      embeddingHealth.recordSuccess();
+      return result;
+    } catch (error) {
+      if (!options?.signal?.aborted) embeddingHealth.recordFailure(error);
+      error.providerSuccessCount = embeddingHealth.snapshot().successCount;
+      throw error;
+    }
+  }
   const { rerankDocuments } = rerankerClient;
 
   const chunker = createChatRagChunker({ config: config.rag });
@@ -80,9 +87,8 @@ function createChatRagModule({ config, database, logger, llm, infrastructure = {
     projectionAdapter,
     privacyStore,
     getHealthSnapshot: () => Object.freeze({
-      embeddingProvider: embeddingClient.getHealthSnapshot(),
+      embeddingProvider: embeddingHealth.snapshot(),
     }),
-    retryEmbeddingProvider: () => embeddingClient.retryNow(),
     admin: Object.freeze({
       indexChatTurn: indexer.indexChatTurn,
       deleteChunksFromMessageId: indexer.deleteChunksFromMessageId,

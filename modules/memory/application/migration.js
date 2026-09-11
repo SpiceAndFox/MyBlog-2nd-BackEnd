@@ -1,6 +1,10 @@
 const { isDeepStrictEqual } = require("node:util");
 const crypto = require("node:crypto");
 const { assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../contracts");
+const { createOperationRunner, summarizeOperation } = require("./operationRunner");
+const { providerFailureDecision } = require("./providerRecoveryPolicy");
+const { createRetryBudget } = require("./retryBudget");
+const { beginManualRetrySession } = require("./manualRetrySession");
 
 function rowValue(row, snake, camel) {
   return row?.[snake] ?? row?.[camel];
@@ -65,6 +69,9 @@ function createMemoryMigration({
   providerTelemetry = null,
   now = () => new Date(),
   monotonicNow = () => Date.now(),
+  operationRunner = createOperationRunner(),
+  providerRecovery,
+  retryBudget = createRetryBudget(),
 } = {}) {
   if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
     || !repositories?.privacy?.purgeDerivedHistory || !repositories?.privacy?.purgeAuthorityState
@@ -187,13 +194,23 @@ function createMemoryMigration({
         outcome: drained.result.outcome ?? null,
         reason: drained.result.reason ?? null,
         taskId: drained.result.taskId ?? null,
+        ...summarizeOperation(drained.result),
       } : null,
       completedTaskCount: Array.isArray(drained.results) ? drained.results.length : 0,
+      ...(drained.notBefore || drained.result?.notBefore ? { notBefore: drained.notBefore ?? drained.result.notBefore } : {}),
+      ...(drained.status === "interrupted" ? { status: drained.status, resumable: true } : {}),
     };
     return error;
   }
 
-  async function rebuildScope(scope, history, { forceNewGeneration = false } = {}) {
+  async function rebuildScope(scope, history, { forceNewGeneration = false, signal, onWait } = {}) {
+    if (signal?.aborted) throw forceDrainError({ status: "interrupted", reason: "cancelled" });
+    const checkPrivacy = async () => {
+      if (await repositories.privacy.hasIncompleteOperation?.(scope.userId, scope.presetId)) {
+        throw Object.assign(new Error("Memory rebuild is blocked by an incomplete privacy operation"), { code: "MEMORY_PRIVACY_OPERATION_PENDING" });
+      }
+    };
+    await checkPrivacy();
     const started = monotonicNow();
     const providerMark = providerTelemetry?.mark?.() ?? 0;
     const rawState = await repositories.state.getRawState(scope.userId, scope.presetId);
@@ -215,11 +232,65 @@ function createMemoryMigration({
         reason: forceNewGeneration ? "manual_cli_rebuild" : "memory_v2_migration",
       });
     if (initialized.boundaryMessageId !== history.boundaryMessageId) throw new Error("Raw source boundary changed after migration inventory");
-    const drained = await sourceRebuild.forceDrainTo(scope.userId, scope.presetId, initialized);
-    if (drained.status !== "completed") throw forceDrainError(drained);
+    await beginManualRetrySession(repositories, retryBudget, scope.userId, scope.presetId, initialized.sourceGeneration);
+    const assertCurrent = async () => {
+      await checkPrivacy();
+      const current = await repositories.state.getState(scope.userId, scope.presetId);
+      const boundary = await repositories.source.getBoundary(scope.userId, scope.presetId);
+      if (current?.meta.sourceGeneration !== initialized.sourceGeneration || boundary !== initialized.boundaryMessageId) {
+        const error = new Error("Rebuild source generation or boundary changed while waiting");
+        error.code = "MEMORY_REBUILD_STALE";
+        error.migrationDetail = { ...initialized, actualGeneration: current?.meta.sourceGeneration, actualBoundary: boundary };
+        throw error;
+      }
+      return current;
+    };
+    const readProgress = async () => {
+      const current = await assertCurrent();
+      const checkpoint = await repositories.runtime.getLibrarianCheckpoint?.(scope.userId, scope.presetId, initialized.sourceGeneration);
+      return { revision: current.meta.revision, cursors: current.meta.targetCursors,
+        librarianBoundary: rowValue(checkpoint, "boundary_message_id", "boundaryMessageId"),
+        librarianOrdinal: rowValue(checkpoint, "completed_ordinal", "completedOrdinal") };
+    };
+    const drained = await operationRunner.run({
+      step: () => sourceRebuild.forceDrainTo(scope.userId, scope.presetId, { ...initialized, signal }),
+      readProgress, signal, onWait, scope, phase: "memory",
+    });
+    if (drained.status !== "completed") throw forceDrainError({ ...drained, sourceGeneration: initialized.sourceGeneration });
     for (const projectionKey of ["rag"]) {
-      const result = await projectionDrains[projectionKey].drain(scope.userId, scope.presetId);
-      if (result.status !== "healthy") throw new Error(`Projection ${projectionKey} drain did not complete: ${result.status}`);
+      const counters = { transientFailures: 0, boundedFailures: 0 };
+      let providerSuccessCount = 0;
+      const result = await operationRunner.run({ signal, onWait, scope, phase: projectionKey,
+        readProgress: async () => {
+          await assertCurrent();
+          const checkpoints = await repositories.sidecars.listProjectionCheckpoints(scope.userId, scope.presetId);
+          const current = checkpoints.map((row) => [rowValue(row, "projection_key", "projectionKey"), rowValue(row, "processed_generation", "processedGeneration"), rowValue(row, "processed_boundary_message_id", "processedBoundaryMessageId")]);
+          return current;
+        },
+        step: async () => {
+          try { return await projectionDrains[projectionKey].drain(scope.userId, scope.presetId, { ...initialized, signal }); }
+          catch (error) {
+            if (!providerRecovery) throw new Error("Projection retries require explicit providerRecovery configuration", { cause: error });
+            if (error.providerSuccessCount > providerSuccessCount) {
+              providerSuccessCount = error.providerSuccessCount;
+              counters.transientFailures = 0; counters.boundedFailures = 0;
+            }
+            const failure = { reason: "llm_call_failed", detail: { code: error.code ?? error.cause?.code,
+              status: error.status, retryable: error.retryable, retryAfterAt: error.retryAfterAt } };
+            const decision = providerFailureDecision({ counters, result: failure, config: providerRecovery,
+              retryMax: providerRecovery.retryMax, now: now() });
+            if (decision.halted) return { status: "failed", reason: decision.budgetExhausted ? "retry_budget_exhausted" : "projection_provider_failed",
+              projectionKey, recoveryKind: decision.kind, detail: failure.detail };
+            return { status: "retry_wait", reason: "projection_provider_unavailable", projectionKey,
+              notBefore: decision.notBefore };
+          }
+        },
+      });
+      if (result.status !== "healthy") {
+        const error = forceDrainError({ status: result.status, result, sourceGeneration: initialized.sourceGeneration, reason: `projection_${projectionKey}_${result.status}` });
+        error.message = `Projection ${projectionKey} drain did not complete: ${result.status}`;
+        throw error;
+      }
     }
     const verified = await verifyScope(scope.userId, scope.presetId, history.boundaryMessageId);
     return {
@@ -232,7 +303,7 @@ function createMemoryMigration({
     };
   }
 
-  async function run({ mode = "rehearsal", serviceStopped = false, scopes } = {}) {
+  async function run({ mode = "rehearsal", serviceStopped = false, scopes, signal, onWait } = {}) {
     if (!["rehearsal", "cutover"].includes(mode)) throw new Error("Migration mode must be rehearsal or cutover");
     if (mode === "cutover" && !serviceStopped) throw new Error("Cutover requires serviceStopped=true");
     const startedAt = now().toISOString();
@@ -248,7 +319,7 @@ function createMemoryMigration({
       histories = scopes ? await inventory(scopes) : globalBefore;
       for (const history of histories) {
         const scope = { userId: history.userId, presetId: history.presetId };
-        results.push(await rebuildScope(scope, history));
+        results.push(await rebuildScope(scope, history, { signal, onWait }));
       }
       afterSourceInventory = sourceInventorySnapshot(await inventory());
       if (!isDeepStrictEqual(beforeSourceInventory.scopes, afterSourceInventory.scopes)) {

@@ -232,6 +232,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     targetKeys = TARGET_KEYS,
     rebuildBoundaryMessageId = boundaryMessageId,
     finalizeTargets = true,
+    signal,
   }) {
     if (typeof normalWritePipeline.prepareEnvelope !== "function"
       || typeof normalWritePipeline.commitPreparedWave !== "function") {
@@ -239,6 +240,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     }
     const results = [];
     while (true) {
+      if (signal?.aborted) return { status: "interrupted", reason: "cancelled", sourceGeneration, results };
       const state = await repositories.state.getState(userId, presetId);
       if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", sourceGeneration, results };
       const candidates = [];
@@ -312,14 +314,17 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           ? await repositories.runtime.listTasksForTarget(userId, presetId, targetKey)
           : [];
         const latest = tasks.find((task) => (
-          Number(rowValue(task, "source_generation", "sourceGeneration")) === sourceGeneration
+          rowValue(task, "task_type", "taskType") !== "maintenance"
+          && Number(rowValue(task, "source_generation", "sourceGeneration")) === sourceGeneration
           && Number(rowValue(task, "cursor_before", "cursorBefore")) === cursor
           && Number(rowValue(task, "target_message_id", "targetMessageId")) === targetMessageId
         ));
         const latestStatus = rowValue(latest, "status", "status");
         const notBefore = rowValue(latest, "not_before", "notBefore");
         if (latestStatus === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
-          const result = { status: "retry_wait", taskId: rowValue(latest, "task_id", "taskId"), notBefore };
+          const result = { status: "retry_wait", taskId: rowValue(latest, "task_id", "taskId"), notBefore,
+            reason: rowValue(latest, "last_error_reason", "lastErrorReason"), stage: latest.stage,
+            mode: rowValue(latest, "task_payload", "taskPayload")?.task?.mode };
           results.push(result);
           return { status: "incomplete", sourceGeneration, sourceWatermark, targetKey, result, results };
         }
@@ -351,7 +356,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           || typeof normalWritePipeline.cancelPreparedWave !== "function") {
           throw new Error("Source rebuild capacity recovery requires wave-aware pipeline operations");
         }
-        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityBlockedEnvelopes[0]);
+        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityBlockedEnvelopes[0], { signal });
         results.push(capacityResult);
         if (!["compaction_applied", "capacity_resolved"].includes(capacityResult.status)) {
           return {
@@ -369,11 +374,11 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
 
       let prepared;
       try {
-        prepared = await Promise.all(envelopes.map((envelope) => normalWritePipeline.prepareEnvelope(envelope)));
+        prepared = await Promise.all(envelopes.map((envelope) => normalWritePipeline.prepareEnvelope(envelope, { signal })));
         if (prepared.some((result) => result.status === "context_expansion_required")) {
           prepared = await Promise.all(envelopes.map((envelope, index) => (
             prepared[index].status === "context_expansion_required"
-              ? normalWritePipeline.prepareEnvelope(envelope)
+              ? normalWritePipeline.prepareEnvelope(envelope, { signal })
               : prepared[index]
           )));
         }
@@ -420,7 +425,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
             results,
           };
         }
-        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityEntry.envelope);
+        const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityEntry.envelope, { signal });
         results.push(deferred, capacityResult);
         if (!["compaction_applied", "capacity_resolved"].includes(capacityResult.status)) {
           return {
@@ -458,6 +463,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
 
   async function forceDrainTo(userId, presetId, options) {
     const { sourceGeneration, boundaryMessageId } = options;
+    if (options.signal?.aborted) return { status: "interrupted", reason: "cancelled", sourceGeneration };
     const checkpoint = await repositories.runtime.getLibrarianCheckpoint(userId, presetId, sourceGeneration);
     let schedule = rowValue(checkpoint, "rebuild_schedule", "rebuildSchedule");
     if (!schedule) {
@@ -503,6 +509,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       });
       results.push(...(drained.results || []));
       if (drained.status !== "completed") return { ...drained, results };
+      if (options.signal?.aborted) return { status: "interrupted", reason: "cancelled", sourceGeneration, results };
       const maintained = await librarian.runAt(userId, presetId, {
         sourceGeneration,
         boundaryMessageId: periodicBoundary,
@@ -510,6 +517,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         watermarkKind: schedule.watermarkKind,
         triggerType: "rebuild",
         skipBarrier: true,
+        signal: options.signal,
       });
       results.push(maintained);
       if (!["committed", "noop", "completed"].includes(maintained.status)) {
@@ -535,7 +543,10 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     });
     results.push(...(drained.results || []));
     if (drained.status !== "completed") return { ...drained, results };
+    if (options.signal?.aborted) return { status: "interrupted", reason: "cancelled", sourceGeneration, results };
     const final = await librarian.runFinal(userId, presetId, boundaryMessageId, {
+      sourceGeneration,
+      signal: options.signal,
       triggerType: "rebuild_final",
       skipBarrier: true,
       schedule,

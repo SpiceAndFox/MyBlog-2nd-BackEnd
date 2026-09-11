@@ -95,6 +95,7 @@ test("real embedding response dimension corruption degrades the composed RAG que
   assert.deepEqual(result.messages, []);
   assert.equal(result.stats.reason, "retrieval_degraded");
   assert.equal(result.stats.degraded, true);
+  await assert.rejects(createEmbeddings({ texts: ["invalid vector"] }), { retryable: false });
 });
 
 test("real embedding timeout degrades without waiting for the upstream response", async () => {

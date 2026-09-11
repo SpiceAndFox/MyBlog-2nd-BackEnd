@@ -3,21 +3,7 @@ const assert = require("node:assert/strict");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { createMemoryRuntimeHealth } = require("../../../modules/memory/application/runtimeHealth");
 
-function providerCircuit(status = "unknown") {
-  let current = status;
-  return {
-    snapshot: () => ({
-      name: "memory",
-      status: current,
-      reason: current === "needs_attention" ? "http_401" : null,
-      nextRetryAt: null,
-    }),
-    retryNow() {
-      current = "degraded";
-      return this.snapshot();
-    },
-  };
-}
+const { createProviderHealth } = require("../../../shared/observability/providerHealth");
 
 test("runtime health exposes resumable progress without leaking internal target errors", async () => {
   const state = createInitialMemoryState();
@@ -49,7 +35,7 @@ test("runtime health exposes resumable progress without leaking internal target 
         },
       },
     },
-    providerCircuit: providerCircuit(),
+    providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds() { return {}; },
     recovery: { async resumeTarget() {} },
   });
@@ -80,7 +66,7 @@ test("runtime health fails closed when authority memory cannot be validated", as
       runtime: {},
       sidecars: {},
     },
-    providerCircuit: providerCircuit(),
+    providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds() { return {}; },
     recovery: { async resumeTarget() {} },
   });
@@ -107,7 +93,7 @@ test("manual runtime retry is scoped and directly runs halted target recovery", 
       },
       sidecars: {},
     },
-    providerCircuit: providerCircuit("needs_attention"),
+    providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds(options) {
       calls.push(["rebuilds", options]);
       return { "7:companion": { status: "skipped", reason: "not_rebuilding" } };

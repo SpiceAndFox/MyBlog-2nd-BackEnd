@@ -42,7 +42,7 @@ for (const failure of ["business", "wire_schema", "transport"]) {
     assert.equal(row.stage_payload.schemaRepairFeedback, undefined, "a durable unable result ends active repair");
     const history = structuredClone(row.stage_payload.schemaRejectedOutputs);
     const counter = failure === "transport" ? "transportInvalidAttempts" : "schemaInvalidAttempts";
-    assert.equal(row.stage_payload[counter], 1);
+    assert.equal(row.stage_payload[counter], undefined);
     assert.equal(data.inspect.ops[0].detail.repairFeedback.validationLayer, failure);
     assert.equal(data.inspect.state.meta.revision, 0);
 
@@ -61,16 +61,16 @@ for (const failure of ["business", "wire_schema", "transport"]) {
     row = JSON.parse(JSON.stringify(data.inspect.tasks.get(row.task_id)));
     data.inspect.tasks.set(row.task_id, row);
     assert.equal(row.stage_payload.schemaRepairFeedback, undefined);
-    assert.equal(row.stage_payload[counter], 1);
+    assert.equal(row.stage_payload[counter], undefined);
     assert.deepEqual(row.stage_payload.schemaRejectedOutputs, history);
     assert.equal((await resumed.processEnvelope(row.task_payload)).status, "committed");
     assert.equal(resumedCalls, 1);
     assert.equal(row.attempt, 2, "ending repair must not reset or consume retry allowance");
-    assert.equal(row.stage_payload[counter], 1);
+    assert.equal(row.stage_payload[counter], undefined);
   });
 }
 
-test("expanded-input repair survives another restart without replaying the base candidate or resetting its budget", async () => {
+test("expanded-input repair retains history across restart and receives a new budget", async () => {
   const data = store();
   const settings = { ...config, providerRecovery: { ...config.providerRecovery, schemaInvalidRetryMax: 2 } };
   let calls = 0;
@@ -92,20 +92,20 @@ test("expanded-input repair survives another restart without replaying the base 
   row = JSON.parse(JSON.stringify(row));
   data.inspect.tasks.set(row.task_id, row);
   assert.equal(row.stage_payload.schemaRepairFeedback.inputVariant, "expanded");
-  assert.equal(row.stage_payload.schemaInvalidAttempts, 2);
+  assert.equal(row.stage_payload.schemaInvalidAttempts, undefined);
   assert.deepEqual(row.stage_payload.schemaRejectedOutputs.map(entry => entry.output), [invalidWire, expandedInvalid]);
   let resumedCalls = 0;
-  let resumedRequest;
+  const resumedRequests = [];
   const third = pipeline(data, adapter(async request => {
     resumedCalls++;
-    resumedRequest = request;
-    return { output: invalidWire }; // All schema allowance was already consumed.
+    resumedRequests.push(request);
+    return { output: invalidWire }; // The new execution has its own bounded allowance.
   }), settings);
   const result = await third.processEnvelope(row.task_payload);
   assert.equal(result.halted, true);
   assert.equal(result.reason, "output_schema_invalid");
-  assert.deepEqual(resumedRequest.repairContext.assistantOutput, expandedInvalid);
-  assert.equal(resumedCalls, 1);
-  assert.equal(row.stage_payload.schemaInvalidAttempts, 2);
+  assert.deepEqual(resumedRequests[0].repairContext.assistantOutput, expandedInvalid);
+  assert.equal(resumedCalls, 3);
+  assert.equal(row.stage_payload.schemaInvalidAttempts, undefined);
   assert.equal(data.inspect.state.meta.revision, 0);
 });

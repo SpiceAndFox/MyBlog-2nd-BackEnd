@@ -20,7 +20,7 @@ test("recovery fixture applies bounded retry backoff and halts only the failing 
   assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), recoveryScenario.providerErrors.map((entry) => entry.reason));
 });
 
-test("provider retryMax halts even before the broader consecutive-error circuit breaker", async () => {
+test("provider retryMax halts even before the broader consecutive-error limit", async () => {
   const data = store();
   const strictConfig = { ...config, providerRecovery: { ...config.providerRecovery, retryMax: 0, haltAfterConsecutiveErrors: 3 } };
   const pipeline = createNormalWritePipeline({ observer: {}, providerAdapter: {}, repositories: data.repositories, config: strictConfig, now: () => fixedNow });
@@ -149,8 +149,8 @@ test("transport and semantic schema repairs have separate bounded allowances", a
   const task = [...data.inspect.tasks.values()][0];
   assert.equal(result.status, "committed");
   assert.equal(calls, 3);
-  assert.equal(task.stage_payload.transportInvalidAttempts, 1);
-  assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(task.stage_payload.transportInvalidAttempts, undefined);
+  assert.equal(task.stage_payload.schemaInvalidAttempts, undefined);
   assert.deepEqual(task.stage_payload.schemaRejectedOutputs.map((entry) => entry.attempt), [0, 1]);
   assert.equal(feedbacks[1].errors[0].code, "TOOL_ARGUMENTS_INVALID_JSON");
   assert.equal(feedbacks[2].errors[0].code, "WRITABLE_REF_INVALID");
@@ -211,7 +211,7 @@ test("input schema invalid never retries", async () => {
   assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), ["output_schema_invalid"]);
 });
 
-test("schema retry allowance remains consumed after an interrupted process", async () => {
+test("schema retry allowance survives re-entry within the same executor", async () => {
   const data = store();
   let calls = 0;
   let interrupted = true;
@@ -229,7 +229,7 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => fixedNow, providerAdapter });
   const envelope = await pipeline.createTask(1, "default", intent);
   await assert.rejects(() => pipeline.processEnvelope(envelope), /simulated process interruption/);
-  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage_payload.schemaInvalidAttempts, undefined);
   interrupted = false;
   const result = await pipeline.processEnvelope(envelope);
   assert.equal(result.halted, true);
@@ -271,7 +271,7 @@ test("unable_to_decide expands once, then commits one cursor-only revision idemp
 });
 
 
-test("an oversized append result consumes one durable repair and cannot partially commit on restart", async () => {
+test("an oversized append result retains repair history and cannot partially commit on restart", async () => {
   const data = store();
   const [original] = await data.repositories.source.getByIds();
   const next = { ...original, id: 2 };
@@ -296,7 +296,7 @@ test("an oversized append result consumes one durable repair and cannot partiall
   assert.equal(calls, 2);
   assert.deepEqual(data.inspect.state, state);
   assert.equal(data.inspect.events.length, 0);
-  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage_payload.schemaInvalidAttempts, 1);
+  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage_payload.schemaInvalidAttempts, undefined);
   await make().processEnvelope(envelope);
   assert.equal(calls, 2);
   assert.deepEqual(data.inspect.state, state);

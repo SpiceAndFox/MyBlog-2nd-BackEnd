@@ -38,7 +38,7 @@ function isUnableToCompact(output, envelope) {
   return output?.sectionResults?.[envelope.task.targetSections[0]]?.status === "unable_to_compact";
 }
 
-function createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry } = {}) {
+function createCapacityMaintenance({ repositories, providerAdapter, config, metrics, now = () => new Date(), idFactory = () => crypto.randomUUID(), recordAdapterError, proposeWithSchemaRetry, recordProviderAdmissionDeferral } = {}) {
   if (!repositories?.withTransaction || !repositories.runtime || !providerAdapter) throw new Error("Capacity maintenance dependencies are required");
 
   async function appendOps(envelope, outcome, attempt, detail, client) {
@@ -450,7 +450,8 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     });
   }
 
-  async function processMaintenanceEnvelope(envelope, { advanceParentAfterCompaction = true } = {}) {
+  async function processMaintenanceEnvelope(envelope, { advanceParentAfterCompaction = true, signal } = {}) {
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled", taskId: envelope.task.taskId };
     const current = await repositories.runtime.getTask(envelope.task.taskId);
     const currentStage = rowValue(current, "stage", "stage");
     const durablePayload = rowValue(current, "stage_payload", "stagePayload") || {};
@@ -481,7 +482,8 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     }
     const notBefore = rowValue(current, "not_before", "notBefore");
     if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
-      return { status: "retry_wait", taskId: envelope.task.taskId, notBefore };
+      return { status: "retry_wait", taskId: envelope.task.taskId, notBefore,
+        reason: rowValue(current, "last_error_reason", "lastErrorReason"), stage: currentStage, mode: envelope.task.mode };
     }
     if (currentStage === "unable_result_persisted") return failUnable(envelope);
     let output = ["semantic_result_persisted", "compiling", "compiled_proposal_persisted", "compacting"].includes(currentStage)
@@ -499,9 +501,10 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       output = buildDeterministicExactMergeOutput(state, envelope.task, envelope.artifact);
       if (!output) {
         const adapterResult = proposeWithSchemaRetry
-          ? await proposeWithSchemaRetry(envelope)
-          : await providerAdapter.propose(envelope);
+          ? await proposeWithSchemaRetry(envelope, { signal })
+          : await providerAdapter.propose(envelope, { signal });
         if (adapterResult.status === "deferred") {
+          if (adapterResult.reason === "provider_queue_full") return recordProviderAdmissionDeferral(envelope, adapterResult);
           return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
         }
         if (adapterResult.status === "error") {
@@ -575,15 +578,19 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     }
     if (advanced.status === "stale") return markStale(envelope, advanced.reason);
     if (advanced.status === "replay_failed") return halt(envelope, advanced.reason, { parent: true });
-    if (advanced.maintenanceEnvelope) return processMaintenanceEnvelope(advanced.maintenanceEnvelope);
+    if (advanced.maintenanceEnvelope) return processMaintenanceEnvelope(advanced.maintenanceEnvelope, { signal });
     return advanced;
   }
 
-  async function resumeParent(parentEnvelope, { resumeEpoch = 0 } = {}) {
+  async function resumeParent(parentEnvelope, { resumeEpoch = 0, signal } = {}) {
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled", taskId: parentEnvelope.task.taskId };
     const parent = await repositories.runtime.getTask(parentEnvelope.task.taskId);
     const payload = rowValue(parent, "stage_payload", "stagePayload");
     const child = payload?.maintenanceTaskId ? await repositories.runtime.getTask(payload.maintenanceTaskId) : null;
-    if (child && !TERMINAL_STATUSES.has(rowValue(child, "status", "status"))) return processMaintenanceEnvelope(rowValue(child, "task_payload", "taskPayload"));
+    if (resumeEpoch === 0 && rowValue(child, "status", "status") === "failed") {
+      return { status: "halted", halted: true, reason: rowValue(child, "last_error_reason", "lastErrorReason"), taskId: rowValue(child, "task_id", "taskId") };
+    }
+    if (child && !TERMINAL_STATUSES.has(rowValue(child, "status", "status"))) return processMaintenanceEnvelope(rowValue(child, "task_payload", "taskPayload"), { signal });
     return advanceParent(parentEnvelope, { resumeEpoch });
   }
 

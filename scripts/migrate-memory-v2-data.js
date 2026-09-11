@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const path = require("node:path");
 const fs = require("node:fs");
+const { logWait, createCommandControl } = require("./memory-command-control");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -8,6 +9,9 @@ function parseArgs(argv) {
     const value = String(argv[index] || "");
     if (!value.startsWith("--")) continue;
     const key = value.slice(2);
+    if (!["mode", "user", "userId", "preset", "presetId", "apply", "service-stopped", "serviceStopped", "report", "help", "h"].includes(key)) {
+      throw new Error(`Unknown argument: ${value}`);
+    }
     const next = argv[index + 1];
     if (next !== undefined && !String(next).startsWith("--")) {
       parsed[key] = String(next);
@@ -173,6 +177,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     mode: options.mode,
     serviceStopped: options.serviceStopped,
     scopes: options.scopes,
+    signal: dependencies.signal, onWait: dependencies.onWait || logWait,
   }), evidence);
   emitReport(report, options.reportPath);
   if (report.status !== "completed") process.exitCode = 2;
@@ -186,7 +191,9 @@ if (require.main === module) {
   const { chatLlm, database: db, config, logger } = createCommandContext();
   const memoryAdministration = createMemoryAdministrationComposition({ database: db });
   const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
+  const control = createCommandControl();
   main(process.argv.slice(2), {
+    ...control,
     database: db,
     memoryAdministration,
     chatRagProjectionAdapter: chatRag.projectionAdapter,
@@ -194,9 +201,9 @@ if (require.main === module) {
   })
     .catch((error) => {
       process.stderr.write(`${error?.stack || error}\n`);
-      process.exitCode = 1;
+      process.exitCode = control.signal.aborted ? 130 : 1;
     })
-    .finally(() => db.end());
+    .finally(async () => { control.dispose(); await db.end(); if (control.signal.aborted) process.exitCode = 130; });
 }
 
 module.exports = { parseArgs, resolveOptions, withCallEstimates, enforceEvidenceGate, emitReport, assertReportPathAvailable, attachEvidence, createMigration, main };

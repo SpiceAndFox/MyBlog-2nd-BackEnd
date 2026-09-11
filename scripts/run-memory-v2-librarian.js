@@ -1,9 +1,15 @@
 #!/usr/bin/env node
+const { logWait, createCommandControl } = require("./memory-command-control");
 
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const argument = String(argv[index] || "");
+    if (argument === "--resume-failed") {
+      if (values.resumeFailed) throw new Error(`Duplicate argument: ${argument}`);
+      values.resumeFailed = true;
+      continue;
+    }
     if (argument === "--help" || argument === "-h") {
       values.help = true;
       continue;
@@ -27,7 +33,7 @@ function resolveOptions(values) {
   if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) {
     throw new Error("--userId must be a positive integer and --presetId cannot be empty");
   }
-  return { help: false, userId, presetId };
+  return { help: false, userId, presetId, ...(values.resumeFailed ? { resumeFailed: true } : {}) };
 }
 
 function printUsage(stream = process.stdout) {
@@ -37,18 +43,19 @@ function printUsage(stream = process.stdout) {
     "",
     "Captures the latest source boundary, drains Memory targets to the barrier, and runs one global Librarian maintenance task.",
     "This command writes Memory authority data and invokes the configured Memory provider.",
+    "--resume-failed explicitly retries a failed Librarian task once; fix its underlying failure first.",
     "",
   ].join("\n"));
 }
 
-async function runLibrarian({ db, librarian, userId, presetId }) {
+async function runLibrarian({ db, librarian, userId, presetId, ...executionOptions }) {
   const { rows } = await db.query(`
     SELECT 1
     FROM chat_prompt_presets
     WHERE user_id=$1 AND preset_id=$2 AND deleted_at IS NULL
   `, [userId, presetId]);
   if (!rows[0]) throw new Error(`Active preset not found: userId=${userId}, presetId=${presetId}`);
-  const result = await librarian.runManual(userId, presetId);
+  const result = await librarian.runManualAndWait(userId, presetId, executionOptions);
   if (result?.status !== "completed") {
     const error = new Error(`Memory Librarian did not complete: ${result?.reason || result?.status || "unknown"}`);
     error.librarianResult = result;
@@ -70,18 +77,22 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   const librarian = dependencies.librarian || require("../app/composition/memory")
     .createMemoryAdministrationComposition({ database: db })
     .createLibrarian({ config: context.config.memoryV2Config });
-  const result = await runLibrarian({ db, librarian, ...options });
+  const { help: _help, ...scopeOptions } = options;
+  const result = await runLibrarian({ db, librarian, ...scopeOptions, signal: dependencies.signal, onWait: dependencies.onWait || logWait });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }
 
 if (require.main === module) {
   const context = require("../app/composition/commandContext").createCommandContext();
-  main(process.argv.slice(2), { context }).catch((error) => {
+  const control = createCommandControl();
+  main(process.argv.slice(2), { context, ...control }).catch((error) => {
     process.stderr.write(`${error?.stack || error}\n`);
-    process.exitCode = 1;
+    if (error.librarianResult) process.stderr.write(`${JSON.stringify(require("../modules/memory/admin").summarizeOperation(error.librarianResult), null, 2)}\n`);
+    process.exitCode = control.signal.aborted ? 130 : 1;
   }).finally(async () => {
     await context.database.end();
+    control.dispose();
   });
 }
 

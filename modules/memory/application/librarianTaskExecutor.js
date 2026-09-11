@@ -9,6 +9,8 @@ const {
 const { compileLibrarianProposal, reduceLibrarianProposal } = require("../domain/librarian");
 const { buildLibrarianEnvelope, librarianDedupeKey } = require("./librarianRenderer");
 const { mapEventToRow } = require("./eventMapper");
+const { providerFailureDecision } = require("./providerRecoveryPolicy");
+const { createRetryBudget } = require("./retryBudget");
 const {
   appendRejectedOutputAttempt,
   createRepairFeedback,
@@ -18,12 +20,6 @@ const {
 } = require("./outputRepair");
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
-const RETRYABLE_PROVIDER_ERRORS = new Set([
-  "llm_call_failed",
-  "safety_policy_blocked",
-  "max_output_truncated",
-  "provider_queue_full",
-]);
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 
 function requireNonNegativeInteger(value, label) {
@@ -45,6 +41,7 @@ function validateLibrarianConfig(config) {
     throw new Error("Memory Librarian providerRecovery config is required");
   }
   requireNonNegativeInteger(recovery.retryMax, "providerRecovery.retryMax");
+  requireNonNegativeInteger(recovery.transientRetryMax, "providerRecovery.transientRetryMax");
   requireNonNegativeInteger(recovery.transportInvalidRetryMax, "providerRecovery.transportInvalidRetryMax");
   requireNonNegativeInteger(recovery.schemaInvalidRetryMax, "providerRecovery.schemaInvalidRetryMax");
   requirePositiveInteger(recovery.backoffBaseMs, "providerRecovery.backoffBaseMs");
@@ -126,6 +123,7 @@ function createLibrarianTaskExecutor({
   now = () => new Date(),
   idFactory = () => crypto.randomUUID(),
   metrics,
+  retryBudget = createRetryBudget(),
 } = {}) {
   validateLibrarianRepositories(repositories);
   if (!providerAdapter?.propose) throw new Error("Memory Librarian provider adapter is required");
@@ -159,6 +157,7 @@ function createLibrarianTaskExecutor({
     triggerType,
     taskId,
     tickId,
+    resumeFailed = false,
   } = {}) {
     return repositories.withTransaction(async (client) => {
       const state = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
@@ -179,9 +178,12 @@ function createLibrarianTaskExecutor({
         tickId,
       });
       await hydrateEvidenceInput(envelope, repositories.source, { client });
-      let row = await repositories.runtime.createTask(librarianTaskRow(envelope), { client });
+      const canonicalKey = librarianDedupeKey(envelope.task);
+      let row = await repositories.runtime.getLatestTaskForDedupeKey?.(userId, presetId, canonicalKey, { client })
+        || await repositories.runtime.createTask(librarianTaskRow(envelope), { client });
       if (String(rowValue(row, "task_id", "taskId")) !== envelope.task.taskId
-        && ["failed", "cancelled"].includes(rowValue(row, "status", "status"))) {
+        && ((resumeFailed && row.status === "failed")
+          || (row.status === "cancelled" && rowValue(row, "last_error_reason", "lastErrorReason") === "revision_mismatch"))) {
         const retryEnvelope = buildLibrarianEnvelope({
           userId,
           presetId,
@@ -196,7 +198,8 @@ function createLibrarianTaskExecutor({
         });
         await hydrateEvidenceInput(retryEnvelope, repositories.source, { client });
         const retryRow = librarianTaskRow(retryEnvelope);
-        retryRow.dedupe_key = `${retryRow.dedupe_key}:retry:${retryEnvelope.task.taskId}`;
+        retryRow.predecessor_task_id = rowValue(row, "task_id", "taskId");
+        retryRow.dedupe_key = `${canonicalKey}:retry:${retryRow.predecessor_task_id}`;
         row = await repositories.runtime.createTask(retryRow, { client });
         return rowValue(row, "task_payload", "taskPayload") ?? retryEnvelope;
       }
@@ -204,26 +207,20 @@ function createLibrarianTaskExecutor({
     });
   }
 
-  async function persistFailure(envelope, reason, detail = null, rejectedOutput) {
+  async function persistFailure(envelope, reason, detail = null, rejectedOutput, retryBudgetExhausted = false, providerDecision, noProviderCall = false) {
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
       if (!task) throw new Error("Librarian task disappeared before failure persistence");
       if (TERMINAL.has(rowValue(task, "status", "status"))) {
         return { status: rowValue(task, "status", "status"), taskId: envelope.task.taskId, duplicate: true };
       }
-      const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
-      const retryMax = config.providerRecovery.retryMax;
-      const retryable = RETRYABLE_PROVIDER_ERRORS.has(reason);
-      const exhausted = attempt > retryMax || !retryable;
-      const backoff = Math.min(
-        config.providerRecovery.backoffMaxMs,
-        config.providerRecovery.backoffBaseMs
-          * (2 ** Math.max(0, attempt - 1)),
-      );
-      const notBefore = exhausted ? null : new Date(now().getTime() + backoff);
+      const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + (noProviderCall ? 0 : 1);
+      const decision = providerDecision || providerFailureDecision({ counters: retryBudget.forTask(envelope.task), result: { reason, detail },
+        config: config.providerRecovery, retryMax: config.providerRecovery.retryMax, now: now() });
+      const { halted: exhausted, notBefore } = decision;
       const taskChanges = {
         status: exhausted ? "failed" : "retry_wait",
-        stage: exhausted ? "failed" : "retry_wait",
+        stage: decision.budgetExhausted || retryBudgetExhausted ? "retry_budget_exhausted" : exhausted ? "failed" : "retry_wait",
         attempt,
         not_before: notBefore,
         last_error_reason: reason,
@@ -241,36 +238,35 @@ function createLibrarianTaskExecutor({
       }
       await repositories.runtime.updateTask(envelope.task.taskId, taskChanges, { client });
       await appendOps(envelope, exhausted ? "failed" : "retry_wait", attempt, { reason, detail }, client);
-      return { status: exhausted ? "failed" : "retry_wait", reason, taskId: envelope.task.taskId, notBefore };
+      return { status: exhausted ? "failed" : "retry_wait", reason, taskId: envelope.task.taskId, notBefore, recoveryKind: decision.kind,
+        stage: taskChanges.stage, mode: "librarian" };
     });
   }
 
-  async function persistCircuitDeferral(envelope, adapterResult) {
-    const providerHealth = adapterResult.providerHealth || {};
-    const needsAttention = providerHealth.status === "needs_attention";
+  async function persistAdmissionDeferral(envelope) {
+    const reason = "provider_queue_full";
     const fallbackRetryAt = new Date(
       now().getTime() + config.providerRecovery.backoffBaseMs,
     );
-    const notBefore = needsAttention ? null : (providerHealth.nextRetryAt || fallbackRetryAt);
+    const notBefore = fallbackRetryAt.toISOString();
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
-      if (!task) throw new Error("Librarian task disappeared before circuit deferral persistence");
+      if (!task) throw new Error("Librarian task disappeared before admission deferral persistence");
       if (TERMINAL.has(rowValue(task, "status", "status"))) {
         return { status: rowValue(task, "status", "status"), taskId: envelope.task.taskId, duplicate: true };
       }
       await repositories.runtime.updateTask(envelope.task.taskId, {
-        status: needsAttention ? "failed" : "retry_wait",
-        stage: "provider_circuit_open",
+        status: "retry_wait",
+        stage: "provider_queue_full",
         not_before: notBefore,
-        last_error_reason: "provider_circuit_open",
+        last_error_reason: reason,
       }, { client });
-      await appendOps(envelope, "provider_circuit_open", Number(rowValue(task, "attempt", "attempt") ?? 0), {
-        providerStatus: providerHealth.status || "degraded",
+      await appendOps(envelope, reason, Number(rowValue(task, "attempt", "attempt") ?? 0), {
         nextRetryAt: notBefore,
       }, client);
       return {
-        status: needsAttention ? "failed" : "retry_wait",
-        reason: "provider_circuit_open",
+        status: "retry_wait",
+        reason,
         taskId: envelope.task.taskId,
         notBefore,
       };
@@ -284,12 +280,13 @@ function createLibrarianTaskExecutor({
       if (TERMINAL.has(rowValue(task, "status", "status"))) return null;
       const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
       const transportFailure = isTransportRepairFailure(adapterResult.detail);
-      const counter = transportFailure ? "transportInvalidAttempts" : "schemaInvalidAttempts";
-      const used = Number(stagePayload[counter] || 0);
+      const counters = retryBudget.forTask(envelope.task);
+      const counter = transportFailure ? "transportFailures" : "schemaFailures";
+      const used = counters[counter]++;
       const limit = transportFailure
         ? config.providerRecovery.transportInvalidRetryMax
         : config.providerRecovery.schemaInvalidRetryMax;
-      if (used >= limit) return null;
+      if (used >= limit) { adapterResult.retryBudgetExhausted = true; return null; }
       const attempt = Number(rowValue(task, "attempt", "attempt") ?? 0) + 1;
       const repairAttempt = repairAttemptCount(stagePayload);
       const nextStagePayload = appendRejectedOutputAttempt(
@@ -300,7 +297,6 @@ function createLibrarianTaskExecutor({
           + config.providerRecovery.transportInvalidRetryMax
           + 1,
       );
-      nextStagePayload[counter] = used + 1;
       nextStagePayload.schemaRepairFeedback = createRepairFeedback(
         adapterResult.detail,
         repairAttempt + 1,
@@ -324,13 +320,24 @@ function createLibrarianTaskExecutor({
     });
   }
 
-  async function proposeWithRecovery(envelope) {
+  async function proposeWithRecovery(envelope, { signal } = {}) {
     const persisted = await repositories.runtime.getTask(envelope.task.taskId);
     const persistedStagePayload = rowValue(persisted, "stage_payload", "stagePayload");
     let repairFeedback = persistedStagePayload?.schemaRepairFeedback ?? null;
     let rejectedOutput = latestRejectedOutput(persistedStagePayload, repairFeedback);
     while (true) {
-      let adapterResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
+      if (signal?.aborted) return { terminalResult: { status: "interrupted", reason: "cancelled", taskId: envelope.task.taskId } };
+      if (retryBudget.exhausted(envelope.task, config)) return { terminalResult:
+        await persistFailure(envelope, "retry_budget_exhausted", null, undefined, true,
+          { halted: true, budgetExhausted: true, notBefore: null, kind: "bounded", counters: retryBudget.forTask(envelope.task) }, true) };
+      let adapterResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput, signal });
+      if (adapterResult.status === "deferred" && adapterResult.reason === "operation_interrupted") {
+        return { terminalResult: { status: "interrupted", reason: "cancelled", taskId: envelope.task.taskId } };
+      }
+      if (adapterResult.status === "ok" || adapterResult.reason === "output_schema_invalid") {
+        retryBudget.providerSucceeded(envelope.task);
+        if (!isTransportRepairFailure(adapterResult.detail)) retryBudget.forTask(envelope.task).transportFailures = 0;
+      }
       if (adapterResult.status === "ok") {
         const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
         if (state?.meta.revision === envelope.task.baseRevision && state.meta.sourceGeneration === envelope.task.sourceGeneration) {
@@ -345,13 +352,16 @@ function createLibrarianTaskExecutor({
           }
         }
       }
-      if (adapterResult.status === "deferred" && adapterResult.reason === "provider_circuit_open") {
-        return { terminalResult: await persistCircuitDeferral(envelope, adapterResult) };
+      if (adapterResult.status === "deferred" && adapterResult.reason === "provider_queue_full") {
+        return { terminalResult: await persistAdmissionDeferral(envelope, adapterResult) };
       }
       const retryableSchemaOutput = adapterResult.status === "error"
         && adapterResult.reason === "output_schema_invalid"
         && adapterResult.detail?.boundary === "output";
-      if (!retryableSchemaOutput) return { adapterResult };
+      if (!retryableSchemaOutput) {
+        if (adapterResult.status === "ok") retryBudget.outputSucceeded(envelope.task);
+        return { adapterResult };
+      }
       const reserved = await reserveSchemaInvalidRetry(envelope, adapterResult);
       if (!reserved) return { adapterResult };
       repairFeedback = reserved.feedback;
@@ -401,7 +411,8 @@ function createLibrarianTaskExecutor({
     }
   }
 
-  async function processEnvelope(envelope) {
+  async function processEnvelope(envelope, { signal } = {}) {
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled", taskId: envelope.task.taskId };
     const persisted = await repositories.runtime.getTask(envelope.task.taskId);
     if (!persisted) throw new Error("Librarian task is not durable");
     const persistedStatus = rowValue(persisted, "status", "status");
@@ -411,6 +422,7 @@ function createLibrarianTaskExecutor({
         taskId: envelope.task.taskId,
         revision: rowValue(persisted, "result_revision", "resultRevision") ?? null,
         duplicate: true,
+        reason: rowValue(persisted, "last_error_reason", "lastErrorReason") ?? null,
       };
     }
     const persistedNotBefore = rowValue(persisted, "not_before", "notBefore");
@@ -420,6 +432,8 @@ function createLibrarianTaskExecutor({
         reason: rowValue(persisted, "last_error_reason", "lastErrorReason") || "retry_wait",
         taskId: envelope.task.taskId,
         notBefore: persistedNotBefore,
+        stage: persisted.stage,
+        mode: envelope.task.mode,
       };
     }
     const current = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
@@ -451,7 +465,7 @@ function createLibrarianTaskExecutor({
         not_before: null,
         last_error_reason: null,
       });
-      const proposed = await proposeWithRecovery(envelope);
+      const proposed = await proposeWithRecovery(envelope, { signal });
       if (proposed.terminalResult) return proposed.terminalResult;
       const { adapterResult } = proposed;
       if (adapterResult.status !== "ok") {
@@ -460,6 +474,9 @@ function createLibrarianTaskExecutor({
           adapterResult.reason || "llm_call_failed",
           adapterResult.detail,
           adapterResult.rejectedOutput,
+          adapterResult.retryBudgetExhausted,
+          adapterResult.providerDecision,
+          adapterResult.noProviderCall,
         );
       }
       semanticResult = adapterResult.output;

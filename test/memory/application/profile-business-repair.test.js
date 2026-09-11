@@ -3,12 +3,46 @@ const assert = require("node:assert/strict");
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { validateProviderWireOutput } = require("../../../modules/memory/infrastructure/providers/output/validateProviderWireOutput");
+const { createRetryBudget } = require("../../../modules/memory/application/retryBudget");
+const { createProviderRequestControl } = require("../../../modules/memory/application/providerRequestRecovery");
+const { createProviderHealth } = require("../../../shared/observability/providerHealth");
 const { config: baseConfig, fixedNow, store: createStore } = require("../support/recovery-harness");
 const config = { ...baseConfig, targets: { ...baseConfig.targets, profileRelationship: { lagThreshold: 1, contextWindow: 2 } } };
 
 const sections = { userProfileProposer: "userProfile", assistantProfileProposer: "assistantProfile", relationshipProposer: "relationship" };
 const candidate = section => ({ sectionStatuses: { [section]: "changes" },
   changes: [{ section, action: "add", text: `${section} fact`, sources: ["message:1"] }] });
+
+test("Profile network retries count each specialist once and respect the latest sibling Retry-After", async () => {
+  const store = createStore(); const retryBudget = createRetryBudget();
+  const settings = { ...config, providerRecovery: { ...config.providerRecovery, transientRetryMax: 1 } };
+  let time = fixedNow.getTime(); const calls = {};
+  const adapter = createMemoryProviderAdapter({ promptLoader: async proposer => proposer,
+    requestControl: createProviderRequestControl({ health: createProviderHealth({ name: "memory" }),
+      retryBudget, config: settings, now: () => new Date(time) }),
+    async invokeStructured(request) {
+      calls[request.proposer] = (calls[request.proposer] || 0) + 1;
+      if (request.proposer !== "relationshipProposer") throw Object.assign(new Error("temporarily unavailable"), {
+        status: 503, retryAfterAt: new Date(time + (request.proposer === "assistantProfileProposer" ? 90000 : 30000)).toISOString(),
+      });
+      return { output: { sectionStatuses: { relationship: "noop" }, changes: [] } };
+    } });
+  const pipeline = createNormalWritePipeline({ observer: {}, repositories: store.repositories, config: settings,
+    retryBudget, providerAdapter: adapter, now: () => new Date(time) });
+  const envelope = await pipeline.createTask(1, "default", { targetKey: "profileRelationship",
+    proposer: "profileRelationshipProposer", targetSections: Object.values(sections) });
+  const first = await pipeline.processEnvelope(envelope);
+  assert.equal(first.halted, false);
+  assert.equal(Date.parse(first.notBefore), time + 90000);
+  time = Date.parse(first.notBefore);
+  const second = await pipeline.processEnvelope(envelope);
+  assert.equal(second.halted, true);
+  assert.equal(second.stage, "retry_budget_exhausted");
+  assert.deepEqual(calls, { userProfileProposer: 2, assistantProfileProposer: 2, relationshipProposer: 2 });
+  assert.equal((await pipeline.processEnvelope(envelope)).status, "failed");
+  assert.equal(Object.values(calls).reduce((sum, count) => sum + count, 0), 6);
+  assert.equal(store.inspect.state.meta.targetCursors.profileRelationship ?? 0, 0);
+});
 
 for (const affected of [["relationship"], ["userProfile", "relationship"]]) {
   test(`Profile business retry restores original specialist candidates after restart: ${affected.join(", ")}`, async () => {
@@ -74,7 +108,7 @@ for (const affected of [["relationship"], ["userProfile", "relationship"]]) {
     assert.equal(retryRequests.length, affected.length);
     assert.equal(resumedProviderResult.callCount, affected.length);
     assert.equal(resumedProviderResult.usage.prompt_tokens, 20 * affected.length);
-    assert.equal(row.stage_payload.schemaInvalidAttempts, 1);
+    assert.equal(row.stage_payload.schemaInvalidAttempts, undefined);
     assert.equal(store.inspect.state.meta.revision, 1);
     for (const section of Object.values(sections)) assert.equal(store.inspect.state.longTerm[section].length, 1);
     for (const section of affected) assert.deepEqual(store.inspect.state.longTerm[section], before.longTerm[section]);
@@ -129,8 +163,8 @@ for (const failure of failures) test(`Profile business -> ${failure.name} -> res
   const row = [...store.inspect.tasks.values()][0];
   row.stage_payload = JSON.parse(JSON.stringify(row.stage_payload));
   assert.equal(row.stage_payload.schemaRepairFeedback.validationLayer, failure.layer);
-  assert.equal(row.stage_payload.schemaInvalidAttempts, failure.layer === "transport" ? 1 : 2);
-  assert.equal(row.stage_payload.transportInvalidAttempts || 0, failure.layer === "transport" ? 1 : 0);
+  assert.equal(row.stage_payload.schemaInvalidAttempts, undefined);
+  assert.equal(row.stage_payload.transportInvalidAttempts, undefined);
   const bundle = row.stage_payload.schemaRejectedOutputs.at(-1).output;
   assert.equal(row.stage_payload.schemaRejectedOutputs.at(-1).outputKind, "specialist_bundle");
   for (const proposer of ["userProfileProposer", "assistantProfileProposer"]) {

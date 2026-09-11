@@ -425,3 +425,99 @@ test("normal commits no longer schedule proactive high-water hygiene", async () 
   assert.equal(data.inspect.state.working.standingAgreements.length, 3);
   assert.equal([...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance").length, 0);
 });
+
+test("capacity child survives provider outage beyond compaction budget and resumes the same parent", async () => {
+  const data = store(); let time = Date.parse("2026-07-13T00:00:00Z"); let calls = 0;
+  const make = () => createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => new Date(time),
+    providerAdapter: { async propose(envelope) {
+      if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+      return ++calls <= 4 ? { status: "error", reason: "llm_call_failed", detail: { status: 503 } }
+        : { status: "ok", output: compactionOutput(envelope) };
+    } } });
+  let result = await make().processIntent(1, "default", intent);
+  const parent = [...data.inspect.tasks.values()].find(task => task.task_type === "normal");
+  const child = [...data.inspect.tasks.values()].find(task => task.task_type === "maintenance");
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    assert.equal(result.halted, false); assert.equal(child.status, "retry_wait");
+    assert.equal(data.inspect.statuses.get("standingAgreements").status, "capacity_blocked");
+    assert.equal(data.inspect.state.meta.targetCursors.standingAgreements ?? 0, 0);
+    assert.equal((await make().processEnvelope(parent.task_payload)).status, "retry_wait");
+    assert.equal(calls, attempt);
+    time = Date.parse(result.notBefore);
+    result = await make().processEnvelope(parent.task_payload);
+  }
+  assert.equal(result.status, "committed"); assert.equal(child.status, "succeeded");
+  assert.equal(data.inspect.state.meta.targetCursors.standingAgreements, 3);
+});
+
+test("manual retry after maintenance budget exhaustion preserves the blocked parent and proposal", async () => {
+  const { createRetryBudget } = require("../../../modules/memory/application/retryBudget");
+  const { beginManualRetrySession } = require("../../../modules/memory/application/manualRetrySession");
+  const data = store(); const retryBudget = createRetryBudget();
+  const settings = { ...config, providerRecovery: { ...config.providerRecovery, transientRetryMax: 1 } };
+  let time = Date.parse("2026-07-13T00:00:00Z"); let normalCalls = 0; let maintenanceCalls = 0; let recovered = false;
+  const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config: settings, retryBudget,
+    now: () => new Date(time), providerAdapter: { async propose(envelope) {
+      if (envelope.task.mode === "normal") { normalCalls++; return { status: "ok", output: normalOutput(envelope) }; }
+      maintenanceCalls++;
+      return recovered ? { status: "ok", output: compactionOutput(envelope) }
+        : { status: "error", reason: "llm_call_failed", detail: { status: 503 } };
+    } } });
+  const first = await pipeline.processIntent(1, "default", intent);
+  const parent = [...data.inspect.tasks.values()].find(task => task.task_type === "normal");
+  const child = [...data.inspect.tasks.values()].find(task => task.task_type === "maintenance");
+  const proposal = structuredClone(parent.stage_payload.compiledProposal);
+  time = Date.parse(first.notBefore);
+  assert.equal((await pipeline.processEnvelope(parent.task_payload)).halted, true);
+  assert.equal(child.stage, "retry_budget_exhausted");
+  assert.equal(data.inspect.state.meta.targetCursors.standingAgreements ?? 0, 0);
+  await beginManualRetrySession(data.repositories, retryBudget, 1, "default", 0);
+  assert.equal(parent.stage, "capacity_blocked");
+  assert.deepEqual(parent.stage_payload.compiledProposal, proposal);
+  recovered = true;
+  assert.equal((await pipeline.processEnvelope(parent.task_payload)).status, "committed");
+  assert.equal(normalCalls, 1);
+  assert.equal(maintenanceCalls, 3);
+  assert.equal(data.inspect.tasks.size, 2);
+  assert.equal(data.inspect.state.meta.targetCursors.standingAgreements, 3);
+});
+
+test("cancellation after a normal response stops the subsequent maintenance provider call", async () => {
+  const data = store(); const controller = new AbortController(); let maintenanceCalls = 0;
+  const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => new Date("2026-07-13T00:00:00Z"),
+    providerAdapter: { async propose(envelope) {
+      if (envelope.task.mode === "normal") {
+        controller.abort();
+        return { status: "ok", output: normalOutput(envelope) };
+      }
+      maintenanceCalls++;
+      return { status: "ok", output: compactionOutput(envelope) };
+    } } });
+  const envelope = await pipeline.createTask(1, "default", intent);
+  const result = await pipeline.processEnvelope(envelope, { signal: controller.signal });
+  assert.equal(result.status, "interrupted");
+  assert.equal(maintenanceCalls, 0);
+  assert.equal(data.inspect.state.meta.targetCursors.standingAgreements ?? 0, 0);
+  assert.equal(data.inspect.tasks.get(envelope.task.taskId).stage, "capacity_blocked");
+});
+
+test("capacity admission deferral preserves the child and parent until the next check", async () => {
+  {
+    const data = store(); let calls = 0;
+    const nextRetryAt = "2026-07-13T00:00:01.000Z";
+    const pipeline = createNormalWritePipeline({ observer: {}, repositories: data.repositories, config, now: () => new Date("2026-07-13T00:00:00Z"),
+      providerAdapter: { async propose(envelope) {
+        if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+        calls++; return { status: "deferred", reason: "provider_queue_full" };
+      } } });
+    const result = await pipeline.processIntent(1, "default", intent);
+    const child = [...data.inspect.tasks.values()].find(task => task.task_type === "maintenance");
+    assert.equal(result.status, "retry_wait");
+    assert.equal(child.not_before, nextRetryAt);
+    assert.equal(data.inspect.state.meta.targetCursors.standingAgreements ?? 0, 0);
+    assert.equal(calls, 1);
+    const parent = [...data.inspect.tasks.values()].find(task => task.task_type === "normal");
+    assert.equal((await pipeline.processEnvelope(parent.task_payload)).status, "retry_wait");
+    assert.equal(calls, 1, "automatic recovery must not advance a failed maintenance child");
+  }
+});

@@ -10,11 +10,14 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
   if (!repositories?.state || !repositories?.source || !repositories?.sidecars || !repositories?.withTransaction) throw new Error("Projection drain repositories are required");
   if (!adapter?.rebuild || !adapter?.append || !adapter?.commit) throw new Error("Projection adapter requires staged rebuild, append, and transactional commit");
 
-  async function drain(userId, presetId) {
+  async function drain(userId, presetId, { sourceGeneration, boundaryMessageId, signal } = {}) {
+    if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
     const state = await repositories.state.getState(userId, presetId);
     if (!state) return { status: "skipped", reason: "state_missing" };
     const capturedGeneration = state.meta.sourceGeneration;
     const capturedBoundary = await repositories.source.getBoundary(userId, presetId);
+    if ((sourceGeneration !== undefined && sourceGeneration !== capturedGeneration)
+      || (boundaryMessageId !== undefined && boundaryMessageId !== capturedBoundary)) return { status: "stale", projectionKey };
     const checkpoint = await repositories.sidecars.getProjectionCheckpoint(userId, presetId, projectionKey);
     const processedGeneration = Number(rowValue(checkpoint, "processed_generation", "processedGeneration") ?? -1);
     const processedBoundary = Number(rowValue(checkpoint, "processed_boundary_message_id", "processedBoundaryMessageId") ?? 0);
@@ -32,6 +35,7 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             ? processedBoundary
             : 0;
           while (true) {
+            if (signal?.aborted) return { status: "interrupted", reason: "cancelled", projectionKey };
             staged = await adapter.rebuildBatch({
               userId,
               presetId,

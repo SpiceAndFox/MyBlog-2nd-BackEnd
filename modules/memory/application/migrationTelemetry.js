@@ -90,7 +90,7 @@ function createMigrationProviderTelemetry({ expectedModel = null, monotonicNow =
         const started = monotonicNow();
         try {
           const result = await adapter.propose(envelope, options);
-          record(envelope, result, monotonicNow() - started, null, durableAttempt);
+          if (result?.status !== "deferred" && !result?.noProviderCall) record(envelope, result, monotonicNow() - started, null, durableAttempt);
           return result;
         } catch (error) {
           record(envelope, null, monotonicNow() - started, error, durableAttempt);

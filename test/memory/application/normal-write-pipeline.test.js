@@ -312,7 +312,7 @@ for (const forceDrain of [false, true]) for (const requesterConflict of [false, 
   assert.equal(store.inspect.state.meta.targetCursors.todos, 2);
 });
 
-test("an open provider circuit durably sleeps work instead of polling the same task", async () => {
+test("admission queue saturation schedules another check without consuming a provider attempt", async () => {
   const store = fakes();
   const intent = {
     targetKey: "todos",
@@ -321,7 +321,7 @@ test("an open provider circuit durably sleeps work instead of polling the same t
     cursorBefore: 0,
     trigger: { type: "lagThreshold" },
   };
-  const nextRetryAt = "2026-07-12T00:02:00.000Z";
+  const nextRetryAt = "2026-07-12T00:01:01.000Z";
   const pipeline = createNormalWritePipeline({
     observer: { observe: async () => ({ eligibleTasks: [intent] }) },
     config,
@@ -330,8 +330,7 @@ test("an open provider circuit durably sleeps work instead of polling the same t
       async propose() {
         return {
           status: "deferred",
-          reason: "provider_circuit_open",
-          providerHealth: { status: "degraded", nextRetryAt },
+          reason: "provider_queue_full",
         };
       },
     },
@@ -343,55 +342,18 @@ test("an open provider circuit durably sleeps work instead of polling the same t
 
   assert.deepEqual(result, {
     status: "retry_wait",
-    outcome: "provider_circuit_open",
+    outcome: "provider_queue_full",
     taskId: task.task_id,
     notBefore: nextRetryAt,
   });
   assert.equal(task.status, "retry_wait");
-  assert.equal(task.stage, "provider_circuit_open");
+  assert.equal(task.stage, "provider_queue_full");
   assert.equal(task.not_before, nextRetryAt);
   assert.equal(task.attempt, 0);
   assert.equal(store.inspect.statuses.at(-1).status, "retry_wait");
   assert.equal(store.inspect.statuses.at(-1).nextRetryAt, nextRetryAt);
 });
 
-test("a provider circuit requiring attention durably halts deferred work", async () => {
-  const store = fakes();
-  const pipeline = createNormalWritePipeline({
-    observer: {
-      observe: async () => ({
-        eligibleTasks: [{
-          targetKey: "todos",
-          proposer: "todoProposer",
-          targetSections: ["todos"],
-          cursorBefore: 0,
-          trigger: { type: "lagThreshold" },
-        }],
-      }),
-    },
-    config,
-    repositories: store.repositories,
-    providerAdapter: {
-      async propose() {
-        return {
-          status: "deferred",
-          reason: "provider_circuit_open",
-          providerHealth: { status: "needs_attention", nextRetryAt: null },
-        };
-      },
-    },
-  });
-
-  const [result] = await pipeline.processScope(1, "default");
-  const task = [...store.inspect.tasks.values()][0];
-
-  assert.equal(result.status, "halted");
-  assert.equal(task.status, "failed");
-  assert.equal(task.stage, "provider_circuit_open");
-  assert.equal(task.attempt, 0);
-  assert.equal(store.inspect.statuses.at(-1).status, "halted");
-  assert.equal(store.inspect.statuses.at(-1).nextRetryAt, null);
-});
 
 test("proposal-triggered cleanup persists the target item id", async () => {
   const store = fakes();

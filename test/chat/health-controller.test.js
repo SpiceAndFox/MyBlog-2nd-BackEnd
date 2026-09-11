@@ -70,7 +70,7 @@ test("chat health exposes provider and stale-memory warnings for the page", asyn
       async getHealthSnapshot() {
         return {
           provider: {
-            status: "needs_attention",
+            status: "degraded",
             reason: "http_401",
             lastFailureAt: "2026-07-25T00:00:00.000Z",
             retryMode: "manual",
@@ -111,11 +111,11 @@ test("chat health exposes provider and stale-memory warnings for the page", asyn
     "embedding",
     "memory",
   ]);
-  assert.match(response.body.warnings[0].message, /手动重试/);
-  assert.match(response.body.warnings[1].message, /跳过旧对话召回/);
+  assert.match(response.body.warnings[0].message, /最近一次/);
+  assert.match(response.body.warnings[1].message, /后续请求仍会正常尝试/);
 });
 
-test("manual embedding retry arms the circuit and immediately resumes useful projection work", async () => {
+test("manual embedding retry directly resumes projection work and then reads health", async () => {
   const calls = [];
   const controller = createController({
     memory: {
@@ -125,9 +125,9 @@ test("manual embedding retry arms the circuit and immediately resumes useful pro
       },
     },
     rag: {
-      retryEmbeddingProvider() {
-        calls.push(["arm"]);
-        return { status: "degraded", nextRetryAt: "2026-07-25T00:00:00.000Z" };
+      getHealthSnapshot() {
+        calls.push(["health"]);
+        return { embeddingProvider: { status: "healthy" } };
       },
     },
   });
@@ -139,6 +139,6 @@ test("manual embedding retry arms the circuit and immediately resumes useful pro
   }, response);
 
   assert.equal(response.statusCode, 202);
-  assert.deepEqual(calls, [["arm"], ["drain", 7, "companion"]]);
+  assert.deepEqual(calls, [["drain", 7, "companion"], ["health"]]);
   assert.equal(response.body.result.projection.rag.status, "healthy");
 });
