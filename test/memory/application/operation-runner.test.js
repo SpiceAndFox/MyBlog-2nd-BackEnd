@@ -1,11 +1,20 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createOperationRunner, operationWait, summarizeOperation } = require("../../../modules/memory/application/operationRunner");
+const { createOperationRunner, operationWait, summarizeOperation, countCompletedTasks } = require("../../../modules/memory/application/operationRunner");
 
 function clock() {
   let time = Date.parse("2026-09-11T00:00:00Z");
   return { now: () => time, advance(ms) { time += ms; }, iso(ms = 0) { return new Date(time + ms).toISOString(); } };
 }
+
+test("interrupted reports count nested completed tasks once and exclude unfinished work", () => {
+  const committed = { status: "committed", taskId: "scene" };
+  const interrupted = { status: "interrupted", result: { status: "interrupted", results: [
+    committed, { status: "noop", taskId: "librarian" }, { status: "prepared", taskId: "pending" },
+    { ...committed }, { status: "queued", taskId: "retry" },
+  ] }, results: [committed] };
+  assert.equal(countCompletedTasks(interrupted), 2);
+});
 
 test("foreground runner honors the latest blocking wave deadline without duplicate dispatch", async () => {
   const time = clock(); let calls = 0;

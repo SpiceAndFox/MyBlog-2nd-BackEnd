@@ -298,7 +298,7 @@ test("migration resumes an incomplete force drain without resetting its generati
     sourceGeneration: migrationScenario.sourceGeneration,
     targetKey: "scene",
     result: { status: "queued", outcome: "transaction_failed", reason: null, taskId: "task-1" },
-    completedTaskCount: 1,
+    completedTaskCount: 0,
   });
   const second = await harness.migration.run({ mode: "cutover", serviceStopped: true });
   assert.equal(second.status, "completed");

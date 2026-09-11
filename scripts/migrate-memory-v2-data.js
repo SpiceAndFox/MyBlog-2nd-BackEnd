@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const path = require("node:path");
 const fs = require("node:fs");
-const { logWait, createCommandControl } = require("./memory-command-control");
+const { logWait, createCommandControl, isInterrupted } = require("./memory-command-control");
 
 function parseArgs(argv) {
   const parsed = {};
@@ -74,9 +74,9 @@ function withCallEstimates(inventory, config) {
   }));
 }
 
-function emitReport(report, reportPath) {
+function emitReport(report, reportPath, { quiet = false } = {}) {
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
-  process.stdout.write(serialized);
+  if (!quiet) process.stdout.write(serialized);
   if (!reportPath) return;
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, serialized, { encoding: "utf8", flag: "wx" });
@@ -179,7 +179,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     scopes: options.scopes,
     signal: dependencies.signal, onWait: dependencies.onWait || logWait,
   }), evidence);
-  emitReport(report, options.reportPath);
+  emitReport(report, options.reportPath, { quiet: dependencies.signal?.aborted && isInterrupted(report) });
   if (report.status !== "completed") process.exitCode = 2;
   return report;
 }
@@ -188,22 +188,17 @@ if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const { createChatRagComposition } = require("../app/composition/chatRag");
-  const { chatLlm, database: db, config, logger } = createCommandContext();
-  const memoryAdministration = createMemoryAdministrationComposition({ database: db });
-  const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
-  const control = createCommandControl();
-  main(process.argv.slice(2), {
-    ...control,
-    database: db,
-    memoryAdministration,
-    chatRagProjectionAdapter: chatRag.projectionAdapter,
-    chatRagConfig: config.chatRagConfig,
-  })
-    .catch((error) => {
-      process.stderr.write(`${error?.stack || error}\n`);
-      process.exitCode = control.signal.aborted ? 130 : 1;
-    })
-    .finally(async () => { control.dispose(); await db.end(); if (control.signal.aborted) process.exitCode = 130; });
+  const control = createCommandControl({ name: "migrate:memory-v2-data" });
+  let db;
+  control.run(async () => {
+    const context = createCommandContext();
+    db = context.database;
+    const { chatLlm, config, logger } = context;
+    const memoryAdministration = createMemoryAdministrationComposition({ database: db });
+    const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
+    return main(process.argv.slice(2), { ...control, database: db, memoryAdministration,
+      chatRagProjectionAdapter: chatRag.projectionAdapter, chatRagConfig: config.chatRagConfig });
+  }, async () => { await db?.end(); });
 }
 
 module.exports = { parseArgs, resolveOptions, withCallEstimates, enforceEvidenceGate, emitReport, assertReportPathAvailable, attachEvidence, createMigration, main };

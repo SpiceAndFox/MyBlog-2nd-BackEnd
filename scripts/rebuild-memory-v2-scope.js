@@ -94,21 +94,17 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   });
   const { help: _help, ...scopeOptions } = options;
   const result = await rebuildScope({ db, migration, ...scopeOptions, signal: dependencies.signal, onWait: dependencies.onWait || logWait });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (!dependencies.signal?.aborted) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }
 
 if (require.main === module) {
-  const context = require("../app/composition/commandContext").createCommandContext();
-  const control = createCommandControl();
-  main(process.argv.slice(2), { context, ...control }).catch((error) => {
-    const detail = error?.migrationDetail ? `\n${JSON.stringify(error.migrationDetail, null, 2)}\n` : "";
-    process.stderr.write(`${error?.stack || error}${detail}\n`);
-    process.exitCode = control.signal.aborted ? 130 : 1;
-  }).finally(async () => {
-    await context.database.end();
-    control.dispose();
-  });
+  const control = createCommandControl({ name: "rebuild:memory-v2" });
+  let context;
+  control.run(async () => {
+    context = require("../app/composition/commandContext").createCommandContext();
+    return main(process.argv.slice(2), { context, ...control });
+  }, async () => { await context?.database.end(); });
 }
 
 module.exports = { parseArgs, resolveOptions, printUsage, createScopedMigration, rebuildScope, main };

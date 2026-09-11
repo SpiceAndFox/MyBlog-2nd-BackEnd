@@ -1,7 +1,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const crypto = require("node:crypto");
 const { assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../contracts");
-const { createOperationRunner, summarizeOperation } = require("./operationRunner");
+const { createOperationRunner, summarizeOperation, countCompletedTasks } = require("./operationRunner");
 const { providerFailureDecision } = require("./providerRecoveryPolicy");
 const { createRetryBudget } = require("./retryBudget");
 const { beginManualRetrySession } = require("./manualRetrySession");
@@ -196,7 +196,7 @@ function createMemoryMigration({
         taskId: drained.result.taskId ?? null,
         ...summarizeOperation(drained.result),
       } : null,
-      completedTaskCount: Array.isArray(drained.results) ? drained.results.length : 0,
+      completedTaskCount: countCompletedTasks(drained),
       ...(drained.notBefore || drained.result?.notBefore ? { notBefore: drained.notBefore ?? drained.result.notBefore } : {}),
       ...(drained.status === "interrupted" ? { status: drained.status, resumable: true } : {}),
     };

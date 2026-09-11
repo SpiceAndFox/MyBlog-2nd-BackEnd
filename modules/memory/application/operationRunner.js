@@ -40,6 +40,19 @@ function summarizeOperation(result) {
   return summary;
 }
 
+function countCompletedTasks(result) {
+  const tasks = new Set();
+  const seen = new Set();
+  function visit(node) {
+    if (!node || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+    if (node.taskId && ["committed", "noop", "completed", "succeeded"].includes(node.status)) tasks.add(node.taskId);
+    for (const child of [node.result, node.barrier, ...(node.results || [])]) visit(child);
+  }
+  visit(result);
+  return tasks.size;
+}
+
 function createOperationRunner({ now = () => Date.now(), sleepUntilNext = (ms, signal) => sleep(ms, undefined, { signal }) } = {}) {
   async function run({ step, readProgress = async () => null, signal, onWait, scope, phase } = {}) {
     let progress = JSON.stringify(await readProgress());
@@ -85,4 +98,4 @@ function createOperationRunner({ now = () => Date.now(), sleepUntilNext = (ms, s
   return Object.freeze({ run });
 }
 
-module.exports = { createOperationRunner, operationWait, summarizeOperation };
+module.exports = { createOperationRunner, operationWait, summarizeOperation, countCompletedTasks };
