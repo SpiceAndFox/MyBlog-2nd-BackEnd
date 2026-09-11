@@ -26,9 +26,9 @@ function fixture(status = "overdue") {
 function patch(value = {}, refs = [source(1), source(2)]) {
   return { op: "reviseItem", itemId: "todo:1", value: { dueChange: { mode: "keep" }, ...value }, sourceRefs: refs };
 }
-function reduce(f, patches) {
+function reduce(f, patches, reductionConfig = config) {
   let id = 0;
-  return reduceCompiledProposal({ ...f, config, idFactory: () => `id-${++id}`, proposal: {
+  return reduceCompiledProposal({ ...f, config: reductionConfig, idFactory: () => `id-${++id}`, proposal: {
     tickId: 1, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches } },
   } });
 }
@@ -39,6 +39,18 @@ function replay(f, result) {
   const rows = result.events.map((entry, i) => mapEventToRow(entry, f, "group", i));
   assert.deepEqual(replayEventGroups(f.state, [group], rows, { userId: 1, presetId: "test" }), result.state);
 }
+
+test("reviving an old Todo at capacity preserves FIFO order and replays revival followed by eviction", () => {
+  const f = fixture();
+  f.state.working.todos.push({ ...structuredClone(f.state.working.todos[0]), id: "todo:newer", text: "新约定",
+    createdAtMessageId: 2, status: "active", dueAt: FUTURE, becameOverdueAt: null });
+  const capacityConfig = createMemoryTestConfig({ sectionBudgets: { todos: { maxItems: 1 } } });
+  const result = reduce(f, [patch({ dueChange: { mode: "set", dueAt: FUTURE } })], capacityConfig);
+  assert.equal(result.outcome, "committable");
+  assert.deepEqual(result.state.working.todos.map(item => item.id), ["todo:newer"]);
+  assert.deepEqual(result.cleanupEvents.map(event => event.cleanupKind), ["todo_revived_from_overdue", "todo_capacity_evicted"]);
+  replay(f, result);
+});
 
 test("exact Todo revisions are auditable noops with cursor progress and unchanged item metadata", () => {
   for (const status of ["active", "overdue"]) for (const op of ["reviseItem", "correctItem"]) {

@@ -9,7 +9,16 @@ Compaction 不由 lagThreshold 调度：
 - `lengthBudget`：normal compiled proposal 会令 compactable section 超容量；
 - `hygiene`：成功 normal revision 后达到高水位和最小 item 增量。
 
-调用 LLM 前继续执行同 section normalized text 完全相同的 deterministic merge。`recentEpisodes` 不参加 compaction，由滑动窗口维护。
+调用 LLM 前继续执行同 section normalized text 完全相同的 deterministic merge。`todos` 和 `recentEpisodes` 不参加容量 compaction，由生命周期清理维护。
+
+### Todo 容量淘汰
+
+- 先执行自然到期的 `active → overdue`；容量只统计剩余 active 项。
+- 完整提案应用后，按 `createdAtMessageId` 升序、相同值按 item ID 排序，逐项移出最旧的 active todo，直到 `maxItems` 和 `maxRenderedChars` 同时满足。修改事项不刷新创建顺序，overdue 项不参与淘汰。
+- 字符统计沿用正文、actor、requester 和 dueAt 的 Unicode code point 计数。
+- 每项淘汰记录 `system_cleanup / todo_capacity_evicted`，携带 itemId；与正常写入在同一 revision、审计 group 和 snapshot 中提交。此原因不代表对话中的承诺自然失效，不复用语义 `expire` 或伪造 overdue。
+- 读取视图、后台 housekeeping、正常提交、重建和原提案 replay 统一调用生命周期规则；后台清理去重键包含 revision，支持无期限事项的连续容量清理。
+- 旧版本尚未完成的 todo capacity child 以 `todo_capacity_policy_changed` 原因取消，恢复原 compiled proposal 并执行上述淘汰；重建返回 `capacity_resolved` 后重新准备整个 wave。该恢复过程不调用 compaction Provider，重复恢复不重复提交。
 
 ## 2. Task 阶段
 
@@ -58,7 +67,7 @@ Hygiene 使用同一 task 类型。正常的 `unable_to_compact`、merge rejecti
 
 - refs/itemIds 至少两个、不可重复、同一 patch 之外不复用；
 - 不跨 section；
-- Todo 仅 active 且 actor/requester/dueAt 分别相同；
+- 历史 Todo merge 的兼容校验仍要求 active 且 actor/requester/dueAt 分别相同；新容量维护不生成 Todo merge；
 - milestones 不跨阶段；
 - standingAgreements/worldFacts/Profile/relationship 只能无损合并重复表达；
 - Profile/Relationship 不再要求 facet/canonicalKey 相等；

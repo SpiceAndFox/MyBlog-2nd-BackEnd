@@ -55,6 +55,18 @@ test("event replay permits a validated zero-event cursor-only proposal revision"
   assert.equal(replayed.meta.targetCursors.todos, 1);
 });
 
+test("event replay restores capacity eviction and rejects missing or overdue targets", () => {
+  const eviction = overdueEvent({
+    cleanup_type: "todo_capacity_evicted",
+    normalized_operation: { cleanupKind: "todo_capacity_evicted", itemId: "todo:1" },
+  });
+  const replayed = replayEventGroups(createInitialMemoryState(), [proposalGroup()], [addEvent(), eviction]);
+  assert.deepEqual(replayed.working.todos, []);
+  assert.equal(replayed.meta.targetCursors.todos, 1);
+  assert.throws(() => replayEventGroups(createInitialMemoryState(), [proposalGroup()], [addEvent(), overdueEvent(), { ...eviction, event_index: 2 }]), /requires active todo/);
+  assert.throws(() => applySemanticEvent(createInitialMemoryState(), eviction), /Replay todo missing/);
+});
+
 test("event replay rejects audit-only groups", () => {
   assert.throws(
     () => replayEventGroups(createInitialMemoryState(), [proposalGroup({ result_revision: null, cursor_after: 0 })], []),

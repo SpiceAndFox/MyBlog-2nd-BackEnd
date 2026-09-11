@@ -13,7 +13,9 @@ function cleanupDedupeKey(state, targetKey, timestamp) {
   const dueBoundary = targetKey === "todos"
     ? state.working.todos.filter((item) => item.status === "active" && item.dueAt && Date.parse(item.dueAt) <= timestamp).map((item) => item.id).sort().join(",")
     : targetKey === "episodes" ? `${state.working.recentEpisodes.length}:${state.meta.revision}` : `${sceneAnchorMessageId(state) ?? 0}:${state.meta.revision}`;
-  return `system_cleanup:${state.meta.sourceGeneration}:${targetKey}:${dueBoundary}`;
+  // Capacity cleanup can recur without any due dates, at different revisions.
+  const boundary = targetKey === "todos" ? `${dueBoundary}:${state.meta.revision}` : dueBoundary;
+  return `system_cleanup:${state.meta.sourceGeneration}:${targetKey}:${boundary}`;
 }
 
 function createMemoryHousekeeping({ repositories, config, enqueueByKey, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date(), idFactory = () => crypto.randomUUID() } = {}) {

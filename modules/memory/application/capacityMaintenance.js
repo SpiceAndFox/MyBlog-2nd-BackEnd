@@ -460,7 +460,25 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       }
       return advanceParent((await repositories.runtime.getTask(envelope.task.parentTaskId)).task_payload ?? (await repositories.runtime.getTask(envelope.task.parentTaskId)).taskPayload);
     }
-    if (TERMINAL_STATUSES.has(rowValue(current, "status", "status"))) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
+    const supersededTodoCapacity = rowValue(current, "status", "status") === "cancelled"
+      && rowValue(current, "last_error_reason", "lastErrorReason") === "todo_capacity_policy_changed";
+    if (TERMINAL_STATUSES.has(rowValue(current, "status", "status")) && !supersededTodoCapacity) return { status: rowValue(current, "status", "status"), reason: rowValue(current, "last_error_reason", "lastErrorReason"), duplicate: true };
+    // Pending todo children from the previous capacity policy must not invoke
+    // compaction. Replaying the parent now applies deterministic FIFO cleanup.
+    if (envelope.task.targetSections.length === 1 && envelope.task.targetSections[0] === "todos") {
+      if (isHygiene(envelope)) return finishHygieneWithoutMutation(envelope, "hygiene_skipped", { reason: "todo_capacity_policy_changed" });
+      await repositories.withTransaction(async client => {
+        const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+        if (!TERMINAL_STATUSES.has(rowValue(task, "status", "status"))) {
+          await repositories.runtime.updateTask(envelope.task.taskId, {
+            status: "cancelled", stage: "stale", not_before: null, last_error_reason: "todo_capacity_policy_changed",
+          }, { client });
+        }
+      });
+      if (!advanceParentAfterCompaction) return { status: "capacity_resolved", taskId: envelope.task.taskId };
+      const parent = await repositories.runtime.getTask(envelope.task.parentTaskId);
+      return advanceParent(rowValue(parent, "task_payload", "taskPayload"));
+    }
     const notBefore = rowValue(current, "not_before", "notBefore");
     if (rowValue(current, "status", "status") === "retry_wait" && notBefore && new Date(notBefore).getTime() > now().getTime()) {
       return { status: "retry_wait", taskId: envelope.task.taskId, notBefore };

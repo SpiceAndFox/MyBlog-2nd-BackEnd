@@ -20,6 +20,7 @@ const CLEANUPS = Object.freeze({
   scene_expired: { section: "scene", targetKey: "scene", keys: ["cleanupKind", "expiredAt"] },
   expired_scene_evicted: { section: "scene", targetKey: "scene", keys: ["cleanupKind"] },
   todo_became_overdue: { section: "todos", targetKey: "todos", keys: ["cleanupKind", "itemId", "becameOverdueAt"] },
+  todo_capacity_evicted: { section: "todos", targetKey: "todos", keys: ["cleanupKind", "itemId"] },
   todo_revived_from_overdue: { section: "todos", targetKey: "todos", keys: ["cleanupKind", "itemId", "dueAt"] },
   recent_episode_evicted: { section: "recentEpisodes", targetKey: "episodes", keys: ["cleanupKind", "itemId"] },
 });
@@ -352,6 +353,11 @@ function applySemanticEvent(state, event) {
     item.status = "active";
     item.becameOverdueAt = null;
     item.dueAt = operation.dueAt;
+  } else if (operation.cleanupKind === "todo_capacity_evicted") {
+    const index = state.working.todos.findIndex(item => item.id === operation.itemId);
+    if (index < 0) fail(`Replay todo missing: ${operation.itemId}`);
+    if (state.working.todos[index].status !== "active") fail(`Replay capacity eviction requires active todo: ${operation.itemId}`);
+    state.working.todos.splice(index, 1);
   } else if (operation.cleanupKind === "recent_episode_evicted") {
     const index = state.working.recentEpisodes.findIndex((item) => item.id === operation.itemId);
     if (index < 0) fail(`Replay episode missing: ${operation.itemId}`);

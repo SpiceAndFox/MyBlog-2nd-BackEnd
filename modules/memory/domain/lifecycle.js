@@ -1,5 +1,5 @@
 const { createEmptyScene } = require("../contracts/state");
-const { measureSection } = require("./capacity");
+const { measureSection, itemRenderedChars } = require("./capacity");
 
 function clone(value) { return structuredClone(value); }
 function cleanup(section, targetKey, cleanupKind, details = {}) {
@@ -11,6 +11,21 @@ function cleanup(section, targetKey, cleanupKind, details = {}) {
     cleanupKind,
     normalizedOperation: { cleanupKind, ...details },
   };
+}
+
+function evictOldestOverBudget(state, section, targetKey, cleanupKind, budget, events) {
+  const items = state.working[section];
+  const candidates = items.filter(item => section !== "todos" || item.status === "active");
+  const measured = measureSection(state, section);
+  if (!candidates.length || (measured.items <= budget.maxItems && measured.renderedChars <= budget.maxRenderedChars)) return;
+  candidates.sort((a, b) => a.createdAtMessageId - b.createdAtMessageId || a.id.localeCompare(b.id));
+  for (const oldest of candidates) {
+    if (measured.items <= budget.maxItems && measured.renderedChars <= budget.maxRenderedChars) break;
+    items.splice(items.findIndex(item => item.id === oldest.id), 1);
+    measured.items -= 1;
+    measured.renderedChars -= itemRenderedChars(oldest, section);
+    events.push(cleanup(section, targetKey, cleanupKind, { itemId: oldest.id }));
+  }
 }
 
 function normalizeLifecycle(memoryState, anchors, now, config, { targetKeys = ["scene", "todos", "episodes"] } = {}) {
@@ -38,15 +53,10 @@ function normalizeLifecycle(memoryState, anchors, now, config, { targetKeys = ["
     }
   }
 
-  const budget = config.sectionBudgets.recentEpisodes;
-  const episodes = state.working.recentEpisodes;
-  const oldestFirst = () => episodes.slice().sort((a, b) => a.createdAtMessageId - b.createdAtMessageId || a.id.localeCompare(b.id));
-  while (targetKeys.includes("episodes") && (episodes.length > budget.maxItems || measureSection(state, "recentEpisodes").renderedChars > budget.maxRenderedChars)) {
-    const oldest = oldestFirst()[0];
-    if (!oldest) break;
-    episodes.splice(episodes.findIndex((item) => item.id === oldest.id), 1);
-    events.push(cleanup("recentEpisodes", "episodes", "recent_episode_evicted", { itemId: oldest.id }));
-  }
+  // Natural overdue transitions release active capacity before FIFO eviction.
+  // Capacity eviction does not imply that the conversation's commitment expired.
+  if (targetKeys.includes("todos")) evictOldestOverBudget(state, "todos", "todos", "todo_capacity_evicted", config.sectionBudgets.todos, events);
+  if (targetKeys.includes("episodes")) evictOldestOverBudget(state, "recentEpisodes", "episodes", "recent_episode_evicted", config.sectionBudgets.recentEpisodes, events);
   return { state, events, changed: events.length > 0 };
 }
 

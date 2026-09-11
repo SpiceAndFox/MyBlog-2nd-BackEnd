@@ -353,7 +353,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         }
         const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityBlockedEnvelopes[0]);
         results.push(capacityResult);
-        if (capacityResult.status !== "compaction_applied") {
+        if (!["compaction_applied", "capacity_resolved"].includes(capacityResult.status)) {
           return {
             status: "incomplete",
             sourceGeneration,
@@ -363,7 +363,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
             results,
           };
         }
-        await normalWritePipeline.cancelPreparedWave(envelopes, "wave_capacity_compacted");
+        await normalWritePipeline.cancelPreparedWave(envelopes, capacityResult.status === "capacity_resolved" ? "wave_capacity_resolved" : "wave_capacity_compacted");
         continue;
       }
 
@@ -422,7 +422,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         }
         const capacityResult = await normalWritePipeline.resolvePreparedWaveCapacity(capacityEntry.envelope);
         results.push(deferred, capacityResult);
-        if (capacityResult.status !== "compaction_applied") {
+        if (!["compaction_applied", "capacity_resolved"].includes(capacityResult.status)) {
           return {
             status: "incomplete",
             sourceGeneration,
@@ -432,7 +432,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
             results,
           };
         }
-        await normalWritePipeline.cancelPreparedWave(envelopes, "wave_capacity_compacted");
+        await normalWritePipeline.cancelPreparedWave(envelopes, capacityResult.status === "capacity_resolved" ? "wave_capacity_resolved" : "wave_capacity_compacted");
         continue;
       }
       results.push(...(committed.results ?? [committed]));

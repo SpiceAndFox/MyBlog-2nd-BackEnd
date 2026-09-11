@@ -6,6 +6,9 @@ const { createMemoryMetrics } = require("../../../modules/memory/application/met
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
 const { createMemoryProviderAdapter } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { loadProposerPrompt } = require("../../../modules/memory/prompts");
+const { replayEventGroups } = require("../../../modules/memory/domain/eventReplay");
+const { buildMaintenanceEnvelope } = require("../../../modules/memory/application/envelope");
+const { maintenanceTaskRow } = require("../../../modules/memory/application/capacityMaintenance");
 
 const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
@@ -49,6 +52,94 @@ function fakes() {
       sidecars: {},
     },
   };
+}
+
+for (const recoveryPath of ["parent", "child", "wave"]) {
+  test(`legacy todo capacity recovery through ${recoveryPath} skips compaction and remains retryable`, async () => {
+    const store = fakes();
+    store.inspect.state.working.todos = [{
+      id: "todo:old", text: "旧约定", actor: "user", requester: "user", status: "active", dueAt: null, becameOverdueAt: null,
+      createdAtMessageId: 0, updatedAtMessageId: 1, sourceRefs: [{ messageId: 1, contentHash: message.contentHash }],
+    }];
+    const capacityConfig = createMemoryTestConfig({ ...config, sectionBudgets: { todos: { maxItems: 1 } } });
+    const pipeline = createNormalWritePipeline({ observer: {}, repositories: store.repositories, config: capacityConfig,
+      now: () => new Date("2026-07-12T00:01:00Z"),
+      providerAdapter: { propose: async () => { throw new Error("legacy capacity recovery must not call a provider"); } },
+    });
+    const parent = await pipeline.createTask(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } });
+    const violation = { section: "todos", dimension: "maxItems", limit: 1, actual: 2 };
+    const child = buildMaintenanceEnvelope({ parentEnvelope: parent, state: store.inspect.state, section: "todos", violation, config: capacityConfig });
+    await store.repositories.runtime.createTask(maintenanceTaskRow(child));
+    await store.repositories.runtime.updateTask(child.task.taskId, { status: "retry_wait", not_before: "2099-01-01T00:00:00.000Z" });
+    await store.repositories.runtime.updateTask(parent.task.taskId, { status: "running", stage: "capacity_blocked", stage_payload: {
+      maintenanceTaskId: child.task.taskId, blockingViolation: violation, attemptedSections: [],
+      compiledProposal: { tickId: parent.task.tickId, proposer: "todoProposer", sectionResults: { todos: { status: "patches", patches: [{
+        op: "addItem", value: { text: "新约定", actor: "user", requester: "user", dueAt: null }, sourceRefs: [{ messageId: 1, contentHash: message.contentHash }],
+      }] } } },
+    } });
+    if (recoveryPath === "wave") {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        assert.equal((await pipeline.resolvePreparedWaveCapacity(parent)).status, "capacity_resolved");
+        assert.equal(store.inspect.state.meta.revision, 0, "a wave must repropose before advancing any parent");
+        assert.equal(store.inspect.groups.size, 0);
+      }
+    } else {
+      const result = await pipeline.processEnvelope(recoveryPath === "parent" ? parent : child);
+      assert.equal(result.status, "committed");
+      assert.deepEqual(store.inspect.state.working.todos.map(item => item.text), ["新约定"]);
+      assert.equal(store.inspect.state.meta.targetCursors.todos, 1);
+      assert.equal(store.inspect.state.meta.revision, 1);
+      assert.equal((await pipeline.processEnvelope(child)).duplicate, true);
+      assert.equal(store.inspect.state.meta.revision, 1);
+    }
+    assert.equal(store.inspect.tasks.get(child.task.taskId).status, "cancelled");
+    assert.equal(store.inspect.tasks.get(child.task.taskId).last_error_reason, "todo_capacity_policy_changed");
+  });
+}
+
+for (const wave of [false, true]) {
+  test(`todo overflow commits FIFO eviction with the whole ${wave ? "rebuild wave" : "normal proposal"} and never compacts`, async () => {
+    const store = fakes();
+    store.inspect.state.working.todos = ["a", "b"].map(id => ({
+      id: `todo:${id}`, text: `旧约定${id}`, actor: "user", requester: "user", status: "active",
+      dueAt: null, becameOverdueAt: null, createdAtMessageId: 0, updatedAtMessageId: 1,
+      sourceRefs: [{ messageId: 1, contentHash: message.contentHash }],
+    }));
+    const initial = structuredClone(store.inspect.state);
+    const capacityConfig = createMemoryTestConfig({ ...config, sectionBudgets: { todos: { maxItems: 2 } } });
+    let calls = 0;
+    const pipeline = createNormalWritePipeline({ observer: {}, config: capacityConfig, repositories: store.repositories,
+      now: () => new Date("2026-07-12T00:01:00Z"),
+      providerAdapter: { propose: async envelope => {
+        calls += 1;
+        assert.equal(envelope.task.proposer, "todoProposer", "capacity must never call compaction");
+        return { status: "ok", output: { tickId: envelope.task.tickId, proposer: "todoProposer", sectionResults: { todos: {
+          status: "changes", changes: ["还书", "买花"].map(text => ({ action: "add", text, actor: "user", requester: "user", evidenceMessageIds: [1] })),
+        } } } };
+      } },
+    });
+    const envelope = await pipeline.createTask(1, "default", { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: wave ? "forceDrain" : "lagThreshold" } });
+    const result = wave
+      ? await pipeline.commitPreparedWave([await pipeline.prepareEnvelope(envelope)])
+      : await pipeline.processEnvelope(envelope);
+    assert.equal(result.status, "committed");
+    assert.equal(calls, 1);
+    assert.deepEqual(store.inspect.state.working.todos.map(item => item.text), ["还书", "买花"]);
+    assert.equal(store.inspect.state.meta.revision, 1);
+    assert.equal(store.inspect.state.meta.targetCursors.todos, 1);
+    assert.equal(store.inspect.tasks.size, 1);
+    assert.equal(store.inspect.groups.size, 1);
+    assert.deepEqual(store.inspect.events.map(event => event.decision), ["accepted", "accepted", "system_cleanup", "system_cleanup"]);
+    assert.deepEqual(store.inspect.events.filter(event => event.cleanup_type).map(event => [event.cleanup_type, event.item_id]), [
+      ["todo_capacity_evicted", "todo:a"], ["todo_capacity_evicted", "todo:b"],
+    ]);
+    assert.deepEqual(replayEventGroups(initial, [...store.inspect.groups.values()], store.inspect.events), store.inspect.state);
+    assert.deepEqual(store.inspect.snapshots[0].state, store.inspect.state);
+    const duplicate = await pipeline.processEnvelope(envelope);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(calls, 1);
+    assert.equal(store.inspect.state.meta.revision, 1);
+  });
 }
 
 test("normal task atomically persists state, event group, snapshot, task and target status", async () => {
