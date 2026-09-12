@@ -19,6 +19,7 @@ const { createProviderHealth } = require("../../../shared/observability/provider
 const { createRetryBudget } = require("./retryBudget");
 const { createMemoryRuntimeHealth } = require("./runtimeHealth");
 const { createMemoryLibrarian } = require("./librarian");
+const { createMemoryWorkCoordinator } = require("./workCoordinator");
 
 const MAX_BACKGROUND_FAILURE_REASON_CHARS = 200;
 
@@ -197,8 +198,10 @@ function createMemoryRuntime({
   onBackgroundError,
   enqueueByKey: sharedEnqueueByKey,
 } = {}) {
-  const enqueueByKey = sharedEnqueueByKey || createKeyedExecutor();
-  if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores, enqueueByKey);
+  const sourceQueue = sharedEnqueueByKey || createKeyedExecutor();
+  if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores, sourceQueue);
+  const workCoordinator = createMemoryWorkCoordinator({ enqueueMutation: sourceQueue });
+  const enqueueByKey = workCoordinator.enqueue;
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
@@ -234,7 +237,9 @@ function createMemoryRuntime({
   });
   sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, librarian, config });
   const privacyDelete = repositories.privacy
-    ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey, onBackgroundError })
+    ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey,
+        enqueueMutation: workCoordinator.mutate,
+        ensureState: (userId, presetId) => ensureScope({ userId, presetId }), onBackgroundError })
     : null;
   const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
   const recovery = createMemoryRecovery({
@@ -256,7 +261,7 @@ function createMemoryRuntime({
   const backgroundOperations = new Set();
   let shuttingDown = false;
 
-  async function ensureState(userId, presetId) {
+  async function ensureState(userId, presetId, { signal } = {}) {
     try {
       return (
         (await repositories.state.getState(userId, presetId)) ||
@@ -279,15 +284,18 @@ function createMemoryRuntime({
         cutoverError.actualVersion = rawState.version;
         throw cutoverError;
       }
-      const recovered = await stateRecovery.recoverScope(userId, presetId);
-      if (!["healthy", "snapshot_restored", "events_replayed", "rebuilt"].includes(recovered.status))
-        throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
-      return recovered.state ?? repositories.state.getState(userId, presetId);
+      // We already hold the Memory lane. Schedule, but never await, the joint
+      // mutation barrier here: it must first wait for this job to leave.
+      if (!signal?.aborted) void scheduleStateRecovery({ userId, presetId }).catch(() => {});
+      return null;
     }
   }
 
   function ensureScope({ userId, presetId } = {}) {
-    return enqueueByKey(`${userId}:${presetId}`, () => ensureState(userId, presetId));
+    // Context assembly already runs inside a chat send. Initialization is a
+    // short idempotent transaction; never re-enter that lane or await a model.
+    return repositories.state.getState(userId, presetId).then(state =>
+      state || repositories.state.initializeRevisionZero(userId, presetId));
   }
 
   function runInBackground(work) {
@@ -314,12 +322,14 @@ function createMemoryRuntime({
     shuttingDown = true;
     stopTaskPolling();
     stopProjectionPolling();
+    await workCoordinator.shutdown();
     while (backgroundOperations.size) await Promise.allSettled([...backgroundOperations]);
     await privacyDelete?.waitForIdle?.();
     return { status: "stopped" };
   }
 
-  async function drainProjectionsNow(userId, presetId) {
+  async function drainProjectionsNow(userId, presetId, { signal } = {}) {
+    if (signal?.aborted) return {};
     if (
       repositories.privacy?.hasIncompleteOperation &&
       (await repositories.privacy.hasIncompleteOperation(userId, presetId))
@@ -350,11 +360,12 @@ function createMemoryRuntime({
       }
     }
     for (const projectionKey of Object.keys(projectionDrains)) {
+      if (signal?.aborted) break;
       const drain = projectionDrains[projectionKey];
       if (!drain?.drain) continue;
       const startedAt = performance.now();
       try {
-        results[projectionKey] = await drain.drain(userId, presetId);
+        results[projectionKey] = await drain.drain(userId, presetId, { signal });
         metrics.observe(
           "memory_projection_duration_ms",
           { projectionKey, status: results[projectionKey]?.status ?? "unknown" },
@@ -377,7 +388,7 @@ function createMemoryRuntime({
   }
 
   function drainProjections(userId, presetId) {
-    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => drainProjectionsNow(userId, presetId)));
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, options => drainProjectionsNow(userId, presetId, options)));
   }
 
   async function reconcileProjections() {
@@ -388,8 +399,8 @@ function createMemoryRuntime({
       const userId = Number(scope.userId ?? scope.user_id);
       const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
       if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
-      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, () =>
-        drainProjectionsNow(userId, presetId),
+      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, options =>
+        drainProjectionsNow(userId, presetId, options),
       );
     }
     return results;
@@ -405,14 +416,15 @@ function createMemoryRuntime({
       if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
       if (selectedScope
         && (Number(selectedScope.userId) !== userId || String(selectedScope.presetId) !== presetId)) continue;
-      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, async () => {
+      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, async ({ signal }) => {
         if (
           repositories.privacy?.hasIncompleteOperation &&
           (await repositories.privacy.hasIncompleteOperation(userId, presetId))
         ) {
           return { status: "skipped", reason: "privacy_delete_pending" };
         }
-        const state = await ensureState(userId, presetId);
+        const state = await ensureState(userId, presetId, { signal });
+        if (!state) return { status: "skipped", reason: "state_recovery_pending" };
         const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
         const rebuilding = statuses.filter((row) => {
           const boundary = row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId;
@@ -439,6 +451,7 @@ function createMemoryRuntime({
           sourceGeneration: state.meta.sourceGeneration,
           boundaryMessageId: boundaries[0],
           resumeHalted,
+          signal,
         });
       });
     }
@@ -497,26 +510,46 @@ function createMemoryRuntime({
     return stopTaskPolling;
   }
 
+  async function processScopeNow(userId, presetId, { signal }) {
+    if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+      return { status: "skipped", reason: "privacy_delete_pending" };
+    }
+    const state = await ensureState(userId, presetId, { signal });
+    if (!state) return { status: "skipped", reason: "state_recovery_pending" };
+    let librarianResult;
+    try {
+      librarianResult = await librarian.runScheduled(userId, presetId, { signal });
+    } catch (error) {
+      librarianResult = { status: "failed", reason: backgroundFailureReason(error, "librarian_failed") };
+      metrics.increment("memory_librarian_background_errors_total", {});
+      onBackgroundError?.(error);
+    }
+    if (signal.aborted) return { status: "interrupted", reason: "cancelled" };
+    const memory = await pipeline.processScope(userId, presetId, { signal });
+    const projections = await drainProjectionsNow(userId, presetId, { signal });
+    return { memory, librarian: librarianResult, projections };
+  }
+
+  const pendingScopes = new Map();
   function processScope(userId, presetId) {
-    return runInBackground(() =>
-      enqueueByKey(`${userId}:${presetId}`, async () => {
-        await ensureState(userId, presetId);
-        let librarianResult;
-        try {
-          librarianResult = await librarian.runScheduled(userId, presetId);
-        } catch (error) {
-          librarianResult = {
-            status: "failed",
-            reason: backgroundFailureReason(error, "librarian_failed"),
-          };
-          metrics.increment("memory_librarian_background_errors_total", {});
-          onBackgroundError?.(error);
+    const key = `${userId}:${presetId}`;
+    const pending = pendingScopes.get(key);
+    if (pending) { pending.dirty = true; return pending.promise; }
+    const entry = { dirty: true };
+    entry.promise = runInBackground(() =>
+      enqueueByKey(key, async ({ signal }) => {
+        let result;
+        while (entry.dirty && !signal.aborted) {
+          entry.dirty = false;
+          result = await processScopeNow(userId, presetId, { signal });
         }
-        const memory = await pipeline.processScope(userId, presetId);
-        const projections = await drainProjectionsNow(userId, presetId);
-        return { memory, librarian: librarianResult, projections };
+        return signal.aborted ? { status: "interrupted", reason: "cancelled" } : result;
       }),
     );
+    pendingScopes.set(key, entry);
+    const release = () => { if (pendingScopes.get(key) === entry) pendingScopes.delete(key); };
+    void entry.promise.then(release, release);
+    return entry.promise;
   }
 
   function rebuildScope(userId, presetId, { reason = "manual_repair" } = {}) {
@@ -525,9 +558,10 @@ function createMemoryRuntime({
     if (active) return Promise.resolve({ status: "queued", operationId: active.operationId, deduplicated: true });
     const operationId = crypto.randomUUID();
     const promise = runInBackground(() =>
-      enqueueByKey(key, async () => {
+      enqueueByKey(key, async ({ signal }) => {
         const startedAt = performance.now();
-        const state = await ensureState(userId, presetId);
+        const state = await ensureState(userId, presetId, { signal });
+        if (!state) return { status: "skipped", reason: "state_recovery_pending" };
         const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
         const rebuilding = statuses.filter((row) => {
           const boundary = row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId;
@@ -555,13 +589,14 @@ function createMemoryRuntime({
         const drained = await sourceRebuild.forceDrainTo(userId, presetId, {
           ...initialized,
           resumeHalted: true,
+          signal,
         });
         metrics.observe(
           "memory_rebuild_duration_ms",
           { reason, status: drained.status },
           performance.now() - startedAt,
         );
-        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId, { signal }) : {};
         return { ...initialized, ...drained, projections };
       }),
     );
@@ -577,26 +612,31 @@ function createMemoryRuntime({
   async function mutateSourceAndRebuild(
     userId,
     presetId,
-    { mutateSource, purgeDerived = null, reason = "source_mutation", affectedFromMessageId = null } = {},
+    { mutateSource, purgeDerived = null, reason = "source_mutation", affectedFromMessageId = null, sourceAlreadyExcluded = false } = {},
   ) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
-    const initialized = await enqueueByKey(`${userId}:${presetId}`, async () => {
-      await ensureState(userId, presetId);
+    const initialized = await workCoordinator.mutate(`${userId}:${presetId}`, async () => {
+      if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+        throw Object.assign(new Error("Privacy operation is still in progress"), { status: 409, code: "MEMORY_PRIVACY_OPERATION_PENDING" });
+      }
+      await ensureScope({ userId, presetId });
       return sourceRebuild.initializeGeneration(userId, presetId, {
         mutateSource,
         purgeDerived,
         reason,
         affectedFromMessageId,
+        sourceAlreadyExcluded,
       });
     });
     runInBackground(() =>
-      enqueueByKey(`${userId}:${presetId}`, async () => {
-        const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
-        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+      enqueueByKey(`${userId}:${presetId}`, async ({ signal }) => {
+        const drained = initialized.rebuildRequired === false ? { status: "completed" }
+          : await sourceRebuild.forceDrainTo(userId, presetId, { ...initialized, signal });
+        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId, { signal }) : {};
         return { ...drained, projections };
       }),
     );
-    return { status: "rebuilding", ...initialized };
+    return { status: initialized.rebuildRequired === false ? "completed" : "rebuilding", ...initialized };
   }
 
   async function recoverPending() {
@@ -624,10 +664,29 @@ function createMemoryRuntime({
     return runInBackground(() => housekeeping.runScope(userId, presetId, { requestNow }));
   }
 
+  const pendingStateRecoveries = new Map();
   function scheduleStateRecovery({ userId, presetId } = {}) {
-    return runInBackground(() =>
-      enqueueByKey(`${userId}:${presetId}`, () => stateRecovery.recoverScope(userId, presetId)),
-    );
+    const key = `${userId}:${presetId}`;
+    if (pendingStateRecoveries.has(key)) return pendingStateRecoveries.get(key);
+    const promise = runInBackground(async () => {
+      const initialized = await workCoordinator.mutate(key, async () => {
+        if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+          return { status: "skipped", reason: "privacy_delete_pending" };
+        }
+        return stateRecovery.prepareScopeRecovery(userId, presetId);
+      });
+      if (initialized.status !== "rebuild_initialized") return initialized;
+      return enqueueByKey(key, async options => {
+        if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+          return { status: "skipped", reason: "privacy_delete_pending" };
+        }
+        return stateRecovery.drainPreparedRecovery(userId, presetId, initialized, options);
+      });
+    });
+    pendingStateRecoveries.set(key, promise);
+    const release = () => { if (pendingStateRecoveries.get(key) === promise) pendingStateRecoveries.delete(key); };
+    void promise.then(release, release);
+    return promise;
   }
 
   async function resumeTarget(userId, presetId, targetKey) {
@@ -681,7 +740,12 @@ function createMemoryRuntime({
   }
 
   function runLibrarian(userId, presetId) {
-    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => librarian.runManual(userId, presetId)));
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async options => {
+      if (await repositories.privacy?.hasIncompleteOperation?.(userId, presetId)) {
+        return { status: "skipped", reason: "privacy_delete_pending" };
+      }
+      return librarian.runManual(userId, presetId, options);
+    }));
   }
 
   return Object.freeze({

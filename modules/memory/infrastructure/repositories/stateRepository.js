@@ -47,8 +47,9 @@ async function initializeRevisionZero(userId, presetId) {
         [scope.userId, scope.presetId, state],
       );
     } else assertSupportedMemoryState(state);
-    if (state.meta.revision !== 0 || state.meta.sourceGeneration !== 0)
-      throw new Error("initializeRevisionZero cannot initialize an already advanced state");
+    // Another worker may initialize and advance the authority after our caller's
+    // initial read. Its committed state wins; initialization must be idempotent.
+    if (state.meta.revision !== 0 || state.meta.sourceGeneration !== 0) return state;
     await client.query(
       `INSERT INTO chat_memory_snapshots (user_id,preset_id,source_generation,revision,schema_version,state) VALUES ($1,$2,0,0,$3,$4) ON CONFLICT (user_id,preset_id,revision) DO NOTHING`,
       [scope.userId, scope.presetId, state.version ?? SCHEMA_VERSION, state],

@@ -38,6 +38,7 @@ function createChatTrashCleanup({ config, chatRepository, memory, logger } = {})
     let purged = 0;
     for (const group of groups.values()) {
       const mutation = await memory.privacyHardDelete(group.userId, group.presetId, {
+        sourceAlreadyExcluded: true,
         affectedFromMessageId: group.affectedFromMessageId,
         deleteRawSource: (client) => chatRepository.purgeTrashedSessionIds(
           group.userId,

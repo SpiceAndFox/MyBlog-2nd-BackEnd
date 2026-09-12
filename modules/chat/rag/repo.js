@@ -152,22 +152,29 @@ async function deleteAllChunks(userId, presetId, { client } = {}) {
   return rowCount || 0;
 }
 
-async function discardOtherProjectionStages(
+async function prepareProjectionStage(
   userId,
   presetId,
   { sourceGeneration, boundaryMessageId },
   { client } = {},
 ) {
+  if (!client) throw new Error("Projection stage preparation requires a transaction client");
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
   const generation = normalizeNonNegativeInteger(sourceGeneration, { name: "sourceGeneration" });
   const boundary = normalizeNonNegativeInteger(boundaryMessageId, { name: "boundaryMessageId" });
-  const { rowCount } = await (client || db).query(`
+  await client.query(`
     DELETE FROM chat_rag_projection_staging
     WHERE user_id=$1 AND preset_id=$2
-      AND (source_generation<>$3 OR boundary_message_id<>$4)
+      AND source_generation<>$3
+  `, [normalizedUserId, normalizedPresetId, generation]);
+  // An append preserves the completed prefix of this generation. Retarget its
+  // staged chunks with the next batch and checkpoint in the same transaction.
+  await client.query(`
+    UPDATE chat_rag_projection_staging SET boundary_message_id=$4,updated_at=NOW()
+    WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3
+      AND boundary_message_id<>$4
   `, [normalizedUserId, normalizedPresetId, generation, boundary]);
-  return rowCount || 0;
 }
 
 async function deleteAllProjectionStages(userId, presetId, { client } = {}) {
@@ -509,7 +516,7 @@ return Object.freeze({
   deleteAllChunks,
   deleteAllProjectionStages,
   countProjectionStages,
-  discardOtherProjectionStages,
+  prepareProjectionStage,
   upsertProjectionStage,
   promoteProjectionStage,
   countChunks,

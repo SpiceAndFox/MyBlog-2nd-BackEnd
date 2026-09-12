@@ -27,6 +27,12 @@ test("projection drain rebuilds on generation mismatch and rejects a stale compl
 
   checkpointWrite = null;
   adapter.rebuild = async () => { boundary = 21; return { rows: [] }; };
+  const appended = await drain.drain(7, "companion");
+  assert.equal(appended.status, "healthy");
+  assert.equal(checkpointWrite.processedBoundaryMessageId, 20);
+
+  checkpointWrite = null;
+  adapter.rebuild = async () => { state.meta.sourceGeneration += 1; return { rows: [] }; };
   const stale = await drain.drain(7, "companion");
   assert.equal(stale.status, "stale");
   assert.equal(checkpointWrite, null);
@@ -60,6 +66,34 @@ test("projection drain persists a retryable coverage state when staging fails", 
     status: "degraded",
     lastErrorReason: "EMBEDDING_UNAVAILABLE",
   });
+});
+
+test("cancelled projection staging never promotes a late embedding result or writes failure health", { timeout: 2000 }, async () => {
+  const state = createInitialMemoryState();
+  const staged = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  const controller = new AbortController();
+  const writes = [];
+  const drain = createProjectionDrain({ projectionKey: "rag", repositories: {
+    state: { async getState() { return state; } },
+    source: { async getBoundary() { return 20; } },
+    sidecars: {
+      async getProjectionCheckpoint() { return { processed_generation: 0, processed_boundary_message_id: 10 }; },
+      async upsertProjectionCheckpoint() { writes.push("checkpoint"); },
+    },
+    async withTransaction(work) { return work({}); },
+  }, adapter: {
+    async rebuild() { throw new Error("unexpected rebuild"); },
+    append({ signal }) { assert.equal(signal, controller.signal); started.resolve(); return staged.promise; },
+    async commit() { writes.push("commit"); },
+  } });
+  const work = drain.drain(1, "default", { signal: controller.signal });
+  await started.promise;
+  controller.abort();
+  assert.equal((await work).status, "interrupted");
+  staged.resolve({ chunks: ["old-source"] });
+  await new Promise(setImmediate);
+  assert.deepEqual(writes, []);
 });
 
 test("projection drain uses only generation and source boundary when already current", async () => {

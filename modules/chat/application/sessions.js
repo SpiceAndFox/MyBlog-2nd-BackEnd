@@ -112,6 +112,7 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
       const presetId = presetIdOf(existing);
       cancelScope(userId, presetId, "Session permanently deleted");
       const mutation = await memory.privacyHardDelete(userId, presetId, {
+        sourceAlreadyExcluded: true,
         deleteRawSource: (client) => chatRepository.deleteSessionPermanently(userId, sessionId, { client }),
         affectedFromMessageId: (deletedSession) => deletedSession?.firstMessageId ?? null,
       });

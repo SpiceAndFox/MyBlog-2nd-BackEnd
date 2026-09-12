@@ -13,7 +13,18 @@ function createMemoryRecovery({ repositories, pipeline, librarianPipeline, enque
     const selected = envelope?.task?.targetKey === LIBRARIAN_TARGET_KEY ? librarianPipeline : pipeline;
     if (!selected?.processEnvelope) throw new Error(`Memory pipeline is unavailable for ${envelope?.task?.targetKey}`);
     if (typeof enqueueByKey !== "function") return selected.processEnvelope(envelope);
-    return enqueueByKey(buildKey(envelope.task.userId, envelope.task.presetId), () => selected.processEnvelope(envelope));
+    return enqueueByKey(buildKey(envelope.task.userId, envelope.task.presetId), async (options) => {
+      if (await repositories.privacy?.hasIncompleteOperation?.(envelope.task.userId, envelope.task.presetId)) {
+        return { status: "skipped", reason: "privacy_delete_pending" };
+      }
+      if (repositories.state?.getState) {
+        const state = await repositories.state.getState(envelope.task.userId, envelope.task.presetId);
+        if (!state || state.meta.sourceGeneration !== envelope.task.sourceGeneration) {
+          return { status: "stale", reason: "generation_mismatch", taskId: envelope.task.taskId };
+        }
+      }
+      return selected.processEnvelope(envelope, options);
+    });
   }
 
   async function isRebuildManaged(envelope) {

@@ -51,15 +51,21 @@ function createMemoryStateRecovery({ repositories, sourceRebuild } = {}) {
     });
   }
 
-  async function recoverScope(userId, presetId) {
+  // This phase may replace the authority generation. The runtime must place it
+  // behind both Chat sends and prior Memory work, without holding a model call.
+  async function prepareScopeRecovery(userId, presetId) {
     const restored = await restoreLatestCompleteSnapshot(userId, presetId);
     if (restored.status !== "rebuild_required") return restored;
     const initialized = await sourceRebuild.initializeRecoveryGeneration(userId, presetId);
-    const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
-    return { status: drained.status === "completed" ? "rebuilt" : "rebuild_incomplete", ...initialized, ...drained };
+    return { status: "rebuild_initialized", ...initialized };
   }
 
-  return Object.freeze({ recoverScope, restoreLatestCompleteSnapshot });
+  async function drainPreparedRecovery(userId, presetId, initialized, { signal } = {}) {
+    const drained = await sourceRebuild.forceDrainTo(userId, presetId, { ...initialized, signal });
+    return { ...initialized, ...drained, status: drained.status === "completed" ? "rebuilt" : "rebuild_incomplete" };
+  }
+
+  return Object.freeze({ prepareScopeRecovery, drainPreparedRecovery, restoreLatestCompleteSnapshot });
 }
 
 module.exports = { createMemoryStateRecovery };

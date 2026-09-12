@@ -63,3 +63,25 @@ test("invalid authority replays a continuous semantic event tail from the latest
   assert.equal(authority.meta.revision, 3);
   assert.equal(authority.meta.targetCursors.todos, 1);
 });
+
+test("state recovery separates generation initialization from model draining and reports its terminal outcome", async () => {
+  let drains = 0;
+  const initialized = { sourceGeneration: 1, revision: 4, boundaryMessageId: 20 };
+  const recovery = createMemoryStateRecovery({ repositories: {
+    async withTransaction(work) { return work({}); },
+    state: { async getRawState() { return { version: "2.01", broken: true }; } },
+    audit: {
+      async getRecoveryHead() { return { revision: 3, sourceGeneration: 0 }; },
+      async listSnapshotsForRecovery() { return []; },
+    },
+  }, sourceRebuild: {
+    async initializeRecoveryGeneration() { return initialized; },
+    async forceDrainTo(_u, _p, options) { drains++; assert.equal(options.sourceGeneration, 1); return { status: "completed" }; },
+  } });
+  const prepared = await recovery.prepareScopeRecovery(1, "default");
+  assert.equal(prepared.status, "rebuild_initialized");
+  assert.equal(drains, 0);
+  const result = await recovery.drainPreparedRecovery(1, "default", prepared);
+  assert.equal(result.status, "rebuilt");
+  assert.equal(drains, 1);
+});

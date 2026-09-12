@@ -55,7 +55,7 @@ function createChatRagProjectionAdapter({
   if (typeof chatRagRepo?.deleteAllChunks !== "function" || typeof chatRagRepo?.upsertChunk !== "function") {
     throw new Error("Chat RAG projection repository is required");
   }
-  if (typeof chatRagRepo.discardOtherProjectionStages !== "function"
+  if (typeof chatRagRepo.prepareProjectionStage !== "function"
     || typeof chatRagRepo.upsertProjectionStage !== "function"
     || typeof chatRagRepo.promoteProjectionStage !== "function") {
     throw new Error("Chat RAG resumable projection repository is required");
@@ -97,7 +97,7 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
     }
   }
   const embeddings = staged.length
-    ? await createEmbeddings({ texts: staged.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) })
+    ? await createEmbeddings({ texts: staged.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)), signal: input.signal })
     : [];
   return { chunks: staged.map((chunk, index) => ({ ...chunk, embedding: embeddings[index] })) };
 }
@@ -148,7 +148,7 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
       }
     }
     const embeddings = staged.length
-      ? await createEmbeddings({ texts: staged.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) })
+      ? await createEmbeddings({ texts: staged.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)), signal: input.signal })
       : [];
     const complete = selectedTurns.length === turns.length;
     const processedBoundaryMessageId = complete
@@ -166,7 +166,7 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
     rebuildBatch: stageRagProjectionBatch,
     async stageRebuildBatch({ staged, userId, presetId, sourceGeneration, boundaryMessageId, client }) {
-      await chatRagRepo.discardOtherProjectionStages(
+      await chatRagRepo.prepareProjectionStage(
         userId,
         presetId,
         { sourceGeneration, boundaryMessageId },

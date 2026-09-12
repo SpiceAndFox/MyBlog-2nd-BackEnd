@@ -43,7 +43,7 @@ function createMemoryHousekeeping({ repositories, config, enqueueByKey, buildKey
       nextState.meta.revision = state.meta.revision + 1;
       const task = {
         task_id: taskId, dedupe_key: cleanupDedupeKey(state, targetKey, timestamp), user_id: Number(userId), preset_id: String(presetId), target_key: targetKey,
-        source_generation: state.meta.sourceGeneration, task_type: "system_cleanup", parent_task_id: null, predecessor_task_id: null, resume_epoch: 0,
+        source_generation: state.meta.sourceGeneration, schema_version: SCHEMA_VERSION, task_type: "system_cleanup", parent_task_id: null, predecessor_task_id: null, resume_epoch: 0,
         status: "succeeded", stage: "committed", cursor_before: null, target_message_id: null, base_revision: state.meta.revision,
         task_payload: { now: executionNow.toISOString(), targetKey }, stage_payload: null, attempt: 1, context_expansion_attempt: 0,
         not_before: null, last_error_reason: null, result_revision: nextState.meta.revision,

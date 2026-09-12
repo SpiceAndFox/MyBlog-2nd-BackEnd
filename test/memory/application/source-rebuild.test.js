@@ -163,7 +163,7 @@ test("source mutation atomically advances generation, preserves global revision,
   const harness = makeRebuildHarness();
   const rebuild = createMemorySourceRebuild({ repositories: harness.repositories, normalWritePipeline: harness.normalWritePipeline, config: { targets: {} } });
   const result = await rebuild.initializeGeneration(7, "companion", { mutateSource() { harness.data.mutationRan = true; return "mutated"; } });
-  assert.deepEqual(result, { sourceGeneration: 1, revision: 6, boundaryMessageId: 20, mutationResult: "mutated" });
+  assert.deepEqual(result, { sourceGeneration: 1, revision: 6, boundaryMessageId: 20, mutationResult: "mutated", rebuildRequired: true });
   assert.equal(harness.data.mutationRan, true);
   assert.deepEqual(harness.data.sourceGuardClient, { transaction: true });
   assert.equal(harness.data.cancelled, true);
@@ -172,6 +172,120 @@ test("source mutation atomically advances generation, preserves global revision,
   assert.deepEqual(harness.data.state.meta.targetCursors, Object.fromEntries(TARGET_KEYS.map((key) => [key, 0])));
   assert.equal(Object.values(harness.data.statuses).every((entry) => entry.status === "rebuilding" && entry.rebuildBoundaryMessageId === 20), true);
   assert.equal(harness.data.snapshots.length, 1);
+});
+
+test("source mutation and derived-history replacement roll back together at every new-generation write boundary", async () => {
+  for (const failurePoint of ["purge", "state", "snapshot", "target", "checkpoint", "projection"]) {
+    const h = makeRebuildHarness();
+    const before = structuredClone(h.data);
+    let inject = true;
+    const fail = point => {
+      if (inject && point === failurePoint) { inject = false; throw new Error(`injected:${point}`); }
+    };
+    h.repositories.withTransaction = async work => {
+      const committed = structuredClone(h.data);
+      try { return await work({ transaction: true }); }
+      catch (error) {
+        for (const key of Object.keys(h.data)) delete h.data[key];
+        Object.assign(h.data, committed);
+        throw error;
+      }
+    };
+    h.repositories.runtime.getLibrarianCheckpoint = async () => ({
+      completed_ordinal: 4, boundary_message_id: 9, watermark_kind: "complete_turn",
+    });
+    h.repositories.runtime.upsertLibrarianCheckpoint = async (_u, _p, value) => {
+      h.data.checkpoint = value;
+      fail("checkpoint");
+    };
+    for (const [repository, method, point] of [
+      [h.repositories.state, "writeState", "state"],
+      [h.repositories.audit, "insertSnapshot", "snapshot"],
+      [h.repositories.runtime, "upsertTargetStatus", "target"],
+      [h.repositories.sidecars, "markProjectionsRebuilding", "projection"],
+    ]) {
+      const original = repository[method];
+      repository[method] = async (...args) => { await original(...args); fail(point); };
+    }
+    const rebuild = createMemorySourceRebuild({ repositories: h.repositories, normalWritePipeline: h.normalWritePipeline, config: { targets: {} } });
+    const options = {
+      affectedFromMessageId: 30,
+      mutateSource(client) { assert.equal(client.transaction, true); h.data.mutationRan = true; return { deleted: 30 }; },
+      purgeDerived(client) { assert.equal(client.transaction, true); h.data.historyPurged = true; fail("purge"); },
+    };
+    await assert.rejects(rebuild.initializeGeneration(7, "companion", options), new RegExp(`injected:${failurePoint}`));
+    assert.deepEqual(h.data, before, failurePoint);
+    const retried = await rebuild.initializeGeneration(7, "companion", options);
+    assert.equal(retried.sourceGeneration, 1);
+    assert.equal(retried.revision, 6);
+    assert.equal(retried.rebuildRequired, false);
+    assert.equal(h.data.snapshots.length, 1);
+    assert.equal(h.data.mutationRan, true);
+    assert.equal(h.data.historyPurged, true);
+  }
+});
+
+test("trashing messages after all cursors preserves Memory and its Librarian completion without a model call", async () => {
+  const h = makeRebuildHarness();
+  h.data.state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map(key => [key, 8278]));
+  h.repositories.source.getBoundary = async () => 8278;
+  h.repositories.runtime.getLibrarianCheckpoint = async () => ({
+    source_generation: 0, completed_ordinal: 54, boundary_message_id: 8278, watermark_kind: "message_batch",
+  });
+  let carried;
+  h.repositories.runtime.upsertLibrarianCheckpoint = async (_u, _p, value) => { carried = value; };
+  const before = structuredClone(h.data.state);
+  const rebuild = createMemorySourceRebuild({ repositories: h.repositories, normalWritePipeline: h.normalWritePipeline, config: {} });
+  const result = await rebuild.mutateAndRebuild(7, "companion", {
+    mutateSource: async () => ({ id: 236 }), affectedFromMessageId: () => 8298,
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.rebuildRequired, false);
+  assert.equal(result.restoredFromSnapshotRevision, 5);
+  assert.deepEqual({ ...h.data.state, meta: before.meta }, before);
+  assert.deepEqual(carried, { sourceGeneration: 1, boundaryMessageId: 8278, completedOrdinal: 54, watermarkKind: "message_batch", lastTaskId: null });
+  assert.equal(Object.values(h.data.statuses).every(row => row.status === "healthy" && row.rebuildBoundaryMessageId === null), true);
+});
+
+test("empty and missing sessions leave generation, snapshots and checkpoint unchanged", async () => {
+  for (const mutationResult of [{ id: 236 }, null]) {
+    const h = makeRebuildHarness();
+    const before = structuredClone(h.data.state);
+    const rebuild = createMemorySourceRebuild({ repositories: h.repositories, normalWritePipeline: h.normalWritePipeline, config: {} });
+    const result = await rebuild.initializeGeneration(7, "companion", {
+      mutateSource: async () => mutationResult, affectedFromMessageId: () => null,
+    });
+    assert.equal(result.rebuildRequired, false);
+    assert.deepEqual(h.data.state, before);
+    assert.equal(h.data.snapshots.length, 0);
+    assert.equal(h.data.cancelled, false);
+  }
+});
+
+test("permanent purge preserves already-excluded source state but still purges history before its new anchor", async () => {
+  const h = makeRebuildHarness();
+  const before = structuredClone(h.data.state);
+  let purged = false;
+  const rebuild = createMemorySourceRebuild({ repositories: h.repositories, normalWritePipeline: h.normalWritePipeline, config: {} });
+  const result = await rebuild.initializeGeneration(7, "companion", {
+    mutateSource: async () => ({ id: 5 }), affectedFromMessageId: () => 1, sourceAlreadyExcluded: true,
+    purgeDerived: async (_client, metadata) => { purged = true; assert.equal(metadata.rebuildRequired, false); },
+  });
+  assert.equal(purged, true);
+  assert.equal(result.rebuildRequired, false);
+  assert.deepEqual({ ...h.data.state, meta: before.meta }, before);
+  assert.equal(h.data.snapshots.length, 1);
+});
+
+test("an unchanged state with unfinished rebuild targets must still finish its existing work", async () => {
+  const h = makeRebuildHarness();
+  h.repositories.runtime.getTargetStatuses = async () => [{ target_key: "todos", rebuild_boundary_message_id: 20 }];
+  const rebuild = createMemorySourceRebuild({ repositories: h.repositories, normalWritePipeline: h.normalWritePipeline, config: {} });
+  const result = await rebuild.initializeGeneration(7, "companion", {
+    mutateSource: async () => ({ id: 236 }), affectedFromMessageId: () => 21,
+  });
+  assert.equal(result.rebuildRequired, true);
+  assert.equal(result.restoredFromSnapshotRevision, 5);
 });
 
 test("source mutation restores the latest unaffected snapshot into the new generation", async () => {

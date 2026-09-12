@@ -1,3 +1,5 @@
+const { abortable } = require("../../../shared/async/abortable");
+
 function positiveInt(value, name) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`${name} must be a positive integer`);
@@ -51,9 +53,19 @@ function admissionControlledAdapter(adapter, admission) {
   if (!admission?.run) throw new Error("Memory Provider admission is required");
   return Object.freeze({
     propose(envelope, options) {
-      return admission.tryRun(() => options?.signal?.aborted
-        ? { status: "deferred", reason: "operation_interrupted" } : adapter.propose(envelope, options))
-        || Promise.resolve({ status: "deferred", reason: "provider_queue_full" });
+      const signal = options?.signal;
+      const interrupted = { status: "deferred", reason: "operation_interrupted" };
+      if (signal?.aborted) return Promise.resolve(interrupted);
+      const scheduled = admission.tryRun(async () => {
+        if (!signal) return adapter.propose(envelope, options);
+        try { return await abortable(() => adapter.propose(envelope, options), signal); }
+        catch (error) { if (signal?.aborted) return interrupted; throw error; }
+      });
+      if (!scheduled) return Promise.resolve({ status: "deferred", reason: "provider_queue_full" });
+      return abortable(() => scheduled, signal).catch(error => {
+        if (signal?.aborted) return interrupted;
+        throw error;
+      });
     },
   });
 }

@@ -10,6 +10,25 @@ const {
   operationAvatarUrls,
 } = require("../../../modules/chat/infrastructure/avatarStorage");
 
+test("an unrelated deletion cannot borrow an active operation or report its raw source committed", async () => {
+  let rawDeletes = 0;
+  let scheduled = 0;
+  const active = { operationId: "old-operation", operationMode: "rebuild", status: "draining" };
+  const hardDelete = createPrivacyHardDelete({
+    repositories: {
+      privacy: { async getOperation() { return active; }, purgeDerivedHistory() {}, upsertOperation() {}, updateOperation() {} },
+    },
+    enqueueMutation: (_key, work) => work(),
+    enqueueByKey: async () => { scheduled += 1; },
+  });
+  await assert.rejects(hardDelete.execute(7, "companion", {
+    deleteRawSource() { rawDeletes += 1; return { id: 123 }; },
+  }), { status: 409, code: "MEMORY_PRIVACY_OPERATION_PENDING", operationId: "old-operation" });
+  await hardDelete.waitForIdle();
+  assert.equal(rawDeletes, 0);
+  assert.equal(scheduled, 1, "the interrupted original operation is rescheduled");
+});
+
 test("privacy hard delete does not force-drain while any external store still reports residue", async () => {
   const calls = [];
   let affectedFromMessageId = null;

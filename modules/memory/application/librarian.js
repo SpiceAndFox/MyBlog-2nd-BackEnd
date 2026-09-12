@@ -114,7 +114,7 @@ function createMemoryLibrarian({
     userId,
     presetId,
     boundaryMessageId,
-    { triggerType = "periodic", skipBarrier = false } = {},
+    { triggerType = "periodic", skipBarrier = false, signal } = {},
   ) {
     const state = await repositories.state.getState(userId, presetId);
     if (!state) return { status: "skipped", reason: "state_missing" };
@@ -139,6 +139,7 @@ function createMemoryLibrarian({
       config.librarian.lagThreshold,
     );
     while (nextOrdinal <= turns.length) {
+      if (signal?.aborted) return { status: "interrupted", reason: "cancelled", results };
       const current = await repositories.state.getState(userId, presetId);
       if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) {
         return { status: "stale", reason: "generation_mismatch", results };
@@ -161,6 +162,7 @@ function createMemoryLibrarian({
         watermarkOrdinal: aligned.watermarkOrdinal,
         triggerType,
         skipBarrier,
+        signal,
       });
       results.push(result);
       if (!TERMINAL_RUN_STATUSES.has(result.status)) {
@@ -225,9 +227,9 @@ function createMemoryLibrarian({
     };
   }
 
-  async function runScheduled(userId, presetId) {
+  async function runScheduled(userId, presetId, options = {}) {
     const boundary = await repositories.source.getBoundary(userId, presetId);
-    return scheduleForBoundary(userId, presetId, boundary, { triggerType: "periodic" });
+    return scheduleForBoundary(userId, presetId, boundary, { ...options, triggerType: "periodic" });
   }
 
   async function runManual(userId, presetId, options = {}) {

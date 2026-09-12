@@ -1,3 +1,5 @@
+const { abortable } = require("../../../shared/async/abortable");
+
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 
 function errorReason(error) {
@@ -36,13 +38,14 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             : 0;
           while (true) {
             if (signal?.aborted) return { status: "interrupted", reason: "cancelled", projectionKey };
-            staged = await adapter.rebuildBatch({
+            staged = await abortable(() => adapter.rebuildBatch({
               userId,
               presetId,
               sourceGeneration: capturedGeneration,
               boundaryMessageId: capturedBoundary,
               afterMessageId: rebuildProcessedBoundary,
-            });
+              signal,
+            }), signal);
             const nextBoundary = Number(staged?.processedBoundaryMessageId);
             if (!Number.isSafeInteger(nextBoundary)
               || nextBoundary < rebuildProcessedBoundary
@@ -52,9 +55,9 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             const stagedResult = await repositories.withTransaction(async (client) => {
               const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
               const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
-              if (!current
+              if (signal?.aborted || !current
                 || current.meta.sourceGeneration !== capturedGeneration
-                || currentBoundary !== capturedBoundary) return { status: "stale" };
+                || currentBoundary < capturedBoundary) return { status: "stale" };
               await adapter.stageRebuildBatch({
                 staged,
                 userId,
@@ -78,9 +81,9 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             return repositories.withTransaction(async (client) => {
               const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
               const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
-              if (!current
+              if (signal?.aborted || !current
                 || current.meta.sourceGeneration !== capturedGeneration
-                || currentBoundary !== capturedBoundary) return { status: "stale", projectionKey };
+                || currentBoundary < capturedBoundary) return { status: "stale", projectionKey };
               await adapter.finalizeRebuild({
                 userId,
                 presetId,
@@ -104,20 +107,21 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
             });
           }
         }
-        staged = await adapter.rebuild({
+        staged = await abortable(() => adapter.rebuild({
           userId,
           presetId,
           sourceGeneration: capturedGeneration,
           boundaryMessageId: capturedBoundary,
-        });
+          signal,
+        }), signal);
       } else if (processedBoundary < capturedBoundary) {
         mode = "append";
-        staged = await adapter.append({ userId, presetId, sourceGeneration: capturedGeneration, afterMessageId: processedBoundary, boundaryMessageId: capturedBoundary });
+        staged = await abortable(() => adapter.append({ userId, presetId, sourceGeneration: capturedGeneration, afterMessageId: processedBoundary, boundaryMessageId: capturedBoundary, signal }), signal);
       }
       return await repositories.withTransaction(async (client) => {
         const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
         const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
-        if (!current || current.meta.sourceGeneration !== capturedGeneration || currentBoundary !== capturedBoundary) return { status: "stale", projectionKey };
+        if (signal?.aborted || !current || current.meta.sourceGeneration !== capturedGeneration || currentBoundary < capturedBoundary) return { status: "stale", projectionKey };
         if (mode !== "noop") await adapter.commit({ mode, staged, userId, presetId, sourceGeneration: capturedGeneration, boundaryMessageId: capturedBoundary, client });
         await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
           projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary,
@@ -126,6 +130,7 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
         return { status: "healthy", projectionKey, processedGeneration: capturedGeneration, processedBoundaryMessageId: capturedBoundary };
       });
     } catch (error) {
+      if (signal?.aborted) return { status: "interrupted", reason: "cancelled", projectionKey };
       try {
         await repositories.withTransaction(async (client) => {
           const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });

@@ -1007,12 +1007,16 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     return result;
   }
 
-  async function processIntent(userId, presetId, intent) { return processEnvelope(await createTask(userId, presetId, intent)); }
+  async function processIntent(userId, presetId, intent, options) { return processEnvelope(await createTask(userId, presetId, intent), options); }
   async function prepareEnvelope(envelope, { signal } = {}) { return processEnvelope(envelope, { deferCommit: true, signal }); }
-  async function processScope(userId, presetId) {
+  async function processScope(userId, presetId, { signal } = {}) {
+    if (signal?.aborted) return [];
     const observation = await observer.observe(userId, presetId);
     const results = [];
-    for (const intent of observation.eligibleTasks) results.push(await processIntent(userId, presetId, intent));
+    for (const intent of observation.eligibleTasks) {
+      if (signal?.aborted) break;
+      results.push(await processIntent(userId, presetId, intent, { signal }));
+    }
     return results;
   }
   return Object.freeze({

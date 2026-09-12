@@ -112,33 +112,63 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     return null;
   }
 
+  async function canKeepCurrentState(userId, presetId, current, { affectedFromMessageId, sourceUnchanged, boundary }, client) {
+    if (!sourceUnchanged && affectedFromMessageId === null) return false;
+    if (!TARGET_KEYS.every(key => {
+      const cursor = current.meta.targetCursors[key] ?? 0;
+      return cursor <= boundary && (sourceUnchanged || cursor < affectedFromMessageId);
+    })) return false;
+    const refs = collectSourceRefs(current);
+    if (!refs || (!sourceUnchanged && [...refs.keys()].some(id => id >= affectedFromMessageId))) return false;
+    if (!refs.size) return true;
+    const messages = await repositories.source.getByIds(userId, presetId, [...refs.keys()], { client });
+    return messages.length === refs.size && messages.every(message => refs.get(message.id) === message.contentHash);
+  }
+
   async function initializeGeneration(userId, presetId, {
     mutateSource = async () => {},
     purgeDerived = null,
     reason = "source_mutation",
     affectedFromMessageId: affectedFromOption = null,
+    sourceAlreadyExcluded = false,
   } = {}) {
     return repositories.withTransaction(async (client) => {
       await repositories.sourceWriteGuard.lockScope(userId, presetId, { client });
       const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
       if (!current) throw new Error("Memory state must be initialized before source mutation");
       const mutationResult = await mutateSource(client);
+      if (mutationResult === null || mutationResult === false || mutationResult === 0) {
+        return { mutationResult, rebuildRequired: false, sourceGeneration: current.meta.sourceGeneration };
+      }
       const affectedFromMessageId = normalizeAffectedFromMessageId(
         typeof affectedFromOption === "function"
           ? await affectedFromOption(mutationResult, client)
           : affectedFromOption,
       );
       const boundary = await repositories.source.getBoundary(userId, presetId, { client });
+      if (typeof affectedFromOption === "function" && affectedFromMessageId === null && !purgeDerived) {
+        return { mutationResult, rebuildRequired: false, sourceGeneration: current.meta.sourceGeneration,
+          revision: current.meta.revision, boundaryMessageId: boundary };
+      }
       const sourceGeneration = current.meta.sourceGeneration + 1;
-      const restored = await findSafeSnapshotState(
-        userId,
-        presetId,
-        current,
-        affectedFromMessageId,
-        boundary,
-        client,
-      );
-      if (purgeDerived) await purgeDerived(client, { sourceGeneration, boundaryMessageId: boundary, revision: current.meta.revision + 1 });
+      // A callback that found no messages denotes an empty session. An omitted
+      // boundary (manual rebuild) must still retain its full-rebuild meaning.
+      const sourceUnchanged = sourceAlreadyExcluded
+        || (typeof affectedFromOption === "function" && affectedFromMessageId === null);
+      const keepCurrent = await canKeepCurrentState(userId, presetId, current, {
+        affectedFromMessageId, sourceUnchanged, boundary,
+      }, client);
+      const restored = keepCurrent
+        ? { state: cloneSnapshotState({ state: current }, current, sourceGeneration), revision: current.meta.revision }
+        : await findSafeSnapshotState(userId, presetId, current, affectedFromMessageId, boundary, client);
+      const oldStatuses = keepCurrent && repositories.runtime.getTargetStatuses
+        ? await repositories.runtime.getTargetStatuses(userId, presetId, { client }) : [];
+      const rebuildRequired = !keepCurrent || oldStatuses.some(row =>
+        rowValue(row, "rebuild_boundary_message_id", "rebuildBoundaryMessageId") != null);
+      const oldCheckpoint = keepCurrent
+        ? await repositories.runtime.getLibrarianCheckpoint(userId, presetId, current.meta.sourceGeneration, { client }) : null;
+      if (purgeDerived) await purgeDerived(client, { sourceGeneration, boundaryMessageId: boundary,
+        revision: current.meta.revision + 1, rebuildRequired });
       const next = restored?.state ?? createInitialMemoryState();
       if (!restored) {
         next.meta.revision = current.meta.revision + 1;
@@ -151,8 +181,20 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       await repositories.audit.insertSnapshot(userId, presetId, { sourceGeneration, revision: next.meta.revision, schemaVersion: SCHEMA_VERSION, state: next }, { client });
       for (const targetKey of TARGET_KEYS) {
         await repositories.runtime.upsertTargetStatus(userId, presetId, {
-          targetKey, sourceGeneration, rebuildBoundaryMessageId: boundary, status: "rebuilding",
+          targetKey, sourceGeneration, rebuildBoundaryMessageId: rebuildRequired ? boundary : null, status: rebuildRequired ? "rebuilding" : "healthy",
           consecutiveErrors: 0, lastErrorReason: null, lastTaskId: null, nextRetryAt: null,
+        }, { client });
+      }
+      // Only the unchanged current state can carry its completion proof forward.
+      // An older restored snapshot must never inherit a later Librarian result.
+      const checkpointBoundary = Number(rowValue(oldCheckpoint, "boundary_message_id", "boundaryMessageId"));
+      if (oldCheckpoint && checkpointBoundary <= boundary
+        && (sourceUnchanged || checkpointBoundary < affectedFromMessageId)) {
+        await repositories.runtime.upsertLibrarianCheckpoint(userId, presetId, {
+          sourceGeneration, boundaryMessageId: checkpointBoundary,
+          completedOrdinal: Number(rowValue(oldCheckpoint, "completed_ordinal", "completedOrdinal")),
+          watermarkKind: rowValue(oldCheckpoint, "watermark_kind", "watermarkKind") ?? "complete_turn",
+          lastTaskId: null,
         }, { client });
       }
       if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, sourceGeneration, { client });
@@ -162,6 +204,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         revision: next.meta.revision,
         boundaryMessageId: boundary,
         mutationResult,
+        rebuildRequired,
         ...(affectedFromMessageId === null ? {} : {
           affectedFromMessageId,
           restoredFromSnapshotRevision: restored?.revision ?? null,
@@ -578,6 +621,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
   function mutateAndRebuild(userId, presetId, options = {}) {
     return enqueueByKey(`${userId}:${presetId}`, async () => {
       const initialized = await initializeGeneration(userId, presetId, options);
+      if (initialized.rebuildRequired === false) return { ...initialized, status: "completed" };
       const drained = await forceDrainTo(userId, presetId, initialized);
       return { ...initialized, ...drained };
     });
