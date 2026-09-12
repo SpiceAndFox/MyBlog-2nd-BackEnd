@@ -1,4 +1,5 @@
 const { iterateSseData } = require("../sse");
+const { buildOpenCodeGoHeaders } = require("../opencodeGoHeaders");
 
 function createOpenAiCompatibleAdapter({ providers, settingsSchema, config: llmConfig, fetchImpl = globalThis.fetch } = {}) {
   if (!providers?.getProviderConfig || !providers?.getProviderDefinition || !providers?.isBodyParamAllowed) {
@@ -191,10 +192,11 @@ function buildBody({
   return body;
 }
 
-async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, signal, ...rest } = {}) {
+async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, signal, requestContext, ...rest } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "chat/completions");
   const headerExtensions = buildHeaderExtensions({ providerId: provider.id, model, settings: rest?.settings }); // openrouter
+  const sessionHeaders = buildOpenCodeGoHeaders(provider, requestContext);
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
@@ -207,6 +209,7 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
       method: "POST",
       headers: {
         ...headerExtensions, // openrouter
+        ...sessionHeaders,
         "Content-Type": "application/json",
         Authorization: `Bearer ${provider.apiKey}`,
       },
@@ -251,15 +254,17 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
   }
 }
 
-async function createChatCompletionStreamResponse({ providerId, model, messages, signal, ...rest } = {}) {
+async function createChatCompletionStreamResponse({ providerId, model, messages, signal, requestContext, ...rest } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "chat/completions");
   const headerExtensions = buildHeaderExtensions({ providerId: provider.id, model, settings: rest?.settings }); // openrouter
+  const sessionHeaders = buildOpenCodeGoHeaders(provider, requestContext);
 
   const response = await fetchImpl(url, {
     method: "POST",
     headers: {
       ...headerExtensions, // openrouter
+      ...sessionHeaders,
       "Content-Type": "application/json",
       Authorization: `Bearer ${provider.apiKey}`,
     },

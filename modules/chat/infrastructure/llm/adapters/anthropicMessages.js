@@ -1,4 +1,5 @@
 const { iterateSseData } = require("../sse");
+const { buildOpenCodeGoHeaders } = require("../opencodeGoHeaders");
 
 function createAnthropicMessagesAdapter({ providers, settingsSchema, config: llmConfig, fetchImpl = globalThis.fetch } = {}) {
   if (!providers?.getProviderConfig || !providers?.isBodyParamAllowed) {
@@ -232,6 +233,7 @@ async function createChatCompletion({
   messages,
   timeoutMs = llmConfig.timeoutMs,
   signal,
+  requestContext,
   settings,
   rawBody,
   rawConfig,
@@ -239,6 +241,7 @@ async function createChatCompletion({
 } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "messages");
+  const sessionHeaders = buildOpenCodeGoHeaders(provider, requestContext);
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
@@ -254,6 +257,7 @@ async function createChatCompletion({
     const response = await fetchImpl(url, {
       method: "POST",
       headers: {
+        ...sessionHeaders,
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
         "x-api-key": provider.apiKey,
@@ -290,6 +294,7 @@ async function createChatCompletionStreamResponse({
   model,
   messages,
   signal,
+  requestContext,
   settings,
   rawBody,
   rawConfig,
@@ -297,10 +302,12 @@ async function createChatCompletionStreamResponse({
 } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "messages");
+  const sessionHeaders = buildOpenCodeGoHeaders(provider, requestContext);
 
   const response = await fetchImpl(url, {
     method: "POST",
     headers: {
+      ...sessionHeaders,
       "Content-Type": "application/json",
       "anthropic-version": "2023-06-01",
       "x-api-key": provider.apiKey,

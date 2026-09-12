@@ -332,6 +332,28 @@ const chatController = createChatController({
 
 test.beforeEach(resetHarness);
 
+test("chat passes authenticated conversation identity to non-streaming and streaming LLM requests", async () => {
+  const contexts = [];
+  completeChat = async ({ requestContext }) => {
+    contexts.push(requestContext);
+    return "assistant";
+  };
+  createStreamResponse = async ({ requestContext }) => {
+    contexts.push(requestContext);
+    return { body: "upstream" };
+  };
+  readStreamDeltas = async function* () { yield "assistant"; };
+  for (const stream of [false, true]) {
+    sessions.get(11).settings.stream = stream;
+    const response = new TestResponse();
+    await chatController.sendMessage(request(11, "hello", `context-${stream}`, {
+      requestContext: { userId: 999, sessionId: 999 },
+    }), response);
+    assert.equal(response.statusCode, 200);
+  }
+  assert.deepEqual(contexts, [{ userId: 7, sessionId: 11 }, { userId: 7, sessionId: 11 }]);
+});
+
 test("send failures expose the application error code to clients", async () => {
   const response = new TestResponse();
 

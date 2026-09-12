@@ -208,6 +208,7 @@ function createSendMessageUseCase({
       if (!effectiveSettings.stream) {
         const { content: assistantContent } = await llm.complete({
           providerId,
+          requestContext: { userId, sessionId },
           model: modelId,
           messages: context.messages,
           settings: effectiveSettings,
@@ -241,6 +242,7 @@ function createSendMessageUseCase({
       try {
         const upstreamResponse = await llm.createStreamResponse({
           providerId,
+          requestContext: { userId, sessionId },
           model: modelId,
           messages: context.messages,
           settings: effectiveSettings,
