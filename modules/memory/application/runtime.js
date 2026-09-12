@@ -192,7 +192,6 @@ function createMemoryRuntime({
   config,
   repositories,
   providerAdapter,
-  projectionDrains = {},
   privacyStores = [],
   metrics = createMemoryMetrics(),
   onBackgroundError,
@@ -205,10 +204,6 @@ function createMemoryRuntime({
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
-  const unsupportedProjectionKeys = Object.keys(projectionDrains).filter((projectionKey) => projectionKey !== "rag");
-  if (unsupportedProjectionKeys.length)
-    throw new Error(`Unsupported Memory projection drain: ${unsupportedProjectionKeys.join(",")}`);
-
   const admission = createProviderAdmission(config.admission);
   const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
   const providerHealth = createProviderHealth({ name: "memory" });
@@ -355,31 +350,6 @@ function createMemoryRuntime({
         metrics.observe(
           "memory_projection_duration_ms",
           { projectionKey: "diagnostics", status: "failed" },
-          performance.now() - startedAt,
-        );
-      }
-    }
-    for (const projectionKey of Object.keys(projectionDrains)) {
-      if (signal?.aborted) break;
-      const drain = projectionDrains[projectionKey];
-      if (!drain?.drain) continue;
-      const startedAt = performance.now();
-      try {
-        results[projectionKey] = await drain.drain(userId, presetId, { signal });
-        metrics.observe(
-          "memory_projection_duration_ms",
-          { projectionKey, status: results[projectionKey]?.status ?? "unknown" },
-          performance.now() - startedAt,
-        );
-      } catch (error) {
-        results[projectionKey] = {
-          status: "failed",
-          reason: backgroundFailureReason(error, "projection_failed"),
-        };
-        if (!error?.suppressed) onBackgroundError?.(error);
-        metrics.observe(
-          "memory_projection_duration_ms",
-          { projectionKey, status: "failed" },
           performance.now() - startedAt,
         );
       }

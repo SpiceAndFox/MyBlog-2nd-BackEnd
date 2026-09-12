@@ -134,7 +134,7 @@ async function inspectMemory({ db, memory, userId, presetId, sections }) {
         WHERE diagnostic_row.user_id = pm.user_id
           AND diagnostic_row.preset_id = pm.preset_id
           AND diagnostic_row.resolved = FALSE
-          AND (diagnostic_row.subject_kind <> 'projection' OR diagnostic_row.subject_key = 'rag')
+          AND diagnostic_row.subject_kind <> 'projection'
       ), '[]'::jsonb) AS diagnostics
     FROM chat_preset_memory pm
     WHERE pm.user_id = $1 AND pm.preset_id = $2

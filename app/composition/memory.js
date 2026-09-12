@@ -11,22 +11,17 @@ function createChatMemoryRuntime({
   recentWindowMaxChars,
   logger,
   memoryModule,
-  ragProjectionAdapter,
   privacyStores = [],
   enqueueByKey,
 } = {}) {
   if (!config || typeof config !== "object") throw new Error("Memory runtime config is required");
   if (!logger?.error) throw new Error("Memory runtime logger is required");
-  if (!memoryModule?.createRuntime || !memoryModule?.createContextAssembly || !memoryModule?.createProjectionDrain) {
+  if (!memoryModule?.createRuntime || !memoryModule?.createContextAssembly) {
     throw new Error("An explicitly created Memory module is required");
   }
 
-  const projectionDrains = config.enabled
-    ? { rag: memoryModule.createProjectionDrain("rag", ragProjectionAdapter) }
-    : {};
   const runtime = memoryModule.createRuntime({
     config,
-    projectionDrains,
     privacyStores,
     enqueueByKey,
     onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),
@@ -57,13 +52,11 @@ function createMemoryAdministrationComposition({ database } = {}) {
   return createMemoryAdministration({ database, ...createMemoryPorts(database) });
 }
 
-function createMemoryRuntimeComposition({ database, config, chatConfig, logger, scopeCoordinator, chatRag } = {}) {
+function createMemoryRuntimeComposition({ database, config, chatConfig, logger, scopeCoordinator } = {}) {
   const coordinator = scopeCoordinator || createChatScopeCoordinator();
   const chatAdapters = createChatMemoryAdapters({
     database,
     scopeCoordinator: coordinator,
-    ragProjectionAdapter: chatRag?.projectionAdapter,
-    ragPrivacyStore: chatRag?.privacyStore,
   });
   const memoryModule = createMemoryModule({
     database,
@@ -75,7 +68,6 @@ function createMemoryRuntimeComposition({ database, config, chatConfig, logger, 
     recentWindowMaxChars: chatConfig?.recentWindowMaxChars,
     logger,
     memoryModule,
-    ragProjectionAdapter: chatAdapters.ragProjectionAdapter,
     privacyStores: chatAdapters.privacyStores,
     enqueueByKey: chatAdapters.enqueueByKey,
   });

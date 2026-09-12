@@ -6,7 +6,7 @@ The Chat scope coordinator orders sends and source mutations by `userId:presetId
 It preserves complete-turn ordering across sessions of the same preset.
 
 The Memory work coordinator orders Memory jobs separately by the same scope.
-Normal proposers, Librarian, recovery, projection drains and housekeeping share
+Normal proposers, Librarian, recovery, diagnostic projection and housekeeping share
 this lane. Provider computation never holds the Chat lane. Multiple turn-complete
 wakeups coalesce into one active scope processor with a dirty flag for another
 pass, rather than creating a backlog of redundant scans.
@@ -44,7 +44,7 @@ awaiting the barrier from inside that worker would deadlock. Recovery requests
 coalesce per scope and respect the privacy fence before both phases.
 
 Cancellation is propagated through normal, maintenance and Librarian provider
-calls and projection staging. `abortable` is restricted to external computation
+calls. `abortable` is restricted to external computation
 without repository writes. It discards late transport results even when a test
 adapter ignores AbortSignal. Never race a whole pipeline or database transaction:
 that could release the mutation barrier while a late callback still writes.
@@ -86,18 +86,6 @@ behavior. No schema migration is required. Concurrent unrelated privacy requests
 receive 409 and leave their raw source untouched; they cannot reuse another
 operation's commit result. The original cleanup is rescheduled.
 
-## Projection boundaries
-
-RAG captures a source boundary before staging. Additional messages in the same
-generation do not invalidate a completed prefix: commit that prefix and leave
-the new suffix for a later pass. A changed generation or reduced boundary rejects
-the staged result. Embeddings run outside transactions; staging promotion and
-checkpoint writes remain transactional and are drained by the mutation barrier.
-When a failed batch resumes at a larger boundary, `prepareProjectionStage`
-retains and retargets the same-generation staged prefix in that transaction.
-It discards other generations. Deleting the old boundary's staging while resuming
-its checkpoint would silently promote only the suffix, so it is forbidden.
-
 ## Consistency and failure boundaries
 
 Each authority commit keeps Memory state, its cursors, event history, snapshot
@@ -127,10 +115,6 @@ after the raw commit leaves the operation available for reconciliation.
   isolation, admission waiters and shutdown.
 - `source-rebuild.test.js`: unaffected and empty sessions, checkpoint reuse,
   unfinished rebuilds, safe snapshot fallback and privacy-history cleanup.
-- `projection-drain.test.js`: append during staging, generation invalidation,
-  cancellation and persisted rebuild progress.
-- `test/rag/projection-adapters.test.js`: failed batch, new turns, then resume
-  through the production adapter without losing its staged prefix.
 
 These are offline regression and fault-injection tests. They do not substitute
 for PostgreSQL process-crash, connection-loss or multiple-process testing.

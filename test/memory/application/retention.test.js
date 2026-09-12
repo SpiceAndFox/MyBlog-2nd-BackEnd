@@ -27,6 +27,7 @@ test("retention promotes only a validated continuous anchor and preserves refere
   ];
   let promoted = null;
   let runtimeAnchor = null;
+  let allowOldGenerations;
   const calls = [];
   const repositories = {
     async withTransaction(work) { calls.push("retention"); return work({}); },
@@ -36,13 +37,13 @@ test("retention promotes only a validated continuous anchor and preserves refere
       async listRevisionGroups() { return groups; },
       async listEventsForGroups() { return []; },
       async promoteAnchor(_u, _p, _g, revision) { promoted = revision; return { snapshotsDeleted: 1, groupsDeleted: 1 }; },
-      async deleteExpiredAudit() { return { expiredEvents: 0, expiredGroups: 0, expiredSnapshots: 0 }; },
+      async deleteExpiredAudit(_u, _p, options) { allowOldGenerations = options.allowOldGenerations; return { expiredEvents: 0, expiredGroups: 0, expiredSnapshots: 0 }; },
     },
     runtime: {
       async getTargetStatuses() { return TARGET_KEYS.map((targetKey) => ({ targetKey, sourceGeneration: 2, status: "healthy" })); },
       async deleteRetainedRuntime(_u, _p, options) { runtimeAnchor = options.anchorRevision; return { tasks: 1, ops: 1 }; },
     },
-    sidecars: { async listProjectionCheckpoints() { return [{ projectionKey: "rag", processedGeneration: 2, status: "healthy" }]; } },
+    sidecars: {},
   };
   const retention = createMemoryRetention({
     repositories,
@@ -55,6 +56,7 @@ test("retention promotes only a validated continuous anchor and preserves refere
   assert.equal(result.anchorRevision, 6);
   assert.equal(promoted, 6);
   assert.equal(runtimeAnchor, 6);
+  assert.equal(allowOldGenerations, true, "healthy Memory targets allow expiry without retrieval checkpoints");
 });
 
 test("retention rejects an anchor whose state cannot be reproduced from semantic events", async () => {
@@ -86,7 +88,6 @@ test("retention rejects an anchor whose state cannot be reproduced from semantic
       async promoteAnchor() { throw new Error("must not promote"); },
     },
     runtime: { async getTargetStatuses() { return []; } },
-    sidecars: { async listProjectionCheckpoints() { return []; } },
   };
   const retention = createMemoryRetention({
     repositories,

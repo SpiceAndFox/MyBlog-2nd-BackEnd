@@ -18,7 +18,6 @@ async function purgeDerivedHistory(userId, presetId, { client } = {}) {
     ["diagnostics", `DELETE FROM chat_context_quality_diagnostics WHERE user_id=$1 AND preset_id=$2`],
     ["diagnosticProjectionCheckpoints", `DELETE FROM chat_memory_diagnostic_projection_checkpoints WHERE user_id=$1 AND preset_id=$2`],
     ["notifications", `DELETE FROM chat_memory_recovery_notifications WHERE user_id=$1 AND preset_id=$2`],
-    ["projections", `DELETE FROM chat_context_projection_checkpoints WHERE user_id=$1 AND preset_id=$2`],
     ["targetStatuses", `DELETE FROM chat_memory_target_status WHERE user_id=$1 AND preset_id=$2`],
   ]) {
     const result = await db.query(sql, params);

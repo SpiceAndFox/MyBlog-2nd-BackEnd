@@ -1,7 +1,6 @@
 const { createMemoryInfrastructureRepositories } = require("./infrastructure/repositories");
 const { createMemoryRuntime } = require("./application/runtime");
 const { createMemoryContextAssembly } = require("./application/contextAssembly");
-const { createProjectionDrain } = require("./application/projectionDrain");
 
 function createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
   if (!sourceReader?.getByIds || !sourceReader?.listUpTo || !sourceReader?.getBoundary) {
@@ -39,13 +38,8 @@ function createMemoryModule({ database, transactionExecutor, sourceReader, userT
     });
   }
 
-  function createBoundProjectionDrain(projectionKey, adapter) {
-    return createProjectionDrain({ repositories, projectionKey, adapter });
-  }
-
   return Object.freeze({
     createContextAssembly,
-    createProjectionDrain: createBoundProjectionDrain,
     createRuntime,
   });
 }

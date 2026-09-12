@@ -44,7 +44,7 @@ function createMemoryRuntimeHealth({
   reconcileRebuilds,
   recovery,
 } = {}) {
-  if (!config?.targets || !repositories?.state || !repositories?.runtime || !repositories?.sidecars) {
+  if (!config?.targets || !repositories?.state || !repositories?.runtime) {
     throw new Error("Memory runtime health dependencies are required");
   }
   if (!providerHealth?.snapshot) {
@@ -79,10 +79,7 @@ function createMemoryRuntimeHealth({
           },
         };
       }
-      const [targetStatuses, checkpoints] = await Promise.all([
-        repositories.runtime.getTargetStatuses(normalizedUserId, normalizedPresetId),
-        repositories.sidecars.listProjectionCheckpoints(normalizedUserId, normalizedPresetId),
-      ]);
+      const targetStatuses = await repositories.runtime.getTargetStatuses(normalizedUserId, normalizedPresetId);
       const targets = [];
       const alerts = [];
       let status = "healthy";
@@ -94,19 +91,6 @@ function createMemoryRuntimeHealth({
         alerts.push(alert);
         if (alert.status === "rebuilding") status = "rebuilding";
         else if (status === "healthy") status = "degraded";
-      }
-      const rag = checkpoints.find((entry) => rowValue(entry, "projection_key", "projectionKey") === "rag");
-      const ragGeneration = Number(rowValue(rag, "processed_generation", "processedGeneration") ?? -1);
-      if (!rag || rag.status !== "healthy" || ragGeneration !== state.meta.sourceGeneration) {
-        if (status === "healthy") status = rag?.status === "rebuilding" ? "rebuilding" : "degraded";
-        alerts.push({
-          subjectKind: "projection",
-          subjectKey: "rag",
-          status: rag?.status === "rebuilding" ? "rebuilding" : "degraded",
-          message: rag?.status === "rebuilding"
-            ? "历史对话索引正在从已保存进度继续重建"
-            : "历史对话检索可能不完整",
-        });
       }
       if (provider.status === "degraded") {
         if (status === "healthy") status = "degraded";
@@ -124,13 +108,6 @@ function createMemoryRuntimeHealth({
           usable: true,
           sourceGeneration: state.meta.sourceGeneration,
           targets,
-          projection: rag ? {
-            status: rag.status,
-            processedGeneration: ragGeneration,
-            processedBoundaryMessageId: Number(
-              rowValue(rag, "processed_boundary_message_id", "processedBoundaryMessageId") ?? 0,
-            ),
-          } : null,
           alerts,
         },
       };

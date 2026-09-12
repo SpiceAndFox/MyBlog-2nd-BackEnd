@@ -47,12 +47,12 @@ test("dispatch and durable progress use distinct brief messages", () => {
   assert.equal(lines[2], "[进度已推进] 1/default · 记忆");
 });
 
-test("nested projection barriers retain an actionable HTTP failure", () => {
-  const text = captureLogs([{ event: "memory_waiting", scope: { userId: 1, presetId: "default" }, phase: "rag", waitCount: 1,
+test("nested Memory barriers retain an actionable HTTP failure", () => {
+  const text = captureLogs([{ event: "memory_waiting", scope: { userId: 1, presetId: "default" }, phase: "memory", waitCount: 1,
     result: { status: "incomplete", barrier: { status: "incomplete", results: [
-      { status: "retry_wait", reason: "projection_provider_unavailable", detail: { status: 429 } },
+      { status: "retry_wait", reason: "llm_call_failed", detail: { status: 429 } },
     ] } } }]);
-  assert.match(text, /检索索引 · 服务请求失败（HTTP 429）/);
+  assert.match(text, /记忆 · 服务请求失败（HTTP 429）/);
 });
 
 

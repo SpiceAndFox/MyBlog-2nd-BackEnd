@@ -23,8 +23,6 @@ const { upsertTargetStatus } = createRuntimeRepository(dependencies);
 const {
   upsertActiveDiagnostic,
   resolveGapDiagnosticIfProven,
-  resolveProjectionDiagnosticIfCovered,
-  listProjectionCheckpoints,
 } = createSidecarRepository(dependencies);
 const privacyRepository = createPrivacyRepository(dependencies);
 
@@ -202,7 +200,6 @@ test("active context diagnostics reject stale boundary regressions and resolve o
       if (sql.startsWith("INSERT INTO chat_context_quality_diagnostics")) return { rows: [] };
       if (sql.startsWith("SELECT * FROM chat_context_quality_diagnostics")) return { rows: [existing] };
       if (sql.includes("diagnostic_type='gap_bridge_omitted'")) return { rows: [existing] };
-      if (sql.includes("diagnostic_type='projection_lag'")) return { rows: [{ ...existing, diagnostic_type: "projection_lag", recent_window_start: 101 }] };
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
@@ -217,9 +214,7 @@ test("active context diagnostics reject stale boundary regressions and resolve o
   assert.equal(row.omitted_upper_message_id, 100);
   assert.match(statements[0], /EXCLUDED\.omitted_upper_message_id.*chat_context_quality_diagnostics\.omitted_upper_message_id/);
   await resolveGapDiagnosticIfProven(9, { sourceGeneration: 2, provenUpperMessageId: 100 }, { client });
-  await resolveProjectionDiagnosticIfCovered(10, { sourceGeneration: 2, processedBoundaryMessageId: 100 }, { client });
   assert.equal(statements.some((sql) => /omitted_upper_message_id<=\$3/.test(sql)), true);
-  assert.equal(statements.some((sql) => /recent_window_start,1\)-1\)<=\$3/.test(sql)), true);
 });
 
 test("Chat source inventory reads raw messages without mutating them", async () => {
@@ -250,11 +245,4 @@ test("migration source fingerprint detects same-length content and turn-identity
   assert.notEqual(await fingerprint({ content: "wxyz" }), original);
   assert.notEqual(await fingerprint({ turn_id: "turn-b" }), original);
   assert.doesNotMatch(original, /abcd/);
-});
-
-test("projection checkpoint reads exclude retired recall rows", async () => {
-  let statement = "";
-  const client = { async query(sql) { statement = sql; return { rows: [] }; } };
-  await listProjectionCheckpoints(1, "default", { client });
-  assert.match(statement, /projection_key='rag'/);
 });

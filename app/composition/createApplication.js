@@ -33,7 +33,6 @@ const { createHttpApplication } = require("./httpApplication");
 const { createArticleTempImageCleanup } = require("../../modules/blog");
 const { createChatComposition } = require("./chat");
 const { createChatMemoryRuntime } = require("./memory");
-const { createChatRagComposition } = require("./chatRag");
 function createApplicationComposition({ environment, loadDotenv, adapters = {} } = {}) {
   const startupEnvironment = loadEnvironment({
     environment: environment || process.env,
@@ -57,14 +56,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
 
   const logger = adapters.logger || createLogger({ config: config.logConfig });
   configureLogger(logger);
-  const chatRag = adapters.chatRag || createChatRagComposition({
-    config,
-    database,
-    logger,
-    llm: chatLlm,
-    adapters: adapters.chatRagAdapters,
-  });
-
   const auth = adapters.auth || createAuthModule({
     config: config.authConfig,
     database,
@@ -76,8 +67,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   const chatMemoryAdapters = adapters.chatMemoryAdapters || createChatMemoryAdapters({
     database,
     scopeCoordinator,
-    ragProjectionAdapter: chatRag.projectionAdapter,
-    ragPrivacyStore: chatRag.privacyStore,
   });
   const memoryModule = adapters.memoryModule || createMemoryModule({
     database,
@@ -90,7 +79,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     recentWindowMaxChars: config.chatConfig.recentWindowMaxChars,
     logger,
     memoryModule,
-    ragProjectionAdapter: chatMemoryAdapters.ragProjectionAdapter,
     privacyStores: chatMemoryAdapters.privacyStores,
     enqueueByKey: chatMemoryAdapters.enqueueByKey,
   });
@@ -108,7 +96,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     withRequestContext,
     scopeCoordinator,
     transaction,
-    rag: chatRag,
     llm: chatLlm,
     isModelAllowed: productionModelPolicy.isChatModelAllowed,
     adapters: adapters.chatAdapters,
@@ -155,7 +142,6 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
     auth,
     chat,
     chatLlm,
-    chatRag,
     config,
     database,
     health,

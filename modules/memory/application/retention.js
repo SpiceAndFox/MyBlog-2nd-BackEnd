@@ -6,7 +6,7 @@ const { replayEventGroups } = require("../domain/eventReplay");
 function cutoff(now, days) { return new Date(new Date(now).getTime() - days * 86_400_000); }
 
 function createMemoryRetention({ repositories, config, diagnosticProjection, now = () => new Date() } = {}) {
-  if (!repositories?.withTransaction || !repositories.state || !repositories.audit || !repositories.runtime || !repositories.sidecars) throw new Error("Retention repositories are required");
+  if (!repositories?.withTransaction || !repositories.state || !repositories.audit || !repositories.runtime) throw new Error("Retention repositories are required");
   if (!config?.retention) throw new Error("Memory retention config is required");
   const eventDiagnosticProjection = diagnosticProjection || (repositories.diagnosticProjection
     ? createDiagnosticProjection({ repositories })
@@ -46,14 +46,12 @@ function createMemoryRetention({ repositories, config, diagnosticProjection, now
         ? await repositories.audit.promoteAnchor(userId, presetId, state.meta.sourceGeneration, Number(anchor.revision), { client })
         : { snapshotsDeleted: 0, groupsDeleted: 0 };
       const statuses = await repositories.runtime.getTargetStatuses(userId, presetId, { client });
-      const checkpoints = await repositories.sidecars.listProjectionCheckpoints(userId, presetId, { client });
       const targetsCurrent = statuses.length === 6 && statuses.every((row) => Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration && (row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId) == null);
-      const projectionsCurrent = checkpoints.length === 2 && checkpoints.every((row) => Number(row.processed_generation ?? row.processedGeneration) === state.meta.sourceGeneration && row.status === "healthy");
       const expiredAudit = await repositories.audit.deleteExpiredAudit(userId, presetId, {
         currentGeneration: state.meta.sourceGeneration,
         eventBefore: cutoff(now(), config.retention.eventDays),
         snapshotBefore: cutoff(now(), config.retention.snapshotDays),
-        allowOldGenerations: targetsCurrent && projectionsCurrent,
+        allowOldGenerations: targetsCurrent,
       }, { client });
       const runtime = await repositories.runtime.deleteRetainedRuntime(userId, presetId, {
         taskBefore: cutoff(now(), config.retention.taskDays), opsBefore: cutoff(now(), config.retention.opsLogDays), anchorRevision: Number(anchor.revision),

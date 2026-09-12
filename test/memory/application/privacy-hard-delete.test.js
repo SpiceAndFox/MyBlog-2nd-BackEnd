@@ -50,7 +50,7 @@ test("privacy hard delete does not force-drain while any external store still re
       async updateOperation(_u, _p, value) { Object.assign(operation, value); return operation; },
     },
   };
-  const stores = [{ name: "rag", async purge() { calls.push("rag-purge"); }, async verifyPurged() { return false; } }];
+  const stores = [{ name: "assistant_gists", async purge() { calls.push("gist-purge"); }, async verifyPurged() { return false; } }];
   const hardDelete = createPrivacyHardDelete({ repositories, sourceRebuild, stores });
   const result = await hardDelete.execute(7, "companion", {
     affectedFromMessageId: 12,
@@ -62,7 +62,7 @@ test("privacy hard delete does not force-drain while any external store still re
   assert.deepEqual(calls, ["raw-delete", "memory-purge"]);
   const continued = await hardDelete.continueOperation(7, "companion", operation, { repurge: true });
   assert.equal(continued.status, "incomplete");
-  assert.deepEqual(calls, ["raw-delete", "memory-purge", "rag-purge"]);
+  assert.deepEqual(calls, ["raw-delete", "memory-purge", "gist-purge"]);
   assert.equal(calls.includes("drain"), false);
   assert.equal(operation.status, "purging");
 });
@@ -77,7 +77,7 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
   await fs.writeFile(path.join(avatarDir, avatarName), canary);
 
   const rawMessages = new Set([canary, "retained-source"]);
-  const ragChunks = new Set([canary]);
+  const gistRows = new Set([canary]);
   const gists = new Set([canary]);
   const memoryHistory = new Set([canary]);
   let rebuiltFrom = [];
@@ -106,7 +106,7 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
     },
     async forceDrainTo() {
       assert.equal(rawMessages.has(canary), false);
-      assert.equal(ragChunks.has(canary), false);
+      assert.equal(gistRows.has(canary), false);
       assert.equal(gists.has(canary), false);
       assert.equal(await avatarExists(avatarUrl), false);
       rebuiltFrom = [...rawMessages];
@@ -114,9 +114,9 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
     },
   };
   const stores = [{
-    name: "rag",
-    async purge() { ragChunks.clear(); },
-    async verifyPurged() { return !ragChunks.has(canary); },
+    name: "assistant_gists",
+    async purge() { gistRows.clear(); },
+    async verifyPurged() { return !gistRows.has(canary); },
   }, {
     name: "assistant_gists",
     async purge() { gists.clear(); },
@@ -154,7 +154,7 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
     assert.ifError(backgroundError);
     assert.equal(operation.status, "completed");
     assert.deepEqual(rebuiltFrom, ["retained-source"]);
-    assert.equal(ragChunks.has(canary), false);
+    assert.equal(gistRows.has(canary), false);
     assert.equal(gists.has(canary), false);
     assert.equal(await avatarExists(avatarUrl), false);
   } finally {

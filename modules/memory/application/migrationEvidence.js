@@ -78,10 +78,9 @@ function buildSchemaFingerprint(rootDir) {
   return { sha256: sha256(stableJson(files)), files };
 }
 
-function buildMigrationEvidence({ rootDir, memoryConfig, ragConfig = null } = {}) {
+function buildMigrationEvidence({ rootDir, memoryConfig } = {}) {
   const sanitizedConfig = sanitizeConfig({
     memory: memoryConfig,
-    rag: ragConfig,
     outputRepair: { policyVersion: OUTPUT_REPAIR_POLICY_VERSION },
   });
   return {

@@ -22,8 +22,6 @@ function fixtureEnvironment() {
     OPENROUTER_API_KEY: "test-key",
     OPENCODE_GO_API_KEY: "test-key",
     OPENCODE_ZEN_API_KEY: "test-key",
-    CHAT_RAG_EMBEDDING_API_KEY: "test-key",
-    CHAT_RAG_RERANKER_API_KEY: "test-key",
     CHAT_MEMORY_V2_PROVIDER_API_KEY: "test-key",
     LOG_TO_CONSOLE: "false",
     LOG_TO_FILE: "false",

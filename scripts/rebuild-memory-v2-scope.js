@@ -37,8 +37,8 @@ function printUsage(stream = process.stdout) {
     "Usage:",
     "  npm run rebuild:memory-v2 -- --userId <id> --presetId <id> [--mode fresh|resume]",
     "",
-    "Rebuilds only the selected Memory v2 scope, waits for all targets and its RAG projection, then verifies the result.",
-    "This command writes Memory authority/projection data and invokes the configured Memory provider.",
+    "Rebuilds only the selected Memory v2 scope, waits for all Memory targets, then verifies the result.",
+    "This command writes Memory authority data and invokes the configured Memory provider.",
     "",
     "--mode resume（默认）在存在可恢复的 generation 时接着上次进度，否则回退为从头开始。",
     "--mode fresh 强制开启新 generation，从头处理全部消息。",
@@ -46,18 +46,13 @@ function printUsage(stream = process.stdout) {
   ].join("\n"));
 }
 
-function createScopedMigration({ database, config, logger, chatLlm, chatRagProjectionAdapter } = {}) {
+function createScopedMigration({ database, config } = {}) {
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
   const administration = createMemoryAdministrationComposition({ database });
   const memoryConfig = config?.memoryV2Config;
   if (!memoryConfig?.enabled) throw new Error("Memory v2 is disabled");
-  const projectionAdapter = chatRagProjectionAdapter || require("../app/composition/chatRag")
-    .createChatRagComposition({ config, database, logger, llm: chatLlm }).projectionAdapter;
   return administration.createMigration({
     config: memoryConfig,
-    projectionDrains: {
-      rag: administration.createProjectionDrain("rag", projectionAdapter),
-    },
   });
 }
 
@@ -89,8 +84,6 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   const migration = dependencies.migration || createScopedMigration({
     database: db,
     config: context.config,
-    logger: context.logger,
-    chatLlm: context.chatLlm,
   });
   const { help: _help, ...scopeOptions } = options;
   const result = await rebuildScope({ db, migration, ...scopeOptions, signal: dependencies.signal, onWait: dependencies.onWait || logWait });

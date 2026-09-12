@@ -26,7 +26,7 @@ function waitReason(task) {
 }
 
 function logWait({ event, scope, phase, notBefore, waitCount, result, write = text => process.stderr.write(text) }) {
-  const context = `${scope?.userId ?? "?"}/${scope?.presetId ?? "?"} · ${{ memory: "记忆", librarian: "记忆整理", rag: "检索索引" }[phase] || phase}`;
+  const context = `${scope?.userId ?? "?"}/${scope?.presetId ?? "?"} · ${{ memory: "记忆", librarian: "记忆整理" }[phase] || phase}`;
   let line;
   if (event === "memory_progress_resumed") line = `[进度已推进] ${context}`;
   else {

@@ -10,7 +10,6 @@
     "test:memory-v2": "node --test test/memory/**/*.test.js",
     "test:memory-v2:migration": "node --test test/memory/migration/*.test.js",
     "test:chat": "node --test test/chat/*.test.js",
-    "test:rag": "node --test test/rag/*.test.js",
     "migrate:memory-v2": "node scripts/migrate-memory-v2.js",
     "migrate:memory-v2-data": "node --use-env-proxy scripts/migrate-memory-v2-data.js",
     "probe:memory-v2-provider": "node --use-env-proxy scripts/probe-memory-v2-provider.js",
@@ -26,8 +25,6 @@
     "start": "node --use-env-proxy app.js",
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
     "regenerate-gists": "node --use-env-proxy regenerateGists.js",
-    "regenerate-chat-rag": "node --use-env-proxy regenerateChatRag.js",
-    "migrate-chat-rag-embedding-meta": "node migrateChatRagEmbeddingMeta.js",
     "regenerate-article-thumbnails": "node --use-env-proxy regenerateArticleThumbnails.js",
     "eval:memory-v2-integrity": "node --use-env-proxy scripts/evaluate-memory-v2-integrity.js"
   },

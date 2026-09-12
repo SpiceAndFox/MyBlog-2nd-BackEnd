@@ -2,7 +2,6 @@ const { isDeepStrictEqual } = require("node:util");
 const crypto = require("node:crypto");
 const { assertMemoryState, SCHEMA_VERSION, TARGET_KEYS } = require("../contracts");
 const { createOperationRunner, summarizeOperation, countCompletedTasks } = require("./operationRunner");
-const { providerFailureDecision } = require("./providerRecoveryPolicy");
 const { createRetryBudget } = require("./retryBudget");
 const { beginManualRetrySession } = require("./manualRetrySession");
 
@@ -65,21 +64,18 @@ function sourceInventorySnapshot(rows) {
 function createMemoryMigration({
   repositories,
   sourceRebuild,
-  projectionDrains,
   providerTelemetry = null,
   now = () => new Date(),
   monotonicNow = () => Date.now(),
   operationRunner = createOperationRunner(),
-  providerRecovery,
   retryBudget = createRetryBudget(),
 } = {}) {
-  if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit || !repositories?.sidecars
+  if (!repositories?.withTransaction || !repositories?.state || !repositories?.source || !repositories?.runtime || !repositories?.audit
     || !repositories?.privacy?.purgeDerivedHistory || !repositories?.privacy?.purgeAuthorityState
     || !repositories?.source?.listScopes || !repositories?.migration?.hasIncompatibleDerivedData) {
     throw new Error("Memory migration repositories are required");
   }
   if (!sourceRebuild?.initializeGeneration || !sourceRebuild?.forceDrainTo) throw new Error("Memory migration requires source rebuild");
-  if (!projectionDrains?.rag?.drain) throw new Error("Memory migration requires the rag projection drain");
 
   async function inventory(scopes) {
     const selected = scopes
@@ -133,16 +129,6 @@ function createMemoryMigration({
     }
     if (expectedRevision - 1 !== state.meta.revision) throw new Error("Migration event/snapshot chain does not reach authority state");
 
-    const checkpoints = await repositories.sidecars.listProjectionCheckpoints(userId, presetId);
-    const byProjection = new Map(checkpoints.map((row) => [rowValue(row, "projection_key", "projectionKey"), row]));
-    for (const projectionKey of ["rag"]) {
-      const checkpoint = byProjection.get(projectionKey);
-      if (!checkpoint || rowValue(checkpoint, "status", "status") !== "healthy") throw new Error(`Projection ${projectionKey} is not healthy after migration`);
-      if (Number(rowValue(checkpoint, "processed_generation", "processedGeneration")) !== generation
-        || Number(rowValue(checkpoint, "processed_boundary_message_id", "processedBoundaryMessageId") ?? 0) !== boundary) {
-        throw new Error(`Projection ${projectionKey} did not reach the captured generation/boundary`);
-      }
-    }
     return {
       sourceGeneration: generation,
       revision: state.meta.revision,
@@ -154,7 +140,6 @@ function createMemoryMigration({
         targetCursorsAtBoundary: true,
         authoritySnapshotEqual: true,
         eventSnapshotChainContinuous: true,
-        healthyProjections: ["rag"],
       },
     };
   }
@@ -257,41 +242,6 @@ function createMemoryMigration({
       readProgress, signal, onWait, scope, phase: "memory",
     });
     if (drained.status !== "completed") throw forceDrainError({ ...drained, sourceGeneration: initialized.sourceGeneration });
-    for (const projectionKey of ["rag"]) {
-      const counters = { transientFailures: 0, boundedFailures: 0 };
-      let providerSuccessCount = 0;
-      const result = await operationRunner.run({ signal, onWait, scope, phase: projectionKey,
-        readProgress: async () => {
-          await assertCurrent();
-          const checkpoints = await repositories.sidecars.listProjectionCheckpoints(scope.userId, scope.presetId);
-          const current = checkpoints.map((row) => [rowValue(row, "projection_key", "projectionKey"), rowValue(row, "processed_generation", "processedGeneration"), rowValue(row, "processed_boundary_message_id", "processedBoundaryMessageId")]);
-          return current;
-        },
-        step: async () => {
-          try { return await projectionDrains[projectionKey].drain(scope.userId, scope.presetId, { ...initialized, signal }); }
-          catch (error) {
-            if (!providerRecovery) throw new Error("Projection retries require explicit providerRecovery configuration", { cause: error });
-            if (error.providerSuccessCount > providerSuccessCount) {
-              providerSuccessCount = error.providerSuccessCount;
-              counters.transientFailures = 0; counters.boundedFailures = 0;
-            }
-            const failure = { reason: "llm_call_failed", detail: { code: error.code ?? error.cause?.code,
-              status: error.status, retryable: error.retryable, retryAfterAt: error.retryAfterAt } };
-            const decision = providerFailureDecision({ counters, result: failure, config: providerRecovery,
-              retryMax: providerRecovery.retryMax, now: now() });
-            if (decision.halted) return { status: "failed", reason: decision.budgetExhausted ? "retry_budget_exhausted" : "projection_provider_failed",
-              projectionKey, recoveryKind: decision.kind, detail: failure.detail };
-            return { status: "retry_wait", reason: "projection_provider_unavailable", projectionKey,
-              notBefore: decision.notBefore };
-          }
-        },
-      });
-      if (result.status !== "healthy") {
-        const error = forceDrainError({ status: result.status, result, sourceGeneration: initialized.sourceGeneration, reason: `projection_${projectionKey}_${result.status}` });
-        error.message = `Projection ${projectionKey} drain did not complete: ${result.status}`;
-        throw error;
-      }
-    }
     const verified = await verifyScope(scope.userId, scope.presetId, history.boundaryMessageId);
     return {
       ...scope,

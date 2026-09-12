@@ -197,7 +197,6 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           lastTaskId: null,
         }, { client });
       }
-      if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, sourceGeneration, { client });
       if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, sourceGeneration, { client });
       return {
         sourceGeneration,
@@ -231,7 +230,6 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       for (const targetKey of TARGET_KEYS) {
         await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: next.meta.sourceGeneration, rebuildBoundaryMessageId: boundary, status: "rebuilding", consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: null, nextRetryAt: null }, { client });
       }
-      if (repositories.sidecars.markProjectionsRebuilding) await repositories.sidecars.markProjectionsRebuilding(userId, presetId, next.meta.sourceGeneration, { client });
       if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, next.meta.sourceGeneration, { client });
       return { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, recoveredFromRaw: true };
     });

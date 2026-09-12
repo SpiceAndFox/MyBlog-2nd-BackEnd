@@ -23,7 +23,6 @@ test("foreground migration waits through normal, capacity and final Librarian de
   const report = await h.migration.run();
   assert.equal(report.status, "completed"); assert.equal(calls, 4); assert.equal(h.getInitializeCount(), 1);
   assert.ok(optionsSeen.every(options => options.sourceGeneration === 1 && options.boundaryMessageId === 20));
-  assert.deepEqual(report.results[0].verification.healthyProjections, ["rag"]);
 });
 
 test("foreground migration cancellation leaves the existing generation resumable", async () => {
@@ -60,42 +59,6 @@ test("foreground migration aborts on cancellation or changed source before redis
   }
 });
 
-test("RAG transient failures wait without repeating Memory drain; permanent errors stop", async () => {
-  for (const status of [503, 401]) {
-    const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0; let memoryCalls = 0;
-    const drain = h.sourceRebuild.forceDrainTo;
-    h.sourceRebuild.forceDrainTo = async (...args) => { memoryCalls++; return drain(...args); };
-    h.projectionDrains.rag.drain = async () => { if (++calls <= 4) throw Object.assign(new Error("embedding unavailable"), { status }); return complete(); };
-    const report = await h.migration.run();
-    assert.equal(report.status, status === 503 ? "completed" : "failed");
-    assert.equal(calls, status === 503 ? 5 : 1); assert.equal(memoryCalls, 1); assert.equal(h.getInitializeCount(), 1);
-  }
-});
-
-for (const [status, expectedCalls] of [[503, 6], [undefined, 3]]) {
-  test(`RAG ${status || "unknown"} failure budget stops one run and manual re-entry retains generation`, async () => {
-    const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0;
-    h.projectionDrains.rag.drain = async () => { calls++; throw Object.assign(new Error("embedding unavailable"), { status }); };
-    const failed = await h.migration.run();
-    assert.equal(failed.status, "failed");
-    assert.equal(calls, expectedCalls);
-    assert.match(JSON.stringify(failed.error), /retry_budget_exhausted/);
-    h.projectionDrains.rag.drain = complete;
-    assert.equal((await h.migration.run()).status, "completed");
-    assert.equal(h.getInitializeCount(), 1);
-  });
-}
-
-test("successful embedding requests reset RAG failures before the next failure even within a drain", async () => {
-  const h = waitingHarness(); const complete = h.projectionDrains.rag.drain; let calls = 0;
-  h.projectionDrains.rag.drain = async () => {
-    if (++calls <= 8) throw Object.assign(new Error("partial batch failed"), { status: 503, providerSuccessCount: calls });
-    return complete();
-  };
-  assert.equal((await h.migration.run()).status, "completed");
-  assert.equal(calls, 9);
-});
-
 test("an already cancelled rebuild cannot initialize or purge", async () => {
   const h = waitingHarness(); const controller = new AbortController(); controller.abort();
   await assert.rejects(h.migration.rebuildScope(migrationScenario.scope, migrationScenario.history, { signal: controller.signal }), /did not complete/);
@@ -109,11 +72,10 @@ const migrationScenario = Object.freeze({
   revision: 1,
 });
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, forceDrainStale = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false, operationRunner, now = () => new Date("2026-07-13T00:00:00.000Z") } = {}) {
+function makeHarness({ verificationFailure = null, forceDrainFailureOnce = false, forceDrainStale = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false, operationRunner, now = () => new Date("2026-07-13T00:00:00.000Z") } = {}) {
   let state = initialAuthority ? createInitialMemoryState() : null;
   let snapshots = [];
   let statuses = [];
-  let checkpoints = [];
   let clock = 0;
   let initializeCount = 0;
   let forceDrainCount = 0;
@@ -151,9 +113,9 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
         return [{ base_revision: migrationScenario.revision, result_revision: migrationScenario.revision + 2 }];
       },
     },
-    sidecars: { async listProjectionCheckpoints() { return structuredClone(checkpoints); } },
+    sidecars: {},
     privacy: {
-      async purgeDerivedHistory() { derivedPurges += 1; incompatible = false; snapshots = []; statuses = []; checkpoints = []; },
+      async purgeDerivedHistory() { derivedPurges += 1; incompatible = false; snapshots = []; statuses = []; },
       async purgeAuthorityState() { authorityPurges += 1; state = null; },
     },
     migration: {
@@ -210,20 +172,8 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
       return { status: "completed" };
     },
   };
-  const projectionDrains = Object.fromEntries(["rag"].map((projectionKey) => [projectionKey, {
-    async drain() {
-      if (projectionFailure === projectionKey) return { status: "stale" };
-      checkpoints.push({
-        projection_key: projectionKey,
-        processed_generation: migrationScenario.sourceGeneration,
-        processed_boundary_message_id: migrationScenario.history.boundaryMessageId - (verificationFailure === "checkpoint" ? 1 : 0),
-        status: "healthy",
-      });
-      return { status: "healthy" };
-    },
-  }]));
-  const migration = createMemoryMigration({ providerRecovery: { retryMax: 2, transientRetryMax: 5, backoffBaseMs: 30000, backoffMaxMs: 120000 }, repositories, sourceRebuild, projectionDrains, providerTelemetry, now, operationRunner, monotonicNow: () => (clock += 5) });
-  return { migration, repositories, sourceRebuild, projectionDrains, getInitializeCount: () => initializeCount, getPurgeCounts: () => ({ derivedPurges, authorityPurges }) };
+  const migration = createMemoryMigration({ repositories, sourceRebuild, providerTelemetry, now, operationRunner, monotonicNow: () => (clock += 5) });
+  return { migration, repositories, sourceRebuild, getInitializeCount: () => initializeCount, getPurgeCounts: () => ({ derivedPurges, authorityPurges }) };
 }
 
 test("migration rehearsal rebuilds every raw-history scope", async () => {
@@ -244,7 +194,6 @@ test("migration rehearsal rebuilds every raw-history scope", async () => {
     targetCursorsAtBoundary: true,
     authoritySnapshotEqual: true,
     eventSnapshotChainContinuous: true,
-    healthyProjections: ["rag"],
   });
   assert.equal(report.sourceInventory.unchanged, true);
   assert.equal(report.sourceInventory.before.contentFingerprintCoverageComplete, true);
@@ -332,20 +281,12 @@ test("migration cutover opens the start gate only after full verification", asyn
   assert.equal(report.canStartService, true);
 });
 
-test("a stale projection keeps the service start gate closed", async () => {
-  const harness = makeHarness({ projectionFailure: "rag" });
-  const report = await harness.migration.run({ mode: "cutover", serviceStopped: true });
-  assert.equal(report.status, "failed");
-  assert.equal(report.canStartService, false);
-  assert.match(report.error.message, /Projection rag drain did not complete/);
-});
 
 for (const [failure, message] of [
   ["boundary", /Raw source boundary changed/],
   ["target", /is not healthy/],
   ["snapshot", /snapshot differs from authority state/],
   ["eventChain", /event\/snapshot chain is not continuous/],
-  ["checkpoint", /did not reach the captured generation\/boundary/],
 ]) {
   test(`migration verification closes the start gate on ${failure} failure`, async () => {
     const harness = makeHarness({ verificationFailure: failure });

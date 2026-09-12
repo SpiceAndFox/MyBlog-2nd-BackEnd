@@ -15,7 +15,6 @@ test("context segment assembly uses injected time and Gist configuration in the 
   const messages = build({
     systemPrompt: "system",
     memoryV2: null,
-    ragContext: null,
     gapBridge: null,
     recent: {
       messages: [

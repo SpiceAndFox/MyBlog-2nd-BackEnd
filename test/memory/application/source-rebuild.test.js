@@ -67,7 +67,7 @@ function makeRebuildHarness() {
   const state = createInitialMemoryState();
   state.meta.revision = 5;
   state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 9]));
-  const data = { state, statuses: {}, snapshots: [], checkpointsMarked: false, cancelled: false, mutationRan: false, sourceGuardClient: null };
+  const data = { state, statuses: {}, snapshots: [], cancelled: false, mutationRan: false, sourceGuardClient: null };
   const repositories = {
     async withTransaction(work) { return work({ transaction: true }); },
     sourceWriteGuard: {
@@ -90,7 +90,7 @@ function makeRebuildHarness() {
       async insertSnapshot(_u, _p, snapshot) { data.snapshots.push(structuredClone(snapshot)); },
       async getSnapshot(_u, _p, revision) { const found = data.snapshots.find((entry) => entry.revision === revision); return found ? { source_generation: found.sourceGeneration, schema_version: found.schemaVersion, state: found.state } : null; },
     },
-    sidecars: { async markProjectionsRebuilding() { data.checkpointsMarked = true; } },
+    sidecars: {},
   };
   const normalWritePipeline = { async createTask() { throw new Error("not used"); }, async processEnvelope() { throw new Error("not used"); } };
   return { data, repositories, normalWritePipeline };
@@ -167,7 +167,6 @@ test("source mutation atomically advances generation, preserves global revision,
   assert.equal(harness.data.mutationRan, true);
   assert.deepEqual(harness.data.sourceGuardClient, { transaction: true });
   assert.equal(harness.data.cancelled, true);
-  assert.equal(harness.data.checkpointsMarked, true);
   assert.equal(harness.data.state.meta.revision, 6);
   assert.deepEqual(harness.data.state.meta.targetCursors, Object.fromEntries(TARGET_KEYS.map((key) => [key, 0])));
   assert.equal(Object.values(harness.data.statuses).every((entry) => entry.status === "rebuilding" && entry.rebuildBoundaryMessageId === 20), true);
@@ -175,7 +174,7 @@ test("source mutation atomically advances generation, preserves global revision,
 });
 
 test("source mutation and derived-history replacement roll back together at every new-generation write boundary", async () => {
-  for (const failurePoint of ["purge", "state", "snapshot", "target", "checkpoint", "projection"]) {
+  for (const failurePoint of ["purge", "state", "snapshot", "target", "checkpoint"]) {
     const h = makeRebuildHarness();
     const before = structuredClone(h.data);
     let inject = true;
@@ -202,7 +201,6 @@ test("source mutation and derived-history replacement roll back together at ever
       [h.repositories.state, "writeState", "state"],
       [h.repositories.audit, "insertSnapshot", "snapshot"],
       [h.repositories.runtime, "upsertTargetStatus", "target"],
-      [h.repositories.sidecars, "markProjectionsRebuilding", "projection"],
     ]) {
       const original = repository[method];
       repository[method] = async (...args) => { await original(...args); fail(point); };

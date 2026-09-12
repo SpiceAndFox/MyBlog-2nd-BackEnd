@@ -17,11 +17,6 @@ test("migration evidence fingerprints code, every schema migration, and redacted
       enabled: true,
       provider: { model: "deepseek-flash", apiKey: "memory-secret" },
     },
-    ragConfig: {
-      embeddingModel: "Qwen/Qwen3-Embedding-8B",
-      embeddingApiKey: "embedding-secret",
-      rerankerModel: "Qwen/Qwen3-Reranker-8B",
-    },
   });
 
   assert.equal(evidence.reportFormatVersion, REPORT_FORMAT_VERSION);
@@ -35,7 +30,7 @@ test("migration evidence fingerprints code, every schema migration, and redacted
   assert.match(evidence.config.sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(evidence.config.values.memory.provider.model, "deepseek-flash");
   assert.deepEqual(evidence.config.values.memory.provider.apiKey, { configured: true });
-  assert.deepEqual(evidence.config.values.rag.embeddingApiKey, { configured: true });
+  assert.equal(Object.hasOwn(evidence.config.values, "rag"), false);
   assert.equal(evidence.config.values.outputRepair.policyVersion, OUTPUT_REPAIR_POLICY_VERSION);
   assert.doesNotMatch(JSON.stringify(evidence), /memory-secret|embedding-secret/);
 });

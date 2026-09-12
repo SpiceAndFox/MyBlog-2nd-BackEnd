@@ -26,20 +26,11 @@ test("diagnostic projection migration adds generic detail and a durable event ch
   assert.match(sql, /processed_event_id BIGINT NOT NULL DEFAULT 0/i);
 });
 
-test("fresh RAG schema includes the embedding text required by the v2 projection adapter", () => {
-  const sql = fs.readFileSync(path.join(__dirname, "../../../models/tableCreate/chat_rag_chunks.sql"), "utf8");
-  assert.match(sql, /embedding_text\s+TEXT\s+NOT NULL/i);
-  assert.doesNotMatch(sql, /^\s*#/m, "SQL comments must not use shell syntax");
-});
 
-test("privacy recovery schema survives preset deletion and RAG verification checks exact live source refs", () => {
+test("privacy recovery schema survives preset deletion", () => {
   const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/007-privacy-operation-recovery.sql"), "utf8");
-  const ragRepository = fs.readFileSync(path.join(__dirname, "../../../modules/chat/rag/repo.js"), "utf8");
   assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_memory_privacy_operations/i);
   assert.doesNotMatch(migration, /REFERENCES\s+chat_prompt_presets/i);
-  assert.match(ragRepository, /jsonb_array_elements/);
-  assert.match(ragRepository, /m\.id::TEXT=ref->>'messageId'/);
-  assert.match(ragRepository, /ref->>'contentHash'='sha256:'/);
 });
 
 test("chat turn migration persists identity, idempotency, generation fences, and durable operation payloads", () => {
@@ -87,15 +78,6 @@ test("2.01 cleanup migration removes evidence classification and suppression sto
   assert.match(migration, /DROP TABLE IF EXISTS chat_context_suppression_tombstones/i);
 });
 
-test("RAG projection migration stores resumable batches separately from the active index", () => {
-  const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/012-resumable-rag-projection.sql"), "utf8");
-  assert.match(migration, /CREATE EXTENSION IF NOT EXISTS vector/i);
-  assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_rag_projection_staging/i);
-  assert.match(migration, /source_generation BIGINT NOT NULL/i);
-  assert.match(migration, /boundary_message_id BIGINT NOT NULL/i);
-  assert.match(migration, /PRIMARY KEY\s*\([\s\S]*source_generation[\s\S]*chunk_index[\s\S]*\)/i);
-  assert.match(migration, /idx_chat_rag_projection_staging_build/i);
-});
 
 test("Librarian migration stores one scheduling checkpoint per scope and generation", () => {
   const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/013-memory-librarian.sql"), "utf8");
@@ -103,4 +85,19 @@ test("Librarian migration stores one scheduling checkpoint per scope and generat
   assert.match(migration, /PRIMARY KEY \(user_id, preset_id, source_generation\)/i);
   assert.match(migration, /completed_ordinal BIGINT NOT NULL/i);
   assert.match(migration, /boundary_message_id BIGINT NOT NULL/i);
+});
+
+test("RAG retirement removes only its storage and refuses cascading extension deletion", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/015-retire-chat-rag.sql"), "utf8");
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.deepEqual([...sql.matchAll(/DROP TABLE IF EXISTS (\w+);/g)].map((match) => match[1]), [
+    "chat_rag_projection_staging", "chat_rag_chunks", "chat_context_projection_checkpoints",
+  ]);
+  assert.equal([...sql.matchAll(/WHERE subject_kind='projection' AND subject_key='rag';/g)].length, 2);
+  const extensionSql = fs.readFileSync(path.join(__dirname, "../../../migrations/optional/retire-pgvector.sql"), "utf8");
+  assert.match(extensionSql, /DROP EXTENSION IF EXISTS vector RESTRICT;/);
+  assert.doesNotMatch(sql, /DROP EXTENSION/i);
+  assert.doesNotMatch(sql, /\bCASCADE\b/i);
+  assert.doesNotMatch(sql, /(?:DELETE FROM|UPDATE|DROP TABLE(?: IF EXISTS)?)\s+(?:chat_messages|chat_preset_memory|chat_memory_diagnostic_projection_checkpoints)\b/i);
 });

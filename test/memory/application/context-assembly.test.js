@@ -24,10 +24,7 @@ function makeData() {
   const data = { state, diagnostics: [], notifications: [], sourceMessages: contextScenario.sourceMessages.map((message) => ({
     ...message,
     contentHash: `sha256:${crypto.createHash("sha256").update(message.content).digest("hex")}`,
-  })), checkpoints: [
-    { projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
-    { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
-  ], nextId: 1 };
+  })), nextId: 1 };
   const sidecars = {
     async listActiveDiagnostics() { return data.diagnostics.filter((row) => !row.resolved); },
     async upsertActiveDiagnostic(_user, _preset, diagnostic) {
@@ -44,7 +41,6 @@ function makeData() {
       return row;
     },
     async listPendingRecoveryNotifications() { return data.notifications.filter((row) => !row.delivered); },
-    async listProjectionCheckpoints() { return data.checkpoints; },
   };
   data.repositories = {
     source: {
@@ -105,45 +101,23 @@ test("historical context queries cannot falsely resolve a gap diagnostic outside
   assert.equal(data.notifications.length, 0);
 });
 
-test("projection lag diagnostic persists until the query boundary is covered", async () => {
-  const data = makeData();
-  const metrics = createMemoryMetrics();
-  data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
-  data.checkpoints = [{ projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 2 }, { projection_key: "recall", processed_generation: 0, processed_boundary_message_id: 5 }];
-  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: contextScenario.recentWindowMaxChars, metrics });
-  const degraded = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "projection-1" });
-  assert.equal(degraded.health.status, "degraded");
-  assert.equal(data.diagnostics.some((row) => row.subjectKind === "projection" && !row.resolved), true);
-  const metricSnapshot = metrics.snapshot();
-  assert.equal(metricSnapshot.observations["memory_projection_lag_messages{projectionKey=rag,status=degraded}"].max, 2);
-  assert.equal(metricSnapshot.observations["memory_health_state_duration_ms{status=degraded,subjectKey=rag,subjectKind=projection}"].count, 1);
 
-  data.checkpoints[0].processed_boundary_message_id = 4;
-  const recovered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "projection-2" });
-  assert.equal(recovered.health.status, "healthy");
-  assert.equal(recovered.notifications.some((row) => row.subjectKind === "projection" && row.subjectKey === "rag"), true);
-});
-
-test("legacy recall checkpoints never participate in projection health", async () => {
+test("retired retrieval diagnostics and notifications do not affect Memory", async () => {
   const data = makeData();
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
-  data.checkpoints = [
-    { projection_key: "rag", processed_generation: 0, processed_boundary_message_id: 5, status: "healthy" },
-    { projection_key: "recall", processed_generation: -1, processed_boundary_message_id: 0, status: "rebuilding" },
-  ];
   data.diagnostics.push({
-    id: data.nextId++, subjectKind: "projection", subjectKey: "recall", diagnosticType: "projection_lag",
+    id: data.nextId++, subjectKind: "projection", subjectKey: "rag", diagnosticType: "projection_lag",
     sourceGeneration: 0, recentWindowStart: 5, resolved: false,
   });
   data.notifications.push({
-    id: data.nextId++, subjectKind: "projection", subjectKey: "recall", boundaryMessageId: 0,
+    id: data.nextId++, subjectKind: "projection", subjectKey: "rag", boundaryMessageId: 0,
     sourceGeneration: 0, delivered: false,
   });
   const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: contextScenario.recentWindowMaxChars });
   const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "legacy-recall" });
   assert.equal(result.health.status, "healthy");
-  assert.deepEqual(result.projectionCoverage.map((entry) => entry.projectionKey), ["rag"]);
-  assert.equal(result.notifications.some((row) => row.subjectKey === "recall"), false);
+  assert.equal(Object.hasOwn(result, "projectionCoverage"), false);
+  assert.equal(result.notifications.some((row) => row.subjectKind === "projection"), false);
 });
 
 test("scene capacity rejection diagnostic is user-visible until the rejected field later recovers", async () => {

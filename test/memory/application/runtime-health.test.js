@@ -23,17 +23,6 @@ test("runtime health exposes resumable progress without leaking internal target 
           }];
         },
       },
-      sidecars: {
-        async listProjectionCheckpoints() {
-          return [{
-            projection_key: "rag",
-            status: "rebuilding",
-            processed_generation: 3,
-            processed_boundary_message_id: 10,
-            last_error_reason: "secret-embedding-detail",
-          }];
-        },
-      },
     },
     providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds() { return {}; },
@@ -50,12 +39,8 @@ test("runtime health exposes resumable progress without leaking internal target 
     processedMessageId: 12,
     rebuildBoundaryMessageId: 20,
   }]);
-  assert.deepEqual(snapshot.scope.projection, {
-    status: "rebuilding",
-    processedGeneration: 3,
-    processedBoundaryMessageId: 10,
-  });
-  assert.doesNotMatch(JSON.stringify(snapshot), /secret-provider-detail|secret-embedding-detail/);
+  assert.equal(Object.hasOwn(snapshot.scope, "projection"), false);
+  assert.doesNotMatch(JSON.stringify(snapshot), /secret-provider-detail/);
 });
 
 test("runtime health fails closed when authority memory cannot be validated", async () => {
@@ -64,7 +49,6 @@ test("runtime health fails closed when authority memory cannot be validated", as
     repositories: {
       state: { async getState() { throw new Error("invalid authority"); } },
       runtime: {},
-      sidecars: {},
     },
     providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds() { return {}; },
@@ -91,7 +75,6 @@ test("manual runtime retry is scoped and directly runs halted target recovery", 
           return [{ target_key: "todos", status: "halted" }];
         },
       },
-      sidecars: {},
     },
     providerHealth: createProviderHealth({ name: "memory" }),
     async reconcileRebuilds(options) {

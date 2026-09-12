@@ -118,16 +118,4 @@ function buildGapBridgeCoverage({ messages, state, recentWindowStartMessageId, m
   };
 }
 
-function assessProjectionCoverage(checkpoint, { sourceGeneration, recentWindowStartMessageId }) {
-  const requiredBoundary = Math.max(0, Number(recentWindowStartMessageId || 1) - 1);
-  if (!checkpoint) return null;
-  const processedGeneration = Number(checkpoint.processedGeneration ?? checkpoint.processed_generation);
-  const processedBoundary = Number(checkpoint.processedBoundaryMessageId ?? checkpoint.processed_boundary_message_id ?? 0);
-  const status = checkpoint.status;
-  if (status === "rebuilding") return { queryHealth: "rebuilding", requiredBoundary, processedBoundary };
-  if (processedGeneration !== sourceGeneration) return { queryHealth: "rebuilding", requiredBoundary, processedBoundary };
-  if (processedBoundary < requiredBoundary) return { queryHealth: "degraded", requiredBoundary, processedBoundary };
-  return { queryHealth: "healthy", requiredBoundary, processedBoundary };
-}
-
-module.exports = { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage, normalizeSourceMessages };
+module.exports = { selectRecentWindow, buildGapBridgeCoverage, normalizeSourceMessages };

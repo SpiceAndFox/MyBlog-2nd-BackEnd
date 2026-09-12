@@ -14,9 +14,7 @@ const SKIPPED_DIRECTORIES = new Set([
 
 const FROZEN_INTERNAL_IMPORT_DEBT = Object.freeze([]);
 
-const ROOT_ENVIRONMENT_BOUNDARIES = new Set([
-  "regenerateChatRag.js",
-]);
+const ROOT_ENVIRONMENT_BOUNDARIES = new Set();
 
 function isEnvironmentBoundary(relativePath) {
   return relativePath.startsWith("app/composition/")
@@ -127,13 +125,10 @@ function tableOwner(tableName) {
     "chat_messages",
     "chat_prompt_presets",
     "chat_message_gists",
-    "chat_rag_chunks",
-    "chat_rag_projection_staging",
   ].includes(table)) {
     return "chat";
   }
   if (table === "chat_preset_memory" || table.startsWith("chat_memory_") || [
-    "chat_context_projection_checkpoints",
     "chat_context_quality_diagnostics",
   ].includes(table)) return "memory";
   if (["articles", "diaries", "tags", "article_tags"].includes(table)) return "blog";
@@ -213,6 +208,10 @@ function analyzeArchitecture({
     const importerRelative = relativeByAbsolute.get(importer);
     const importerOwner = moduleOwner(importerRelative);
     const source = fs.readFileSync(importer, "utf8");
+    if (/^(?:app|modules|controllers|routes|config)\//.test(importerRelative)
+      && /\b(?:rag|ragContext|chatRag\w*|ragProjectionAdapter|ragPrivacyStore|CHAT_RAG_[A-Z_]+|chat_rag_[a-z_]+)\b/i.test(source)) {
+      boundaryViolations.push(`Retired RAG dependencies must not re-enter runtime code: ${importerRelative}`);
+    }
     if (/\bprocess\s*\.\s*env\b/.test(source) && !isEnvironmentBoundary(importerRelative)) {
       environmentViolations.push(`process.env is restricted to configuration/startup boundaries: ${importerRelative}`);
     }

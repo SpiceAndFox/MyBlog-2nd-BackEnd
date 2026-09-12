@@ -39,7 +39,6 @@ function createChatModule({ config, adapters } = {}) {
   const compileContext = adapters.compileContext || createChatContextCompiler({
     memoryEnabled: config.memory.enabled,
     memory: adapters.memory,
-    rag: { retrieve: adapters.rag.retrieve },
     recentWindow: adapters.recentWindow || { build: createRecentWindowContextBuilder({
       config: config.chat,
       contextConfig: config.context,
@@ -61,7 +60,6 @@ function createChatModule({ config, adapters } = {}) {
     compileContext,
     llm: adapters.llm,
     memory: adapters.memory,
-    rag: adapters.rag,
     gist,
     scopeCoordinator: adapters.scopeCoordinator,
     transaction: adapters.transaction,
@@ -72,7 +70,6 @@ function createChatModule({ config, adapters } = {}) {
     chatRepository: adapters.chatRepository,
     settings,
     memory: adapters.memory,
-    rag: adapters.rag,
     scopeCoordinator: adapters.scopeCoordinator,
     logger: adapters.logger,
   });

@@ -10,12 +10,11 @@ function privacyHttpPayload(privacy) {
   };
 }
 
-function createChatController({ chatModule, memory, rag, config, logger, withRequestContext } = {}) {
+function createChatController({ chatModule, memory, logger, withRequestContext } = {}) {
   if (!chatModule?.sendMessage || !chatModule?.editMessage || !chatModule?.presets || !chatModule?.sessions) {
     throw new Error("Chat module is required");
   }
   if (typeof memory?.markRecoveryNotificationsDelivered !== "function") throw new Error("Chat Memory port is required");
-  if (!config?.rag) throw new Error("Chat HTTP config is required");
   if (typeof logger?.error !== "function" || typeof logger?.warn !== "function") throw new Error("Chat logger is required");
   if (typeof withRequestContext !== "function") throw new Error("Request context adapter is required");
 
@@ -26,30 +25,10 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
     return res.status(status).json({ error: message || "Internal Server Error" });
   }
 
-  function getRagSources(context) {
-    return (Array.isArray(context?.rag?.sources) ? context.rag.sources : []).filter(Boolean);
-  }
-
-  function attachRagSources(message, context) {
-    const sources = getRagSources(context);
-    const debug = config.rag.enabled && config.rag.debugIncludeContent && context?.rag
-      ? { enabled: Boolean(context.rag.enabled), stats: context.rag.stats || null, sources }
-      : null;
-    if (!message || (!sources.length && !debug)) return message;
-    return { ...message, ...(sources.length ? { rag_sources: sources } : {}), ...(debug ? { rag_debug: debug } : {}) };
-  }
-
   function attachContextHealth(payload, context, res) {
     const notifications = Array.isArray(context?.memoryRecoveryNotifications) ? context.memoryRecoveryNotifications : [];
     const next = { ...payload };
     if (context?.memoryHealth) next.memory_health = context.memoryHealth;
-    if (context?.rag?.stats?.degraded) {
-      next.rag_health = {
-        status: "degraded",
-        reason: context.rag.stats.reason,
-        failure: context.rag.stats.failure,
-      };
-    }
     if (notifications.length) next.memory_recovery_notifications = notifications;
     const ids = notifications.map((entry) => Number(entry.id)).filter(Number.isSafeInteger);
     if (ids.length) {
@@ -67,9 +46,7 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
       component,
       status: provider.status,
       reason: provider.reason || "provider_unavailable",
-      message: component === "embedding"
-        ? "最近一次历史对话检索请求失败，后续请求仍会正常尝试"
-        : "最近一次记忆服务请求失败，已保存的记忆仍可使用",
+      message: "最近一次记忆服务请求失败，已保存的记忆仍可使用",
       since: provider.lastFailureAt || null,
     };
   }
@@ -98,24 +75,17 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
     async getHealth(req, res) {
       try {
         const presetId = String(req.query?.presetId || "").trim();
-        const [memoryHealth, ragHealth] = await Promise.all([
-          typeof memory.getHealthSnapshot === "function"
-            ? memory.getHealthSnapshot({ userId: req.user?.id, presetId })
-            : Promise.resolve({ provider: null, scope: null }),
-          typeof rag?.getHealthSnapshot === "function"
-            ? Promise.resolve(rag.getHealthSnapshot())
-            : Promise.resolve({ embeddingProvider: null }),
-        ]);
+        const memoryHealth = typeof memory.getHealthSnapshot === "function"
+          ? await memory.getHealthSnapshot({ userId: req.user?.id, presetId })
+          : { provider: null, scope: null };
         const warnings = [
           providerWarning("memory", memoryHealth?.provider),
-          providerWarning("embedding", ragHealth?.embeddingProvider),
           ...(Array.isArray(memoryHealth?.scope?.alerts)
             ? memoryHealth.scope.alerts.map((alert) => ({ component: "memory", ...alert }))
             : []),
         ].filter(Boolean);
         const providerStatuses = [
           memoryHealth?.provider?.status,
-          ragHealth?.embeddingProvider?.status,
         ].filter(Boolean);
         const status = warnings.length
           ? "degraded"
@@ -125,7 +95,6 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
         return res.status(200).json({
           status,
           memory: memoryHealth,
-          rag: ragHealth,
           warnings,
         });
       } catch (error) {
@@ -137,21 +106,14 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
       try {
         const component = String(req.body?.component || "").trim();
         const presetId = String(req.body?.presetId || "").trim();
-        if (!["memory", "embedding"].includes(component)) {
-          return res.status(400).json({ error: "component must be memory or embedding" });
+        if (component !== "memory") {
+          return res.status(400).json({ error: "component must be memory" });
         }
         if (!presetId) return res.status(400).json({ error: "presetId is required" });
-        if (component === "memory") {
-          const result = typeof memory.retryProviderNow === "function"
-            ? await memory.retryProviderNow({ userId: req.user?.id, presetId })
-            : { attempted: false, reason: "retry_unavailable" };
-          return res.status(202).json({ component, result });
-        }
-        const projection = typeof memory.drainProjections === "function"
-          ? await memory.drainProjections(req.user?.id, presetId)
-          : null;
-        const provider = (await rag?.getHealthSnapshot?.())?.embeddingProvider ?? null;
-        return res.status(202).json({ component, result: { provider, projection } });
+        const result = typeof memory.retryProviderNow === "function"
+          ? await memory.retryProviderNow({ userId: req.user?.id, presetId })
+          : { attempted: false, reason: "retry_unavailable" };
+        return res.status(202).json({ component, result });
       } catch (error) {
         return sendFailure(req, res, "chat_health_retry_failed", error);
       }
@@ -413,7 +375,7 @@ function createChatController({ chatModule, memory, rag, config, logger, withReq
         const payload = attachContextHealth({
           session: result.session,
           user_message: result.userMessage,
-          assistant_message: attachRagSources(result.assistantMessage, result.context),
+          assistant_message: result.assistantMessage,
           ...(result.kind === "idempotent_replay" ? { idempotent_replay: true } : {}),
         }, result.context, res);
         if (result.stream) {

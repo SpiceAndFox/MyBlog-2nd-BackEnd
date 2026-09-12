@@ -7,7 +7,7 @@ const {
   withLibrarianRepositoryStubs,
 } = require("../support/memory-builders");
 
-test("startup recovery reconciles projections for initialized scopes using the public repository method", async () => {
+test("startup recovery reconciles Memory diagnostics without retrieval workers", async () => {
   const state = createInitialMemoryState();
   const projectionCalls = [];
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
@@ -26,15 +26,15 @@ test("startup recovery reconciles projections for initialized scopes using the p
       async listRecoverableTasks() { return []; },
     },
     audit: {},
-    sidecars: {},
+    sidecars: { async listActiveDiagnostics() { return []; } },
+    diagnosticProjection: {
+      async lockCheckpoint(userId, presetId) { projectionCalls.push([userId, presetId]); return { processed_event_id: 0 }; },
+      async listCommittedEventsAfter() { return []; },
+      async advanceCheckpoint() {},
+      async recordProjectionError() {},
+    },
     async withTransaction(work) { return work({}); },
   };
-  const projectionDrains = Object.fromEntries(["rag"].map((key) => [key, {
-    async drain(userId, presetId) {
-      projectionCalls.push([key, userId, presetId]);
-      return { status: "healthy" };
-    },
-  }]));
   const runtime = createMemoryRuntime({
     config: createMemoryTestConfig({
       enabled: true,
@@ -43,24 +43,23 @@ test("startup recovery reconciles projections for initialized scopes using the p
     }),
     repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
-    projectionDrains,
   });
 
   const firstReport = await runtime.recoverPending();
   assert.deepEqual(firstReport.tasks, []);
   assert.deepEqual(firstReport.issues, []);
-  assert.deepEqual(projectionCalls, [["rag", 1, "default"]]);
+  assert.deepEqual(projectionCalls, [[1, "default"]]);
   const secondReport = await runtime.recoverPending();
   assert.deepEqual(secondReport.tasks, []);
   assert.deepEqual(secondReport.issues, []);
-  assert.deepEqual(projectionCalls, [["rag", 1, "default"], ["rag", 1, "default"]]);
+  assert.deepEqual(projectionCalls, [[1, "default"], [1, "default"]]);
   const stop = runtime.startProjectionPolling();
   assert.equal(typeof stop, "function");
   assert.equal(runtime.startProjectionPolling(), runtime.stopProjectionPolling);
   stop();
 });
 
-test("diagnostic projection failure does not starve the RAG projection during reconciliation", async () => {
+test("diagnostic synchronization failures remain observable after retrieval retirement", async () => {
   const state = createInitialMemoryState();
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
   const errors = [];
@@ -90,18 +89,14 @@ test("diagnostic projection failure does not starve the RAG projection during re
     }),
     repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
-    projectionDrains: {
-      rag: { async drain() { throw Object.assign(new Error("rag failed"), { code: "RAG_FAILED" }); } },
-    },
     onBackgroundError(error) { errors.push(error.code); },
   });
 
   const results = await runtime.reconcileProjections();
   assert.deepEqual(results["1:default"], {
     diagnostics: { status: "failed", reason: "DIAGNOSTICS_FAILED" },
-    rag: { status: "failed", reason: "RAG_FAILED" },
   });
-  assert.deepEqual(errors, ["DIAGNOSTICS_FAILED", "RAG_FAILED"]);
+  assert.deepEqual(errors, ["DIAGNOSTICS_FAILED"]);
 });
 
 test("strict startup recovery classifies durable and projection work that cannot open readiness", () => {
@@ -113,8 +108,7 @@ test("strict startup recovery classifies durable and projection work that cannot
     rebuildAfter: { "1:default": { status: "incomplete" } },
     projections: {
       "1:default": {
-        diagnostics: { status: "synced" },
-        rag: { status: "failed" },
+        diagnostics: { status: "failed" },
       },
     },
   }), [
@@ -122,28 +116,10 @@ test("strict startup recovery classifies durable and projection work that cannot
     { kind: "rebuild_after", scope: "1:default", status: "incomplete" },
     { kind: "task", taskId: "task-1", status: "retry_wait" },
     { kind: "pending_task", taskId: "task-future", status: "retry_wait" },
-    { kind: "projection", scope: "1:default", projectionKey: "rag", status: "failed" },
+    { kind: "projection", scope: "1:default", projectionKey: "diagnostics", status: "failed" },
   ]);
 });
 
-test("runtime rejects the retired recall projection drain", () => {
-  const state = createInitialMemoryState();
-  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
-  assert.throws(() => createMemoryRuntime({
-    config: createMemoryTestConfig({
-      enabled: true,
-      targets,
-      projections: { pollIntervalMs: 1000 },
-    }),
-    repositories: {
-      state: { async getState() { return state; } },
-      source: {},
-      runtime: {},
-    },
-    providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
-    projectionDrains: { recall: { async drain() {} } },
-  }), /Unsupported Memory projection drain: recall/);
-});
 test("startup recovery resumes a persisted rebuilding boundary even when no task is pending", async () => {
   const state = createInitialMemoryState();
   const statuses = Object.fromEntries(TARGET_KEYS.map((key) => [key, { target_key: key, source_generation: 0, status: "rebuilding", rebuild_boundary_message_id: 0 }]));
@@ -161,7 +137,7 @@ test("startup recovery resumes a persisted rebuilding boundary even when no task
       async listSnapshots() { return [{ revision: 0, source_generation: 0, schema_version: "2.01", state: structuredClone(state) }]; },
       async listRevisionGroups() { return []; },
     },
-    sidecars: { async listProjectionCheckpoints() { return []; } },
+    sidecars: {},
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({

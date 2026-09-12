@@ -7,7 +7,6 @@ function createEditMessageUseCase({
   chatRepository,
   settings,
   memory,
-  rag,
   scopeCoordinator,
   logger,
   randomUUID = crypto.randomUUID,
@@ -25,7 +24,6 @@ function createEditMessageUseCase({
   }
   if (!settings?.resolvePresetForSession || !settings?.isSessionEditableToday) throw new Error("Chat settings service is required");
   if (typeof memory?.privacyHardDelete !== "function") throw new Error("Chat Memory privacy port is required");
-  if (typeof rag?.requestDeleteFromMessage !== "function") throw new Error("Chat RAG delete port is required");
   if (!scopeCoordinator?.buildKey || !scopeCoordinator?.cancelByKey) throw new Error("Chat scope coordinator is required");
   if (typeof logger?.error !== "function") throw new Error("Chat logger is required");
 
@@ -104,14 +102,6 @@ function createEditMessageUseCase({
         if (editedMessage && updated) Object.assign(editedMessage, updated);
       },
     });
-    if (!memory.enabled) {
-      try {
-        rag.requestDeleteFromMessage({ userId, presetId, fromMessageId: messageId });
-      } catch (error) {
-        logger.error("chat_rag_delete_kick_failed", { error, userId, presetId, fromMessageId: messageId });
-      }
-    }
-
     let updatedSession = await chatRepository.updateSessionSettings(
       userId,
       sessionId,

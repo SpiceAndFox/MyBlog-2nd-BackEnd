@@ -6,7 +6,6 @@ function baseAdapters(overrides = {}) {
   return {
     memoryEnabled: false,
     memory: { async assembleContext() { throw new Error("Memory is disabled"); } },
-    rag: { async retrieve() { return null; } },
     recentWindow: {
       async build() {
         return {
@@ -29,28 +28,7 @@ function baseAdapters(overrides = {}) {
   };
 }
 
-test("non-Memory context compilation uses injected recent-window and RAG ports with the pre-window boundary", async () => {
-  const calls = [];
-  const compile = createChatContextCompiler(baseAdapters({
-    rag: {
-      async retrieve(input) {
-        calls.push(input);
-        return { enabled: true, messages: [], sources: [{ messageId: 3 }], stats: { reason: "retrieved" } };
-      },
-    },
-  }));
-
-  const result = await compile({ userId: 7, presetId: "companion", systemPrompt: "system", upToMessageId: 10 });
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].query, "current");
-  assert.equal(calls[0].beforeMessageId, 9);
-  assert.deepEqual(result.rag.sources, [{ messageId: 3 }]);
-  assert.equal(result.memory, null);
-});
-
-test("Memory context compilation fails closed to projection rebuilding without querying stale RAG", async () => {
-  let retrievals = 0;
+test("Memory context compilation preserves memory, history and health without a retrieval port", async () => {
   let segmentState = null;
   const notification = { id: 19, reason: "recovered" };
   const compile = createChatContextCompiler(baseAdapters({
@@ -65,7 +43,6 @@ test("Memory context compilation fails closed to projection rebuilding without q
           recent: { messages: [{ id: 20, role: "user", content: "now" }], stats: { windowStartMessageId: 20 } },
           timeCandidates: [],
           gapBridge: { messages: [], stats: { selected: 0 } },
-          projectionCoverage: [{ projectionKey: "rag", queryHealth: "rebuilding", processedBoundary: 5 }],
           needsMemory: false,
           health: { status: "degraded" },
           notifications: [notification],
@@ -73,7 +50,6 @@ test("Memory context compilation fails closed to projection rebuilding without q
         };
       },
     },
-    rag: { async retrieve() { retrievals += 1; } },
     segments: {
       build(state) {
         segmentState = state;
@@ -84,9 +60,19 @@ test("Memory context compilation fails closed to projection rebuilding without q
 
   const result = await compile({ userId: 7, presetId: "companion", upToMessageId: 20 });
 
-  assert.equal(retrievals, 0);
   assert.equal(segmentState.memoryV2.renderedText, "durable memory");
-  assert.equal(result.rag.stats.reason, "projection_rebuilding");
+  assert.equal(Object.hasOwn(segmentState, "ragContext"), false);
+  assert.equal(Object.hasOwn(result, "rag"), false);
   assert.deepEqual(result.memoryRecoveryNotifications, [notification]);
   assert.deepEqual(result.memoryHealth, { status: "degraded" });
+});
+
+test("recent-window compilation works without retrieval configuration and retains Gist backfill", async () => {
+  let backfills = 0;
+  const compile = createChatContextCompiler(baseAdapters({ gist: { scheduleBackfill() { backfills++; } } }));
+  const result = await compile({ userId: 7, presetId: "companion", systemPrompt: "system", upToMessageId: 10 });
+  assert.deepEqual(result.messages, [{ role: "user", content: "current" }]);
+  assert.equal(result.memory, null);
+  assert.equal(backfills, 1);
+  assert.equal(Object.hasOwn(result, "rag"), false);
 });

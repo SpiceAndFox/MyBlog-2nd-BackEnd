@@ -1,7 +1,7 @@
 const { validateMemoryState } = require("../contracts/state");
 const { SCHEMA_VERSION } = require("../contracts/constants");
 const { TARGET_KEYS } = require("../contracts/constants");
-const { selectRecentWindow, buildGapBridgeCoverage, assessProjectionCoverage } = require("../domain/contextCoverage");
+const { selectRecentWindow, buildGapBridgeCoverage } = require("../domain/contextCoverage");
 const { aggregateMemoryHealth } = require("../domain/health");
 const { renderMemory } = require("../domain/renderer");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
@@ -82,45 +82,6 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     return resolved;
   }
 
-  async function syncProjectionDiagnostics(userId, presetId, state, projectionHealth, active, requestId, recentWindowStartMessageId) {
-    for (const projection of projectionHealth) {
-      const existing = active.find((row) => row.subjectKind === "projection" && row.subjectKey === projection.projectionKey && row.diagnosticType === "projection_lag");
-      if (projection.queryHealth === "healthy") {
-        if (!existing) continue;
-        const resolvedRow = await repositories.withTransaction(async (client) => {
-          const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
-          if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) return null;
-          const row = typeof repositories.sidecars.resolveProjectionDiagnosticIfCovered === "function"
-            ? await repositories.sidecars.resolveProjectionDiagnosticIfCovered(existing.id, {
-              sourceGeneration: state.meta.sourceGeneration,
-              processedBoundaryMessageId: projection.processedBoundary,
-            }, { client })
-            : projection.processedBoundary >= Math.max(0, Number(existing.recentWindowStart || 1) - 1)
-              ? await repositories.sidecars.resolveDiagnostic(existing.id, { client })
-              : null;
-          if (!row) return null;
-          const recoveredBoundary = Math.max(0, Number(row.recent_window_start ?? row.recentWindowStart ?? 1) - 1);
-          await repositories.sidecars.createRecoveryNotification(userId, presetId, { subjectKind: "projection", subjectKey: projection.projectionKey, boundaryMessageId: recoveredBoundary, sourceGeneration: state.meta.sourceGeneration }, { client });
-          return row;
-        });
-        if (resolvedRow) active.splice(active.indexOf(existing), 1);
-        continue;
-      }
-      const persisted = await repositories.withTransaction(async (client) => {
-        const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
-        if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) return null;
-        return repositories.sidecars.upsertActiveDiagnostic(userId, presetId, {
-          subjectKind: "projection", subjectKey: projection.projectionKey, diagnosticType: "projection_lag", requestId,
-          processedBoundaryMessageId: projection.processedBoundary, recentWindowStart: recentWindowStartMessageId, sourceGeneration: state.meta.sourceGeneration, truncated: false,
-        }, { client });
-      });
-      if (!persisted) continue;
-      const normalized = camelDiagnostic(persisted);
-      if (existing) active.splice(active.indexOf(existing), 1);
-      active.push(normalized);
-    }
-  }
-
   return async function assembleMemoryContext({ userId, presetId, upToMessageId, requestId, requestNow = new Date().toISOString() } = {}) {
     const sourceMessages = await repositories.source.listUpTo(userId, presetId, upToMessageId);
     const recent = selectRecentWindow(sourceMessages, recentWindowMaxChars);
@@ -163,7 +124,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     }
     let activeDiagnostics = (await repositories.sidecars.listActiveDiagnostics(userId, presetId))
       .map(camelDiagnostic)
-      .filter((row) => row.subjectKind !== "projection" || row.subjectKey === "rag");
+      .filter((row) => row.subjectKind !== "projection");
     const stateDiagnosticTypes = new Set(["state_missing", "state_read_failed", "state_schema_invalid", "version_unsupported"]);
     if (!state && debug.memorySkipReason && stateDiagnosticTypes.has(debug.memorySkipReason)) {
       const persisted = await repositories.withTransaction((client) => repositories.sidecars.upsertActiveDiagnostic(userId, presetId, {
@@ -223,28 +184,9 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       }
     } else if (!recent.needsMemory) debug.memorySkipReason = "not_needed";
 
-    const checkpoints = state ? await repositories.sidecars.listProjectionCheckpoints(userId, presetId) : [];
-    const projectionHealth = state ? checkpoints
-      .filter((checkpoint) => (checkpoint.projection_key ?? checkpoint.projectionKey) === "rag")
-      .map((checkpoint) => ({
-        projectionKey: checkpoint.projection_key ?? checkpoint.projectionKey,
-        ...assessProjectionCoverage(checkpoint, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }),
-      })) : [];
-    if (state) {
-      for (const projectionKey of ["rag"]) {
-        if (!projectionHealth.some((entry) => entry.projectionKey === projectionKey)) {
-          projectionHealth.push({ projectionKey, ...assessProjectionCoverage({ processedGeneration: -1, processedBoundaryMessageId: 0 }, { sourceGeneration: state.meta.sourceGeneration, recentWindowStartMessageId }) });
-        }
-      }
-    }
-    if (state) await syncProjectionDiagnostics(userId, presetId, state, projectionHealth, activeDiagnostics, requestId, recentWindowStartMessageId);
     const healthNow = new Date(requestNow);
-    const health = aggregateMemoryHealth({ targetStatuses, diagnostics: activeDiagnostics, projectionHealth, now: healthNow, alertDebounceMs: config.health?.alertDebounceMs ?? 0 });
+    const health = aggregateMemoryHealth({ targetStatuses, diagnostics: activeDiagnostics, now: healthNow, alertDebounceMs: config.health?.alertDebounceMs ?? 0 });
     metrics?.increment("memory_context_health_total", { status: health.status });
-    for (const projection of projectionHealth) {
-      const lag = Math.max(0, Number(projection.requiredBoundary ?? 0) - Number(projection.processedBoundary ?? 0));
-      metrics?.observe("memory_projection_lag_messages", { projectionKey: projection.projectionKey, status: projection.queryHealth }, lag);
-    }
     const durationRows = [
       ...targetStatuses.flatMap((row) => {
         const targetKey = row.targetKey ?? row.target_key;
@@ -259,7 +201,6 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
         subjectKind: row.subjectKind,
         subjectKey: row.subjectKey,
         status: row.healthStatus === "rebuilding"
-          || (row.subjectKind === "projection" && projectionHealth.find((projection) => projection.projectionKey === row.subjectKey)?.queryHealth === "rebuilding")
           ? "rebuilding"
           : "degraded",
       })),
@@ -281,8 +222,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     const requestTimestamp = new Date(requestNow).getTime();
     const notifications = (await repositories.sidecars.listPendingRecoveryNotifications(userId, presetId)).filter((row) => {
       const subjectKind = row.subject_kind ?? row.subjectKind;
-      const subjectKey = row.subject_key ?? row.subjectKey;
-      if (subjectKind === "projection" && subjectKey !== "rag") return false;
+      if (subjectKind === "projection") return false;
       const createdAt = row.created_at ?? row.createdAt;
       return !createdAt || requestTimestamp - new Date(createdAt).getTime() >= recoveryStableMs;
     });
@@ -296,7 +236,6 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       memorySegment: rendered?.renderedText || "",
       gapBridge: { messages: gapBridge.messages, content: formatGapBridge(gapBridge.messages), stats: gapBridge.stats },
       health,
-      projectionCoverage: projectionHealth,
       notifications: notifications.map((row) => ({ id: Number(row.id), subjectKind: row.subject_kind ?? row.subjectKind, subjectKey: row.subject_key ?? row.subjectKey, boundaryMessageId: Number(row.boundary_message_id ?? row.boundaryMessageId ?? 0), message: "Memory 已追平到相应 boundary" })),
       debug,
       housekeepingRequested: Boolean(rendered?.needsHousekeeping),

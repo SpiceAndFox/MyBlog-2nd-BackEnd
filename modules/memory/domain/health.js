@@ -16,7 +16,6 @@ function rowValue(row, camel, snake = camel) {
 function aggregateMemoryHealth({
   targetStatuses = [],
   diagnostics = [],
-  projectionHealth = [],
   now = new Date(),
   alertDebounceMs = 0,
 } = {}) {
@@ -58,12 +57,11 @@ function aggregateMemoryHealth({
         : `${TARGET_LABELS[targetKey]}记忆可能滞后${internal === "halted" ? "，需要服务器维护" : ""}`,
     });
   }
-  const queryProjectionKeys = new Set(projectionHealth.filter(Boolean).map((row) => row.projectionKey));
   for (const diagnostic of diagnostics.filter((row) => rowValue(row, "resolved") !== true)) {
     const kind = rowValue(diagnostic, "subjectKind", "subject_kind");
     const key = rowValue(diagnostic, "subjectKey", "subject_key");
     const diagnosticType = rowValue(diagnostic, "diagnosticType", "diagnostic_type");
-    if (kind === "projection" && queryProjectionKeys.has(key)) continue;
+    if (kind === "projection") continue;
     const rebuilding = rowValue(diagnostic, "healthStatus", "health_status") === "rebuilding";
     if (rebuilding) status = "rebuilding";
     else if (status === "healthy") status = "degraded";
@@ -79,28 +77,6 @@ function aggregateMemoryHealth({
       subjectKey: key,
       status: rebuilding ? "rebuilding" : "degraded",
       message: rebuilding ? `${key} 上下文正在重建` : degradedMessage,
-    });
-  }
-  for (const projection of projectionHealth) {
-    if (!projection || projection.queryHealth === "healthy") continue;
-    if (projection.queryHealth === "rebuilding") status = "rebuilding";
-    else if (status === "healthy") status = "degraded";
-    const persistedDiagnostic = diagnostics.find(
-      (row) =>
-        rowValue(row, "resolved") !== true &&
-        rowValue(row, "subjectKind", "subject_kind") === "projection" &&
-        rowValue(row, "subjectKey", "subject_key") === projection.projectionKey &&
-        rowValue(row, "diagnosticType", "diagnostic_type") === "projection_lag",
-    );
-    if (persistedDiagnostic && debounced(persistedDiagnostic)) continue;
-    alerts.push({
-      subjectKind: "projection",
-      subjectKey: projection.projectionKey,
-      status: projection.queryHealth,
-      message:
-        projection.queryHealth === "rebuilding"
-          ? `${projection.projectionKey} 上下文正在重建`
-          : `${projection.projectionKey}：部分早期对话未在上下文中`,
     });
   }
   return { status, alerts, chatBlocked: false };

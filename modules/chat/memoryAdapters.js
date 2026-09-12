@@ -1,14 +1,11 @@
 const { createChatMemorySourceReader } = require("./memorySourceReader");
 
-function createChatMemoryPrivacyStores({ database, ragPrivacyStore } = {}) {
+function createChatMemoryPrivacyStores({ database } = {}) {
   const { createChatGistRepository } = require("./infrastructure/repositories/gistRepository");
   const { createAvatarStorage, operationAvatarUrls } = require("./infrastructure/avatarStorage");
   const chatMessageGistModel = createChatGistRepository({ database });
   const { deleteAvatarByUrl, avatarExists } = createAvatarStorage();
-  if (typeof ragPrivacyStore?.purge !== "function" || typeof ragPrivacyStore?.verifyPurged !== "function") {
-    throw new Error("Chat RAG privacy store is required");
-  }
-  return Object.freeze([ragPrivacyStore, {
+  return Object.freeze([{
     name: "assistant_gists",
     purge: ({ userId, presetId, client }) => chatMessageGistModel.deleteByScope(userId, presetId, { client }),
     verifyPurged: async ({ userId, presetId }) => (await chatMessageGistModel.countByScope(userId, presetId)) === 0,
@@ -26,13 +23,11 @@ function createChatMemoryPrivacyStores({ database, ragPrivacyStore } = {}) {
   }]);
 }
 
-function createChatMemoryAdapters({ database, scopeCoordinator, ragProjectionAdapter, ragPrivacyStore } = {}) {
+function createChatMemoryAdapters({ database, scopeCoordinator } = {}) {
   if (typeof scopeCoordinator?.enqueueByKey !== "function") throw new Error("Chat scope coordinator is required");
-  if (!ragProjectionAdapter?.rebuild || !ragProjectionAdapter?.commit) throw new Error("Chat RAG projection adapter is required");
   return Object.freeze({
     sourceReader: createChatMemorySourceReader({ database }),
-    ragProjectionAdapter,
-    privacyStores: createChatMemoryPrivacyStores({ database, ragPrivacyStore }),
+    privacyStores: createChatMemoryPrivacyStores({ database }),
     enqueueByKey: scopeCoordinator.enqueueByKey,
   });
 }

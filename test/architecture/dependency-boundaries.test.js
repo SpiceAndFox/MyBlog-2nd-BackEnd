@@ -34,6 +34,7 @@ test("the architecture gate detects cycles and dependency-direction violations",
       "modules/chat/application/useCase.js": 'require("../../../app/composition");\n',
       "modules/chat/infrastructure/leaky-db.js": 'require("../../../db");\n',
       "modules/chat/infrastructure/leaky-owner.js": 'module.exports = `SELECT * FROM chat_preset_memory`;\n',
+      "modules/chat/application/retired.js": "module.exports = ({ rag }) => rag.retrieve();\n",
       "db.js": "module.exports = {};\n",
       "services/leaky-config.js": "module.exports = process.env.SECRET;\n",
       "config/allowed.js": "module.exports = process.env.ALLOWED;\n",
@@ -52,6 +53,7 @@ test("the architecture gate detects cycles and dependency-direction violations",
     assert.match(result.errors.join("\n"), /Business modules must not query another module's tables: modules\/chat\/infrastructure\/leaky-owner\.js -> chat_preset_memory \(memory\)/);
     assert.match(result.errors.join("\n"), /process\.env is restricted.*services\/leaky-config\.js/);
     assert.doesNotMatch(result.errors.join("\n"), /config\/allowed\.js/);
+    assert.match(result.errors.join("\n"), /Retired RAG dependencies must not re-enter runtime code: modules\/chat\/application\/retired\.js/);
     assert.equal(result.cycles.length, 1);
     assert.deepEqual(result.cycles[0], ["cycle-a.js", "cycle-b.js"]);
   } finally {
@@ -83,8 +85,6 @@ test("active LLM implementations use injected configuration instead of configura
   const rootDir = path.resolve(__dirname, "../..");
   for (const relativePath of [
     "modules/chat/infrastructure/llm/providerRegistry.js",
-    "modules/chat/rag/infrastructure/embeddings.js",
-    "modules/chat/rag/infrastructure/reranker.js",
   ]) {
     const source = fs.readFileSync(path.join(rootDir, relativePath), "utf8");
     assert.doesNotMatch(source, /require\(["'][^"']*config["']\)/);

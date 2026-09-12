@@ -96,7 +96,7 @@ function fixture(providerAdapter, { missingState = false, rebuilding = false, in
       return { messages: [{ role: "user", content: "new question" }] };
     },
     llm: { complete: complete || (async () => ({ content: "answer" })), createStreamResponse() {}, streamDeltas() {} },
-    rag: { requestTurnIndexing() {} }, gist: { requestGeneration() {} },
+    gist: { requestGeneration() {} },
     logger: { debug() {}, error() {} }, timeoutMs: 1000,
   });
   const sessions = createSessionUseCases({ chatRepository, settings, memory: runtime, scopeCoordinator: chat });

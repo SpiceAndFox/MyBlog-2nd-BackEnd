@@ -101,7 +101,7 @@ const sourceGuardCalls = [];
 let compileContext = async ({ upToMessageId, signal }) => {
   if (signal?.aborted) throw signal.reason;
   events.push(`context:${upToMessageId}`);
-  return { messages: [{ role: "user", content: "compiled" }], segments: {}, memory: null, rag: null };
+  return { messages: [{ role: "user", content: "compiled" }], segments: {}, memory: null };
 };
 
 function resetHarness() {
@@ -121,7 +121,7 @@ function resetHarness() {
   compileContext = async ({ upToMessageId, signal }) => {
     if (signal?.aborted) throw signal.reason;
     events.push(`context:${upToMessageId}`);
-    return { messages: [{ role: "user", content: "compiled" }], segments: {}, memory: null, rag: null };
+    return { messages: [{ role: "user", content: "compiled" }], segments: {}, memory: null };
   };
   for (const id of [11, 12]) {
     sessions.set(id, {
@@ -227,7 +227,6 @@ replaceModule("../../config", {
     defaultModelByProvider: { deepseek: "deepseek-flash" },
   },
   llmConfig: { timeoutMs: 1000 },
-  chatRagConfig: { enabled: true, debugIncludeContent: false },
 });
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
 const testLogger = { debug() {}, warn() {}, error() {} };
@@ -305,7 +304,6 @@ const chatModule = createChatModule({
     settingsSchema,
     isModelAllowed: () => true,
     memory: memoryRuntime,
-    rag: { retrieve: async () => null, requestTurnIndexing() {}, requestDeleteFromMessage() {} },
     gist: { scheduleBackfill() {}, requestGeneration() {} },
     presets: {},
     sessions: {},
@@ -325,7 +323,6 @@ const { createChatController } = require("../../controllers/chatController");
 const chatController = createChatController({
   chatModule,
   memory: { markRecoveryNotificationsDelivered: async () => {} },
-  config: { rag: { enabled: true, debugIncludeContent: false } },
   logger: testLogger,
   withRequestContext: (_req, value) => value,
 });
@@ -519,7 +516,7 @@ test("edit cancels an active send, waits for its lane, and returns an asynchrono
   assert.equal(events.indexOf("provider:aborted") < events.indexOf("edit:update"), true);
 });
 
-test("degraded RAG context remains observable but does not block the main chat Provider", async () => {
+test("retired retrieval metadata is excluded from chat responses", async () => {
   compileContext = async () => ({
     messages: [{ role: "user", content: "main-chat-still-runs" }],
     segments: { rag: { reason: "retrieval_degraded", degraded: true, failure: "http_429" } },
@@ -542,11 +539,9 @@ test("degraded RAG context remains observable but does not block the main chat P
   assert.deepEqual(providerMessages, [{ role: "user", content: "main-chat-still-runs" }]);
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.assistant_message.content, "healthy-main-provider");
-  assert.deepEqual(response.body.rag_health, {
-    status: "degraded",
-    reason: "retrieval_degraded",
-    failure: "http_429",
-  });
+  assert.equal(Object.hasOwn(response.body, "rag_health"), false);
+  assert.equal(Object.hasOwn(response.body.assistant_message, "rag_sources"), false);
+  assert.equal(Object.hasOwn(response.body.assistant_message, "rag_debug"), false);
 });
 
 test("streaming sends HTTP events while committing only the normalized final Provider response", async () => {

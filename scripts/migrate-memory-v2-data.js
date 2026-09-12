@@ -58,7 +58,7 @@ function printUsage() {
     "  npm run migrate:memory-v2-data -- --mode rehearsal --apply --report <path> [--user <id> --preset <id>]",
     "  npm run migrate:memory-v2-data -- --mode cutover --apply --service-stopped --report <path> [--user <id> --preset <id>]",
     "",
-    "inventory is read-only. rehearsal and cutover rebuild Memory plus RAG and write authority data; query-time Recall inherits the RAG cutoff.",
+    "inventory is read-only. rehearsal and cutover rebuild Memory and write authority data.",
     "Run rehearsal only against a production-history copy. Cutover requires the public service to be stopped.",
     "",
   ].join("\n"));
@@ -88,17 +88,10 @@ function assertReportPathAvailable(reportPath) {
 
 function createMigration(config, providerTelemetry, dependencies = {}) {
   const administration = dependencies.memoryAdministration;
-  if (!administration?.createMigration || !administration?.createProjectionDrain) {
+  if (!administration?.createMigration) {
     throw new Error("Memory administration composition is required");
   }
-  const chatRagProjectionAdapter = dependencies.chatRagProjectionAdapter;
-  if (!chatRagProjectionAdapter?.rebuild || !chatRagProjectionAdapter?.commit) {
-    throw new Error("Chat RAG projection adapter is required");
-  }
-  const projectionDrains = {
-    rag: administration.createProjectionDrain("rag", chatRagProjectionAdapter),
-  };
-  return administration.createMigration({ config, projectionDrains, providerTelemetry });
+  return administration.createMigration({ config, providerTelemetry });
 }
 
 function attachEvidence(report, evidence) {
@@ -143,7 +136,6 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   const evidence = memory.buildMigrationEvidence({
     rootDir: path.join(__dirname, ".."),
     memoryConfig: config,
-    ragConfig: dependencies.chatRagConfig,
   });
   const migration = createMigration(config, providerTelemetry, { ...dependencies, memory });
   const inventory = withCallEstimates(await migration.inventory(options.scopes), config);
@@ -187,17 +179,13 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
 if (require.main === module) {
   const { createCommandContext } = require("../app/composition/commandContext");
   const { createMemoryAdministrationComposition } = require("../app/composition/memory");
-  const { createChatRagComposition } = require("../app/composition/chatRag");
   const control = createCommandControl();
   let db;
   control.run(async () => {
     const context = createCommandContext();
     db = context.database;
-    const { chatLlm, config, logger } = context;
     const memoryAdministration = createMemoryAdministrationComposition({ database: db });
-    const chatRag = createChatRagComposition({ config, database: db, logger, llm: chatLlm });
-    return main(process.argv.slice(2), { ...control, database: db, memoryAdministration,
-      chatRagProjectionAdapter: chatRag.projectionAdapter, chatRagConfig: config.chatRagConfig });
+    return main(process.argv.slice(2), { ...control, database: db, memoryAdministration });
   }, async () => { await db?.end(); });
 }
 

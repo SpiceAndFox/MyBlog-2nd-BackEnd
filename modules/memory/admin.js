@@ -7,7 +7,6 @@ const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
 const { createMemorySourceRebuild } = require("./application/sourceRebuild");
 const { createMemoryLibrarian } = require("./application/librarian");
-const { createProjectionDrain } = require("./application/projectionDrain");
 const { createMemoryMigration } = require("./application/migration");
 const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay");
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
@@ -38,10 +37,6 @@ const { createRetryBudget } = require("./application/retryBudget");
 
 function createMemoryAdministration({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
   const repositories = createRepositorySet({ database, transactionExecutor, sourceReader, userTimeZoneReader });
-
-  function createBoundProjectionDrain(projectionKey, adapter) {
-    return createProjectionDrain({ repositories, projectionKey, adapter });
-  }
 
   function createLibrarianStack({ config, providerAdapter, decorateAdapter = (adapter) => adapter }) {
     const retryBudget = createRetryBudget();
@@ -85,7 +80,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
     return { librarian, sourceRebuild, retryBudget };
   }
 
-  function createMigration({ config, projectionDrains, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
+  function createMigration({ config, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
     if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
     const { sourceRebuild, retryBudget } = createLibrarianStack({
       config,
@@ -99,7 +94,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
         })
         : adapter,
     });
-    return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow, retryBudget, providerRecovery: config.providerRecovery });
+    return createMemoryMigration({ repositories, sourceRebuild, providerTelemetry, now, monotonicNow, retryBudget });
   }
 
   function createLibrarian({ config, providerAdapter } = {}) {
@@ -119,7 +114,6 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
   return Object.freeze({
     createMigration,
     createLibrarian,
-    createProjectionDrain: createBoundProjectionDrain,
     createTaskShadowReplay,
   });
 }

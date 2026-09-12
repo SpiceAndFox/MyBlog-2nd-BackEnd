@@ -1,7 +1,7 @@
 const { createAvatarStorage, createChatModule, createChatPersistence } = require("../../modules/chat");
 
-function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, rag, llm, isModelAllowed, adapters = {} } = {}) {
-  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !rag || !llm || typeof isModelAllowed !== "function") {
+function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, llm, isModelAllowed, adapters = {} } = {}) {
+  if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !llm || typeof isModelAllowed !== "function") {
     throw new Error("Chat composition dependencies are required");
   }
   const { createChatController } = require("../../controllers/chatController");
@@ -33,11 +33,6 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
       recentWindow: adapters.buildRecentWindowContext ? { build: adapters.buildRecentWindowContext } : undefined,
       contextSegments: adapters.buildContextSegments ? { build: adapters.buildContextSegments } : undefined,
       timeContext: adapters.buildTimeContextState ? { build: adapters.buildTimeContextState } : undefined,
-      rag: adapters.rag || {
-        retrieve: adapters.retrieveChatRagContext || rag.retrieve,
-        requestTurnIndexing: adapters.requestChatTurnIndexing || rag.requestTurnIndexing,
-        requestDeleteFromMessage: adapters.requestDeleteChunksFromMessageId || rag.requestDeleteFromMessage,
-      },
       gist: adapters.gist,
       gistRepository,
       llm: {
@@ -60,8 +55,6 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
   const controller = adapters.controller || createChatController({
     chatModule,
     memory: memoryRuntime,
-    rag,
-    config: { rag: config.chatRagConfig },
     logger,
     withRequestContext,
   });

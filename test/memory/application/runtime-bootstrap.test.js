@@ -61,14 +61,14 @@ test("disabled runtime privacy delete purges authority and derived state", async
   };
   const runtime = createMemoryRuntime({
     config: { enabled: false }, repositories,
-    privacyStores: [{ name: "rag", async purge() { calls.push(["rag"]); }, async verifyPurged() { return true; } }],
+    privacyStores: [{ name: "assistant_gists", async purge() { calls.push(["assistant_gists"]); }, async verifyPurged() { return true; } }],
   });
   const result = await runtime.privacyHardDelete(1, "default", { async deleteRawSource() { calls.push(["raw"]); return 1; } });
   assert.equal(result.status, "purging");
   assert.equal(result.rawMutationCommitted, true);
   assert.deepEqual(calls, [["guard"], ["raw"], ["derived"], ["authority"]]);
   await runtime.shutdown();
-  assert.deepEqual(calls, [["guard"], ["raw"], ["derived"], ["authority"], ["rag"]]);
+  assert.deepEqual(calls, [["guard"], ["raw"], ["derived"], ["authority"], ["assistant_gists"]]);
   assert.equal(operation.status, "completed");
 });
 

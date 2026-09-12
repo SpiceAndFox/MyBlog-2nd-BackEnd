@@ -24,7 +24,6 @@ function createSendMessageUseCase({
   compileContext,
   llm,
   memory,
-  rag,
   gist,
   scopeCoordinator,
   transaction,
@@ -48,7 +47,6 @@ function createSendMessageUseCase({
   if (!memory || typeof memory.processScope !== "function") throw new Error("Chat Memory port is required");
   if (typeof memory.lockSourceWriteGuard !== "function") throw new Error("Chat Memory source-write guard port is required");
   if (typeof transaction?.run !== "function") throw new Error("Chat transaction executor is required");
-  if (!rag || typeof rag.requestTurnIndexing !== "function") throw new Error("Chat RAG indexing port is required");
   if (!gist || typeof gist.requestGeneration !== "function") throw new Error("Chat gist port is required");
   if (!scopeCoordinator?.enqueueByKey || !scopeCoordinator?.buildKey) throw new Error("Chat scope coordinator is required");
   if (!logger?.debug || !logger?.error) throw new Error("Chat logger is required");
@@ -56,28 +54,6 @@ function createSendMessageUseCase({
 
   function requestPostTurnWork({ userId, presetId, sessionId, userMessage, assistantMessage, assistantContent }) {
     if (memory.enabled) void memory.processScope(userId, presetId);
-    else {
-      try {
-        rag.requestTurnIndexing({
-          userId,
-          presetId,
-          sessionId,
-          userMessage,
-          assistantMessage,
-          userContent: userMessage?.content,
-          assistantContent,
-        });
-      } catch (error) {
-        logger.error("chat_rag_turn_index_kick_failed", {
-          error,
-          userId,
-          presetId,
-          sessionId,
-          userMessageId: userMessage?.id,
-          assistantMessageId: assistantMessage?.id,
-        });
-      }
-    }
     gist.requestGeneration({
       userId,
       presetId,
@@ -195,7 +171,6 @@ function createSendMessageUseCase({
         presetId,
         systemPrompt: effectiveSettings.systemPrompt,
         upToMessageId: userMessage.id,
-        signal,
       });
       logger.debug("chat_context_compiled", {
         userId,
