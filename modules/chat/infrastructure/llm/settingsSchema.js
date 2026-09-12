@@ -115,8 +115,8 @@ function getNumericRangeFromControl(control) {
   return { min, max, type };
 }
 
-function getProviderNumericRange(providerId, key) {
-  const schema = getProviderSettingsSchema(providerId);
+function getProviderNumericRange(providerId, key, modelId) {
+  const schema = modelId ? getActiveSchemaControls(providerId, modelId) : getProviderSettingsSchema(providerId);
   const control = findSchemaControl(schema, key);
   return getNumericRangeFromControl(control);
 }

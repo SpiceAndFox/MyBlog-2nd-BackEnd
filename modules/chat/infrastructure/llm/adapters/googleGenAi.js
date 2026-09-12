@@ -75,8 +75,8 @@ function readSetting(settings, key) {
   return settings[key];
 }
 
-function clampConfigNumber(providerId, key, value, { integer } = {}) {
-  const range = getProviderNumericRange(providerId, key) || getGlobalNumericRange(key);
+function clampConfigNumber(providerId, key, value, { integer, model } = {}) {
+  const range = getProviderNumericRange(providerId, key, model) || getGlobalNumericRange(key);
   const nextValue = clampNumberWithRange(value, range);
   if (!Number.isFinite(nextValue)) return null;
   return integer ? Math.trunc(nextValue) : nextValue;
@@ -181,7 +181,7 @@ function buildGenerateContentConfig({
 
   const normalizedTemperature = clampConfigNumber(providerId, "temperature", temperature);
   const normalizedTopP = clampConfigNumber(providerId, "topP", topP);
-  const normalizedMaxTokens = clampConfigNumber(providerId, "maxOutputTokens", maxOutputTokens, { integer: true });
+  const normalizedMaxTokens = clampConfigNumber(providerId, "maxOutputTokens", maxOutputTokens, { integer: true, model });
   const normalizedPresencePenalty = clampConfigNumber(providerId, "presencePenalty", presencePenalty);
   const normalizedFrequencyPenalty = clampConfigNumber(providerId, "frequencyPenalty", frequencyPenalty);
   const normalizedThinkingBudget = clampConfigNumber(providerId, "thinkingBudget", thinkingBudget, { integer: true });

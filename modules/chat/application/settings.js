@@ -141,7 +141,7 @@ function createChatSettingsService({ config, presetRepository, providers, models
     const normalized = { ...settings };
     for (const key of ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"]) {
       if (normalized[key] === undefined) continue;
-      const range = providerId ? schema.getProviderNumericRange(providerId, key) : null;
+      const range = providerId ? schema.getProviderNumericRange(providerId, key, modelId) : null;
       const nextValue = schema.clampNumberWithRange(normalized[key], range || schema.getGlobalNumericRange(key));
       if (!Number.isFinite(nextValue)) {
         delete normalized[key];
