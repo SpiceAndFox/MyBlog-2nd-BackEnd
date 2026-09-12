@@ -29,8 +29,8 @@ function buildUrl(baseUrl, path) {
   return new URL(normalizedPath, normalizedBaseUrl).toString();
 }
 
-function clampBodyNumber(providerId, key, value, { integer } = {}) {
-  const range = getProviderNumericRange(providerId, key) || getGlobalNumericRange(key);
+function clampBodyNumber(providerId, key, value, { integer, model } = {}) {
+  const range = getProviderNumericRange(providerId, key, model) || getGlobalNumericRange(key);
   const nextValue = clampNumberWithRange(value, range);
   if (!Number.isFinite(nextValue)) return null;
   return integer ? Math.trunc(nextValue) : nextValue;
@@ -164,7 +164,7 @@ function buildBody({
   };
 
   const normalizedTemperature = clampBodyNumber(providerId, "temperature", resolvedTemperature);
-  const normalizedTopP = clampBodyNumber(providerId, "topP", resolvedTopP);
+  const normalizedTopP = clampBodyNumber(providerId, "topP", resolvedTopP, { model });
   const normalizedMaxTokens = clampBodyNumber(providerId, "maxOutputTokens", resolvedMaxTokens, { integer: true });
   const normalizedPresencePenalty = clampBodyNumber(providerId, "presencePenalty", resolvedPresencePenalty);
   const normalizedFrequencyPenalty = clampBodyNumber(providerId, "frequencyPenalty", resolvedFrequencyPenalty);
@@ -173,8 +173,10 @@ function buildBody({
     body.temperature = normalizedTemperature;
   if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings }))
     body.top_p = normalizedTopP;
-  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "max_tokens", { model, settings }))
-    body.max_tokens = normalizedMaxTokens;
+  const modelDefinition = getProviderDefinition(providerId)?.models?.find((entry) => entry.id === String(model || "").trim());
+  const maxTokensParameter = modelDefinition?.maxTokensParameter || "max_tokens";
+  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, maxTokensParameter, { model, settings }))
+    body[maxTokensParameter] = normalizedMaxTokens;
   if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presence_penalty", { model, settings }))
     body.presence_penalty = normalizedPresencePenalty;
   if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequency_penalty", { model, settings }))

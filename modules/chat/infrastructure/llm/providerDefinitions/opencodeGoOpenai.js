@@ -4,6 +4,28 @@
 
 const MODELS = [
   {
+    // https://opencode.ai/docs/go/#endpoints
+    // https://docs.z.ai/api-reference/llm/chat-completion
+    id: "glm-5.3",
+    name: "GLM-5.3",
+    supportsThinking: true,
+    alwaysThinking: true,
+    reasoningEfforts: ["max", "high", "low"],
+    minTopP: 0.01,
+    defaults: { temperature: 1, topP: 0.95, reasoningEffort: "max" },
+  },
+  {
+    // https://platform.kimi.ai/docs/guide/kimi-k3-quickstart
+    id: "kimi-k3",
+    name: "Kimi K3",
+    supportsThinking: true,
+    alwaysThinking: true,
+    reasoningEfforts: ["max", "high", "low"],
+    fixedSampling: true,
+    maxTokensParameter: "max_completion_tokens",
+    defaults: { reasoningEffort: "max" },
+  },
+  {
     id: "glm-5.2",
     name: "GLM-5.2",
     supportsThinking: true,
@@ -11,13 +33,6 @@ const MODELS = [
     supportsWebSearch: true,
     webSearchFormat: "glm",
     defaults: { temperature: 0.75, topP: 0.95 },
-  },
-  {
-    id: "glm-5.1",
-    name: "GLM-5.1",
-    supportsThinking: true,
-    supportsWebSearch: true,
-    webSearchFormat: "glm",
   },
   {
     id: "deepseek-v4-pro",
@@ -33,29 +48,6 @@ const MODELS = [
     supportsThinking: true,
     reasoningEfforts: ["max", "high"],
     blocksSamplingWhenThinking: true,
-  },
-  {
-    id: "mimo-v2.5-pro",
-    name: "MiMo-V2.5-Pro",
-    supportsThinking: true,
-    // MiMo 启用思考时强制 temperature=1.0 / top_p=0.95，采样参数被忽略（同 DeepSeek）。
-    // 屏蔽采样参数以发送干净请求，避免发送会被忽略的值。
-    blocksSamplingWhenThinking: true,
-    // 不声明 reasoningEfforts：MiMo 原生不支持 reasoning_effort 参数。
-    supportsWebSearch: true,
-    // MiMo 原生 web search 为扁平格式（max_keyword/force_search/limit），
-    // 与 GLM 嵌套格式不兼容；通过 webSearchFormat 让 builder 按模型分发正确格式。
-    webSearchFormat: "mimo",
-    // 官方建议采样参数：temperature=1.0、top_p=0.95。
-    // 思考开启时上游会强制这两个值；此处设为默认值，思考关闭时也用官方建议值起步。
-    defaults: { temperature: 1.0, topP: 0.95 },
-  },
-  {
-    id: "mimo-v2.5",
-    name: "MiMo-V2.5",
-    supportsWebSearch: true,
-    webSearchFormat: "mimo",
-    defaults: { temperature: 1.0, topP: 0.95 },
   },
 ];
 
@@ -119,15 +111,12 @@ function modelUsesGlmWebSearchFormat(modelId) {
   return getModelWebSearchFormat(modelId) === "glm";
 }
 
-function modelUsesMimoWebSearchFormat(modelId) {
-  return getModelWebSearchFormat(modelId) === "mimo";
-}
-
 function modelBlocksSamplingWhenThinking(modelId) {
   return Boolean(getModel(modelId)?.blocksSamplingWhenThinking);
 }
 
-function normalizeThinkingMode(settings) {
+function normalizeThinkingMode(settings, modelId) {
+  if (getModel(modelId)?.alwaysThinking) return "enabled";
   const raw = String(settings?.thinkingMode || "").trim();
   return raw === "disabled" ? "disabled" : "enabled";
 }
@@ -170,31 +159,10 @@ function buildGlmWebSearchTool({ settings } = {}) {
   };
 }
 
-function buildMiMoWebSearchTool({ settings } = {}) {
-  const limit = Number(settings?.webSearchMaxResults);
-  const normalizedLimit = Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 5;
-
-  const maxKeyword = Number(settings?.webSearchMaxKeyword);
-  const normalizedMaxKeyword = Number.isFinite(maxKeyword) ? Math.min(10, Math.max(1, Math.trunc(maxKeyword))) : 3;
-
-  return {
-    type: "web_search",
-    max_keyword: normalizedMaxKeyword,
-    force_search: Boolean(settings?.webSearchForceSearch),
-    limit: normalizedLimit,
-  };
-}
-
-function buildWebSearchTool({ model, settings } = {}) {
-  const modelId = normalizeModelId(model);
-  if (modelUsesMimoWebSearchFormat(modelId)) return buildMiMoWebSearchTool({ settings });
-  return buildGlmWebSearchTool({ settings });
-}
-
 function buildBodyExtensions({ model, settings } = {}) {
   const body = {};
   const modelId = normalizeModelId(model);
-  const thinkingMode = normalizeThinkingMode(settings);
+  const thinkingMode = normalizeThinkingMode(settings, modelId);
   const supportsThinking = modelSupportsThinking(modelId);
   const supportsReasoningEffort = modelSupportsReasoningEffort(modelId);
 
@@ -214,20 +182,19 @@ function buildBodyExtensions({ model, settings } = {}) {
   }
 
   if (settings?.enableWebSearch && modelSupportsWebSearch(modelId)) {
-    body.tools = [buildWebSearchTool({ model: modelId, settings })];
+    body.tools = [buildGlmWebSearchTool({ settings })];
   }
 
   return body;
 }
 
 // 派生 blocklist：从模型属性计算，与 openrouter 模式一致。
-const THINKING_MODE_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsThinking(id));
+const THINKING_MODE_BLOCKLIST = MODELS.filter((model) => !model.supportsThinking || model.alwaysThinking).map((model) => model.id);
+const SAMPLING_BLOCKLIST = MODELS.filter((model) => model.fixedSampling).map((model) => model.id);
 const REASONING_EFFORT_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsReasoningEffort(id));
 const WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelSupportsWebSearch(id));
 // webSearchRecency 为 GLM 专属（search_recency_filter），对非 GLM 格式模型隐藏。
 const GLM_WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelUsesGlmWebSearchFormat(id));
-// MiMo 专属旋钮（force_search / max_keyword）仅对 MiMo 格式模型可见。
-const MIMO_WEB_SEARCH_BLOCKLIST = MODELS.map((model) => model.id).filter((id) => !modelUsesMimoWebSearchFormat(id));
 
 module.exports = {
   id: "opencode-go-openai",
@@ -257,7 +224,7 @@ module.exports = {
       default: "max",
       capability: "thinking",
       modelBlocklist: REASONING_EFFORT_BLOCKLIST,
-      disabledWhen: { key: "thinkingMode", value: "disabled" },
+      disabledWhen: { key: "thinkingMode", value: "disabled", modelBlocklist: THINKING_MODE_BLOCKLIST },
     },
     {
       key: "temperature",
@@ -268,17 +235,19 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "temperature",
+      modelBlocklist: SAMPLING_BLOCKLIST,
     },
-    {
+    ...[0, 0.01].map((min) => ({
       key: "topP",
       label: "Top P",
       type: "range",
-      min: 0,
+      min,
       max: 1,
       step: 0.05,
       decimals: 2,
       capability: "topP",
-    },
+      modelBlocklist: MODELS.filter((model) => model.fixedSampling || (model.minTopP || 0) !== min).map((model) => model.id),
+    })),
     {
       key: "maxOutputTokens",
       label: "Max Output Tokens",
@@ -321,25 +290,6 @@ module.exports = {
       capability: "webSearch",
       modelBlocklist: GLM_WEB_SEARCH_BLOCKLIST,
     },
-    {
-      key: "webSearchForceSearch",
-      label: "Web Search: Force Search",
-      type: "toggle",
-      default: false,
-      capability: "webSearch",
-      modelBlocklist: MIMO_WEB_SEARCH_BLOCKLIST,
-    },
-    {
-      key: "webSearchMaxKeyword",
-      label: "Web Search: Max Keywords",
-      type: "number",
-      min: 1,
-      max: 10,
-      step: 1,
-      default: 3,
-      capability: "webSearch",
-      modelBlocklist: MIMO_WEB_SEARCH_BLOCKLIST,
-    },
   ],
   models: MODELS,
   parameterPolicy: {
@@ -347,19 +297,21 @@ module.exports = {
     isBodyParamAllowed: ({ model, paramName, settings }) => {
       if (paramName === "presence_penalty" || paramName === "frequency_penalty") return false;
       if (paramName === "tool_choice" || paramName === "parallel_tool_calls") return false;
+      if (paramName === "max_tokens" && getModel(model)?.maxTokensParameter === "max_completion_tokens") return false;
       // thinking 与 reasoning_effort 互斥（网关约束），与 buildBodyExtensions 逻辑一致：
       //   - thinking enabled + 支持 reasoning_effort → 只允许 reasoning_effort，不允许 thinking
       //   - thinking disabled / 不支持 reasoning_effort → 只允许 thinking，不允许 reasoning_effort
       if (paramName === "thinking") {
         return (
           modelSupportsThinking(model) &&
-          !(normalizeThinkingMode(settings) === "enabled" && modelSupportsReasoningEffort(model))
+          !(normalizeThinkingMode(settings, model) === "enabled" && modelSupportsReasoningEffort(model))
         );
       }
       if (paramName === "reasoning_effort") {
-        return modelSupportsReasoningEffort(model) && normalizeThinkingMode(settings) === "enabled";
+        return modelSupportsReasoningEffort(model) && normalizeThinkingMode(settings, model) === "enabled";
       }
-      if (modelBlocksSamplingWhenThinking(model) && normalizeThinkingMode(settings) === "enabled") {
+      if (getModel(model)?.fixedSampling && ["temperature", "top_p", "n"].includes(paramName)) return false;
+      if (modelBlocksSamplingWhenThinking(model) && normalizeThinkingMode(settings, model) === "enabled") {
         if (paramName === "temperature" || paramName === "top_p") return false;
         if (paramName === "logprobs" || paramName === "top_logprobs") return false;
       }

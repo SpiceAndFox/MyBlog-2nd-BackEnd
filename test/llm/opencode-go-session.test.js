@@ -29,13 +29,13 @@ function harness(apiKey = "test-key") {
       };
     },
   } });
-  return { runtime, requests };
+  return { catalog, runtime, requests };
 }
 
 function request(overrides = {}) {
   return {
     providerId: "opencode-go-openai",
-    model: "glm-5.3-flash",
+    model: "glm-5.3",
     messages: [{ role: "user", content: "hello" }],
     settings: { maxOutputTokens: 1024 },
     requestContext: { userId: 7, sessionId: 11 },
@@ -47,7 +47,7 @@ test("OpenCode Go sends stable session and application headers over both protoco
   const { runtime, requests } = harness();
   for (const providerId of ["opencode-go-openai", "opencode-go-messages"]) {
     for (const stream of [false, true]) {
-      const options = request({ providerId, model: providerId.endsWith("messages") ? "minimax-m3" : "glm-5.3-flash" });
+      const options = request({ providerId, model: providerId.endsWith("messages") ? "minimax-m3" : "glm-5.3" });
       if (stream) await runtime.createChatCompletionStreamResponse(options);
       else assert.equal((await runtime.createChatCompletion(options)).content, "ok");
       const sent = requests.at(-1);
@@ -70,6 +70,60 @@ test("OpenCode Go sends stable session and application headers over both protoco
     messages: [{ role: "user", content: "another turn" }],
   }));
   assert.equal(recreated.requests[0].headers["x-opencode-session"], requests[0].headers["x-opencode-session"]);
+});
+
+test("OpenCode Go catalogs expose GLM-5.3 and Kimi K3 with only supported controls", () => {
+  const { catalog } = harness();
+  const providerId = "opencode-go-openai";
+  assert.deepEqual(catalog.models.listModelsForProvider(providerId).map(model => model.id), [
+    "glm-5.3", "kimi-k3", "glm-5.2", "deepseek-v4-pro", "deepseek-flash",
+  ]);
+  for (const modelId of ["glm-5.3", "kimi-k3"]) {
+    const controls = catalog.settingsSchema.getActiveSchemaControls(providerId, modelId);
+    const model = catalog.settingsSchema.getProviderModel(providerId, modelId);
+    const effort = controls.find(control => control.key === "reasoningEffort");
+    assert.deepEqual(catalog.settingsSchema.getControlOptions(effort, { model }).map(option => option.value), ["max", "high", "low"]);
+    assert.equal(controls.some(control => control.key === "thinkingMode"), false);
+    assert.equal(controls.some(control => control.key === "enableWebSearch"), false);
+    assert.equal(controls.some(control => control.key === "temperature"), modelId === "glm-5.3");
+    for (const reasoningEffort of ["none", "minimal", "medium", "xhigh"]) {
+      assert.match(catalog.settingsSchema.validateSettingsWithSchema({ reasoningEffort }, { providerId, modelId }), /Invalid setting reasoningEffort/);
+    }
+  }
+  for (const modelId of ["glm-5.1", "mimo-v2.5-pro", "mimo-v2.5"]) assert.equal(catalog.models.isSupportedModel(providerId, modelId), false);
+  assert.equal(catalog.settingsSchema.getProviderSettingsSchema(providerId).some(control => ["webSearchForceSearch", "webSearchMaxKeyword"].includes(control.key)), false);
+});
+
+test("OpenCode Go new models enforce reasoning and sampling rules in both stream modes", async () => {
+  const { runtime, requests } = harness();
+  for (const model of ["glm-5.3", "kimi-k3"]) {
+    for (const method of ["createChatCompletion", "createChatCompletionStreamResponse"]) {
+      for (const reasoningEffort of [undefined, "low", "high", "max"]) {
+        await runtime[method](request({ model, settings: {
+          thinkingMode: "disabled", reasoningEffort, temperature: 0.5, topP: 0.8,
+          maxOutputTokens: 8192, enableWebSearch: true,
+        }, rawBody: { thinking: { type: "disabled" }, n: 3, presence_penalty: 1, frequency_penalty: 1 } }));
+        const body = requests.at(-1).body;
+        assert.equal(body.model, model);
+        assert.equal(body.reasoning_effort, reasoningEffort || "max");
+        for (const key of ["thinking", "tools", "presence_penalty", "frequency_penalty", "top_p"]) assert.equal(Object.hasOwn(body, key), false);
+        if (model === "kimi-k3") {
+          assert.equal(body.max_completion_tokens, 8192);
+          for (const key of ["temperature", "n", "max_tokens"]) assert.equal(Object.hasOwn(body, key), false);
+        } else {
+          assert.equal(body.temperature, 0.5);
+          assert.equal(body.max_tokens, 8192);
+        }
+      }
+      await assert.rejects(runtime[method](request({ model, settings: { reasoningEffort: "medium" } })), /Invalid reasoningEffort/);
+    }
+  }
+  await runtime.createChatCompletion(request({ model: "glm-5.3", settings: { topP: 0 } }));
+  assert.equal(requests.at(-1).body.top_p, 0.01);
+  await runtime.createChatCompletion(request({ model: "glm-5.2", settings: { thinkingMode: "disabled", temperature: 0.75, enableWebSearch: true } }));
+  assert.deepEqual(requests.at(-1).body.thinking, { type: "disabled" });
+  assert.equal(requests.at(-1).body.reasoning_effort, undefined);
+  assert.equal(requests.at(-1).body.tools[0].web_search.search_engine, "search-prime");
 });
 
 test("OpenCode Go isolates users, conversations and credentials and rejects incomplete context", async () => {
