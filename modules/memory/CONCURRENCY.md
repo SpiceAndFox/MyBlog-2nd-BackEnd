@@ -22,6 +22,14 @@ neither numeric message-ID distance nor stale durable diagnostics determine it.
 Rebuilding status alone does not block Chat. The separate privacy fence rejects
 new writes while source cleanup remains unverified.
 
+The polling health endpoint reports background progress separately from failure:
+normal target rebuilds retain `status: rebuilding` and valid stored authority
+retains `scope.usable: true`. Its `warnings` array includes progress notices for
+compatibility, so consumers must inspect each notice's status before presenting
+an error. A degraded provider or paused target still takes failure precedence.
+This endpoint does not assemble a pending Chat context; `usable` describes stored
+Memory validity, while the send-time coverage gate decides whether Chat can run.
+
 When coverage is incomplete, `memoryReadiness` releases the mutation lane,
 requests coalesced background catch-up and retries context assembly. An existing
 rebuild retains its frozen boundary and Librarian schedule. Ordinary lag uses

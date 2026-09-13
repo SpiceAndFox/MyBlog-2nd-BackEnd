@@ -63,6 +63,32 @@ test("runtime health fails closed when authority memory cannot be validated", as
   assert.doesNotMatch(JSON.stringify(snapshot), /invalid authority/);
 });
 
+test("runtime distinguishes background updates from a paused target regardless of target order", async () => {
+  for (const paused of [null, "scene", "todos"]) {
+    const health = createMemoryRuntimeHealth({
+      config: { targets: { scene: {}, todos: {} } },
+      repositories: {
+        state: { async getState() { return createInitialMemoryState(); } },
+        runtime: { async getTargetStatuses() {
+          return ["scene", "todos"].map(target_key => ({ target_key,
+            status: target_key === paused ? "halted" : "rebuilding", rebuild_boundary_message_id: 20 }));
+        } },
+      },
+      providerHealth: createProviderHealth({ name: "memory" }),
+      async reconcileRebuilds() { return {}; },
+      recovery: { async resumeTarget() {} },
+    });
+    const snapshot = await health.getHealthSnapshot({ userId: 7, presetId: "companion" });
+    assert.equal(snapshot.scope.usable, true);
+    assert.equal(snapshot.scope.status, paused ? "degraded" : "rebuilding");
+    if (!paused) {
+      assert.deepEqual(snapshot.scope.alerts.map(alert => alert.message), ["当前状态记忆正在后台更新", "待办记忆正在后台更新"]);
+    } else {
+      assert.equal(snapshot.scope.targets.find(target => target.targetKey === paused).status, "needs_attention");
+    }
+  }
+});
+
 test("manual runtime retry is scoped and directly runs halted target recovery", async () => {
   const calls = [];
   const health = createMemoryRuntimeHealth({

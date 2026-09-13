@@ -1,3 +1,5 @@
+const { TARGET_LABELS } = require("../domain/health");
+
 function rowValue(row, snake, camel) {
   return row?.[snake] ?? row?.[camel];
 }
@@ -16,6 +18,7 @@ function publicTargetHealth(state, targetKey, row) {
 }
 
 function targetAlert(targetKey, row) {
+  const label = TARGET_LABELS[targetKey] || targetKey;
   const boundary = rowValue(row, "rebuild_boundary_message_id", "rebuildBoundaryMessageId");
   if (boundary !== null && boundary !== undefined) {
     return {
@@ -23,8 +26,8 @@ function targetAlert(targetKey, row) {
       subjectKey: targetKey,
       status: row?.status === "halted" ? "degraded" : "rebuilding",
       message: row?.status === "halted"
-        ? `${targetKey} 记忆重建已暂停，需要手动重试`
-        : `${targetKey} 记忆正在从已保存进度继续重建`,
+        ? `${label}记忆重建已暂停，需要手动重试`
+        : `${label}记忆正在后台更新`,
     };
   }
   if (row?.status === "healthy") return null;
@@ -32,7 +35,7 @@ function targetAlert(targetKey, row) {
     subjectKind: "target",
     subjectKey: targetKey,
     status: "degraded",
-    message: `${targetKey} 记忆可能滞后`,
+    message: `${label}记忆可能滞后`,
   };
 }
 
@@ -89,11 +92,11 @@ function createMemoryRuntimeHealth({
         targets.push(publicTargetHealth(state, targetKey, row));
         if (!alert) continue;
         alerts.push(alert);
-        if (alert.status === "rebuilding") status = "rebuilding";
-        else if (status === "healthy") status = "degraded";
+        if (alert.status !== "rebuilding") status = "degraded";
+        else if (status === "healthy") status = "rebuilding";
       }
       if (provider.status === "degraded") {
-        if (status === "healthy") status = "degraded";
+        status = "degraded";
         alerts.push({
           subjectKind: "provider",
           subjectKey: "memory",

@@ -53,6 +53,31 @@ test("Memory provider and rebuilding warnings are retained", async () => {
   assert.match(res.body.warnings[1].message, /记忆正在重建/);
 });
 
+test("background rebuilding stays informational while committed Memory remains usable", async () => {
+  const alerts = ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"]
+    .map(subjectKey => ({ subjectKind: "target", subjectKey, status: "rebuilding", message: "记忆正在后台更新" }));
+  const res = response();
+  await controller({ async getHealthSnapshot() { return {
+    provider: { status: "healthy" }, scope: { status: "rebuilding", usable: true, alerts },
+  }; } }).getHealth({ user: { id: 7 }, query: { presetId: "companion" } }, res);
+  assert.equal(res.body.status, "rebuilding");
+  assert.equal(res.body.memory.scope.usable, true);
+  assert.equal(res.body.warnings.length, 6, "background progress remains observable");
+  assert.equal(res.body.warnings.every(warning => warning.status === "rebuilding"), true);
+});
+
+test("a paused target is still a warning when other targets rebuild normally", async () => {
+  const res = response();
+  await controller({ async getHealthSnapshot() { return {
+    provider: { status: "healthy" }, scope: { status: "degraded", usable: true, alerts: [
+      { subjectKind: "target", subjectKey: "scene", status: "rebuilding", message: "正在更新" },
+      { subjectKind: "target", subjectKey: "todos", status: "degraded", message: "重建已暂停" },
+    ] },
+  }; } }).getHealth({ user: { id: 7 }, query: { presetId: "companion" } }, res);
+  assert.equal(res.body.status, "degraded");
+  assert.equal(res.body.warnings.length, 2);
+});
+
 test("manual retry accepts Memory and rejects the retired embedding component", async () => {
   const calls = [];
   const app = controller({ async retryProviderNow(input) { calls.push(input); return { attempted: true }; } });

@@ -87,11 +87,14 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         const providerStatuses = [
           memoryHealth?.provider?.status,
         ].filter(Boolean);
-        const status = warnings.length
+        const hasFailure = warnings.some((warning) => warning.status !== "rebuilding");
+        const status = hasFailure
           ? "degraded"
-          : providerStatuses.includes("unknown")
-            ? "unknown"
-            : "healthy";
+          : warnings.length
+            ? "rebuilding"
+            : providerStatuses.includes("unknown")
+              ? "unknown"
+              : "healthy";
         return res.status(200).json({
           status,
           memory: memoryHealth,
