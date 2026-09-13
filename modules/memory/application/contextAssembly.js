@@ -1,7 +1,7 @@
 const { validateMemoryState } = require("../contracts/state");
 const { SCHEMA_VERSION } = require("../contracts/constants");
 const { TARGET_KEYS } = require("../contracts/constants");
-const { selectRecentWindow, buildGapBridgeCoverage } = require("../domain/contextCoverage");
+const { selectRecentWindow, buildGapBridgeCoverage, assessContextCoverage } = require("../domain/contextCoverage");
 const { aggregateMemoryHealth } = require("../domain/health");
 const { renderMemory } = require("../domain/renderer");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
@@ -156,9 +156,11 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
 
     let gapBridge = { messages: [], diagnostics: [], stats: null };
     let rendered = null;
-    if (recent.needsMemory && state) {
+    if (recent.needsMemory) {
+      // Without a trustworthy state, cursors default to zero. Raw history may
+      // still provide complete coverage; never silently omit the entire bridge.
       gapBridge = buildGapBridgeCoverage({ messages: sourceMessages, state, recentWindowStartMessageId, maxRawChars: config.gapBridge.maxRawChars, retainedMessages: config.gapBridge.retainedMessages });
-      const persistedGapDiagnostics = gapBridge.diagnostics.length
+      const persistedGapDiagnostics = state && gapBridge.diagnostics.length
         ? await repositories.withTransaction(async (client) => {
           const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
           if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) return [];
@@ -175,17 +177,21 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
         activeDiagnostics = activeDiagnostics.filter((row) => !(row.subjectKind === normalized.subjectKind && row.subjectKey === normalized.subjectKey && row.diagnosticType === normalized.diagnosticType));
         activeDiagnostics.push(normalized);
       }
-      const sceneMessageId = Math.max(0, ...Object.values(state.current.scene).map((field) => Number(field.updatedAtMessageId || 0)));
-      const sceneAnchorCreatedAt = sourceMessages.find((message) => message.id === sceneMessageId)?.createdAt;
-      rendered = renderMemory({ state, lifecycleAnchors: sceneAnchorCreatedAt ? { sceneAnchorCreatedAt } : {}, requestNow, config, targetStatuses, diagnostics: activeDiagnostics });
-      if (rendered.needsHousekeeping && typeof scheduleHousekeeping === "function") {
-        try { Promise.resolve(scheduleHousekeeping({ userId, presetId, requestNow })).catch((error) => onBackgroundError?.(error)); }
-        catch (error) { onBackgroundError?.(error); }
+      if (state) {
+        const sceneMessageId = Math.max(0, ...Object.values(state.current.scene).map((field) => Number(field.updatedAtMessageId || 0)));
+        const sceneAnchorCreatedAt = sourceMessages.find((message) => message.id === sceneMessageId)?.createdAt;
+        rendered = renderMemory({ state, lifecycleAnchors: sceneAnchorCreatedAt ? { sceneAnchorCreatedAt } : {}, requestNow, config, targetStatuses, diagnostics: activeDiagnostics });
+        if (rendered.needsHousekeeping && typeof scheduleHousekeeping === "function") {
+          try { Promise.resolve(scheduleHousekeeping({ userId, presetId, requestNow })).catch((error) => onBackgroundError?.(error)); }
+          catch (error) { onBackgroundError?.(error); }
+        }
       }
     } else if (!recent.needsMemory) debug.memorySkipReason = "not_needed";
 
     const healthNow = new Date(requestNow);
     const health = aggregateMemoryHealth({ targetStatuses, diagnostics: activeDiagnostics, now: healthNow, alertDebounceMs: config.health?.alertDebounceMs ?? 0 });
+    const coverage = assessContextCoverage({ needsMemory: recent.needsMemory, gapBridge });
+    health.chatBlocked = !coverage.complete;
     metrics?.increment("memory_context_health_total", { status: health.status });
     const durationRows = [
       ...targetStatuses.flatMap((row) => {
@@ -236,6 +242,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
       memorySegment: rendered?.renderedText || "",
       gapBridge: { messages: gapBridge.messages, content: formatGapBridge(gapBridge.messages), stats: gapBridge.stats },
       health,
+      coverage,
       notifications: notifications.map((row) => ({ id: Number(row.id), subjectKind: row.subject_kind ?? row.subjectKind, subjectKey: row.subject_key ?? row.subjectKey, boundaryMessageId: Number(row.boundary_message_id ?? row.boundaryMessageId ?? 0), message: "Memory 已追平到相应 boundary" })),
       debug,
       housekeepingRequested: Boolean(rendered?.needsHousekeeping),

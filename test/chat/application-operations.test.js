@@ -97,6 +97,24 @@ test("permanent Preset deletion durably carries its avatar target into the priva
   assert.deepEqual(events, [["cancel", "4:companion", "CHAT_SCOPE_MUTATED"]]);
 });
 
+test("updating the preset system prompt never rebuilds or resets Memory", async () => {
+  const presetRepository = { isBuiltinPresetId: () => false,
+    async updatePreset(_userId, id, changes) { return { id, ...changes, systemPromptChanged: true }; },
+  };
+  for (const method of ["listPresets", "listTrashedPresets", "getPreset", "createPreset", "updatePresetAvatar",
+    "deletePreset", "restorePreset", "deletePresetPermanently"]) presetRepository[method] = async () => null;
+  const presets = createPresetUseCases({ presetRepository,
+    settings: { normalizePresetId: value => value },
+    memory: { enabled: true, rebuildScope() { assert.fail("prompt edit must not rebuild"); },
+      privacyHardDelete() { assert.fail("prompt edit must not purge Memory"); } },
+    avatarStorage: { processUploadedAvatar() {}, deleteAvatarByUrl() {}, deleteFile() {} },
+    scopeCoordinator: coordinator([]),
+  });
+  const result = await presets.update({ userId: 1, presetId: "companion", changes: { systemPrompt: "新的角色设定" } });
+  assert.equal(result.systemPrompt, "新的角色设定");
+  assert.equal(result.systemPromptChanged, true);
+});
+
 test("Session creation resolves one preset and persists normalized provider settings", async () => {
   let inserted;
   const chatRepository = {

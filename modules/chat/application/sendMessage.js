@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const { ChatApplicationError, fail } = require("./errors");
+const { createMemoryReadinessRunner, COVERAGE_PENDING } = require("./memoryReadiness");
 
 function normalizePositiveId(value) {
   const id = Number.parseInt(String(value), 10);
@@ -29,6 +30,7 @@ function createSendMessageUseCase({
   transaction,
   logger,
   timeoutMs,
+  memoryWaitTimeoutMs = timeoutMs,
   randomUUID = crypto.randomUUID,
 } = {}) {
   for (const method of [
@@ -51,6 +53,8 @@ function createSendMessageUseCase({
   if (!scopeCoordinator?.enqueueByKey || !scopeCoordinator?.buildKey) throw new Error("Chat scope coordinator is required");
   if (!logger?.debug || !logger?.error) throw new Error("Chat logger is required");
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Chat LLM timeout is required");
+  const runWhenReady = createMemoryReadinessRunner({ scopeCoordinator, memory, timeoutMs: memoryWaitTimeoutMs,
+    onBackgroundError: error => logger.error("chat_memory_catchup_failed", { error }) });
 
   function requestPostTurnWork({ userId, presetId, sessionId, userMessage, assistantMessage, assistantContent }) {
     if (memory.enabled) void memory.processScope(userId, presetId);
@@ -172,6 +176,14 @@ function createSendMessageUseCase({
         systemPrompt: effectiveSettings.systemPrompt,
         upToMessageId: userMessage.id,
       });
+      signal?.throwIfAborted();
+      if (context.memoryCoverage?.complete === false) {
+        const error = new ChatApplicationError("记忆正在补齐上下文，请稍后重试", {
+          status: 409, code: COVERAGE_PENDING, session: updatedSession, userMessage,
+        });
+        error.memoryCoverage = context.memoryCoverage;
+        throw error;
+      }
       logger.debug("chat_context_compiled", {
         userId,
         sessionId,
@@ -189,6 +201,7 @@ function createSendMessageUseCase({
           settings: effectiveSettings,
           signal,
         });
+        signal?.throwIfAborted();
         const committed = await commitAssistant({
           userId,
           sessionId,
@@ -302,11 +315,19 @@ function createSendMessageUseCase({
     const presetId = settings.getSessionPresetId(session);
     if (!presetId) fail("Session has no valid preset", { status: 409, code: "CHAT_SESSION_PRESET_INVALID" });
 
-    return scopeCoordinator.enqueueByKey(
-      scopeCoordinator.buildKey(userId, presetId),
-      ({ signal }) => executeInScope({ ...input, userId, sessionId, content, idempotencyKey }, signal),
-      { cancellable: true, signal: input.signal },
-    );
+    try {
+      return await runWhenReady({ key: scopeCoordinator.buildKey(userId, presetId), userId, presetId,
+        signal: input.signal,
+        execute: signal => executeInScope({ ...input, userId, sessionId, content, idempotencyKey }, signal),
+      });
+    } catch (error) {
+      if (error instanceof ChatApplicationError) throw error;
+      throw new ChatApplicationError(error?.message || "Request cancelled", {
+        code: error?.code || "CHAT_REQUEST_ABORTED",
+        status: error?.code === "CHAT_SCOPE_MUTATED" ? 409 : error?.code === "SERVICE_SHUTTING_DOWN" ? 503 : 500,
+        session,
+      });
+    }
   };
 }
 

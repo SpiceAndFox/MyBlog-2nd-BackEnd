@@ -6,6 +6,7 @@ const {
   TARGET_KEYS,
 } = require("../contracts");
 const { isDeepStrictEqual } = require("node:util");
+const { collectSourceRefs, isSafeRecoveryCheckpoint, recoverySnapshots } = require("./checkpointSafety");
 const {
   nextLibrarianPeriodicOrdinal,
   furthestLibrarianBarrierCursor,
@@ -16,7 +17,6 @@ const {
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
-const MAX_SNAPSHOT_RESTORE_ATTEMPTS = 8;
 
 function normalizeAffectedFromMessageId(value) {
   if (value === null || value === undefined) return null;
@@ -25,28 +25,6 @@ function normalizeAffectedFromMessageId(value) {
     throw new Error("affectedFromMessageId must be a positive safe integer");
   }
   return normalized;
-}
-
-function collectSourceRefs(value, refs = new Map()) {
-  if (!value || typeof value !== "object") return refs;
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      if (!collectSourceRefs(entry, refs)) return null;
-    }
-    return refs;
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key !== "sourceRefs") {
-      if (!collectSourceRefs(entry, refs)) return null;
-      continue;
-    }
-    for (const ref of entry) {
-      const previous = refs.get(ref.messageId);
-      if (previous && previous !== ref.contentHash) return null;
-      refs.set(ref.messageId, ref.contentHash);
-    }
-  }
-  return refs;
 }
 
 function cloneSnapshotState(snapshot, current, sourceGeneration) {
@@ -76,7 +54,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     }
     let beforeRevision = current.meta.revision + 1;
     const maxCursorMessageId = Math.min(boundaryMessageId, affectedFromMessageId - 1);
-    for (let attempt = 0; attempt < MAX_SNAPSHOT_RESTORE_ATTEMPTS; attempt += 1) {
+    while (beforeRevision > 0) {
       const snapshot = await repositories.audit.getLatestSnapshotBeforeMessage(userId, presetId, {
         sourceGeneration: current.meta.sourceGeneration,
         beforeRevision,
@@ -85,7 +63,10 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       }, { client });
       if (!snapshot) return null;
       const revision = Number(rowValue(snapshot, "revision", "revision"));
-      beforeRevision = Number.isSafeInteger(revision) ? revision : beforeRevision - 1;
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision >= beforeRevision) {
+        throw new Error("Snapshot reader did not advance its revision cursor");
+      }
+      beforeRevision = revision;
       try {
         if (!Number.isSafeInteger(revision) || revision < 0 || revision > current.meta.revision) continue;
         if (Number(rowValue(snapshot, "source_generation", "sourceGeneration")) !== current.meta.sourceGeneration) continue;
@@ -221,7 +202,17 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       const rawRevision = Number.isSafeInteger(raw?.meta?.revision) && raw.meta.revision >= 0 ? raw.meta.revision : 0;
       const rawGeneration = Number.isSafeInteger(raw?.meta?.sourceGeneration) && raw.meta.sourceGeneration >= 0 ? raw.meta.sourceGeneration : 0;
       const boundary = await repositories.source.getBoundary(userId, presetId, { client });
-      const next = createInitialMemoryState();
+      const sourceGeneration = Math.max(rawGeneration, head.sourceGeneration);
+      const maxRevision = Math.max(rawRevision, head.revision);
+      let checkpoint = null;
+      for await (const row of recoverySnapshots(repositories.audit, userId, presetId, { client, sourceGeneration })) {
+        if (await isSafeRecoveryCheckpoint(row, { sourceGeneration, maxRevision, boundaryMessageId: boundary,
+          source: repositories.source, userId, presetId, client })) {
+          checkpoint = row;
+          break;
+        }
+      }
+      const next = checkpoint ? structuredClone(checkpoint.state) : createInitialMemoryState();
       next.meta.revision = Math.max(rawRevision, head.revision) + 1;
       next.meta.sourceGeneration = Math.max(rawGeneration, head.sourceGeneration) + 1;
       await repositories.runtime.cancelNonTerminalTasks(userId, presetId, next.meta.sourceGeneration, reason, { client });
@@ -231,7 +222,8 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         await repositories.runtime.upsertTargetStatus(userId, presetId, { targetKey, sourceGeneration: next.meta.sourceGeneration, rebuildBoundaryMessageId: boundary, status: "rebuilding", consecutiveErrors: 0, lastErrorReason: reason, lastTaskId: null, nextRetryAt: null }, { client });
       }
       if (repositories.sidecars.resolveDiagnosticsOutsideGeneration) await repositories.sidecars.resolveDiagnosticsOutsideGeneration(userId, presetId, next.meta.sourceGeneration, { client });
-      return { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary, recoveredFromRaw: true };
+      return { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, boundaryMessageId: boundary,
+        recoveredFromRaw: !checkpoint, restoredFromSnapshotRevision: checkpoint ? Number(checkpoint.revision) : null };
     });
   }
 
@@ -312,8 +304,10 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
             results,
           };
         }
-        if (targetBoundary !== rebuildBoundaryMessageId
-          || (resumeHalted && targetRuntimeStatus === "halted")) {
+        // A null rebuild boundary requests ordinary lag catch-up. Keep normal
+        // health/retry state and let task recovery resume unfinished work.
+        if (rebuildBoundaryMessageId !== null && (targetBoundary !== rebuildBoundaryMessageId
+          || (resumeHalted && targetRuntimeStatus === "halted"))) {
           await repositories.runtime.upsertTargetStatus(userId, presetId, {
             targetKey,
             sourceGeneration,

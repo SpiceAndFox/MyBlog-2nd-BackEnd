@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { selectRecentWindow, buildGapBridgeCoverage } = require("../../../modules/memory/domain");
 const contextScenario = require("../support/context-scenario");
+const { assessContextCoverage } = require("../../../modules/memory/domain/contextCoverage");
 
 const TARGETS = ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"];
 
@@ -48,4 +49,24 @@ test("GapBridge retains every message when the raw character budget is not excee
   assert.deepEqual(result.messages.map((row) => row.id), [1, 2, 3, 4]);
   assert.equal(result.diagnostics.length, 0);
   assert.equal(result.stats.truncated, false);
+});
+
+test("coverage detects the slowest target and holes inside the retained bridge with sparse message ids", () => {
+  const state = createInitialMemoryState();
+  state.meta.targetCursors = Object.fromEntries(TARGETS.map(key => [key, 50]));
+  state.meta.targetCursors.todos = 10;
+  const messages = [
+    { id: 10, role: "user", content: "old" },
+    { id: 20, role: "assistant", content: "x" },
+    { id: 40, role: "user", content: "oversized message cannot fit" },
+    { id: 50, role: "assistant", content: "y" },
+    { id: 90, role: "user", content: "now" },
+  ];
+  const options = { messages, state, recentWindowStartMessageId: 90, maxRawChars: 2, retainedMessages: 3 };
+  const bridge = buildGapBridgeCoverage(options);
+  assert.deepEqual(bridge.messages.map(row => row.id), [20, 50]);
+  const coverage = assessContextCoverage({ needsMemory: true, gapBridge: bridge });
+  assert.deepEqual(coverage, { complete: false, gaps: [{ targetKey: "todos", targetCursor: 10, omittedCount: 1, throughMessageId: 40 }] });
+  state.meta.targetCursors.todos = 40;
+  assert.equal(assessContextCoverage({ needsMemory: true, gapBridge: buildGapBridgeCoverage(options) }).complete, true);
 });

@@ -1,5 +1,6 @@
 function createChatScopeCoordinator() {
   const lanes = new Map();
+  const sendLanes = new Map();
   const cancellable = new Map();
 
   function normalizeKey(key) {
@@ -19,7 +20,7 @@ function createChatScopeCoordinator() {
     };
   }
 
-  function enqueueByKey(rawKey, work, { cancellable: canCancel = false, signal } = {}) {
+  function enqueue(laneMap, rawKey, work, { cancellable: canCancel = false, signal } = {}) {
     const key = normalizeKey(rawKey);
     if (typeof work !== "function") throw new Error("Scope coordinator work is required");
 
@@ -35,21 +36,26 @@ function createChatScopeCoordinator() {
       }
     }
 
-    const previous = lanes.get(key) || Promise.resolve();
+    const previous = laneMap.get(key) || Promise.resolve();
     const current = previous.catch(() => {}).then(async () => {
       if (controller?.signal.aborted) throw controller.signal.reason || new Error("Request cancelled");
       return work({ signal: controller?.signal });
     });
-    lanes.set(key, current);
+    laneMap.set(key, current);
 
     const release = () => {
       unlinkExternal();
       untrack();
-      if (lanes.get(key) === current) lanes.delete(key);
+      if (laneMap.get(key) === current) laneMap.delete(key);
     };
     void current.then(release, release);
     return current;
   }
+
+  function enqueueByKey(key, work, options) { return enqueue(lanes, key, work, options); }
+  // Preserve complete-turn order while a send waits for Memory outside the
+  // mutation lane. Mutations and recovery can acquire that lane during a wait.
+  function enqueueSendByKey(key, work, options) { return enqueue(sendLanes, key, work, options); }
 
   function cancelByKey(rawKey, reason = new Error("Scope source changed")) {
     const key = normalizeKey(rawKey);
@@ -77,7 +83,7 @@ function createChatScopeCoordinator() {
   }
 
   async function waitForIdle() {
-    while (lanes.size) await Promise.allSettled([...lanes.values()]);
+    while (lanes.size || sendLanes.size) await Promise.allSettled([...lanes.values(), ...sendLanes.values()]);
   }
 
   function buildKey(userId, presetId) {
@@ -86,7 +92,7 @@ function createChatScopeCoordinator() {
     return `${userId}:${normalizedPresetId}`;
   }
 
-  return Object.freeze({ enqueueByKey, cancelByKey, cancelAll, waitForIdle, buildKey });
+  return Object.freeze({ enqueueByKey, enqueueSendByKey, cancelByKey, cancelAll, waitForIdle, buildKey });
 }
 
 module.exports = { createChatScopeCoordinator };

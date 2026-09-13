@@ -401,6 +401,11 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         if (error?.code) payload.code = error.code;
         if (error?.session) payload.session = error.session;
         if (error?.userMessage) payload.user_message = error.userMessage;
+        if (error?.memoryCoverage) payload.memory_coverage = error.memoryCoverage;
+        if (error?.retryAfterMs) {
+          payload.retry_after_ms = error.retryAfterMs;
+          res.setHeader("Retry-After", String(Math.ceil(error.retryAfterMs / 1000)));
+        }
         return res.status(Number(error?.status) || 500).json(payload);
       } finally {
         res.removeListener("close", onResponseClose);

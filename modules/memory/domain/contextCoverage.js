@@ -118,4 +118,14 @@ function buildGapBridgeCoverage({ messages, state, recentWindowStartMessageId, m
   };
 }
 
-module.exports = { selectRecentWindow, buildGapBridgeCoverage, normalizeSourceMessages };
+function assessContextCoverage({ needsMemory, gapBridge }) {
+  const gaps = needsMemory ? gapBridge.diagnostics.map(row => ({
+    targetKey: row.subjectKey,
+    targetCursor: row.targetCursor,
+    omittedCount: row.omittedCount,
+    throughMessageId: row.omittedUpperMessageId,
+  })) : [];
+  return { complete: gaps.length === 0, gaps };
+}
+
+module.exports = { selectRecentWindow, buildGapBridgeCoverage, assessContextCoverage, normalizeSourceMessages };

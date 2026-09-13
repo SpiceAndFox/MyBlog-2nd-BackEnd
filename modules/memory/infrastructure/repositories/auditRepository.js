@@ -90,9 +90,12 @@ async function getLatestSnapshotBeforeMessage(userId, presetId, {
   ]);
   return rows[0] || null;
 }
-async function listSnapshotsForRecovery(userId, presetId, { client } = {}) {
+async function listSnapshotsForRecovery(userId, presetId, { client, sourceGeneration = null, beforeRevision = null, limit = 32 } = {}) {
   const scope = normalizeScope(userId, presetId);
-  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 ORDER BY revision DESC`, [scope.userId, scope.presetId]);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid recovery snapshot page limit");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2
+    AND ($3::BIGINT IS NULL OR source_generation=$3) AND ($4::BIGINT IS NULL OR revision<$4)
+    ORDER BY revision DESC LIMIT $5`, [scope.userId, scope.presetId, sourceGeneration, beforeRevision, limit]);
   return rows;
 }
 async function getRecoveryHead(userId, presetId, { client } = {}) {

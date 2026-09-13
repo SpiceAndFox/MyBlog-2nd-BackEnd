@@ -159,6 +159,29 @@ test("force drain reloads progress when an old execution commits while preparing
   assert.equal(commits, 1);
 });
 
+test("ordinary lag drain preserves normal retry state without entering rebuild or resetting error history", async () => {
+  const h = makeRebuildHarness();
+  const generation = h.data.state.meta.sourceGeneration;
+  const prior = { sourceGeneration: generation, status: "retry_wait", rebuildBoundaryMessageId: null,
+    consecutiveErrors: 2, lastErrorReason: "llm_call_failed" };
+  h.data.statuses.todos = structuredClone(prior);
+  h.repositories.source.getForceDrainWindow = async () => [{ id: 20 }];
+  h.repositories.runtime.listTasksForTarget = async () => [{ task_id: "pending", task_type: "normal",
+    source_generation: generation, cursor_before: 9, target_message_id: 20,
+    status: "retry_wait", not_before: "2099-01-01T00:00:00.000Z" }];
+  const rebuild = createMemorySourceRebuild({ repositories: h.repositories,
+    config: { targets: { todos: { lagThreshold: 1, contextWindow: 2 } } },
+    normalWritePipeline: { ...h.normalWritePipeline,
+      async prepareEnvelope() { assert.fail("retry is not due"); },
+      async commitPreparedWave() { assert.fail("retry is not due"); },
+    } });
+  const result = await rebuild.forceDrainTargetsTo(7, "companion", { sourceGeneration: generation,
+    boundaryMessageId: 20, targetKeys: ["todos"], rebuildBoundaryMessageId: null, finalizeTargets: false });
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.result.status, "retry_wait");
+  assert.deepEqual(h.data.statuses.todos, prior);
+});
+
 test("source mutation atomically advances generation, preserves global revision, and enters rebuilding", async () => {
   const harness = makeRebuildHarness();
   const rebuild = createMemorySourceRebuild({ repositories: harness.repositories, normalWritePipeline: harness.normalWritePipeline, config: { targets: {} } });

@@ -51,6 +51,7 @@ function createChatContextCompiler({
         },
         memory: { version: context.schemaVersion, sourceGeneration: context.sourceGeneration, debug: context.debug },
         memoryHealth: context.health,
+        memoryCoverage: context.coverage,
         memoryRecoveryNotifications: context.notifications,
       };
     }

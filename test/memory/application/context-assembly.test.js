@@ -66,7 +66,8 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   assert.equal(degraded.needsMemory, contextScenario.expected.needsMemory);
   assert.equal(degraded.recent.stats.windowStartMessageId, contextScenario.expected.recentWindowStartMessageId);
   assert.equal(degraded.health.status, contextScenario.expected.healthBeforeRecovery);
-  assert.equal(degraded.health.chatBlocked, false);
+  assert.equal(degraded.health.chatBlocked, true);
+  assert.equal(degraded.coverage.complete, false);
   assert.match(degraded.memorySegment, /该类记忆可能滞后/);
   assert.deepEqual(degraded.gapBridge.messages.map((row) => row.id), contextScenario.expected.retainedGapMessageIds);
   assert.equal(data.diagnostics.filter((row) => !row.resolved).length, 6);
@@ -74,6 +75,8 @@ test("context assembly persists omitted diagnostics and atomically emits recover
   data.state.meta.targetCursors = Object.fromEntries(TARGETS.map((key) => [key, 3]));
   const recovered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5, requestId: "request-2", requestNow: "2026-07-13T00:00:06.000Z" });
   assert.equal(recovered.health.status, contextScenario.expected.healthAfterRecovery);
+  assert.equal(recovered.health.chatBlocked, false);
+  assert.equal(recovered.coverage.complete, true);
   assert.equal(recovered.notifications.length, 6);
   assert.equal(recovered.notifications[0].message, contextScenario.expected.notificationMessage);
   assert.equal(data.diagnostics.every((row) => row.resolved), true);
@@ -196,4 +199,62 @@ test("unsupported v2.0 authority is not passed to 2.01 state recovery", async ()
   assert.equal(result.memorySegment, "");
   assert.equal(result.debug.memorySkipReason, "version_unsupported");
   assert.equal(recoveries, 0);
+});
+
+test("rebuilding context follows committed authority but does not allow uncovered history", async () => {
+  const data = makeData();
+  const message = data.sourceMessages[0];
+  data.state.longTerm.relationship.push({
+    id: "relationship:audit", text: "互相信任", createdAtMessageId: 1, updatedAtMessageId: 1,
+    sourceRefs: [{ messageId: message.id, contentHash: message.contentHash }],
+  });
+  data.repositories.runtime.getTargetStatuses = async () => TARGETS.map(targetKey => ({
+    targetKey, sourceGeneration: 0, status: "rebuilding", rebuildBoundaryMessageId: 4,
+  }));
+  const assemble = createMemoryContextAssembly({ repositories: data.repositories, config: config(), recentWindowMaxChars: contextScenario.recentWindowMaxChars });
+  const anchor = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.match(anchor.memorySegment, /互相信任/);
+  assert.match(anchor.memorySegment, /该类记忆正在重建/);
+
+  data.state = structuredClone(data.state);
+  data.state.meta.revision += 1;
+  data.state.meta.targetCursors.profileRelationship = 1;
+  data.state.longTerm.relationship[0].text = "重建中间批次产生的关系描述";
+  const intermediate = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.match(intermediate.memorySegment, /重建中间批次产生的关系描述/);
+  assert.doesNotMatch(intermediate.memorySegment, /互相信任/);
+  assert.match(intermediate.memorySegment, /该类记忆正在重建/);
+  assert.equal(intermediate.gapBridge.stats.truncated, true);
+  assert.equal(intermediate.health.chatBlocked, true);
+  data.state.meta.targetCursors = Object.fromEntries(TARGETS.map(key => [key, 3]));
+  const covered = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.equal(covered.health.status, "rebuilding");
+  assert.equal(covered.health.chatBlocked, false);
+  assert.match(covered.memorySegment, /重建中间批次产生的关系描述/);
+});
+
+test("invalid authority starts recovery and blocks only when raw history cannot bridge its missing Memory", async () => {
+  const data = makeData();
+  delete data.state.current;
+  let recoveries = 0;
+  const assemble = createMemoryContextAssembly({
+    repositories: data.repositories, config: config(), recentWindowMaxChars: contextScenario.recentWindowMaxChars,
+    scheduleStateRecovery() { recoveries += 1; return new Promise(() => {}); },
+  });
+  const result = await assemble({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.equal(recoveries, 1);
+  assert.equal(result.needsMemory, true);
+  assert.equal(result.debug.memorySkipReason, "state_schema_invalid");
+  assert.equal(result.memorySegment, "");
+  assert.deepEqual(result.gapBridge.messages.map(row => row.id), [4]);
+  assert.equal(result.coverage.complete, false);
+  assert.equal(result.recent.messages.length, 1);
+  const rawFallback = createMemoryContextAssembly({
+    repositories: data.repositories, config: { ...config(), gapBridge: { maxRawChars: 100, retainedMessages: 10 } },
+    recentWindowMaxChars: contextScenario.recentWindowMaxChars,
+  });
+  const covered = await rawFallback({ userId: 1, presetId: "default", upToMessageId: 5 });
+  assert.equal(covered.coverage.complete, true);
+  assert.equal(covered.health.chatBlocked, false);
+  assert.deepEqual(covered.gapBridge.messages.map(row => row.id), [1, 2, 3, 4]);
 });

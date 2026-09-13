@@ -2,8 +2,10 @@
 
 ## Ownership
 
-The Chat scope coordinator orders sends and source mutations by `userId:presetId`.
-It preserves complete-turn ordering across sessions of the same preset.
+The Chat scope coordinator orders work by `userId:presetId`. Its outer send queue
+preserves complete-turn ordering across sessions of the same preset. Each send
+attempt uses a separate mutation lane, which can be released during a coverage
+wait without letting a later send overtake the pending turn.
 
 The Memory work coordinator orders Memory jobs separately by the same scope.
 Normal proposers, Librarian, recovery, diagnostic projection and housekeeping share
@@ -13,9 +15,29 @@ pass, rather than creating a backlog of redundant scans.
 
 Chat reads committed Memory, recent raw messages and GapBridge. Ordinary appends
 do not change the source generation or cancel the current proposer. Memory may
-lag. Coverage diagnostics report gaps beyond the configured raw-context budget;
-they do not wait for the Memory provider. The separate privacy fence continues to
-reject new writes while an incomplete privacy operation exists.
+lag when those three sources cover every source message through the pending
+user message for every target. The coverage decision uses the current assembly's
+actually retained raw messages, including holes caused by oversized messages;
+neither numeric message-ID distance nor stale durable diagnostics determine it.
+Rebuilding status alone does not block Chat. The separate privacy fence rejects
+new writes while source cleanup remains unverified.
+
+When coverage is incomplete, `memoryReadiness` releases the mutation lane,
+requests coalesced background catch-up and retries context assembly. An existing
+rebuild retains its frozen boundary and Librarian schedule. Ordinary lag uses
+normal target tasks even below lag thresholds, without creating a new generation
+or another Librarian rebuild schedule. Provider retry and halted states remain
+effective. Every validated intermediate commit can make the next attempt ready;
+Chat does not wait for the final Librarian when coverage is already complete.
+
+The coverage wait defaults to the configured Chat request timeout, independently
+of model execution time, and checks again every 250 ms. If coverage still has
+gaps, the response is HTTP 409 with `CHAT_MEMORY_COVERAGE_PENDING`, the pending
+`user_message`, `memory_coverage`, `retry_after_ms` and `Retry-After`. Retrying with
+the same idempotency key reuses that user message. A recovery generation switch
+can refresh an unchanged, unanswered turn's generation under the source write
+guard; completed replies retain their identity. Disconnect, source mutation and
+shutdown cancel waiting sends as well as active and queued sends.
 
 ## Source mutation barrier
 
@@ -73,6 +95,22 @@ Database transactions and filesystem cleanup are allowed to finish normally.
 - Otherwise restore the latest safe snapshot from the previous generation and
   refill from its cursors. If no safe snapshot exists, rebuild from empty state.
 
+Corrupt-state recovery first tries a complete current-generation snapshot or
+validated event replay to the audit head. A missing or invalid event tail does
+not discard a trustworthy checkpoint: `initializeRecoveryGeneration` preserves
+its full state and per-target cursors in a new generation anchor, then recomputes
+only each target's suffix. `checkpointSafety` validates schema and metadata,
+source references/content hashes, cursor existence and source boundaries under
+the source lock. Candidates are read newest first in bounded pages, with no
+arbitrary candidate-count cutoff. Invalid candidates fall back to older ones;
+checkpoints from an earlier source generation cannot resurrect changed source.
+Empty-state recovery is the fallback when no trustworthy checkpoint is found.
+
+While authority is unavailable, GapBridge uses zero cursors. Chat can proceed
+only if the raw bridge and recent window together cover the entire source;
+otherwise it waits for recovery. Updating a preset's system prompt changes
+future Chat context and does not initialize a Memory rebuild.
+
 Librarian completion can be carried to a new generation only when the **current
 state** is preserved and the affected source is strictly beyond the checkpoint
 (or was already excluded). Its boundary must still exist within the source
@@ -95,22 +133,36 @@ Cancellation waits for these transactions to exit; it never abandons one and
 allows deletion to race its eventual writes.
 
 Chat may consume an older committed Memory revision while a newer one is being
-computed. Recent raw messages and GapBridge use that captured state's cursors.
-This is eventual semantic coverage, not a partially committed Memory object.
+computed. Recent raw messages and GapBridge use that captured state's cursors,
+and the coverage gate must pass before any model call or stream starts.
 Target statuses and diagnostic sidecars can be read at a later instant, so the
 assembled context is not a repeatable-read snapshot of every table.
 
 Privacy deletion and external cleanup are a durable multi-step operation, not a
 single transaction spanning PostgreSQL, model calls and the filesystem. A raw
-commit returns `rawMutationCommitted: true` with a pending operation status;
-only successful verification and required draining mark it completed. A crash
-after the raw commit leaves the operation available for reconciliation.
+commit returns `rawMutationCommitted: true` with a pending operation status.
+Successful cleanup verification marks the privacy operation completed and
+releases its fence. The replacement anchor and durable target boundaries have
+already committed with the source mutation. Rebuild continues independently;
+provider failures do not reopen privacy cleanup or purge newly created gists.
+A crash before verification leaves cleanup available for reconciliation, while
+a crash after verification leaves any unfinished target rebuild resumable.
+Legacy `verified` and `draining` operations reuse their cleanup proof.
 
 ## Regression coverage
 
 - `runtime-concurrency.test.js`: real runtime and send/session use cases with a
   suspended proposer, a subsequent chat, deletion, late response, missing state,
-  corrupt-state recovery during a reply and its privacy fence.
+  corrupt-state recovery, coverage waits and early release of a verified privacy
+  fence while Librarian remains pending.
+- `memory-readiness.test.js` and `controller-concurrency.test.js`: send ordering
+  during waits, source-mutation cancellation and bounded HTTP backpressure.
+- `checkpoint-recovery.test.js`: broken event tails, cursor-preserving suffix
+  repair, invalid provenance, generation isolation and paginated fallback.
+- `context-coverage.test.js` and `context-assembly.test.js`: per-target coverage,
+  sparse IDs, internal bridge holes and raw fallback without valid authority.
+- `context-catchup.test.js`: coalescing, frozen rebuild boundaries and ordinary
+  lag catch-up without creating another Librarian rebuild schedule.
 - `work-coordinator.test.js`: mutation ordering, queued cancellation, scope
   isolation, admission waiters and shutdown.
 - `source-rebuild.test.js`: unaffected and empty sessions, checkpoint reuse,

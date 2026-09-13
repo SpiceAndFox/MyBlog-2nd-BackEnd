@@ -5,10 +5,11 @@ const { TARGET_KEYS, assertMemoryState } = require("../../../modules/memory/cont
 const { createSendMessageUseCase } = require("../../../modules/chat/application/sendMessage");
 const { createChatScopeCoordinator } = require("../../../modules/chat/application/scopeCoordinator");
 const { createSessionUseCases } = require("../../../modules/chat/application/sessions");
+const { createMemoryContextAssembly } = require("../../../modules/memory/application/contextAssembly");
 const { store, config } = require("../support/recovery-harness");
 const { withLibrarianRepositoryStubs, createMemoryTestConfig } = require("../support/memory-builders");
 
-function fixture(providerAdapter, { missingState = false, rebuilding = false, invalidState = false, complete } = {}) {
+function fixture(providerAdapter, { missingState = false, rebuilding = false, invalidState = false, complete, privacyStores = [], contextFactory } = {}) {
   const memory = store();
   if (invalidState) delete memory.inspect.state.current;
   if (rebuilding) {
@@ -40,6 +41,9 @@ function fixture(providerAdapter, { missingState = false, rebuilding = false, in
     sourceWriteGuard: { async lockScope() {}, async lockAndRead() { return { sourceGeneration: memory.inspect.state.meta.sourceGeneration, privacyPending: operation && operation.status !== "completed" }; } },
     runtime: {
       ...memory.repositories.runtime,
+      async listTasksForTarget(_u, _p, targetKey) {
+        return [...memory.inspect.tasks.values()].reverse().filter(task => task.target_key === targetKey);
+      },
       async cancelNonTerminalTasks() {
         for (const task of memory.inspect.tasks.values()) if (!["succeeded", "failed", "cancelled"].includes(task.status)) task.status = "cancelled";
       },
@@ -62,7 +66,7 @@ function fixture(providerAdapter, { missingState = false, rebuilding = false, in
   const runtime = createMemoryRuntime({
     config: createMemoryTestConfig({ ...config, enabled: true,
       targets: Object.fromEntries(TARGET_KEYS.map(key => [key, config.targets[key] || { lagThreshold: 10, contextWindow: 20 }])) }), repositories, providerAdapter,
-    enqueueByKey: chat.enqueueByKey, onBackgroundError: error => errors.push(error),
+    enqueueByKey: chat.enqueueByKey, privacyStores, onBackgroundError: error => errors.push(error),
   });
   const session = { id: 5, preset_id: "default", settings: {} };
   const chatRepository = {
@@ -90,11 +94,11 @@ function fixture(providerAdapter, { missingState = false, rebuilding = false, in
   };
   const send = createSendMessageUseCase({
     chatRepository, settings, memory: runtime, scopeCoordinator: chat, transaction: { run: repositories.withTransaction },
-    compileContext: async () => {
+    compileContext: contextFactory?.({ repositories, runtime }) || (async () => {
       if (invalidState) stateRecovery = runtime.scheduleStateRecovery({ userId: 1, presetId: "default" });
       else await runtime.ensureScope({ userId: 1, presetId: "default" });
       return { messages: [{ role: "user", content: "new question" }] };
-    },
+    }),
     llm: { complete: complete || (async () => ({ content: "answer" })), createStreamResponse() {}, streamDeltas() {} },
     gist: { requestGeneration() {} },
     logger: { debug() {}, error() {} }, timeoutMs: 1000,
@@ -216,4 +220,130 @@ test("state recovery cannot switch generation or rebuild while privacy cleanup r
   assert.equal(harness.memory.inspect.state.meta.sourceGeneration, generation);
   await harness.runtime.reconcilePrivacyDeletes();
   assert.equal(harness.operation.status, "completed");
+});
+
+test("ordinary rebuilding allows a chat while its Librarian provider is suspended", { timeout: 3000 }, async t => {
+  const started = Promise.withResolvers();
+  const harness = fixture({ propose(_envelope, { signal }) {
+    started.resolve(signal);
+    return new Promise(() => {});
+  } }, { rebuilding: true });
+  t.after(() => harness.runtime.shutdown());
+  await harness.runtime.rebuildScope(1, "default");
+  const signal = await started.promise;
+  const result = await harness.send({ userId: 1, sessionId: 5, content: "continue chatting", idempotencyKey: "audit-rebuild" });
+  assert.equal(result.kind, "completed");
+  assert.equal(signal.aborted, false);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("verified privacy cleanup permits chat while the preserved Memory continues rebuilding", { timeout: 3000 }, async t => {
+  const started = Promise.withResolvers();
+  const storeChecks = [];
+  const harness = fixture({ propose(_envelope, { signal }) {
+    started.resolve(signal);
+    return new Promise(() => {});
+  } }, { rebuilding: true, privacyStores: [{
+    name: "audit-store",
+    async purge() { storeChecks.push("purged"); },
+    async verifyPurged() { storeChecks.push("verified"); return true; },
+  }] });
+  t.after(() => harness.runtime.shutdown());
+  const before = structuredClone(harness.memory.inspect.state);
+  const deleted = await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
+  assert.equal(deleted.privacy.rawMutationCommitted, true);
+  const signal = await started.promise;
+  assert.equal(harness.operation.status, "completed");
+  assert.deepEqual(storeChecks, ["purged", "verified"]);
+  assert.equal(harness.memory.inspect.state.meta.sourceGeneration, before.meta.sourceGeneration + 1);
+  assert.deepEqual(harness.memory.inspect.state.longTerm, before.longTerm);
+  assert.deepEqual(harness.memory.inspect.state.meta.targetCursors, before.meta.targetCursors);
+  assert.equal(harness.memory.inspect.snapshots.length, 1, "the replacement anchor has already committed");
+  const sent = await harness.send({ userId: 1, sessionId: 5, content: "continue chatting", idempotencyKey: "privacy-clean" });
+  assert.equal(sent.kind, "completed");
+  assert.equal(signal.aborted, false);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("runtime catch-up advances ordinary lag without reusing a completed Librarian rebuild schedule", { timeout: 3000 }, async t => {
+  const targets = [];
+  const h = fixture({ async propose(envelope) {
+    assert.notEqual(envelope.task.targetKey, "librarian");
+    targets.push(envelope.task.targetKey);
+    return { status: "ok", output: {
+      tickId: envelope.task.tickId, proposer: envelope.task.proposer,
+      sectionResults: Object.fromEntries(envelope.task.targetSections.map(section => [section, { status: "noop" }])),
+    } };
+  } });
+  t.after(() => h.runtime.shutdown());
+  for (const key of TARGET_KEYS) h.memory.inspect.statuses.set(key, {
+    target_key: key, source_generation: 0, status: "healthy", rebuild_boundary_message_id: null,
+  });
+  const result = await h.runtime.requestContextCatchup(1, "default");
+  assert.equal(result.status, "completed");
+  assert.deepEqual(targets.sort(), [...TARGET_KEYS].sort());
+  assert.equal(h.memory.inspect.state.meta.sourceGeneration, 0);
+  for (const key of TARGET_KEYS) {
+    assert.equal(h.memory.inspect.state.meta.targetCursors[key], 1);
+    assert.equal(h.memory.inspect.statuses.get(key).status, "healthy");
+  }
+  assert.deepEqual(h.errors, []);
+});
+
+test("real context assembly waits through corrupt-state recovery and resumes before final Librarian completes", { timeout: 4000 }, async t => {
+  const proposals = Promise.withResolvers();
+  const normalStarted = Promise.withResolvers();
+  const finalStarted = Promise.withResolvers();
+  let calls = 0;
+  const h = fixture({ async propose(envelope) {
+    if (envelope.task.targetKey === "librarian") {
+      finalStarted.resolve(); return new Promise(() => {});
+    }
+    normalStarted.resolve();
+    await proposals.promise;
+    return { status: "ok", output: {
+      tickId: envelope.task.tickId,
+      proposer: envelope.task.proposer,
+      sectionResults: Object.fromEntries(envelope.task.targetSections.map(section => [section, { status: "noop" }])),
+    } };
+  } }, { invalidState: true,
+    complete() { calls++; return { content: "covered answer" }; },
+    contextFactory({ repositories, runtime }) {
+      repositories.source.listUpTo = async () => [
+        ...(await repositories.source.getObservedWindow()),
+        { id: 2, role: "user", content: "next", createdAt: "2026-07-13T00:00:01.000Z" },
+      ];
+      Object.assign(repositories.sidecars, {
+        async listActiveDiagnostics() { return []; },
+        async listPendingRecoveryNotifications() { return []; },
+        async upsertActiveDiagnostic(_u, _p, row) { return { id: 1, ...row }; },
+      });
+      const assemble = createMemoryContextAssembly({ repositories,
+        config: createMemoryTestConfig({ enabled: true, gapBridge: { maxRawChars: 1, retainedMessages: 1 } }),
+        recentWindowMaxChars: 4,
+        ensureState: runtime.ensureScope, scheduleStateRecovery: runtime.scheduleStateRecovery,
+      });
+      return async input => {
+        const context = await assemble(input);
+        return { messages: context.recent.messages, memoryCoverage: context.coverage, memoryHealth: context.health };
+      };
+    },
+  });
+  t.after(async () => { proposals.resolve(); await h.runtime.shutdown(); });
+  const sending = h.send({ userId: 1, sessionId: 5, content: "next", idempotencyKey: "recovery-covered" });
+  void sending.catch(() => {});
+  const premature = sending.then(() => { throw new Error(`Chat completed before the rebuild barrier: ${h.errors.map(error => error.message).join("; ")}`); }, error => {
+    throw new Error(`${error.message}; background: ${h.errors.map(failure => failure.message).join("; ")}`, { cause: error });
+  });
+  void premature.catch(() => {});
+  await Promise.race([normalStarted.promise, premature]);
+  assert.equal(calls, 0);
+  assert.equal(h.memory.inspect.state.meta.sourceGeneration, 1);
+  proposals.resolve();
+  await Promise.race([finalStarted.promise, premature]);
+  const sent = await sending;
+  assert.equal(sent.kind, "completed");
+  assert.equal(sent.context.memoryCoverage.complete, true);
+  assert.equal(calls, 1);
+  assert.deepEqual(h.errors, []);
 });

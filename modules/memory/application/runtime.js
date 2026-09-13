@@ -20,6 +20,7 @@ const { createRetryBudget } = require("./retryBudget");
 const { createMemoryRuntimeHealth } = require("./runtimeHealth");
 const { createMemoryLibrarian } = require("./librarian");
 const { createMemoryWorkCoordinator } = require("./workCoordinator");
+const { createContextCatchup } = require("./contextCatchup");
 
 const MAX_BACKGROUND_FAILURE_REASON_CHARS = 200;
 
@@ -718,8 +719,13 @@ function createMemoryRuntime({
     }));
   }
 
+  const requestContextCatchup = createContextCatchup({
+    repositories, ensureState, sourceRebuild, enqueueByKey, runInBackground,
+  });
+
   return Object.freeze({
     enabled: true,
+    requestContextCatchup,
     ensureScope,
     processScope,
     rebuildScope,

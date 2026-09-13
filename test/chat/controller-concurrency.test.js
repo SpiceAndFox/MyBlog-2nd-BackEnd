@@ -118,6 +118,7 @@ function resetHarness() {
   lastPrivacyOptions = null;
   sourceGuardResult = { sourceGeneration: 0, privacyPending: false };
   sourceGuardCalls.length = 0;
+  memoryRuntime.requestContextCatchup = async () => {};
   compileContext = async ({ upToMessageId, signal }) => {
     if (signal?.aborted) throw signal.reason;
     events.push(`context:${upToMessageId}`);
@@ -264,6 +265,7 @@ const memoryRuntime = {
     throw new Error("Memory context is disabled");
   },
   async processScope() {},
+  async requestContextCatchup() {},
   async rebuildScope() {},
   async lockSourceWriteGuard(userId, presetId, { client }) {
     sourceGuardCalls.push({ userId, presetId, client });
@@ -451,6 +453,46 @@ test("an active privacy fence rejects a send before any raw message write", asyn
   assert.equal(providerCalls, 0);
   assert.equal(sourceGuardCalls.length, 1);
   assert.equal(sourceGuardCalls[0].client, transactionClient);
+});
+
+test("chat waits for coverage, then replies once without waiting for the whole rebuild", { timeout: 3000 }, async () => {
+  let ready = false;
+  let providerCalls = 0;
+  const started = Promise.withResolvers();
+  compileContext = async () => ({ messages: [{ role: "user", content: "compiled" }],
+    memoryCoverage: { complete: ready, gaps: ready ? [] : [{ targetKey: "todos", throughMessageId: 10 }] },
+    memoryHealth: { status: "rebuilding", chatBlocked: !ready },
+  });
+  memoryRuntime.requestContextCatchup = async () => { started.resolve(); };
+  completeChat = async () => { providerCalls++; assert.equal(ready, true); return "covered reply"; };
+  const first = new TestResponse();
+  const sending = chatController.sendMessage(request(11, "wait for context", "coverage-key"), first);
+  await started.promise;
+  assert.equal(first.headersSent, false);
+  assert.equal(providerCalls, 0);
+  assert.equal(messages.length, 1);
+  ready = true;
+  await sending;
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.body.memory_health.status, "rebuilding");
+  const retry = new TestResponse();
+  await chatController.sendMessage(request(11, "wait for context", "coverage-key"), retry);
+  assert.equal(retry.body.idempotent_replay, true);
+  assert.equal(providerCalls, 1);
+  assert.equal(messages.length, 2);
+});
+
+test("coverage timeout exposes a retryable response and never calls the chat model", { timeout: 3000 }, async () => {
+  compileContext = async () => ({ messages: [], memoryCoverage: { complete: false, gaps: [{ targetKey: "scene" }] } });
+  completeChat = async () => { assert.fail("incomplete context must not reach the model"); };
+  const response = new TestResponse();
+  await chatController.sendMessage(request(11, "wait", "timeout-key"), response);
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, "CHAT_MEMORY_COVERAGE_PENDING");
+  assert.equal(response.body.memory_coverage.complete, false);
+  assert.equal(response.body.user_message.id, messages[0].id);
+  assert.equal(response.getHeader("Retry-After"), "1");
+  assert.equal(messages.length, 1);
 });
 
 test("concurrent retry with one idempotency key replays the committed turn without another Provider call", async () => {

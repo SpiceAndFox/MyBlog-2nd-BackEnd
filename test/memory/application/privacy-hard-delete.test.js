@@ -161,3 +161,44 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
     await fs.rm(uploadsRoot, { recursive: true, force: true });
   }
 });
+
+test("rebuild failure after cleanup never reopens the privacy fence or purges newly created data", async () => {
+  const operation = { status: "purging", operationMode: "rebuild", sourceGeneration: 3, boundaryMessageId: 20 };
+  const data = new Set(["old gist"]);
+  let purges = 0;
+  let drains = 0;
+  const service = createPrivacyHardDelete({
+    repositories: { async withTransaction(work) { return work({}); }, privacy: {
+      purgeDerivedHistory() {}, upsertOperation() {},
+      async updateOperation(_u, _p, changes) { Object.assign(operation, changes); },
+    } },
+    stores: [{ name: "gists", async purge() { purges++; data.clear(); }, async verifyPurged() { return data.size === 0; } }],
+    sourceRebuild: { async forceDrainTo() {
+      drains++;
+      assert.equal(operation.status, "completed");
+      data.add("new valid gist");
+      throw new Error("provider unavailable");
+    } },
+  });
+  await assert.rejects(service.continueOperation(1, "p", operation, { repurge: true }), /provider unavailable/);
+  assert.equal(operation.status, "completed");
+  assert.equal((await service.continueOperation(1, "p", operation, { repurge: true })).status, "completed");
+  assert.deepEqual([...data], ["new valid gist"]);
+  assert.equal(purges, 1);
+  assert.equal(drains, 1);
+});
+
+test("legacy draining operations release verified cleanup without repeating purge or verification", async () => {
+  const operation = { status: "draining", operationMode: "rebuild", sourceGeneration: 3, boundaryMessageId: 20 };
+  const service = createPrivacyHardDelete({
+    repositories: { privacy: { purgeDerivedHistory() {}, upsertOperation() {},
+      async updateOperation(_u, _p, changes) { Object.assign(operation, changes); },
+    } },
+    stores: [{ name: "gists", async purge() { assert.fail("already verified"); }, async verifyPurged() { assert.fail("already verified"); } }],
+    sourceRebuild: { async forceDrainTo() { return { status: "incomplete", result: { status: "retry_wait" } }; } },
+  });
+  const result = await service.continueOperation(1, "p", operation, { repurge: true });
+  assert.equal(operation.status, "completed");
+  assert.equal(result.status, "completed");
+  assert.equal(result.rebuild.status, "incomplete");
+});

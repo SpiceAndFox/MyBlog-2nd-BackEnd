@@ -470,6 +470,21 @@ function createChatRepository({ database } = {}) {
       error.code = "CHAT_IDEMPOTENCY_CONFLICT";
       throw error;
     }
+    if (Number(message.source_generation ?? 0) !== normalizedSourceGeneration) {
+      if (!client) throw new Error("Resuming a pending turn requires a source-guarded transaction");
+      // The caller holds the source write guard. Recovery may have switched the
+      // generation while this unchanged, idempotent turn waited for coverage.
+      // Completed turns keep their original identity and remain replayable.
+      const refreshed = await client.query(`
+        UPDATE chat_messages u SET source_generation=$4
+        WHERE u.id=$1 AND u.user_id=$2 AND u.session_id=$3 AND u.role='user'
+          AND u.content=$5 AND u.turn_id=$6 AND u.idempotency_key=$7
+          AND NOT EXISTS (SELECT 1 FROM chat_messages a WHERE a.parent_user_message_id=u.id AND a.role='assistant')
+          AND EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id=u.session_id AND s.deleted_at IS NULL)
+        RETURNING id,session_id,preset_id,role,content,turn_id,parent_user_message_id,idempotency_key,source_generation,created_at
+      `, [message.id, userId, sessionId, normalizedSourceGeneration, normalizedContent, message.turn_id, normalizedKey]);
+      if (refreshed.rows[0]) return { message: refreshed.rows[0], created: false };
+    }
     return { message, created: false };
   },
 

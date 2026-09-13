@@ -24,31 +24,35 @@ function createPrivacyHardDelete({ repositories, sourceRebuild, stores = [], enq
   async function continueOperation(userId, presetId, operation, { repurge = false, signal } = {}) {
     if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
     const mode = rowValue(operation, "operation_mode", "operationMode");
-    if (repurge) await repositories.withTransaction((client) => purgeStores(userId, presetId, operation, client));
-    const residue = await verifyStores(userId, presetId, operation);
-    if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
-    if (residue) {
-      await privacy.updateOperation(userId, presetId, { status: "purging", lastErrorReason: `residue:${residue}` });
-      return { status: "incomplete", reason: `residue:${residue}`, operationMode: mode };
+    if (operation.status === "completed") return { status: "completed", operationMode: mode };
+    // Legacy verified/draining operations already proved cleanup. Do not purge
+    // again after that proof: newly appended messages may create valid gists.
+    if (!["verified", "draining"].includes(operation.status)) {
+      if (repurge) await repositories.withTransaction((client) => purgeStores(userId, presetId, operation, client));
+      const residue = await verifyStores(userId, presetId, operation);
+      if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
+      if (residue) {
+        await privacy.updateOperation(userId, presetId, { status: "purging", lastErrorReason: `residue:${residue}` });
+        return { status: "incomplete", reason: `residue:${residue}`, operationMode: mode };
+      }
     }
-    await privacy.updateOperation(userId, presetId, { status: "verified", lastErrorReason: null });
+    // The replacement anchor and durable target boundaries committed with the
+    // raw mutation. Cleanup completion releases the privacy fence; coverage is
+    // checked separately by Chat, while rebuild reconciliation owns catch-up.
+    await privacy.updateOperation(userId, presetId, { status: "completed", lastErrorReason: null });
     const payload = rowValue(operation, "operation_payload", "operationPayload") || {};
     if (mode !== "rebuild" || payload.memoryRebuildRequired === false) {
-      await privacy.updateOperation(userId, presetId, { status: "completed", lastErrorReason: null });
       return { status: "completed", operationMode: mode };
     }
     if (!sourceRebuild?.forceDrainTo) throw new Error("Privacy rebuild operation requires source rebuild");
     const sourceGeneration = Number(rowValue(operation, "source_generation", "sourceGeneration"));
     const boundaryMessageId = Number(rowValue(operation, "boundary_message_id", "boundaryMessageId"));
-    await privacy.updateOperation(userId, presetId, { status: "draining", lastErrorReason: null });
     const drained = await sourceRebuild.forceDrainTo(userId, presetId, { sourceGeneration, boundaryMessageId, signal });
     if (signal?.aborted) return { status: "interrupted", reason: "cancelled" };
     if (drained.status === "completed") {
-      await privacy.updateOperation(userId, presetId, { status: "completed", lastErrorReason: null });
       return { ...drained, operationMode: mode };
     }
-    await privacy.updateOperation(userId, presetId, { status: "draining", lastErrorReason: `drain:${drained.status}` });
-    return { ...drained, status: "incomplete", reason: `drain:${drained.status}`, operationMode: mode };
+    return { status: "completed", operationMode: mode, rebuild: drained };
   }
 
   function dispatch(userId, presetId, operation) {
