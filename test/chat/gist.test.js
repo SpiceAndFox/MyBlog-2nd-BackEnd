@@ -6,6 +6,7 @@ const { createChatGistRepository } = require("../../modules/chat/infrastructure/
 const { loadGistRuntimeConfig } = require("../../config/gistRuntime");
 const text = require("../../modules/chat/application/textUtils");
 const { createGistFixture } = require("./support/gist-fixture");
+const { gistTestEnvironment } = require("./support/gist-env");
 
 function logger() {
   return { debug() {}, warn() {}, error() {} };
@@ -35,7 +36,7 @@ test("Gist generation is an injected Chat application service and skips an uncha
   const gistRepository = fixture.repository;
   const service = createChatGistService({
     config: {
-      ...loadGistRuntimeConfig({}),
+      ...loadGistRuntimeConfig(gistTestEnvironment()),
       enabled: true,
       workerConcurrency: 1,
       workerProviderId: "deepseek",
@@ -79,7 +80,7 @@ test("Gist backfill honors the configured per-request admission bound", () => {
   const repository = createGistFixture().repository;
   repository.enqueueGistTask = async scope => { scheduled.push(scope); return null; };
   const service = createChatGistService({
-    config: { ...loadGistRuntimeConfig({ CHAT_GIST_BACKFILL_MAX_PER_REQUEST: "3" }),
+    config: { ...loadGistRuntimeConfig(gistTestEnvironment()),
       enabled: true, workerConcurrency: 2, workerTimeoutMs: 1000, maxChars: 20 },
     contextConfig: { recentWindowAssistantGistEnabled: true },
     gistRepository: repository,

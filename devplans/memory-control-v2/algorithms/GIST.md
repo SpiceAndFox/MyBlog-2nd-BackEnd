@@ -34,11 +34,11 @@ Claims consume the durable attempt budget, including abandoned claims. An old
 claim cannot commit after replacement, source changes, deletion or privacy purge.
 Source validation, cache write and successful completion commit in one transaction.
 
-Defaults allow one initial attempt plus five transient retries, delayed by
+The example environment allows one initial attempt plus five transient retries, delayed by
 30, 60, 120, 120 and 120 seconds. HTTP `Retry-After` can defer a retry further.
 Timeouts, connection failures, 408/425/429 and 5xx retry; authentication, invalid
 request and unknown errors stop. Empty output stops too. Waiting tasks do not
-occupy worker slots. The poller runs every second, uses the configured gist
+occupy worker slots. The poller uses `CHAT_GIST_POLL_INTERVAL_MS` and the configured gist
 concurrency, and aborts/drains in-flight work before database shutdown.
 
 ## Migration and operation
@@ -52,10 +52,10 @@ npm run migrate:chat-gists
 
 The existing `chat_message_gists` table is a prerequisite. The migration adds
 `source_hash` and the task table/indexes; it does not regenerate historical data.
-Scheduling and recovery defaults are defined once in `config/gistRuntime.js`,
-loaded by `config/index.js`. Environment values override them; the resolved, validated configuration is injected into
-Chat. Worker and generation code contain no fallback policy values. Existing
-environment files still load using the configuration-layer defaults:
+Scheduling and recovery settings are validated in `config/gistRuntime.js`,
+loaded by `config/index.js`, and injected into Chat. All six fields are required
+in the environment: missing, blank or invalid values fail application composition.
+There are no configuration-layer or worker fallback values. Example values:
 
 ```dotenv
 CHAT_GIST_POLL_INTERVAL_MS=1000
@@ -67,7 +67,7 @@ CHAT_GIST_RETRY_BACKOFF_MAX_MS=120000
 ```
 
 `CHAT_GIST_BACKFILL_MAX_PER_REQUEST` bounds on-demand backfill independently of
-worker concurrency (default 10, matching the previous default concurrency of 2).
+worker concurrency (10 in the example environment).
 Provider/model, generation timeout, output length and generation parameters
 are also loaded by `chatGistConfig` in `config/index.js`; recent-window rendering
 switches belong to `chatContextConfig` in that same configuration file.

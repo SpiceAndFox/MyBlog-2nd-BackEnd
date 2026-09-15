@@ -4,6 +4,7 @@ const thinkingModeOptions = [
 ];
 
 const reasoningEffortOptions = [
+  { value: "low", label: "Low" },
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
 ];
@@ -19,7 +20,7 @@ function normalizeReasoningEffort(settings) {
   const raw = String(settings?.reasoningEffort || "")
     .trim()
     .toLowerCase();
-  return raw === "max" ? "max" : "high";
+  return reasoningEffortOptions.some((option) => option.value === raw) ? raw : "high";
 }
 
 const deprecatedPenaltyParams = ["presence_penalty", "frequency_penalty"];

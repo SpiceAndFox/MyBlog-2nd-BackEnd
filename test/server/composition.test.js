@@ -63,6 +63,7 @@ test("composition creates process-level adapters explicitly without starting bac
     assert.equal(composition.database, database);
     assert.equal(composition.memoryRuntime, memoryRuntime);
     assert.equal(composition.config.authConfig.jwtSecret, "composition-test-secret");
+    assert.equal(composition.config.chatGistConfig.workerSettings.reasoningEffort, "low");
     assert.equal(Object.isFrozen(composition.config), true);
     assert.equal(Object.isFrozen(composition.config.chatConfig), true);
     assert.equal(intervalCount, 0);
