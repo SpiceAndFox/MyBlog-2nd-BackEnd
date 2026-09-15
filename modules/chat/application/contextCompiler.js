@@ -11,6 +11,7 @@ function createChatContextCompiler({
   segments,
   timeContext,
   gist,
+  renderRecentGists = async ({ recent }) => recent,
   randomUUID = crypto.randomUUID,
 } = {}) {
   if (!memory?.assembleContext) throw new Error("Chat Memory context port is required");
@@ -32,7 +33,8 @@ function createChatContextCompiler({
         requestId: randomUUID(),
       });
       const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
-      const recent = context.recent;
+      const recent = await renderRecentGists({ userId, presetId: normalizedPresetId,
+        recent: context.recent, sourceMessages: context.recentSourceMessages, sourceHistory: context.timeCandidates });
       const messages = segments.build({
         systemPrompt: normalizedSystemPrompt,
         memoryV2: { renderedText: context.memorySegment },

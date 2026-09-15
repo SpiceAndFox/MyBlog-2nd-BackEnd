@@ -3,8 +3,9 @@ const assert = require("node:assert/strict");
 
 const { createChatGistService } = require("../../modules/chat/admin");
 const { createChatGistRepository } = require("../../modules/chat/infrastructure/repositories/gistRepository");
-const taskQueue = require("../../modules/chat/application/taskQueue");
+const { loadGistRuntimeConfig } = require("../../config/gistRuntime");
 const text = require("../../modules/chat/application/textUtils");
+const { createGistFixture } = require("./support/gist-fixture");
 
 function logger() {
   return { debug() {}, warn() {}, error() {} };
@@ -28,14 +29,13 @@ test("Gist Repository uses its injected database adapter", async () => {
 });
 
 test("Gist generation is an injected Chat application service and skips an unchanged result", async () => {
-  let stored = null;
+  const fixture = createGistFixture();
+  fixture.addSource(12);
   let providerCalls = 0;
-  const gistRepository = {
-    async getGist() { return stored; },
-    async upsertGist(_userId, _presetId, _messageId, value) { stored = value; return value; },
-  };
+  const gistRepository = fixture.repository;
   const service = createChatGistService({
     config: {
+      ...loadGistRuntimeConfig({}),
       enabled: true,
       workerConcurrency: 1,
       workerProviderId: "deepseek",
@@ -46,10 +46,8 @@ test("Gist generation is an injected Chat application service and skips an uncha
       maxChars: 20,
     },
     contextConfig: { recentWindowAssistantGistEnabled: true },
-    chatRepository: { async listRecentMessagesByPreset() { return []; } },
     gistRepository,
     llm: { async complete() { providerCalls += 1; return { content: "- 温柔安抚。\n- 给出下一步！" }; } },
-    taskQueue,
     text,
     logger: logger(),
   });
@@ -70,6 +68,7 @@ test("Gist generation is an injected Chat application service and skips an uncha
   });
 
   assert.equal(providerCalls, 1);
+  const stored = fixture.stored.get(12);
   assert.equal(stored.gistText, "温柔安抚；给出下一步；");
   assert.equal(stored.providerId, "deepseek");
   assert.equal(stored.modelId, "gist-model");
@@ -77,17 +76,14 @@ test("Gist generation is an injected Chat application service and skips an uncha
 
 test("Gist backfill honors the configured per-request admission bound", () => {
   const scheduled = [];
-  const immediateTaskQueue = {
-    createSemaphore: () => ({ acquire: async () => () => {} }),
-    createKeyedTaskQueue: () => ({ enqueue(_key, task) { scheduled.push(task); return Promise.resolve(); } }),
-  };
+  const repository = createGistFixture().repository;
+  repository.enqueueGistTask = async scope => { scheduled.push(scope); return null; };
   const service = createChatGistService({
-    config: { enabled: true, workerConcurrency: 2, maxChars: 20 },
+    config: { ...loadGistRuntimeConfig({ CHAT_GIST_BACKFILL_MAX_PER_REQUEST: "3" }),
+      enabled: true, workerConcurrency: 2, workerTimeoutMs: 1000, maxChars: 20 },
     contextConfig: { recentWindowAssistantGistEnabled: true },
-    chatRepository: { async listRecentMessagesByPreset() { return []; } },
-    gistRepository: { async getGist() {}, async upsertGist() {} },
+    gistRepository: repository,
     llm: { async complete() { return { content: "gist" }; } },
-    taskQueue: immediateTaskQueue,
     text,
     logger: logger(),
   });
@@ -95,6 +91,6 @@ test("Gist backfill honors the configured per-request admission bound", () => {
 
   const result = service.scheduleBackfill({ userId: 1, presetId: "default", gistBackfillCandidates: candidates });
 
-  assert.deepEqual(result, { scheduled: 10, maxPerRequest: 10, candidatesCount: 15 });
-  assert.equal(scheduled.length, 10);
+  assert.deepEqual(result, { scheduled: 3, maxPerRequest: 3, candidatesCount: 15 });
+  assert.equal(scheduled.length, 3);
 });

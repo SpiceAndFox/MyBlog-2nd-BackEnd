@@ -108,6 +108,10 @@ function createApplicationComposition({ environment, loadDotenv, adapters = {} }
   });
   const backgroundServices = createBackgroundServices([
     {
+      name: "chat-gist-worker",
+      start: chat?.chatModule?.gist?.start || (() => () => {}),
+    },
+    {
       name: "chat-trash-cleanup",
       start: chat?.chatModule?.trashCleanup?.start || (() => () => {}),
     },

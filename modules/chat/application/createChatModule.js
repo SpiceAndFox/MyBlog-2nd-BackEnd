@@ -11,6 +11,7 @@ const { createChatTrashCleanup } = require("./trashCleanup");
 const { createRecentWindowContextBuilder } = require("./context/buildRecentWindowContext");
 const { createContextSegmentBuilder } = require("./context/segmentRegistry");
 const { buildTimeContextState } = require("./context/buildTimeContextState");
+const { createRecentGistRenderer } = require("./context/renderRecentGists");
 
 function createChatModule({ config, adapters } = {}) {
   if (!config?.chat || !config?.llm || !config?.memory || !config?.context || !config?.gist || !config?.timeContext) {
@@ -29,10 +30,8 @@ function createChatModule({ config, adapters } = {}) {
   const gist = adapters.gist || createChatGistService({
     config: config.gist,
     contextConfig: config.context,
-    chatRepository: adapters.chatRepository,
     gistRepository: adapters.gistRepository,
     llm: { complete: adapters.llm.complete },
-    taskQueue: adapters.taskQueue,
     text: adapters.text,
     logger: adapters.logger,
   });
@@ -53,6 +52,8 @@ function createChatModule({ config, adapters } = {}) {
     }) },
     timeContext: adapters.timeContext || { build: buildTimeContextState },
     gist: { scheduleBackfill: gist.scheduleBackfill },
+    renderRecentGists: createRecentGistRenderer({ config: config.gist, contextConfig: config.context,
+      gistRepository: adapters.gistRepository, gist, logger: adapters.logger }),
   });
   const sendMessage = createSendMessageUseCase({
     chatRepository: adapters.chatRepository,

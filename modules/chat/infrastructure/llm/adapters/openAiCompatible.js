@@ -1,3 +1,4 @@
+const { chatHttpFailure } = require("./httpFailure");
 const { iterateSseData } = require("../sse");
 const { buildOpenCodeGoHeaders } = require("../opencodeGoHeaders");
 
@@ -229,7 +230,7 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
 
     if (!response.ok) {
       const { json, text } = await readJsonSafe(response);
-      throw new Error(pickErrorMessage({ status: response.status, json, text }));
+      throw chatHttpFailure(pickErrorMessage({ status: response.status, json, text }), response);
     }
 
     const data = await response.json();
@@ -284,7 +285,7 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
 
   if (!response.ok) {
     const { json, text } = await readJsonSafe(response);
-    throw new Error(pickErrorMessage({ status: response.status, json, text }));
+    throw chatHttpFailure(pickErrorMessage({ status: response.status, json, text }), response);
   }
 
   if (!response.body) {

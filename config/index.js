@@ -1,4 +1,5 @@
 const envReaders = require("./readEnv");
+const { loadGistRuntimeConfig } = require("./gistRuntime");
 
 function loadApplicationConfig(env = {}, { chatLlmCatalog, loadMemoryConfig } = {}) {
   if (!env || typeof env !== "object" || Array.isArray(env)) {
@@ -628,6 +629,7 @@ const chatGistConfig = (() => {
     workerModelId,
     workerConcurrency,
     workerTimeoutMs,
+    ...loadGistRuntimeConfig(env),
     workerSettings,
     workerRaw: {
       openaiCompatibleBody,

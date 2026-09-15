@@ -1,3 +1,5 @@
+const { createGistTaskRepository } = require("./gistTaskRepository");
+
 function normalizePresetId(rawPresetId) {
   const normalized = String(rawPresetId || "").trim();
   return normalized || null;
@@ -29,6 +31,7 @@ function mapRow(row) {
     presetId: row.preset_id,
     gistText: row.gist_text || "",
     contentHash: row.content_hash || "",
+    sourceHash: row.source_hash || "",
     providerId: row.provider_id || "",
     modelId: row.model_id || "",
     createdAt: row.created_at,
@@ -42,6 +45,7 @@ function createChatGistRepository({ database } = {}) {
   const executor = (client) => (client && typeof client.query === "function" ? client : database);
 
   const chatMessageGistModel = {
+  ...createGistTaskRepository({ database }),
   async getGist(userId, presetId, messageId) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
@@ -49,7 +53,7 @@ function createChatGistRepository({ database } = {}) {
     if (normalizedMessageId === null) throw new Error("messageId must be a non-negative integer");
 
     const query = `
-      SELECT message_id, user_id, preset_id, gist_text, content_hash, provider_id, model_id, created_at, updated_at
+      SELECT message_id, user_id, preset_id, gist_text, content_hash, source_hash, provider_id, model_id, created_at, updated_at
       FROM chat_message_gists
       WHERE user_id = $1 AND preset_id = $2 AND message_id = $3
       LIMIT 1
@@ -65,12 +69,18 @@ function createChatGistRepository({ database } = {}) {
     if (!normalizedIds.length) return [];
 
     const query = `
-      SELECT message_id, user_id, preset_id, gist_text, content_hash, provider_id, model_id, created_at, updated_at
+      SELECT message_id, user_id, preset_id, gist_text, content_hash, source_hash, provider_id, model_id, created_at, updated_at
       FROM chat_message_gists
       WHERE user_id = $1 AND preset_id = $2 AND message_id = ANY($3)
     `;
     const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedIds]);
-    return rows.map(mapRow).filter(Boolean);
+    if (!rows.length) return [];
+    const sources = new Map((await chatMessageGistModel.getGistSources(userId, presetId, rows.map(row => row.message_id)))
+      .map(source => [String(source.messageId), source]));
+    return rows.filter(row => {
+      const source = sources.get(String(row.message_id));
+      return source && source.contentHash === row.content_hash && source.sourceHash === row.source_hash;
+    }).map(row => ({ ...mapRow(row), userMessageId: sources.get(String(row.message_id)).userMessageId }));
   },
 
   async upsertGist(userId, presetId, messageId, { gistText, contentHash, providerId, modelId } = {}) {

@@ -6,6 +6,10 @@ function createChatMemoryPrivacyStores({ database } = {}) {
   const chatMessageGistModel = createChatGistRepository({ database });
   const { deleteAvatarByUrl, avatarExists } = createAvatarStorage();
   return Object.freeze([{
+    name: "assistant_gist_tasks",
+    purge: ({ userId, presetId, client }) => chatMessageGistModel.deleteGistTasksByScope(userId, presetId, { client }),
+    verifyPurged: async ({ userId, presetId }) => (await chatMessageGistModel.countGistTasksByScope(userId, presetId)) === 0,
+  }, {
     name: "assistant_gists",
     purge: ({ userId, presetId, client }) => chatMessageGistModel.deleteByScope(userId, presetId, { client }),
     verifyPurged: async ({ userId, presetId }) => (await chatMessageGistModel.countByScope(userId, presetId)) === 0,

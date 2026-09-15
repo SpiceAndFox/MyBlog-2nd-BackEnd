@@ -235,6 +235,7 @@ function createMemoryContextAssembly({ repositories, config, recentWindowMaxChar
     return {
       schemaVersion: SCHEMA_VERSION,
       needsMemory: recent.needsMemory,
+      recentSourceMessages: recent.messages,
       recent: {
         messages: recent.messages.map(({ role, content }) => ({ role, content })),
         stats: { candidateChars: recent.candidateChars, selectedChars: recent.selectedChars, selected: recent.messages.length, droppedToUserBoundary: recent.droppedToUserBoundary, windowStartMessageId: recentWindowStartMessageId, windowEndMessageId: recent.messages.at(-1)?.id ?? null },

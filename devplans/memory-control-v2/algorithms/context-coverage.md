@@ -13,6 +13,8 @@ Context compiler 先从该 user/preset 的有效 user/assistant raw messages 构
 
 recent window 可以跨 session，session 只保留为消息元数据；不得插入会改变 Proposer 或主聊天语义处理的 session boundary 控制标记。主聊天 recent window 保留 user-boundary 裁剪，Memory Observer 按 target cursor 读取完整 source，两者不能复用同一个裁剪结果。
 
+主聊天最终渲染允许将已选窗口中较早的 assistant 原文替换为有效且更短的 gist；最新 N 条 assistant 回复和全部 user 消息保持原文。此替换发生在 raw-window 选择及覆盖判断之后，不扩大窗口、不改变 `needsMemory`、起止边界或 GapBridge，也不用于 Proposer。gist 缺失或失效时回退原文并后台补生成；缓存错误不阻断聊天。详见 [Gist 运行说明](./GIST.md)。
+
 除 `needsMemory=false` 外，跳过注入时必须记录原因（state 不存在 / version 不支持 / schema 校验失败），写入 debug payload 供排查，不得静默跳过。
 
 ## 2. Per-target GapBridge

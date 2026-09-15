@@ -25,6 +25,8 @@
     "start": "node --use-env-proxy app.js",
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
     "regenerate-gists": "node --use-env-proxy regenerateGists.js",
+    "migrate:chat-gists": "node scripts/migrate-chat-gists.js",
+    "retry:chat-gists": "node --use-env-proxy scripts/retry-chat-gists.js",
     "regenerate-article-thumbnails": "node --use-env-proxy regenerateArticleThumbnails.js",
     "eval:memory-v2-integrity": "node --use-env-proxy scripts/evaluate-memory-v2-integrity.js"
   },

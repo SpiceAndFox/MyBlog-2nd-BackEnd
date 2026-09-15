@@ -18,14 +18,15 @@ const buildRecentWindowContext = createRecentWindowContextBuilder({
   gistRepository,
   logger,
 });
-const { requestGeneration: requestAssistantGistGeneration } = createChatGistService({
+const gistService = createChatGistService({
   config: chatGistConfig,
   contextConfig: chatContextConfig,
-  chatRepository,
   gistRepository,
   llm: { complete: chatLlm.createChatCompletion },
   logger,
 });
+
+const { requestGeneration: requestAssistantGistGeneration } = gistService;
 
 function parseArgs(argv) {
   const parsed = {};
@@ -165,40 +166,15 @@ async function regenerateGistsForMessages({ userId, presetId, messages, dryRun =
 
   let ok = 0;
   let failed = 0;
-  const total = list.length;
-
-  const tasks = list.map((row) => {
-    const messageId = Number(row.messageId);
-    const content = String(row.content || "").trim();
-    if (!Number.isFinite(messageId) || messageId <= 0 || !content) {
-      failed += 1;
-      return Promise.resolve();
-    }
-
-    const task = requestAssistantGistGeneration({
-      userId,
-      presetId,
-      messageId,
-      content,
-      force: true,
-    });
-
-    return Promise.resolve(task)
-      .then(() => {
-        ok += 1;
-        process.stdout.write(`\rprogress: ${ok + failed}/${total}`);
-      })
-      .catch((error) => {
-        failed += 1;
-        const message = error?.message || String(error || "");
-        console.error(`\nfailed to regenerate gist for message_id=${messageId}: ${message}`);
-      });
-  });
-
-  await Promise.allSettled(tasks);
-  process.stdout.write("\n");
-
-  return { total, ok, failed };
+  let pending = 0;
+  for (const row of list) {
+    const outcome = await requestAssistantGistGeneration({ userId, presetId, messageId: Number(row.messageId), force: true });
+    if (outcome?.status === "succeeded") ok++;
+    else if (["queued", "running", "retry_wait"].includes(outcome?.status)) pending++;
+    else failed++;
+    process.stdout.write(JSON.stringify({ messageId: row.messageId, status: outcome?.status || "source_unavailable" }) + "\n");
+  }
+  return { total: list.length, ok, failed, pending };
 }
 
 (async () => {
@@ -240,6 +216,7 @@ async function regenerateGistsForMessages({ userId, presetId, messages, dryRun =
       let total = 0;
       let ok = 0;
       let failed = 0;
+      let pending = 0;
       let batch = 0;
 
       do {
@@ -258,11 +235,12 @@ async function regenerateGistsForMessages({ userId, presetId, messages, dryRun =
         total += result.total;
         ok += result.ok;
         failed += result.failed;
+        pending += result.pending || 0;
 
         beforeMessageId = Math.min(...gistMessageIds);
       } while (runAll && !dryRun);
 
-      console.log("done:", { total, ok, failed, scope, limit, all: runAll });
+      console.log("done:", { total, ok, failed, pending, scope, limit, all: runAll });
       return;
     }
 
@@ -272,6 +250,7 @@ async function regenerateGistsForMessages({ userId, presetId, messages, dryRun =
     console.error(`error: ${message}`);
     process.exitCode = 1;
   } finally {
-    db.end();
+    await gistService.stop();
+    await db.end();
   }
 })();

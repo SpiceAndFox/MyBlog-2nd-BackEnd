@@ -125,6 +125,7 @@ function tableOwner(tableName) {
     "chat_messages",
     "chat_prompt_presets",
     "chat_message_gists",
+    "chat_gist_tasks",
   ].includes(table)) {
     return "chat";
   }
