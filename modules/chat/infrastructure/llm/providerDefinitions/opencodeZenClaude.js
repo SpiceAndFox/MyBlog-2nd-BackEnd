@@ -4,6 +4,7 @@ const MODELS = [
   { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
   { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
   { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -12,7 +13,7 @@ const MODELS = [
   { id: "claude-fable-5", name: "Claude Fable 5" },
 ];
 
-const NO_SAMPLING_PARAMETER_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"];
+const NO_SAMPLING_PARAMETER_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7"];
 
 function normalizeModelId(modelId) {
   return String(modelId || "").trim();
