@@ -168,6 +168,15 @@ function buildBody({ providerId, model, messages, temperature, topP, maxTokens, 
   };
 
   if (system) body.system = system;
+  const modelDefinition = settingsSchema.getProviderModel?.(providerId, model);
+  const allowedEfforts = modelDefinition?.reasoningEfforts;
+  if (Array.isArray(allowedEfforts) && allowedEfforts.length) {
+    const effort = String(readSetting(settings, "reasoningEffort") ?? modelDefinition.defaults?.reasoningEffort ?? "").trim();
+    if (!allowedEfforts.includes(effort)) {
+      throw new Error(`Invalid reasoningEffort for model ${model}: ${effort}. Allowed values: ${allowedEfforts.join(", ")}`);
+    }
+    body.output_config = { effort };
+  }
   if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings })) {
     body.temperature = normalizedTemperature;
   }

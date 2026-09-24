@@ -4,7 +4,12 @@ const MODELS = [
   { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
   { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
   { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
-  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  {
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaults: { reasoningEffort: "medium" },
+  },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -52,6 +57,22 @@ module.exports = {
   apiKeyEnv: ["OPENCODE_ZEN_API_KEY"],
   baseUrlEnv: ["OPENCODE_ZEN_MESSAGES_BASE_URL"],
   settingsSchema: [
+    {
+      key: "reasoningEffort",
+      label: "Reasoning Effort",
+      type: "select",
+      options: [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "xhigh", label: "XHigh" },
+        { value: "max", label: "Max" },
+      ],
+      optionsFrom: "reasoningEfforts",
+      default: "medium",
+      capability: "thinking",
+      modelBlocklist: MODELS.filter((model) => !model.reasoningEfforts?.length).map((model) => model.id),
+    },
     {
       key: "temperature",
       label: "Temperature",
@@ -120,6 +141,6 @@ module.exports = {
     frequencyPenalty: false,
     webSearch: true,
     tools: false,
-    thinking: false,
+    thinking: true,
   },
 };
