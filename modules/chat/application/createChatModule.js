@@ -55,11 +55,14 @@ function createChatModule({ config, adapters } = {}) {
     renderRecentGists: createRecentGistRenderer({ config: config.gist, contextConfig: config.context,
       gistRepository: adapters.gistRepository, gist, logger: adapters.logger }),
   });
+  const sendMessageLlm = typeof adapters.decorateSendLlm === "function"
+    ? adapters.decorateSendLlm(adapters.llm)
+    : adapters.llm;
   const sendMessage = createSendMessageUseCase({
     chatRepository: adapters.chatRepository,
     settings,
     compileContext,
-    llm: adapters.llm,
+    llm: sendMessageLlm,
     memory: adapters.memory,
     gist,
     scopeCoordinator: adapters.scopeCoordinator,

@@ -1,9 +1,18 @@
 const { createAvatarStorage, createChatModule, createChatPersistence } = require("../../modules/chat");
+const { createPromptDebugDecorator } = require("../../shared/observability/promptDebug");
 
 function createChatComposition({ config, database, memoryRuntime, logger, authMiddleware, withRequestContext, scopeCoordinator, transaction, llm, isModelAllowed, adapters = {} } = {}) {
   if (!config || !database || !memoryRuntime || !logger || typeof authMiddleware !== "function" || !scopeCoordinator || !transaction || !llm || typeof isModelAllowed !== "function") {
     throw new Error("Chat composition dependencies are required");
   }
+  const fullPromptDebugEnabled = config.logConfig?.debugFullEnabled === true;
+  if (fullPromptDebugEnabled && typeof logger.debugFull !== "function") {
+    throw new Error("LOG_DEBUG_FULL_ENABLED requires a logger adapter with debugFull()");
+  }
+  const promptDebug = createPromptDebugDecorator({
+    enabled: fullPromptDebugEnabled,
+    write: fullPromptDebugEnabled ? (event, payload) => logger.debugFull(event, payload) : undefined,
+  });
   const { createChatController } = require("../../controllers/chatController");
   const { createChatRouter } = require("../../routes/chat");
   const uploadPresetAvatar = require("../../middleware/uploadChatPresetAvatar");
@@ -50,6 +59,7 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
       sessions: adapters.sessions,
       trashCleanup: adapters.trashCleanup,
       logger,
+      decorateSendLlm: promptDebug.enabled ? promptDebug.decorate : undefined,
     },
   });
   const controller = adapters.controller || createChatController({

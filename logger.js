@@ -79,7 +79,14 @@ function createLogger({ config, baseDir = __dirname, fsRef = fs, consoleRef = co
     debug: resolveLogPath(logDir, config.debugFile || "debug.log"),
   };
   const chatLogFilePath = resolveLogPath(logDir, config.chatFile || "");
-  const retained = new Set([...Object.values(levelLogFilePaths), chatLogFilePath].filter(Boolean));
+  const debugFullLogFilePath = config.debugFullEnabled
+    ? resolveLogPath(logDir, config.debugFullFile || "debug-full.log")
+    : "";
+  const retained = new Set([
+    ...Object.values(levelLogFilePaths),
+    chatLogFilePath,
+    debugFullLogFilePath,
+  ].filter(Boolean));
   for (const legacyPath of [
     resolveLogPath(logDir, config.debugFullFile || "debug-full.log"),
     resolveLogPath(logDir, config.debugGistFile || "debug-gist.log"),
@@ -96,6 +103,12 @@ function createLogger({ config, baseDir = __dirname, fsRef = fs, consoleRef = co
 
   function emitFile(filePath, entry) {
     if (!filePath) return;
+    fsRef.appendFile(filePath, `${safeJsonStringify(entry)}\n`, () => {});
+  }
+
+  function emitRaw(filePath, level, message, meta) {
+    if (!filePath || !toFile) return;
+    const { entry } = buildEntry(level, message, meta);
     fsRef.appendFile(filePath, `${safeJsonStringify(entry)}\n`, () => {});
   }
 
@@ -119,6 +132,7 @@ function createLogger({ config, baseDir = __dirname, fsRef = fs, consoleRef = co
     info: (message, meta) => log("info", message, meta),
     chat: logChat,
     debug: (message, meta) => log("debug", message, meta),
+    debugFull: (message, meta) => emitRaw(debugFullLogFilePath, "debug_full", message, meta),
   });
 }
 
@@ -146,6 +160,7 @@ const logger = Object.freeze({
   info(message, meta) { return getLogger().info(message, meta); },
   chat(message, meta) { return getLogger().chat(message, meta); },
   debug(message, meta) { return getLogger().debug(message, meta); },
+  debugFull(message, meta) { return getLogger().debugFull(message, meta); },
 });
 
 function withRequestContext(req, meta = {}) {
