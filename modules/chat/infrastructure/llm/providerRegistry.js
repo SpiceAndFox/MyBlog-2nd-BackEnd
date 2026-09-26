@@ -1,6 +1,7 @@
 const grok = require("./providerDefinitions/grok");
 const deepseek = require("./providerDefinitions/deepseek");
 const gemini = require("./providerDefinitions/gemini");
+const botcf = require("./providerDefinitions/botcf");
 const { createOpenRouterDefinition } = require("./providerDefinitions/openrouter");
 const opencodeGoOpenai = require("./providerDefinitions/opencodeGoOpenai");
 const opencodeGoMessages = require("./providerDefinitions/opencodeGoMessages");
@@ -28,6 +29,7 @@ function createProviderRegistry({ environment, openRouterAttribution = {} } = {}
     grok,
     deepseek,
     gemini,
+    botcf,
     createOpenRouterDefinition({ attributionHeaders: openRouterAttribution }),
     opencodeGoOpenai,
     opencodeGoMessages,
