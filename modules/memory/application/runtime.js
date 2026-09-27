@@ -191,6 +191,7 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
 
 function createMemoryRuntime({
   config,
+  recentWindowMaxChars,
   repositories,
   providerAdapter,
   privacyStores = [],
@@ -583,7 +584,7 @@ function createMemoryRuntime({
   async function mutateSourceAndRebuild(
     userId,
     presetId,
-    { mutateSource, purgeDerived = null, reason = "source_mutation", affectedFromMessageId = null, sourceAlreadyExcluded = false } = {},
+    { mutateSource, purgeDerived = null, reason = "source_mutation", affectedFromMessageId = null, sourceAlreadyExcluded = false, afterGenerationInitialized } = {},
   ) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
     const initialized = await workCoordinator.mutate(`${userId}:${presetId}`, async () => {
@@ -597,8 +598,13 @@ function createMemoryRuntime({
         reason,
         affectedFromMessageId,
         sourceAlreadyExcluded,
+        afterGenerationInitialized,
       });
     });
+    if (initialized.sourceUnchanged) {
+      runInBackground(() => reconcileRebuilds({ selectedScope: { userId, presetId } }));
+      return { status: "completed", ...initialized };
+    }
     runInBackground(() =>
       enqueueByKey(`${userId}:${presetId}`, async ({ signal }) => {
         const drained = initialized.rebuildRequired === false ? { status: "completed" }
@@ -673,6 +679,7 @@ function createMemoryRuntime({
 
   const runtimeHealth = createMemoryRuntimeHealth({
     config,
+    recentWindowMaxChars,
     repositories,
     providerHealth,
     resetRetryBudget: (userId, presetId) => retryBudget.resetScope(userId, presetId),

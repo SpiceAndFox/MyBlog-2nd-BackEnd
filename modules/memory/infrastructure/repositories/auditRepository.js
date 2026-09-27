@@ -49,12 +49,14 @@ async function listSnapshots(userId, presetId, sourceGeneration, { client } = {}
 }
 async function getLatestSnapshotBeforeMessage(userId, presetId, {
   sourceGeneration,
+  minimumSourceGeneration = sourceGeneration,
   beforeRevision,
   affectedFromMessageId,
   maxCursorMessageId,
 }, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) throw new Error("Invalid snapshot sourceGeneration");
+  if (!Number.isSafeInteger(minimumSourceGeneration) || minimumSourceGeneration < 0 || minimumSourceGeneration > sourceGeneration) throw new Error("Invalid minimum snapshot sourceGeneration");
   if (!Number.isSafeInteger(beforeRevision) || beforeRevision <= 0) throw new Error("Invalid snapshot beforeRevision");
   if (!Number.isSafeInteger(affectedFromMessageId) || affectedFromMessageId <= 0) throw new Error("Invalid affectedFromMessageId");
   if (!Number.isSafeInteger(maxCursorMessageId) || maxCursorMessageId < 0) throw new Error("Invalid maxCursorMessageId");
@@ -75,7 +77,7 @@ async function getLatestSnapshotBeforeMessage(userId, presetId, {
     FROM chat_memory_snapshots
     WHERE user_id=$1
       AND preset_id=$2
-      AND source_generation=$3
+      AND source_generation BETWEEN $7 AND $3
       AND revision<$4
       AND ${cursorPredicates}
     ORDER BY revision DESC
@@ -87,8 +89,23 @@ async function getLatestSnapshotBeforeMessage(userId, presetId, {
     beforeRevision,
     affectedFromMessageId,
     maxCursorMessageId,
+    minimumSourceGeneration,
   ]);
   return rows[0] || null;
+}
+async function recordSourceTransition(userId, presetId, transition, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  await executor(client).query(`INSERT INTO chat_memory_source_history
+    (user_id,preset_id,source_generation,affected_from_message_id,source_unchanged,reason)
+    VALUES ($1,$2,$3,$4,$5,$6)`, [scope.userId, scope.presetId, transition.sourceGeneration,
+    transition.affectedFromMessageId, transition.sourceUnchanged, transition.reason]);
+}
+async function listSourceTransitions(userId, presetId, sourceGeneration, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const { rows } = await executor(client).query(`SELECT source_generation,affected_from_message_id,source_unchanged
+    FROM chat_memory_source_history WHERE user_id=$1 AND preset_id=$2 AND source_generation<=$3
+    ORDER BY source_generation DESC`, [scope.userId, scope.presetId, sourceGeneration]);
+  return rows;
 }
 async function listSnapshotsForRecovery(userId, presetId, { client, sourceGeneration = null, beforeRevision = null, limit = 32 } = {}) {
   const scope = normalizeScope(userId, presetId);
@@ -142,7 +159,7 @@ async function deleteExpiredAudit(userId, presetId, { currentGeneration, eventBe
   if (allowOldGenerations) snapshots = await db.query(`DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2 AND source_generation<$3 AND created_at<$4`, [scope.userId, scope.presetId, currentGeneration, snapshotBefore]);
   return { expiredEvents: events.rowCount || 0, expiredGroups: groups.rowCount || 0, expiredSnapshots: snapshots.rowCount || 0 };
 }
-return Object.freeze({ insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, getLatestSnapshotBeforeMessage, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit });
+return Object.freeze({ insertSnapshot, getSnapshot, insertEventGroup, getEventGroup, insertEvents, listSnapshots, getLatestSnapshotBeforeMessage, listSourceTransitions, recordSourceTransition, listSnapshotsForRecovery, getRecoveryHead, listRevisionGroups, listEventsForGroups, promoteAnchor, deleteExpiredAudit });
 }
 
 module.exports = { createAuditRepository };

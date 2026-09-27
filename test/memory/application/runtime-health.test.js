@@ -1,9 +1,46 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createInitialMemoryState } = require("../../../modules/memory/contracts");
-const { createMemoryRuntimeHealth } = require("../../../modules/memory/application/runtimeHealth");
+const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
+const { createMemoryRuntimeHealth: createProductionHealth } = require("../../../modules/memory/application/runtimeHealth");
+function createMemoryRuntimeHealth(options) {
+  return createProductionHealth({ recentWindowMaxChars: 100,
+    ...options, config: { gapBridge: { maxRawChars: 100, retainedMessages: 10 }, ...options.config },
+    repositories: { source: { async listUpTo() { return []; } }, ...options.repositories } });
+}
 
 const { createProviderHealth } = require("../../../shared/observability/providerHealth");
+
+test("health uses chat coverage, exposes real message progress, and unlocks when the gap is covered", async () => {
+  const state = createInitialMemoryState();
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map(key => [key, 100]));
+  // Sparse global IDs: 100/10000 is not the progress percentage.
+  const messages = [100, 200, 7000, 10000].map((id, index) => ({ id,
+    role: index % 2 === 0 ? "user" : "assistant", content: "x".repeat(80) }));
+  const health = createMemoryRuntimeHealth({
+    config: { targets: { scene: {}, todos: {} }, gapBridge: { maxRawChars: 50, retainedMessages: 1 } },
+    repositories: {
+      source: { async listUpTo() { return messages; } },
+      state: { async getState() { return state; } },
+      runtime: { async getTargetStatuses() { return ["scene", "todos"].map(target_key => ({ target_key,
+        status: "rebuilding", rebuild_boundary_message_id: 10000 })); } },
+    },
+    providerHealth: createProviderHealth({ name: "memory" }),
+    async reconcileRebuilds() {}, recovery: { async resumeTarget() {} },
+  });
+  const blocked = (await health.getHealthSnapshot({ userId: 7, presetId: "companion" })).scope;
+  assert.equal(blocked.usable, false);
+  assert.equal(blocked.chatBlocked, true);
+  assert.equal(blocked.availability, "rebuilding");
+  assert.deepEqual(blocked.progress, { processedMessages: 1, totalMessages: 4, remainingMessages: 3 });
+  assert.equal(blocked.alerts[0].chatBlocked, true);
+  assert.match(blocked.alerts[0].message, /暂时无法继续对话/);
+  for (const key of Object.keys(state.meta.targetCursors)) state.meta.targetCursors[key] = 7000;
+  const ready = (await health.getHealthSnapshot({ userId: 7, presetId: "companion" })).scope;
+  assert.equal(ready.chatBlocked, false);
+  assert.equal(ready.usable, true);
+  assert.equal(ready.availability, "ready");
+  assert.equal(ready.progress.processedMessages, 3);
+});
 
 test("runtime health exposes resumable progress without leaking internal target errors", async () => {
   const state = createInitialMemoryState();
@@ -61,6 +98,22 @@ test("runtime health fails closed when authority memory cannot be validated", as
   assert.equal(snapshot.scope.usable, false);
   assert.match(snapshot.scope.alerts[0].message, /不会使用该记忆/);
   assert.doesNotMatch(JSON.stringify(snapshot), /invalid authority/);
+});
+
+test("a halted ordinary catch-up exposes manual retry even without a rebuild boundary", async () => {
+  const health = createMemoryRuntimeHealth({
+    config: { targets: { scene: {} } },
+    repositories: {
+      state: { async getState() { return createInitialMemoryState(); } },
+      runtime: { async getTargetStatuses() { return [{ target_key: "scene", status: "halted",
+        rebuild_boundary_message_id: null }]; } },
+    },
+    providerHealth: createProviderHealth({ name: "memory" }),
+    async reconcileRebuilds() { return {}; }, recovery: { async resumeTarget() {} },
+  });
+  const snapshot = await health.getHealthSnapshot({ userId: 7, presetId: "companion" });
+  assert.equal(snapshot.scope.targets[0].status, "needs_attention");
+  assert.match(snapshot.scope.alerts[0].message, /需要手动重试/);
 });
 
 test("runtime distinguishes background updates from a paused target regardless of target order", async () => {

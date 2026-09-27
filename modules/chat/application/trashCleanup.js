@@ -5,7 +5,7 @@ function createChatTrashCleanup({ config, chatRepository, memory, logger } = {})
   if (!chatRepository?.listTrashedSessionPurgeCandidates || !chatRepository?.purgeTrashedSessionIds) {
     throw new Error("Chat repository is required");
   }
-  if (typeof memory?.privacyHardDelete !== "function") throw new Error("Chat Memory privacy port is required");
+  if (typeof memory?.mutateSourceAndRebuild !== "function") throw new Error("Chat Memory source mutation port is required");
   if (!logger?.info || !logger?.warn || !logger?.error) throw new Error("Chat trash cleanup logger is required");
 
   function isInteger(value) {
@@ -37,10 +37,11 @@ function createChatTrashCleanup({ config, chatRepository, memory, logger } = {})
     }
     let purged = 0;
     for (const group of groups.values()) {
-      const mutation = await memory.privacyHardDelete(group.userId, group.presetId, {
+      const mutation = await memory.mutateSourceAndRebuild(group.userId, group.presetId, {
+        reason: "trashed_sessions_purged",
         sourceAlreadyExcluded: true,
         affectedFromMessageId: group.affectedFromMessageId,
-        deleteRawSource: (client) => chatRepository.purgeTrashedSessionIds(
+        mutateSource: (client) => chatRepository.purgeTrashedSessionIds(
           group.userId,
           group.presetId,
           group.sessionIds,

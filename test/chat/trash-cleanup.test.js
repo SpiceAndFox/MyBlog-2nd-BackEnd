@@ -40,10 +40,11 @@ test("trash cleanup groups raw deletes by Memory scope and uses the injected tra
     deletes.push({ userId, presetId, ids, client });
     return ids.length;
   };
-  memoryRuntime.privacyHardDelete = async (userId, presetId, { deleteRawSource, affectedFromMessageId }) => {
+  memoryRuntime.mutateSourceAndRebuild = async (userId, presetId, { mutateSource, affectedFromMessageId, sourceAlreadyExcluded }) => {
+    assert.equal(sourceAlreadyExcluded, true);
     const client = { scope: `${userId}:${presetId}` };
     affected.push({ userId, presetId, affectedFromMessageId });
-    return { mutationResult: await deleteRawSource(client) };
+    return { mutationResult: await mutateSource(client) };
   };
 
   const result = await createCleanup().purge({
@@ -67,10 +68,10 @@ test("trash cleanup starts immediately, never overlaps ticks, and drains its act
   const activeTickGate = new Promise((resolve) => { releaseActiveTick = resolve; });
   chatModel.listTrashedSessionPurgeCandidates = async () => [{ id: 4, userId: 8, presetId: "c" }];
   chatModel.purgeTrashedSessionIds = async () => 1;
-  memoryRuntime.privacyHardDelete = async (_userId, _presetId, { deleteRawSource }) => {
+  memoryRuntime.mutateSourceAndRebuild = async (_userId, _presetId, { mutateSource }) => {
     calls += 1;
     await activeTickGate;
-    return { mutationResult: await deleteRawSource({ transaction: true }) };
+    return { mutationResult: await mutateSource({ transaction: true }) };
   };
 
   const stop = createCleanup().start();

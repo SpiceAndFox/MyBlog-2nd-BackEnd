@@ -1,7 +1,6 @@
 const crypto = require("node:crypto");
 const { fail } = require("./errors");
 const { normalizePositiveId } = require("./sendMessage");
-const { privacyPayload } = require("./privacy");
 
 function createEditMessageUseCase({
   chatRepository,
@@ -23,7 +22,7 @@ function createEditMessageUseCase({
     if (typeof chatRepository?.[method] !== "function") throw new Error(`Chat repository port is missing: ${method}`);
   }
   if (!settings?.resolvePresetForSession || !settings?.isSessionEditableToday) throw new Error("Chat settings service is required");
-  if (typeof memory?.privacyHardDelete !== "function") throw new Error("Chat Memory privacy port is required");
+  if (typeof memory?.mutateSourceAndRebuild !== "function") throw new Error("Chat Memory source mutation port is required");
   if (!scopeCoordinator?.buildKey || !scopeCoordinator?.cancelByKey) throw new Error("Chat scope coordinator is required");
   if (typeof logger?.error !== "function") throw new Error("Chat logger is required");
 
@@ -78,9 +77,10 @@ function createEditMessageUseCase({
     const nextTurnId = randomUUID();
     const regenerationKey = String(message.idempotency_key || "").trim() || `edit:${randomUUID()}`;
     let editedMessage = null;
-    const mutation = await memory.privacyHardDelete(userId, presetId, {
+    const mutation = await memory.mutateSourceAndRebuild(userId, presetId, {
+      reason: "message_edited",
       affectedFromMessageId: messageId,
-      deleteRawSource: async (client) => {
+      mutateSource: async (client) => {
         if (truncate) await chatRepository.deleteMessagesAfter(userId, sessionId, messageId, { client });
         const updated = await chatRepository.updateMessageContent(userId, sessionId, messageId, content, {
           client,
@@ -111,15 +111,7 @@ function createEditMessageUseCase({
     const common = {
       session: updatedSession,
       userMessage: mutation.mutationResult,
-      privacy: privacyPayload(mutation),
     };
-    if (mutation.status !== "completed") {
-      return {
-        kind: "privacy_pending",
-        ...common,
-        regeneration: regenerate ? { idempotencyKey: regenerationKey } : null,
-      };
-    }
     if (!regenerate) {
       updatedSession = await chatRepository.touchSession(userId, sessionId) || updatedSession;
       return { kind: "updated", session: updatedSession, userMessage: mutation.mutationResult };

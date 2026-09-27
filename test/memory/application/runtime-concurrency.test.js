@@ -117,16 +117,17 @@ test("actual chat completes while the runtime proposer is pending; permanent del
   assert.equal(sent.assistantMessage.content, "answer");
   assert.equal(signal.aborted, false);
   const deleted = await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
-  assert.equal(deleted.privacy.rawMutationCommitted, true);
+  assert.deepEqual(deleted, { sessionId: 5 });
   assert.equal(harness.rawExists, false);
   assert.equal(signal.aborted, true);
   await background;
   provider.resolve({ status: "ok", output: { outcome: "noop" } });
   await new Promise(setImmediate);
   await harness.runtime.reconcilePrivacyDeletes();
-  assert.equal(harness.operation.status, "completed");
-  assert.equal(harness.memory.inspect.state.meta.targetCursors.todos, 0);
-  assert.equal(harness.memory.inspect.tasks.size, 0, "late output cannot recreate purged task history");
+  assert.equal(harness.operation, null, "ordinary deletion must not create a privacy operation");
+  assert.equal(harness.memory.inspect.state.meta.sourceGeneration, 0);
+  assert.equal(harness.memory.inspect.state.meta.targetCursors.todos ?? 0, 0);
+  assert.ok(harness.memory.inspect.tasks.size > 0, "cancelled task history must be retained");
   await harness.runtime.shutdown();
   assert.deepEqual(harness.errors, []);
 });
@@ -134,10 +135,10 @@ test("actual chat completes while the runtime proposer is pending; permanent del
 test("permanent deletion initializes a missing authority without invoking a proposer", { timeout: 3000 }, async () => {
   const harness = fixture({ propose() { throw new Error("unexpected proposer"); } }, { missingState: true });
   const result = await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
-  assert.equal(result.privacy.rawMutationCommitted, true);
+  assert.deepEqual(result, { sessionId: 5 });
   await harness.runtime.reconcilePrivacyDeletes();
-  assert.equal(harness.operation.status, "completed");
-  assert.equal(harness.memory.inspect.state.meta.sourceGeneration, 1);
+  assert.equal(harness.operation, null);
+  assert.equal(harness.memory.inspect.state.meta.sourceGeneration, 0);
   await harness.runtime.shutdown();
   assert.deepEqual(harness.errors, []);
 });
@@ -160,7 +161,7 @@ test("a Librarian rebuild can be interrupted by deletion without delaying its ra
   await harness.runtime.rebuildScope(1, "default");
   const signal = await started.promise;
   const result = await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
-  assert.equal(result.privacy.rawMutationCommitted, true);
+  assert.deepEqual(result, { sessionId: 5 });
   assert.equal(signal.aborted, true);
   assert.equal(harness.rawExists, false);
   await harness.runtime.shutdown();
@@ -210,7 +211,9 @@ test("a Memory worker schedules corrupt-state recovery without waiting on its ow
 test("state recovery cannot switch generation or rebuild while privacy cleanup remains incomplete", { timeout: 3000 }, async t => {
   const harness = fixture({ propose() { throw new Error("unexpected proposer"); } });
   t.after(() => harness.runtime.shutdown());
-  await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
+  await harness.runtime.privacyHardDelete(1, "default", {
+    sourceAlreadyExcluded: true, deleteRawSource: async () => 1,
+  });
   const generation = harness.memory.inspect.state.meta.sourceGeneration;
   // execute returned after its source transaction, before the setImmediate
   // privacy continuation. The durable fence must also cover state recovery.
@@ -250,8 +253,10 @@ test("verified privacy cleanup permits chat while the preserved Memory continues
   }] });
   t.after(() => harness.runtime.shutdown());
   const before = structuredClone(harness.memory.inspect.state);
-  const deleted = await harness.sessions.removePermanently({ userId: 1, sessionId: 5 });
-  assert.equal(deleted.privacy.rawMutationCommitted, true);
+  const deleted = await harness.runtime.privacyHardDelete(1, "default", {
+    sourceAlreadyExcluded: true, deleteRawSource: async () => 1,
+  });
+  assert.equal(deleted.rawMutationCommitted, true);
   const signal = await started.promise;
   assert.equal(harness.operation.status, "completed");
   assert.deepEqual(storeChecks, ["purged", "verified"]);

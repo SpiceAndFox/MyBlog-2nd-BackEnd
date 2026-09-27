@@ -139,11 +139,27 @@ test("snapshot lookup constrains every target cursor to the unaffected source pr
   }, { client });
 
   assert.equal(result, expected);
-  assert.deepEqual(parameters, [1, "default", 3, 16, 50, 49]);
+  assert.deepEqual(parameters, [1, "default", 3, 16, 50, 49, 3]);
+  assert.match(statement, /source_generation BETWEEN \$7 AND \$3/);
   for (const targetKey of ["scene", "todos", "standingAgreements", "episodes", "profileRelationship", "worldFacts"]) {
     assert.match(statement, new RegExp(`targetCursors,${targetKey}`));
   }
   assert.match(statement, /ORDER BY revision DESC\s+LIMIT 1/);
+});
+
+test("source transition records and older snapshot reads use the same scoped transaction", async () => {
+  const calls = [];
+  const client = { async query(sql, params) { calls.push({ sql, params }); return { rows: [] }; } };
+  const audit = createAuditRepository(dependencies);
+  await audit.recordSourceTransition(1, "default", { sourceGeneration: 4, affectedFromMessageId: 800,
+    sourceUnchanged: false, reason: "message_edited" }, { client });
+  await audit.listSourceTransitions(1, "default", 4, { client });
+  await audit.getLatestSnapshotBeforeMessage(1, "default", { sourceGeneration: 4, minimumSourceGeneration: 2,
+    beforeRevision: 30, affectedFromMessageId: 700, maxCursorMessageId: 699 }, { client });
+  assert.deepEqual(calls.map(call => call.params), [
+    [1, "default", 4, 800, false, "message_edited"], [1, "default", 4], [1, "default", 4, 30, 700, 699, 2],
+  ]);
+  assert.match(calls[1].sql, /user_id=\$1 AND preset_id=\$2 AND source_generation<=\$3/);
 });
 
 test("2.01 privacy purge has no suppression tombstone store dependency", async () => {

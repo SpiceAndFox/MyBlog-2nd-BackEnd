@@ -3,6 +3,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
+test("source history migration is additive and does not invent legacy recovery proof", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/016-source-history.sql"), "utf8");
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_memory_source_history/);
+  assert.match(sql, /PRIMARY KEY \(user_id, preset_id, source_generation\)/);
+  assert.doesNotMatch(sql, /\b(?:UPDATE|DELETE|INSERT|DROP|TRUNCATE)\b/i);
+});
+
 test("the v1 schema removal migration drops only obsolete Memory storage", () => {
   const sql = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/002-drop-memory-v1.sql"), "utf8");
   assert.match(sql, /DROP TABLE IF EXISTS chat_preset_memory_checkpoints/i);

@@ -22,6 +22,7 @@ function createChatMemoryRuntime({
 
   const runtime = memoryModule.createRuntime({
     config,
+    recentWindowMaxChars,
     privacyStores,
     enqueueByKey,
     onBackgroundError: (error) => logger.error("memory_v2_background_failed", { error }),

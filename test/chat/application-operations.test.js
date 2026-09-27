@@ -26,15 +26,14 @@ test("permanent Session deletion keeps raw deletion inside the Memory-owned tran
     chatRepository[method] = async () => null;
   }
   const memory = {
-    async mutateSourceAndRebuild() {},
-    async privacyHardDelete(userId, presetId, options) {
-      events.push(["privacy", userId, presetId]);
-      const mutationResult = await options.deleteRawSource(transactionClient);
+    async privacyHardDelete() { assert.fail("ordinary deletion must not erase recovery history"); },
+    async mutateSourceAndRebuild(userId, presetId, options) {
+      events.push(["mutation", userId, presetId]);
+      assert.equal(options.sourceAlreadyExcluded, true);
+      const mutationResult = await options.mutateSource(transactionClient);
       assert.equal(await options.affectedFromMessageId(mutationResult, transactionClient), 42);
       return {
-        operationId: "privacy-session",
-        status: "purging",
-        rawMutationCommitted: true,
+        status: "completed",
         mutationResult,
       };
     },
@@ -50,12 +49,11 @@ test("permanent Session deletion keeps raw deletion inside the Memory-owned tran
 
   assert.deepEqual(events, [
     ["cancel", "9:companion", "CHAT_SCOPE_MUTATED"],
-    ["privacy", 9, "companion"],
+    ["mutation", 9, "companion"],
     ["raw-delete", 9, 17, transactionClient],
   ]);
   assert.deepEqual(result, {
     sessionId: 17,
-    privacy: { operationId: "privacy-session", status: "purging", rawMutationCommitted: true },
   });
 });
 

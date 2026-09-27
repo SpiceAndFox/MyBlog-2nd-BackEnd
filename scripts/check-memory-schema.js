@@ -3,6 +3,7 @@ const { spawnSync } = require("node:child_process");
 const { Pool } = require("pg");
 
 const REQUIRED_COLUMNS = Object.freeze({
+  chat_memory_source_history: ["user_id", "preset_id", "source_generation", "affected_from_message_id", "source_unchanged", "reason", "created_at"],
   chat_messages: ["id", "session_id", "user_id", "preset_id", "role", "content", "turn_id", "parent_user_message_id", "idempotency_key", "source_generation", "created_at"],
   chat_preset_memory: ["id", "user_id", "preset_id", "memory_state", "created_at", "updated_at"],
   chat_memory_snapshots: ["id", "user_id", "preset_id", "source_generation", "revision", "schema_version", "state", "created_at"],

@@ -1,4 +1,6 @@
 const { TARGET_LABELS } = require("../domain/health");
+const { TARGET_KEYS } = require("../contracts");
+const { selectRecentWindow, buildGapBridgeCoverage, assessContextCoverage } = require("../domain/contextCoverage");
 
 function rowValue(row, snake, camel) {
   return row?.[snake] ?? row?.[camel];
@@ -9,8 +11,8 @@ function publicTargetHealth(state, targetKey, row) {
   const internalStatus = row?.status || "missing";
   return {
     targetKey,
-    status: boundary !== null && boundary !== undefined
-      ? internalStatus === "halted" ? "needs_attention" : "rebuilding"
+    status: internalStatus === "halted" ? "needs_attention"
+      : boundary !== null && boundary !== undefined ? "rebuilding"
       : internalStatus === "healthy" ? "healthy" : "degraded",
     processedMessageId: Number(state.meta.targetCursors[targetKey] ?? 0),
     rebuildBoundaryMessageId: boundary ?? null,
@@ -35,12 +37,13 @@ function targetAlert(targetKey, row) {
     subjectKind: "target",
     subjectKey: targetKey,
     status: "degraded",
-    message: `${label}记忆可能滞后`,
+    message: row?.status === "halted" ? `${label}记忆更新已暂停，需要手动重试` : `${label}记忆可能滞后`,
   };
 }
 
 function createMemoryRuntimeHealth({
   config,
+  recentWindowMaxChars,
   repositories,
   providerHealth,
   resetRetryBudget,
@@ -83,6 +86,25 @@ function createMemoryRuntimeHealth({
         };
       }
       const targetStatuses = await repositories.runtime.getTargetStatuses(normalizedUserId, normalizedPresetId);
+      // Use the same raw-history coverage rules as contextAssembly/sendMessage.
+      // A valid state JSON or a running rebuild does not establish chat readiness.
+      const messages = await repositories.source.listUpTo(normalizedUserId, normalizedPresetId);
+      const recent = selectRecentWindow(messages, recentWindowMaxChars);
+      const gapBridge = recent.needsMemory
+        ? buildGapBridgeCoverage({ messages, state, recentWindowStartMessageId: recent.messages[0]?.id,
+            maxRawChars: config.gapBridge.maxRawChars, retainedMessages: config.gapBridge.retainedMessages })
+        : { diagnostics: [] };
+      const coverage = assessContextCoverage({ needsMemory: recent.needsMemory, gapBridge });
+      const rebuilding = targetStatuses.some(row => rowValue(row, "rebuild_boundary_message_id", "rebuildBoundaryMessageId") != null);
+      const paused = targetStatuses.some(row => row.status === "halted");
+      const boundary = rebuilding
+        ? Math.max(...targetStatuses.map(row => Number(rowValue(row, "rebuild_boundary_message_id", "rebuildBoundaryMessageId") ?? 0)))
+        : Number(messages.at(-1)?.id ?? 0);
+      const progressMessages = messages.filter(message => message.id <= boundary);
+      const processedMessages = Math.min(...TARGET_KEYS.map(key =>
+        progressMessages.filter(message => message.id <= Number(state.meta.targetCursors[key] ?? 0)).length));
+      const progress = { processedMessages, totalMessages: progressMessages.length,
+        remainingMessages: progressMessages.length - processedMessages };
       const targets = [];
       const alerts = [];
       let status = "healthy";
@@ -95,20 +117,34 @@ function createMemoryRuntimeHealth({
         if (alert.status !== "rebuilding") status = "degraded";
         else if (status === "healthy") status = "rebuilding";
       }
+      if (!coverage.complete) {
+        status = paused ? "degraded" : "rebuilding";
+        alerts.unshift({ subjectKind: "system", subjectKey: "memory_coverage",
+          status, chatBlocked: true,
+          message: paused ? "记忆补齐已暂停，暂时无法继续对话，请重试长期记忆"
+            : rebuilding ? "记忆正在重建，历史上下文尚未恢复，暂时无法继续对话"
+              : "记忆正在补齐历史上下文，暂时无法继续对话",
+        });
+      }
       if (provider.status === "degraded") {
         status = "degraded";
         alerts.push({
           subjectKind: "provider",
           subjectKey: "memory",
           status: provider.status,
-          message: "最近一次记忆服务请求失败，已保存的记忆仍可使用",
+          message: coverage.complete ? "最近一次记忆服务请求失败，已保存的记忆仍可使用"
+            : "最近一次记忆服务请求失败，历史上下文尚未补齐",
         });
       }
       return {
         provider,
         scope: {
           status,
-          usable: true,
+          usable: coverage.complete,
+          chatBlocked: !coverage.complete,
+          availability: coverage.complete ? "ready" : rebuilding ? "rebuilding" : "catching_up",
+          progress,
+          coverage,
           sourceGeneration: state.meta.sourceGeneration,
           targets,
           alerts,
@@ -120,6 +156,7 @@ function createMemoryRuntimeHealth({
         scope: {
           status: "unavailable",
           usable: false,
+          chatBlocked: null,
           sourceGeneration: null,
           alerts: [{
             subjectKind: "system",

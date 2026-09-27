@@ -1,6 +1,5 @@
 const { fail } = require("./errors");
 const { normalizePositiveId } = require("./sendMessage");
-const { privacyPayload } = require("./privacy");
 
 function createSessionUseCases({ chatRepository, settings, memory, scopeCoordinator } = {}) {
   for (const method of [
@@ -18,7 +17,7 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
     if (typeof chatRepository?.[method] !== "function") throw new Error(`Chat repository port is missing: ${method}`);
   }
   if (!settings?.resolvePresetForSession || !settings?.resolveProviderModel) throw new Error("Chat settings service is required");
-  if (!memory?.mutateSourceAndRebuild || !memory?.privacyHardDelete) throw new Error("Chat Memory port is required");
+  if (!memory?.mutateSourceAndRebuild) throw new Error("Chat Memory port is required");
   if (!scopeCoordinator?.buildKey || !scopeCoordinator?.cancelByKey) throw new Error("Chat scope coordinator is required");
 
   function requireSessionId(rawValue) {
@@ -111,13 +110,14 @@ function createSessionUseCases({ chatRepository, settings, memory, scopeCoordina
       if (!existing) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
       const presetId = presetIdOf(existing);
       cancelScope(userId, presetId, "Session permanently deleted");
-      const mutation = await memory.privacyHardDelete(userId, presetId, {
+      const mutation = await memory.mutateSourceAndRebuild(userId, presetId, {
+        reason: "session_permanently_deleted",
         sourceAlreadyExcluded: true,
-        deleteRawSource: (client) => chatRepository.deleteSessionPermanently(userId, sessionId, { client }),
+        mutateSource: (client) => chatRepository.deleteSessionPermanently(userId, sessionId, { client }),
         affectedFromMessageId: (deletedSession) => deletedSession?.firstMessageId ?? null,
       });
       if (!mutation.mutationResult) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
-      return { sessionId, privacy: privacyPayload(mutation) };
+      return { sessionId };
     },
 
     async listMessages({ userId, sessionId: rawSessionId } = {}) {

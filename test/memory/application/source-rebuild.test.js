@@ -23,6 +23,7 @@ function createMemorySourceRebuild(options) {
     ...options.repositories,
     source: {
       listSchedulingMessages: async () => [],
+      countAfter: async () => 20,
       ...options.repositories.source,
       listCompleteTurnBoundaries: options.repositories.source.listCompleteTurnBoundaries
         || (async () => []),
@@ -95,6 +96,123 @@ function makeRebuildHarness() {
   const normalWritePipeline = { async createTask() { throw new Error("not used"); }, async processEnvelope() { throw new Error("not used"); } };
   return { data, repositories, normalWritePipeline };
 }
+
+function makeHistoryHarness() {
+  const h = makeRebuildHarness();
+  h.data.state.meta.sourceGeneration = 1;
+  h.data.state.meta.revision = 30;
+  h.data.state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map(key => [key, 900]));
+  h.data.history = [];
+  const safe = structuredClone(h.data.state);
+  safe.meta.revision = 20;
+  safe.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map(key => [key, 700]));
+  safe.longTerm.worldFacts.push(item("retained-fact", [OLD_SOURCE]));
+  h.data.snapshots.push({ source_generation: 1, schema_version: "2.01", revision: 20, state: safe });
+  h.repositories.source.getBoundary = async () => 2000;
+  h.repositories.source.countAfter = async () => 1500;
+  h.repositories.source.getByIds = async (_u, _p, ids) => ids.map(id => ({ id, contentHash: OLD_SOURCE.contentHash }));
+  h.repositories.audit.listSourceTransitions = async () => structuredClone(h.data.history);
+  h.repositories.audit.recordSourceTransition = async (_u, _p, transition, { client }) => {
+    assert.equal(client.transaction, true);
+    h.data.history.push({ source_generation: transition.sourceGeneration,
+      affected_from_message_id: transition.affectedFromMessageId, source_unchanged: transition.sourceUnchanged });
+  };
+  h.repositories.audit.getLatestSnapshotBeforeMessage = async (_u, _p, options) => h.data.snapshots
+    .filter(row => row.revision < options.beforeRevision
+      && (row.source_generation ?? row.sourceGeneration) >= options.minimumSourceGeneration
+      && (row.source_generation ?? row.sourceGeneration) <= options.sourceGeneration
+      && TARGET_KEYS.every(key => row.state.meta.targetCursors[key] < options.affectedFromMessageId))
+    .sort((a, b) => b.revision - a.revision)[0] ?? null;
+  h.repositories.withTransaction = async work => {
+    const before = structuredClone(h.data);
+    try { return await work({ transaction: true }); }
+    catch (error) { Object.assign(h.data, before); throw error; }
+  };
+  return h;
+}
+
+test("successive edits retain an older generation checkpoint for a later session deletion", async () => {
+  const h = makeHistoryHarness();
+  const rebuild = createMemorySourceRebuild(h);
+  for (const affected of [950, 960]) {
+    const result = await rebuild.initializeGeneration(7, "companion", {
+      affectedFromMessageId: affected, mutateSource: () => ({ edited: affected }), reason: "message_edited",
+    });
+    assert.equal(result.rebuildRequired, false);
+  }
+  const result = await rebuild.initializeGeneration(7, "companion", {
+    affectedFromMessageId: 850, mutateSource: () => ({ trashed: 1 }), reason: "session_trashed",
+  });
+  assert.equal(result.restoredFromSnapshotRevision, 20);
+  assert.equal(result.sourceGeneration, 4);
+  assert.equal(result.revision, 33);
+  assert.equal(h.data.state.meta.targetCursors.scene, 700);
+  assert.equal(h.data.state.longTerm.worldFacts[0].id, "retained-fact");
+  assert.equal(h.data.snapshots.length, 4);
+  assert.equal(h.data.history.length, 3);
+});
+
+test("old snapshots with matching surviving references still cannot cross an earlier affected boundary", async () => {
+  const h = makeHistoryHarness();
+  h.data.state.meta.sourceGeneration = 2;
+  h.data.history = [{ source_generation: 2, source_unchanged: false, affected_from_message_id: 600 }];
+  const rebuild = createMemorySourceRebuild(h);
+  const before = structuredClone(h.data);
+  await assert.rejects(rebuild.initializeGeneration(7, "companion", {
+    affectedFromMessageId: 850, mutateSource: () => { h.data.mutationRan = true; return 1; },
+  }), { code: "MEMORY_REBUILD_BASELINE_REQUIRED", status: 409 });
+  assert.deepEqual(h.data, before, "raw mutation and every memory change must roll back");
+});
+
+test("legacy missing history cannot silently reset a large scope, while explicit rebuild remains possible", async () => {
+  const h = makeHistoryHarness();
+  h.data.state.meta.sourceGeneration = 2;
+  const rebuild = createMemorySourceRebuild(h);
+  const before = structuredClone(h.data);
+  await assert.rejects(rebuild.initializeGeneration(7, "companion", {
+    affectedFromMessageId: 850, mutateSource: () => { h.data.mutationRan = true; return 1; },
+  }), { code: "MEMORY_REBUILD_BASELINE_REQUIRED" });
+  assert.deepEqual(h.data, before);
+  const manual = await rebuild.initializeGeneration(7, "companion", { reason: "manual_rebuild" });
+  assert.equal(manual.rebuildRequired, true);
+  assert.equal(h.data.state.meta.targetCursors.scene, 0);
+});
+
+test("explicit privacy erasure retains its purge semantics when no recovery point exists", async () => {
+  const h = makeHistoryHarness();
+  h.data.state.meta.sourceGeneration = 2;
+  const result = await createMemorySourceRebuild(h).initializeGeneration(7, "companion", {
+    affectedFromMessageId: 850, mutateSource: () => ({ deleted: 1 }),
+    purgeDerived: async client => {
+      assert.equal(client.transaction, true);
+      h.data.snapshots = [];
+      h.data.history = [];
+    },
+  });
+  assert.equal(result.rebuildRequired, true);
+  assert.equal(h.data.state.meta.targetCursors.scene, 0);
+  assert.equal(h.data.snapshots.length, 1);
+  assert.equal(h.data.snapshots[0].sourceGeneration, 3);
+});
+
+test("deletion of excluded or empty sessions preserves an active rebuild and all its history", async () => {
+  for (const [sourceAlreadyExcluded, firstMessage] of [[true, null], [true, 850], [false, null]]) {
+    const h = makeHistoryHarness();
+    h.data.statuses.scene = { sourceGeneration: 1, rebuildBoundaryMessageId: 2000, status: "rebuilding" };
+    const before = structuredClone(h.data);
+    const result = await createMemorySourceRebuild(h).initializeGeneration(7, "companion", {
+      sourceAlreadyExcluded, affectedFromMessageId: () => firstMessage, mutateSource: () => ({ deleted: 1 }),
+    });
+    assert.equal(result.sourceUnchanged, true);
+    assert.equal(result.sourceGeneration, 1);
+    assert.equal(result.rebuildRequired, false);
+    assert.deepEqual(h.data.state, before.state);
+    assert.deepEqual(h.data.snapshots, before.snapshots);
+    assert.deepEqual(h.data.statuses, before.statuses);
+    assert.deepEqual(h.data.history, before.history);
+    assert.equal(h.data.cancelled, false);
+  }
+});
 
 test("force drain resumes the blocked normal parent when maintenance shares its source window", async () => {
   const h = makeRebuildHarness();

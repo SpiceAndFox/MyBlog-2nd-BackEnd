@@ -6,6 +6,7 @@ const {
   TARGET_KEYS,
 } = require("../contracts");
 const { isDeepStrictEqual } = require("node:util");
+const { snapshotRecoveryBounds } = require("../domain/sourceHistory");
 const { collectSourceRefs, isSafeRecoveryCheckpoint, recoverySnapshots } = require("./checkpointSafety");
 const {
   nextLibrarianPeriodicOrdinal,
@@ -53,10 +54,14 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       throw new Error("Source rebuild snapshot restore repository is required");
     }
     let beforeRevision = current.meta.revision + 1;
+    const history = repositories.audit.listSourceTransitions
+      ? await repositories.audit.listSourceTransitions(userId, presetId, current.meta.sourceGeneration, { client }) : [];
+    const recoveryBounds = snapshotRecoveryBounds(current.meta.sourceGeneration, affectedFromMessageId, history);
     const maxCursorMessageId = Math.min(boundaryMessageId, affectedFromMessageId - 1);
     while (beforeRevision > 0) {
       const snapshot = await repositories.audit.getLatestSnapshotBeforeMessage(userId, presetId, {
         sourceGeneration: current.meta.sourceGeneration,
+        minimumSourceGeneration: [...recoveryBounds.keys()].at(-1),
         beforeRevision,
         affectedFromMessageId,
         maxCursorMessageId,
@@ -69,17 +74,19 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       beforeRevision = revision;
       try {
         if (!Number.isSafeInteger(revision) || revision < 0 || revision > current.meta.revision) continue;
-        if (Number(rowValue(snapshot, "source_generation", "sourceGeneration")) !== current.meta.sourceGeneration) continue;
+        const snapshotGeneration = Number(rowValue(snapshot, "source_generation", "sourceGeneration"));
+        const safeBefore = recoveryBounds.get(snapshotGeneration);
+        if (safeBefore === undefined) continue;
         if (String(rowValue(snapshot, "schema_version", "schemaVersion")) !== SCHEMA_VERSION) continue;
         assertMemoryState(snapshot.state);
-        if (snapshot.state.meta.revision !== revision || snapshot.state.meta.sourceGeneration !== current.meta.sourceGeneration) continue;
+        if (snapshot.state.meta.revision !== revision || snapshot.state.meta.sourceGeneration !== snapshotGeneration) continue;
         const cursorsAreSafe = TARGET_KEYS.every((key) => {
           const cursor = snapshot.state.meta.targetCursors[key] ?? 0;
-          return cursor < affectedFromMessageId && cursor <= boundaryMessageId;
+          return cursor < safeBefore && cursor <= boundaryMessageId;
         });
         if (!cursorsAreSafe) continue;
         const refs = collectSourceRefs(snapshot.state);
-        if (!refs || [...refs.keys()].some((messageId) => messageId >= affectedFromMessageId)) continue;
+        if (!refs || [...refs.keys()].some((messageId) => messageId >= safeBefore)) continue;
         if (refs.size) {
           const sourceRows = await repositories.source.getByIds(userId, presetId, [...refs.keys()], { client });
           if (sourceRows.length !== refs.size) continue;
@@ -112,6 +119,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
     reason = "source_mutation",
     affectedFromMessageId: affectedFromOption = null,
     sourceAlreadyExcluded = false,
+    afterGenerationInitialized,
   } = {}) {
     return repositories.withTransaction(async (client) => {
       await repositories.sourceWriteGuard.lockScope(userId, presetId, { client });
@@ -127,9 +135,9 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           : affectedFromOption,
       );
       const boundary = await repositories.source.getBoundary(userId, presetId, { client });
-      if (typeof affectedFromOption === "function" && affectedFromMessageId === null && !purgeDerived) {
+      if (!purgeDerived && (sourceAlreadyExcluded || (typeof affectedFromOption === "function" && affectedFromMessageId === null))) {
         return { mutationResult, rebuildRequired: false, sourceGeneration: current.meta.sourceGeneration,
-          revision: current.meta.revision, boundaryMessageId: boundary };
+          revision: current.meta.revision, boundaryMessageId: boundary, sourceUnchanged: true };
       }
       const sourceGeneration = current.meta.sourceGeneration + 1;
       // A callback that found no messages denotes an empty session. An omitted
@@ -142,6 +150,17 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       const restored = keepCurrent
         ? { state: cloneSnapshotState({ state: current }, current, sourceGeneration), revision: current.meta.revision }
         : await findSafeSnapshotState(userId, presetId, current, affectedFromMessageId, boundary, client);
+      // Ordinary edits/deletions must not silently turn into hours of replay.
+      // Throw inside the transaction so the raw mutation is rolled back too.
+      // Explicit full rebuilds (no affected boundary) retain their meaning.
+      if (!purgeDerived && !restored && affectedFromMessageId !== null && boundary > 0) {
+        const messageCount = await repositories.source.countAfter(userId, presetId, 0, { client });
+        if (messageCount > (config?.librarian?.messageBatchSize ?? 96)) {
+          throw Object.assign(new Error("没有找到安全的记忆恢复点，本次修改未执行。请先恢复记忆快照，或显式执行全量记忆重建。"), {
+            status: 409, code: "MEMORY_REBUILD_BASELINE_REQUIRED",
+          });
+        }
+      }
       const oldStatuses = keepCurrent && repositories.runtime.getTargetStatuses
         ? await repositories.runtime.getTargetStatuses(userId, presetId, { client }) : [];
       const rebuildRequired = !keepCurrent || oldStatuses.some(row =>
@@ -150,6 +169,11 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         ? await repositories.runtime.getLibrarianCheckpoint(userId, presetId, current.meta.sourceGeneration, { client }) : null;
       if (purgeDerived) await purgeDerived(client, { sourceGeneration, boundaryMessageId: boundary,
         revision: current.meta.revision + 1, rebuildRequired });
+      if (afterGenerationInitialized) await afterGenerationInitialized(client, { sourceGeneration,
+        boundaryMessageId: boundary, revision: current.meta.revision + 1, rebuildRequired });
+      if (repositories.audit.recordSourceTransition) await repositories.audit.recordSourceTransition(userId, presetId, {
+        sourceGeneration, affectedFromMessageId, sourceUnchanged, reason,
+      }, { client });
       const next = restored?.state ?? createInitialMemoryState();
       if (!restored) {
         next.meta.revision = current.meta.revision + 1;
@@ -215,6 +239,9 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       const next = checkpoint ? structuredClone(checkpoint.state) : createInitialMemoryState();
       next.meta.revision = Math.max(rawRevision, head.revision) + 1;
       next.meta.sourceGeneration = Math.max(rawGeneration, head.sourceGeneration) + 1;
+      if (repositories.audit.recordSourceTransition) await repositories.audit.recordSourceTransition(userId, presetId, {
+        sourceGeneration: next.meta.sourceGeneration, affectedFromMessageId: null, sourceUnchanged: true, reason,
+      }, { client });
       await repositories.runtime.cancelNonTerminalTasks(userId, presetId, next.meta.sourceGeneration, reason, { client });
       await repositories.state.writeState(userId, presetId, next, { client });
       await repositories.audit.insertSnapshot(userId, presetId, { sourceGeneration: next.meta.sourceGeneration, revision: next.meta.revision, schemaVersion: SCHEMA_VERSION, state: next }, { client });

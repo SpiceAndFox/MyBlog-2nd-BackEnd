@@ -22,7 +22,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
     const status = Number(error?.status) || 500;
     if (status >= 500) logger.error(event, withRequestContext(req, { error, ...detail }));
     const message = status < 500 || exposeInternal ? error?.message : "Internal Server Error";
-    return res.status(status).json({ error: message || "Internal Server Error" });
+    return res.status(status).json({ error: message || "Internal Server Error", ...(error?.code ? { code: error.code } : {}) });
   }
 
   function attachContextHealth(payload, context, res) {
@@ -40,13 +40,14 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
     return next;
   }
 
-  function providerWarning(component, provider) {
+  function providerWarning(component, provider, chatBlocked = false) {
     if (provider?.status !== "degraded") return null;
     return {
       component,
       status: provider.status,
       reason: provider.reason || "provider_unavailable",
-      message: "最近一次记忆服务请求失败，已保存的记忆仍可使用",
+      message: chatBlocked ? "最近一次记忆服务请求失败，历史上下文尚未补齐"
+        : "最近一次记忆服务请求失败，已保存的记忆仍可使用",
       since: provider.lastFailureAt || null,
     };
   }
@@ -79,7 +80,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           ? await memory.getHealthSnapshot({ userId: req.user?.id, presetId })
           : { provider: null, scope: null };
         const warnings = [
-          providerWarning("memory", memoryHealth?.provider),
+          providerWarning("memory", memoryHealth?.provider, memoryHealth?.scope?.chatBlocked),
           ...(Array.isArray(memoryHealth?.scope?.alerts)
             ? memoryHealth.scope.alerts.map((alert) => ({ component: "memory", ...alert }))
             : []),
@@ -281,7 +282,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           userId: req.user?.id,
           sessionId: req.params.sessionId,
         });
-        return res.status(202).json({ sessionId: result.sessionId, privacy: privacyHttpPayload(result.privacy) });
+        return res.status(200).json({ sessionId: result.sessionId });
       } catch (error) {
         return sendFailure(req, res, "chat_session_delete_permanent_failed", error, { sessionId: req.params.sessionId });
       }
@@ -326,7 +327,9 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         }
         if (result.kind === "regeneration_required") {
           return res.status(409).json({
-            error: "Regeneration must resume through the send endpoint after the privacy operation completes",
+            error: "消息已修改，请通过发送接口继续生成回复",
+            session: result.session,
+            user_message: result.userMessage,
             regeneration: {
               method: "POST",
               url: `/api/chat/sessions/${req.params.sessionId}/messages`,

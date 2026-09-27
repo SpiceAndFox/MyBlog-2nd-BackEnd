@@ -267,16 +267,17 @@ const memoryRuntime = {
   async processScope() {},
   async requestContextCatchup() {},
   async rebuildScope() {},
+  async privacyHardDelete() { assert.fail("message edits must not use privacy purge"); },
   async lockSourceWriteGuard(userId, presetId, { client }) {
     sourceGuardCalls.push({ userId, presetId, client });
     return sourceGuardResult;
   },
-  async privacyHardDelete(userId, presetId, options) {
+  async mutateSourceAndRebuild(userId, presetId, options) {
     lastPrivacyOptions = options;
     return scopeCoordinator.enqueueByKey(scopeCoordinator.buildKey(userId, presetId), async () => {
-      const mutationResult = await options.deleteRawSource(null);
+      const mutationResult = await options.mutateSource(null);
       await options.afterGenerationInitialized?.(null, { sourceGeneration: 1, boundaryMessageId: 0 });
-      return { status: "purging", operationId: "privacy-edit", rawMutationCommitted: true, mutationResult };
+      return { status: "rebuilding", mutationResult };
     });
   },
 };
@@ -515,7 +516,7 @@ test("concurrent retry with one idempotency key replays the committed turn witho
   assert.equal(retryResponse.body.assistant_message.content, "only-once");
 });
 
-test("edit cancels an active send, waits for its lane, and returns an asynchronous privacy operation", async () => {
+test("edit cancels an active send, waits for its lane, and resumes without a privacy purge", async () => {
   let providerStartedResolve;
   const providerStarted = new Promise((resolve) => {
     providerStartedResolve = resolve;
@@ -545,10 +546,10 @@ test("edit cancels an active send, waits for its lane, and returns an asynchrono
 
   await Promise.all([send, edit]);
   assert.equal(sendResponse.statusCode, 409);
-  assert.equal(editResponse.statusCode, 202);
-  assert.equal(editResponse.body.privacy.operationId, "privacy-edit");
-  assert.equal(editResponse.body.privacy.rawMutationCommitted, true);
-  assert.equal(editResponse.body.regeneration.status, "blocked_until_privacy_completed");
+  assert.equal(editResponse.statusCode, 409);
+  assert.equal(editResponse.body.privacy, undefined);
+  assert.equal(editResponse.body.user_message.content, "new");
+  assert.equal(editResponse.body.regeneration.idempotencyKey, "edit-key");
   assert.equal(
     messages.some((message) => message.role === "assistant"),
     false,

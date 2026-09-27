@@ -148,9 +148,9 @@ test("privacy canary is absent from raw source, derived stores, avatar files, an
     assert.equal(rawMessages.has(canary), false);
     assert.equal(memoryHistory.has(canary), false);
 
-    for (let attempt = 0; attempt < 20 && operation?.status !== "completed" && !backgroundError; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    // Cleanup releases the privacy fence before background rebuilding finishes.
+    // Wait for the dispatched work, not just its earlier cleanup status.
+    await hardDelete.waitForIdle();
     assert.ifError(backgroundError);
     assert.equal(operation.status, "completed");
     assert.deepEqual(rebuiltFrom, ["retained-source"]);

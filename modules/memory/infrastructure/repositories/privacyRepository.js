@@ -12,6 +12,7 @@ async function purgeDerivedHistory(userId, presetId, { client } = {}) {
     ["events", `DELETE FROM chat_memory_events WHERE user_id=$1 AND preset_id=$2`],
     ["eventGroups", `DELETE FROM chat_memory_event_groups WHERE user_id=$1 AND preset_id=$2`],
     ["snapshots", `DELETE FROM chat_memory_snapshots WHERE user_id=$1 AND preset_id=$2`],
+    ["sourceHistory", `DELETE FROM chat_memory_source_history WHERE user_id=$1 AND preset_id=$2`],
     ["tasks", `DELETE FROM chat_memory_tasks WHERE user_id=$1 AND preset_id=$2`],
     ["ops", `DELETE FROM chat_memory_ops_log WHERE user_id=$1 AND preset_id=$2`],
     ["librarianCheckpoints", `DELETE FROM chat_memory_librarian_checkpoints WHERE user_id=$1 AND preset_id=$2`],
