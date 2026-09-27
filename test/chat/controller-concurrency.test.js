@@ -135,8 +135,8 @@ function resetHarness() {
 }
 
 const chatModel = {
-  async getSession(_userId, sessionId) {
-    return sessions.get(Number(sessionId)) || null;
+  async getSession(userId, sessionId) {
+    return userId === 7 ? sessions.get(Number(sessionId)) || null : null;
   },
   async updateSessionSettings(_userId, sessionId, settings) {
     const session = sessions.get(Number(sessionId));
@@ -197,8 +197,11 @@ const chatModel = {
     messages.push(message);
     return { message, created: true };
   },
-  async getMessage(_userId, _sessionId, messageId) {
-    return messages.find((message) => message.id === Number(messageId)) || null;
+  async getMessage(_userId, sessionId, messageId) {
+    return messages.find((message) => message.id === Number(messageId) && message.session_id === Number(sessionId)) || null;
+  },
+  async getLatestMessageIdByPreset(_userId, presetId) {
+    return messages.filter(message => message.preset_id === presetId && sessions.has(message.session_id)).at(-1)?.id ?? null;
   },
   async deleteMessagesAfter(_userId, sessionId, messageId) {
     events.push("edit:truncate");
@@ -331,6 +334,138 @@ const chatController = createChatController({
 });
 
 test.beforeEach(resetHarness);
+
+async function unfinishedYesterdayTurn() {
+  const { message } = await chatModel.createUserMessage(7, 11, "昨天的问题", {
+    turnId: "original-turn", idempotencyKey: "original-key", sourceGeneration: 0, client: transactionClient,
+  });
+  message.created_at = "2026-01-01T12:00:00.000Z";
+  sessions.get(11).title = "2026-01-01";
+  return message;
+}
+
+function resumeRequest(message, sessionId = 11) {
+  return request(sessionId, "ignored replacement text", null, { messageId: message.id });
+}
+
+for (const stream of [false, true]) test(`resume yesterday's latest unfinished turn preserves source identity and does not rebuild (stream=${stream})`, async () => {
+  const user = await unfinishedYesterdayTurn();
+  const before = { ...user };
+  sourceGuardResult = { sourceGeneration: 64, privacyPending: false };
+  sessions.get(11).settings.stream = stream;
+  let calls = 0;
+  completeChat = async () => { calls++; return "补回的回复"; };
+  createStreamResponse = async () => { calls++; return {}; };
+  readStreamDeltas = async function* () { yield "补回的回复"; };
+  const response = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(calls, 1);
+  assert.deepEqual(messages.filter(entry => entry.role === "user"), [{ ...before, source_generation: 64 }]);
+  assert.equal(messages[1].parent_user_message_id, user.id);
+  assert.equal(messages[1].source_generation, 64);
+  assert.equal(lastPrivacyOptions, null);
+  assert.equal(events.filter(entry => entry.startsWith("user:")).length, 1);
+  const payload = stream ? JSON.parse(response.chunks.at(-1).slice(6)) : response.body;
+  assert.equal(payload.user_message.reply_status, "complete");
+  assert.equal(payload.user_message.can_resume, false);
+});
+
+test("history stays read-only for new sends and edits while resume is allowed", async () => {
+  const user = await unfinishedYesterdayTurn();
+  for (const method of ["sendMessage", "editMessage"]) {
+    const response = new TestResponse();
+    const req = method === "sendMessage" ? request(11, "new message", "new-key")
+      : request(11, "edited", null, { messageId: user.id, regenerate: true });
+    await chatController[method](req, response);
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.body.code, "CHAT_SESSION_READ_ONLY");
+  }
+  assert.equal(messages.length, 1);
+});
+
+test("concurrent resumes and replay after later turns return the same committed reply", async () => {
+  const user = await unfinishedYesterdayTurn();
+  let calls = 0;
+  completeChat = async () => { calls++; return "one reply"; };
+  const first = new TestResponse(), second = new TestResponse();
+  await Promise.all([chatController.sendMessage(resumeRequest(user), first), chatController.sendMessage(resumeRequest(user), second)]);
+  assert.equal(calls, 1);
+  assert.equal(messages.length, 2);
+  assert.equal(first.body.assistant_message.id, second.body.assistant_message.id);
+  assert.equal(second.body.idempotent_replay, true);
+  await chatModel.createUserMessage(7, 12, "later", { turnId: "later", idempotencyKey: "later", sourceGeneration: 0, client: transactionClient });
+  const replay = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), replay);
+  assert.equal(replay.body.idempotent_replay, true);
+  assert.equal(calls, 1);
+});
+
+test("resume refuses a newer message anywhere in the preset, including a race before commit", async () => {
+  const user = await unfinishedYesterdayTurn();
+  const appendLater = () => chatModel.createUserMessage(7, 12, "later", {
+    turnId: "later", idempotencyKey: "later", sourceGeneration: 0, client: transactionClient,
+  });
+  let calls = 0;
+  completeChat = async () => { calls++; await appendLater(); return "must not commit"; };
+  const racing = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), racing);
+  assert.equal(racing.statusCode, 409);
+  assert.equal(racing.body.code, "CHAT_RESUME_NOT_LATEST");
+  const outdated = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), outdated);
+  assert.equal(outdated.body.code, "CHAT_RESUME_NOT_LATEST");
+  assert.equal(calls, 1);
+  assert.equal(messages.filter(entry => entry.role === "assistant").length, 0);
+});
+
+test("resume rejects wrong owners, wrong sessions, removed messages and legacy unlinked turns", async () => {
+  const user = await unfinishedYesterdayTurn();
+  completeChat = async () => assert.fail("invalid resume must not call provider");
+  const wrongOwner = resumeRequest(user); wrongOwner.user.id = 8;
+  for (const req of [wrongOwner, resumeRequest(user, 12), resumeRequest({ id: 999 })]) {
+    const response = new TestResponse();
+    await chatController.sendMessage(req, response);
+    assert.equal(response.statusCode, 404);
+  }
+  user.turn_id = null;
+  const legacy = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), legacy);
+  assert.equal(legacy.body.code, "CHAT_RESUME_UNAVAILABLE");
+  sessions.delete(11);
+  const removed = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), removed);
+  assert.equal(removed.statusCode, 404);
+});
+
+test("resume waits for memory coverage without duplicating the historical message", { timeout: 3000 }, async () => {
+  const user = await unfinishedYesterdayTurn();
+  const before = { ...user };
+  let ready = false, calls = 0;
+  compileContext = async () => ({ messages: [], memoryCoverage: { complete: ready, gaps: [] } });
+  completeChat = async () => { calls++; return "recovered"; };
+  const waiting = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), waiting);
+  assert.equal(waiting.body.code, "CHAT_MEMORY_COVERAGE_PENDING");
+  assert.equal(waiting.body.user_message.can_resume, true);
+  assert.equal(calls, 0);
+  assert.deepEqual(messages, [before]);
+  ready = true;
+  const recovered = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), recovered);
+  assert.equal(calls, 1);
+  assert.equal(messages.length, 2);
+});
+
+test("a privacy fence leaves an unfinished resume untouched", async () => {
+  const user = await unfinishedYesterdayTurn();
+  const before = { ...user };
+  sourceGuardResult = { sourceGeneration: 2, privacyPending: true };
+  const response = new TestResponse();
+  await chatController.sendMessage(resumeRequest(user), response);
+  assert.equal(response.body.code, "CHAT_PRIVACY_PENDING");
+  assert.deepEqual(messages, [before]);
+});
 
 test("chat passes authenticated conversation identity to non-streaming and streaming LLM requests", async () => {
   const contexts = [];

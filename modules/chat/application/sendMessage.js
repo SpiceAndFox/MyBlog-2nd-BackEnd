@@ -35,6 +35,9 @@ function createSendMessageUseCase({
 } = {}) {
   for (const method of [
     "getSession",
+    "getMessage",
+    "getLatestMessageIdByPreset",
+    "setMessageSourceGeneration",
     "updateSessionSettings",
     "createUserMessage",
     "getAssistantForUserMessage",
@@ -67,9 +70,23 @@ function createSendMessageUseCase({
     });
   }
 
-  async function commitAssistant({ userId, sessionId, presetId, userMessage, assistantContent }) {
+  async function requireLatestMessage(userId, presetId, messageId, client) {
+    const latestId = await chatRepository.getLatestMessageIdByPreset(userId, presetId, { client });
+    if (Number(latestId) !== Number(messageId)) {
+      fail("这条消息之后已有新的对话，无法补回复，请在今天的会话中继续", {
+        status: 409, code: "CHAT_RESUME_NOT_LATEST",
+      });
+    }
+  }
+
+  async function commitAssistant({ userId, sessionId, presetId, userMessage, assistantContent, requireLatest = false }) {
     const { message: assistantMessage } = await transaction.run(async (client) => {
       const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
+      if (requireLatest) {
+        const existing = await chatRepository.getAssistantForUserMessage(userId, userMessage.id, { client });
+        if (existing) return { message: existing, created: false };
+        await requireLatestMessage(userId, presetId, userMessage.id, client);
+      }
       if (guard.privacyPending) {
         const existing = await chatRepository.getAssistantForUserMessage(userId, userMessage.id, { client });
         if (existing) return { message: existing, created: false };
@@ -92,15 +109,42 @@ function createSendMessageUseCase({
   }
 
   async function executeInScope(input, signal) {
-    const { userId, sessionId, content, idempotencyKey, rawSettings, onStreamStart, onStreamDelta } = input;
+    const { userId, sessionId, content, idempotencyKey, resumeMessageId, rawSettings, onStreamStart, onStreamDelta } = input;
     let errorSession = null;
     let userMessage = null;
     try {
-      if (!content) fail("Content cannot be empty", { status: 400, code: "CHAT_CONTENT_EMPTY" });
+      if (!resumeMessageId && !content) fail("Content cannot be empty", { status: 400, code: "CHAT_CONTENT_EMPTY" });
       const session = await chatRepository.getSession(userId, sessionId);
       if (!session) fail("Session not found", { status: 404, code: "CHAT_SESSION_NOT_FOUND" });
       errorSession = session;
-      if (!settings.isSessionEditableToday(session)) {
+      if (resumeMessageId) {
+        // Resume an existing turn under the same source guard used by edits and
+        // sends. Never insert a replacement user message or rewrite its date.
+        const resumed = await transaction.run(async client => {
+          const presetId = settings.getSessionPresetId(session);
+          const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
+          const message = await chatRepository.getMessage(userId, sessionId, resumeMessageId, { client });
+          if (!message) fail("Message not found", { status: 404, code: "CHAT_MESSAGE_NOT_FOUND" });
+          if (message.role !== "user" || !message.turn_id || !message.idempotency_key) {
+            fail("这条消息不支持补回复", { status: 409, code: "CHAT_RESUME_UNAVAILABLE" });
+          }
+          const assistantMessage = await chatRepository.getAssistantForUserMessage(userId, message.id, { client });
+          if (assistantMessage) return { message, assistantMessage };
+          await requireLatestMessage(userId, presetId, message.id, client);
+          if (guard.privacyPending) fail("记忆正在处理历史变更，请稍后补回复", { status: 409, code: "CHAT_PRIVACY_PENDING" });
+          if (Number(message.source_generation) !== guard.sourceGeneration) {
+            const refreshed = await chatRepository.setMessageSourceGeneration(userId, sessionId, message.id, guard.sourceGeneration, { client });
+            if (!refreshed) fail("Message not found", { status: 404, code: "CHAT_MESSAGE_NOT_FOUND" });
+            return { message: refreshed };
+          }
+          return { message };
+        });
+        userMessage = resumed.message;
+        if (resumed.assistantMessage) {
+          return { kind: "idempotent_replay", stream: false, session, userMessage,
+            assistantMessage: resumed.assistantMessage };
+        }
+      } else if (!settings.isSessionEditableToday(session)) {
         fail("Historical sessions are read-only", { status: 403, code: "CHAT_SESSION_READ_ONLY" });
       }
 
@@ -142,7 +186,7 @@ function createSendMessageUseCase({
       ) || session;
       errorSession = updatedSession;
 
-      const userInsert = await transaction.run(async (client) => {
+      const userInsert = resumeMessageId ? { message: userMessage, created: false } : await transaction.run(async (client) => {
         const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
         if (guard.privacyPending) return { message: null, created: false, blocked: true };
         return chatRepository.createUserMessage(userId, sessionId, content, {
@@ -169,6 +213,7 @@ function createSendMessageUseCase({
           };
         }
       }
+      userMessage = { ...userMessage, reply_status: "incomplete", can_resume: true };
 
       const context = await compileContext({
         userId,
@@ -208,6 +253,7 @@ function createSendMessageUseCase({
           presetId,
           userMessage,
           assistantContent,
+          requireLatest: Boolean(resumeMessageId),
         });
         return {
           kind: "completed",
@@ -270,12 +316,14 @@ function createSendMessageUseCase({
 
       const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
       if (!normalizedAssistantContent) fail("Empty model response", { code: "CHAT_EMPTY_MODEL_RESPONSE" });
+      signal?.throwIfAborted();
       const committed = await commitAssistant({
         userId,
         sessionId,
         presetId,
         userMessage,
         assistantContent: normalizedAssistantContent,
+        requireLatest: Boolean(resumeMessageId),
       });
       return {
         kind: "completed",
@@ -305,8 +353,12 @@ function createSendMessageUseCase({
     const sessionId = normalizePositiveId(input.sessionId);
     const content = String(input.content || "").trim();
     const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey);
+    const resumeMessageId = input.resumeMessageId == null ? null : normalizePositiveId(input.resumeMessageId);
     if (!sessionId) fail("Invalid sessionId", { status: 400, code: "CHAT_SESSION_ID_INVALID" });
-    if (!idempotencyKey) {
+    if (input.resumeMessageId != null && !resumeMessageId) {
+      fail("Invalid messageId", { status: 400, code: "CHAT_MESSAGE_ID_INVALID" });
+    }
+    if (!resumeMessageId && !idempotencyKey) {
       fail("Idempotency-Key header is required", { status: 400, code: "CHAT_IDEMPOTENCY_KEY_REQUIRED" });
     }
 
@@ -318,7 +370,7 @@ function createSendMessageUseCase({
     try {
       return await runWhenReady({ key: scopeCoordinator.buildKey(userId, presetId), userId, presetId,
         signal: input.signal,
-        execute: signal => executeInScope({ ...input, userId, sessionId, content, idempotencyKey }, signal),
+        execute: signal => executeInScope({ ...input, userId, sessionId, content, idempotencyKey, resumeMessageId }, signal),
       });
     } catch (error) {
       if (error instanceof ChatApplicationError) throw error;

@@ -131,6 +131,7 @@ test("HTTP methods, paths, auth placement, uploads, and controller bindings rema
     { method: "DELETE", path: "/api/chat/sessions/:sessionId/permanent", handlers: ["chat_deleteSessionPermanently"], globalAuth: true },
     { method: "GET", path: "/api/chat/sessions/:sessionId/messages", handlers: ["chat_listMessages"], globalAuth: true },
     { method: "PATCH", path: "/api/chat/sessions/:sessionId/messages/:messageId", handlers: ["chat_editMessage"], globalAuth: true },
+    { method: "POST", path: "/api/chat/sessions/:sessionId/messages/:messageId/resume", handlers: ["chat_sendMessage"], globalAuth: true },
     { method: "POST", path: "/api/chat/sessions/:sessionId/messages", handlers: ["chat_sendMessage"], globalAuth: true },
   ]);
 });

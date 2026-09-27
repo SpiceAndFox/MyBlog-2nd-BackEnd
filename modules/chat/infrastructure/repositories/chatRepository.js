@@ -258,22 +258,44 @@ function createChatRepository({ database } = {}) {
     if (!session) return null;
 
     const query = `
-      SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
-      FROM chat_messages
-      WHERE session_id = $1 AND user_id = $2
-      ORDER BY id ASC
+      WITH latest AS (
+        SELECT MAX(m.id) AS id FROM chat_messages m
+        JOIN chat_sessions s ON s.id=m.session_id AND s.user_id=m.user_id
+        WHERE m.user_id=$2 AND m.preset_id=$3 AND s.deleted_at IS NULL
+      )
+      SELECT m.id, m.preset_id, m.role, m.content, m.turn_id, m.parent_user_message_id,
+             m.idempotency_key, m.source_generation, m.created_at,
+             CASE WHEN m.role='user' AND m.turn_id IS NOT NULL AND m.idempotency_key IS NOT NULL
+               THEN CASE WHEN a.id IS NULL THEN 'incomplete' ELSE 'complete' END END AS reply_status,
+             COALESCE(m.role='user' AND m.turn_id IS NOT NULL AND NULLIF(m.idempotency_key,'') IS NOT NULL
+               AND a.id IS NULL AND m.id=latest.id, FALSE) AS can_resume
+      FROM chat_messages m CROSS JOIN latest
+      LEFT JOIN chat_messages a ON a.parent_user_message_id=m.id AND a.user_id=m.user_id AND a.role='assistant'
+      WHERE m.session_id = $1 AND m.user_id = $2
+      ORDER BY m.id ASC
     `;
-    const { rows } = await db.query(query, [sessionId, userId]);
+    const { rows } = await db.query(query, [sessionId, userId, session.preset_id]);
     return rows;
   },
 
-  async getMessage(userId, sessionId, messageId) {
+  async getLatestMessageIdByPreset(userId, presetId, { client } = {}) {
+    const { rows } = await executor(client).query(`
+      SELECT m.id FROM chat_messages m
+      JOIN chat_sessions s ON s.id=m.session_id AND s.user_id=m.user_id
+      WHERE m.user_id=$1 AND m.preset_id=$2 AND s.deleted_at IS NULL
+      ORDER BY m.id DESC LIMIT 1
+    `, [userId, presetId]);
+    return rows[0] ? Number(rows[0].id) : null;
+  },
+
+  async getMessage(userId, sessionId, messageId, { client } = {}) {
     const query = `
       SELECT id, preset_id, role, content, turn_id, parent_user_message_id, idempotency_key, source_generation, created_at
       FROM chat_messages
       WHERE id = $1 AND session_id = $2 AND user_id = $3
+        AND EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id=$2 AND s.user_id=$3 AND s.deleted_at IS NULL)
     `;
-    const { rows } = await db.query(query, [messageId, sessionId, userId]);
+    const { rows } = await executor(client).query(query, [messageId, sessionId, userId]);
     return rows[0] || null;
   },
 

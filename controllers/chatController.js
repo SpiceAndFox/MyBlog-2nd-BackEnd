@@ -363,6 +363,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           sessionId: req.params.sessionId,
           content: req.body?.content,
           idempotencyKey,
+          resumeMessageId: req.params.messageId || undefined,
           rawSettings: req.body?.settings,
           signal: clientAbort.signal,
           onStreamStart({ sessionId, userMessage }) {
@@ -380,7 +381,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         });
         const payload = attachContextHealth({
           session: result.session,
-          user_message: result.userMessage,
+          user_message: { ...result.userMessage, reply_status: "complete", can_resume: false },
           assistant_message: result.assistantMessage,
           ...(result.kind === "idempotent_replay" ? { idempotent_replay: true } : {}),
         }, result.context, res);
@@ -395,7 +396,8 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         const message = error?.message || "Internal Server Error";
         if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
           try {
-            if (message !== "Client disconnected") writeSse(res, { type: "error", error: message });
+            if (message !== "Client disconnected") writeSse(res, { type: "error", error: message,
+              code: error?.code, user_message: error?.userMessage });
             res.end();
           } catch {
             // Ignore a second transport failure while closing an SSE response.

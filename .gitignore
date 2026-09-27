@@ -3,3 +3,5 @@ node_modules
 uploads
 logs
 reports/*
+backup-secrets.json
+backup.conf.json

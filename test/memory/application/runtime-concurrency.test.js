@@ -71,6 +71,9 @@ function fixture(providerAdapter, { missingState = false, rebuilding = false, in
   const session = { id: 5, preset_id: "default", settings: {} };
   const chatRepository = {
     async getSession() { return session; }, async getTrashedSession() { return rawExists ? session : null; },
+    async getMessage() { assert.fail("ordinary sends must not load a resume message"); },
+    async getLatestMessageIdByPreset() { assert.fail("ordinary sends must not enter resume validation"); },
+    async setMessageSourceGeneration() { assert.fail("ordinary sends must not refresh an existing turn"); },
     async updateSessionSettings() { return session; }, async touchSession() { return session; },
     async createUserMessage(_u, _s, _content, options) {
       userGeneration = options.sourceGeneration;

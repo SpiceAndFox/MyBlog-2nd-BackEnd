@@ -31,6 +31,7 @@ function createChatRouter({ authMiddleware, chatController, uploadPresetAvatar }
   router.delete("/sessions/:sessionId/permanent", chatController.deleteSessionPermanently);
   router.get("/sessions/:sessionId/messages", chatController.listMessages);
   router.patch("/sessions/:sessionId/messages/:messageId", chatController.editMessage);
+  router.post("/sessions/:sessionId/messages/:messageId/resume", chatController.sendMessage);
   router.post("/sessions/:sessionId/messages", chatController.sendMessage);
 
   return router;

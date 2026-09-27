@@ -1,0 +1,18 @@
+[Unit]
+Description=Verified PostgreSQL backup to Google Drive
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/Blog/UpBack/auto-backup/backup.sh
+WorkingDirectory=/root/Blog/UpBack/auto-backup
+User=root
+UMask=0077
+TimeoutStartSec=1h
+TimeoutStopSec=30s
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true

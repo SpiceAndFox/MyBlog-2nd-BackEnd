@@ -1,0 +1,9 @@
+{
+  "backend_dir": "/root/Blog/BlogBackEnd",
+  "local_dir": "/root/Blog/UpBack/auto-backup/data",
+  "remote": "GoogleDrive:BlogBackup/automatic-v1",
+  "rclone_config": "/root/.config/rclone/rclone.conf",
+  "password_file": "/root/Blog/UpBack/auto-backup/backup-secrets.json",
+  "local_keep": 4,
+  "remote_keep": 30
+}
