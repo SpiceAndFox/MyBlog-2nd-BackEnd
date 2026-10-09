@@ -12,13 +12,23 @@ const MODELS = [
   },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
-  { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+  {
+    id: "claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    reasoningEfforts: ["low", "medium", "high", "max"],
+    // Opt into adaptive thinking; effort alone does not enable it on Opus 4.6.
+    // https://platform.claude.com/docs/en/build-with-claude/thinking
+    thinking: { type: "adaptive" },
+    defaults: { reasoningEffort: "medium" },
+  },
   { id: "claude-opus-4-5", name: "Claude Opus 4.5" },
   { id: "claude-opus-4-1", name: "Claude Opus 4.1" },
   { id: "claude-fable-5", name: "Claude Fable 5" },
 ];
 
-const NO_SAMPLING_PARAMETER_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7"];
+// Newer models reject custom sampling. For Opus 4.6 we use adaptive thinking:
+// omit temperature and top_p to keep the upstream thinking-compatible defaults.
+const NO_SAMPLING_PARAMETER_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"];
 
 function normalizeModelId(modelId) {
   return String(modelId || "").trim();

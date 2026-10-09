@@ -169,6 +169,7 @@ function buildBody({ providerId, model, messages, temperature, topP, maxTokens, 
 
   if (system) body.system = system;
   const modelDefinition = settingsSchema.getProviderModel?.(providerId, model);
+  if (modelDefinition?.thinking) body.thinking = { ...modelDefinition.thinking };
   const allowedEfforts = modelDefinition?.reasoningEfforts;
   if (Array.isArray(allowedEfforts) && allowedEfforts.length) {
     const effort = String(readSetting(settings, "reasoningEffort") ?? modelDefinition.defaults?.reasoningEffort ?? "").trim();
@@ -180,7 +181,7 @@ function buildBody({ providerId, model, messages, temperature, topP, maxTokens, 
   if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings })) {
     body.temperature = normalizedTemperature;
   }
-  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings })) {
+  if (body.temperature === undefined && normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings })) {
     body.top_p = normalizedTopP;
   }
 
