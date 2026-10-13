@@ -31,11 +31,17 @@ function resolveAdapter(providerId) {
 }
 
 async function createChatCompletion(options = {}) {
-  return resolveAdapter(options.providerId).createChatCompletion(options);
+  return resolveAdapter(options.providerId).createChatCompletion(withModelTimeout(options));
 }
 
 async function createChatCompletionStreamResponse(options = {}) {
-  return resolveAdapter(options.providerId).createChatCompletionStreamResponse(options);
+  return resolveAdapter(options.providerId).createChatCompletionStreamResponse(withModelTimeout(options));
+}
+
+function withModelTimeout(options) {
+  const model = getProviderDefinition(options.providerId)?.models?.find(entry => entry.id === options.model);
+  if (options.timeoutMs !== undefined || !model?.requestTimeoutMs) return options;
+  return { ...options, timeoutMs: Math.max(config.timeoutMs, model.requestTimeoutMs) };
 }
 
 function streamChatCompletionDeltas(options = {}) {

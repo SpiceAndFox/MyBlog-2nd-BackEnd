@@ -175,6 +175,78 @@ class BackupTests(unittest.TestCase):
         self.assertNotIn(job.cloud_path(job.state["pending"]), self.cloud)
         self.assertIn(job.cloud_path(job.state["pending"], temporary=True), self.cloud)
 
+    def test_cloud_backoff_does_not_block_due_local_backup(self):
+        job = self.job()
+        job.upload_failure = True
+        with self.assertRaises(backup.BackupError):
+            job.run()
+        oldest = job.state["pending"]
+        self.now += backup.INTERVAL
+        job.state["retry_not_before"] = self.now + 1800
+        job.persist()
+        blocked = self.job()
+        blocked.run()
+        self.assertEqual(self.dump_count, 2)
+        self.assertEqual(blocked.state["pending"], oldest)
+        self.assertEqual(len(blocked.local_names()), 2)
+        self.assertFalse(self.cloud)
+        self.assertEqual(blocked.state["next_due"], self.now + backup.INTERVAL)
+        self.job().run()
+        self.assertEqual(self.dump_count, 2)
+
+    def test_backlog_upload_does_not_move_local_schedule_backwards(self):
+        job = self.job()
+        job.upload_failure = True
+        with self.assertRaises(backup.BackupError):
+            job.run()
+        oldest = job.state["pending"]
+        self.now += backup.INTERVAL
+        resumed = self.job()
+        resumed.run()
+        newest = resumed.state["last_local_success"]
+        self.assertEqual(resumed.state["last_success"], oldest)
+        self.assertEqual(resumed.state["pending"], newest)
+        self.assertEqual(resumed.state["next_due"], self.now + backup.INTERVAL)
+        self.job().run()
+        self.assertEqual(self.dump_count, 2)
+        self.assertIsNone(self.job().state["pending"])
+        self.assertEqual(len(self.cloud), 2)
+
+    def test_local_failure_backoff_allows_pending_cloud_upload(self):
+        job = self.job()
+        job.upload_failure = True
+        with self.assertRaises(backup.BackupError):
+            job.run()
+        self.now += backup.INTERVAL
+        self.dump_error = True
+        with self.assertRaises(backup.BackupError):
+            self.job().run()
+        self.now += 60
+        resumed = self.job()
+        resumed.run()
+        self.assertEqual(self.dump_count, 2)
+        self.assertIsNotNone(resumed.state["last_success"])
+        self.assertIsNotNone(resumed.state["local_last_error"])
+        self.now += 3600
+        self.dump_error = False
+        recovered = self.job()
+        recovered.run()
+        self.assertEqual(self.dump_count, 3)
+        self.assertIsNone(recovered.state["local_last_error"])
+
+    def test_missing_state_recovers_multiple_pending_archives(self):
+        job = self.job()
+        oldest = job.new_backup()
+        self.now += backup.INTERVAL
+        newest = job.new_backup()
+        job.state_path.unlink()
+        resumed = self.job()
+        resumed.run()
+        self.assertEqual(self.dump_count, 2)
+        self.assertEqual(resumed.state["last_success"], oldest)
+        self.assertEqual(resumed.state["pending"], newest)
+        self.assertEqual(resumed.state["next_due"], self.now + backup.INTERVAL)
+
     def test_failed_final_rename_is_retried_without_a_new_dump(self):
         job = self.job()
         job.rename_failure = True

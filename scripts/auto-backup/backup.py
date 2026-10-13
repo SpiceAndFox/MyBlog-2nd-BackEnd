@@ -205,7 +205,9 @@ class Backup:
                         "backend_commit": checked(["git", "rev-parse", "HEAD"], cwd=self.backend).decode().strip()}
             atomic_json(stage / "manifest.json", manifest)
             os.rename(stage, destination)
-        self.state["pending"] = name
+        self.state.update(pending=self.state.get("pending") or name,
+                          last_local_success=name, last_local_success_at=stamp(created),
+                          next_due=created + INTERVAL, local_retry_not_before=0, local_last_error=None)
         self.persist()
         log("archive_verified", backup=name, bytes=archive_size)
         return name
@@ -251,8 +253,9 @@ class Backup:
         self.verify_remote_cipher(name, manifest, temporary=True)
         self.rclone("moveto", self.cloud_path(name, temporary=True), self.cloud_path(name))
         atomic_json(folder / "uploaded.json", {"remote": self.remote, "verified_at": stamp(self.clock())})
-        self.state.update(pending=None, last_success=name, last_success_at=stamp(self.clock()),
-                          next_due=manifest["created_epoch"] + INTERVAL, retry_not_before=0,
+        self.state.update(pending=next((item for item in self.local_names()
+                                       if not (self.bundle(item) / "uploaded.json").exists()), None),
+                          last_success=name, last_success_at=stamp(self.clock()), retry_not_before=0,
                           last_error=None, retention_pending=True)
         self.persist()
         log("cloud_verified", backup=name, next_due=stamp(self.state["next_due"]))
@@ -295,23 +298,37 @@ class Backup:
 
     def run(self, force=False):
         now = self.clock()
+        names = self.local_names()
+        # Derive the local schedule from published archives, including legacy
+        # state and a crash between the directory rename and state persistence.
+        if names:
+            latest = max(names, key=lambda name: self.manifest(name)["created_epoch"])
+            self.state["next_due"] = self.manifest(latest)["created_epoch"] + INTERVAL
+        pending = self.state.get("pending") or next((name for name in names
+                          if not (self.bundle(name) / "uploaded.json").exists()), None)
+        self.state["pending"] = pending
+        # Cloud backoff must never suppress a due local recovery point. Local
+        # failures have their own backoff so broken dumps don't run every minute.
+        due = now >= self.state.get("next_due", 0) or (force and not pending)
+        if due and (force or now >= self.state.get("local_retry_not_before", 0)):
+            try:
+                self.new_backup()
+            except Exception as error:
+                self.state.update(local_last_error=str(error), last_error=str(error),
+                                  last_failure_at=stamp(now), local_retry_not_before=self.clock() + 3600)
+                self.persist()
+                raise
+        if self.state_path.exists() and load_json(self.state_path) != self.state:
+            self.persist()
         if not force and now < self.state.get("retry_not_before", 0):
             return
         try:
             pending = self.state.get("pending")
-            if not pending:
-                # Recover the small crash window between publishing a local
-                # encrypted archive and recording its pending upload in state.
-                pending = next((name for name in self.local_names() if not (self.bundle(name) / "uploaded.json").exists()), None)
             if pending:
-                self.state["pending"] = pending
-                self.persist()
                 self.upload(pending)
-            elif force or now >= self.state.get("next_due", 0):
-                self.upload(self.new_backup())
             if self.state.get("retention_pending"):
                 self.prune()
-            self.state.update(last_error=None, retry_not_before=0)
+            self.state.update(last_error=self.state.get("local_last_error"), retry_not_before=0)
             # No writes or network calls are necessary on an ordinary not-due tick.
             if self.state_path.exists() and load_json(self.state_path) != self.state:
                 self.persist()
@@ -324,7 +341,7 @@ class Backup:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--force", action="store_true", help="Run now; an unfinished upload is resumed first")
+    parser.add_argument("--force", action="store_true", help="Bypass backoff; create a due local archive and resume the oldest pending upload")
     parser.add_argument("--status", action="store_true", help="Print local state without uploading or dumping")
     args = parser.parse_args()
     os.umask(0o077)

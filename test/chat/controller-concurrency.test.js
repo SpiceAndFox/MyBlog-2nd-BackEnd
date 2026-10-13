@@ -335,6 +335,29 @@ const chatController = createChatController({
 
 test.beforeEach(resetHarness);
 
+for (const stream of [false, true]) test(`Argon chat uses its model timeout through completion and streaming (stream=${stream})`, async t => {
+  const definition = require("../../modules/chat/infrastructure/llm/providerDefinitions/gemini");
+  t.mock.method(providerCatalog, "getProviderDefinition", () => definition);
+  Object.assign(sessions.get(11).settings, { providerId: "gemini", modelId: "gemini-4-argon", stream });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const checkRequest = options => {
+    calls++;
+    assert.equal(options.timeoutMs, 1200000);
+    // Passing the old 1-second timeout must not cancel Argon's streaming request.
+    t.mock.timers.tick(1001);
+    assert.equal(options.signal.aborted, false);
+  };
+  completeChat = async options => { checkRequest(options); return "Argon reply"; };
+  createStreamResponse = async options => { checkRequest(options); return {}; };
+  readStreamDeltas = async function* () { yield "Argon reply"; };
+  const response = new TestResponse();
+  await chatController.sendMessage(request(11, "Hello", "argon-timeout"), response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(calls, 1);
+  assert.equal(messages.at(-1).content, "Argon reply");
+});
+
 async function unfinishedYesterdayTurn() {
   const { message } = await chatModel.createUserMessage(7, 11, "昨天的问题", {
     turnId: "original-turn", idempotencyKey: "original-key", sourceGeneration: 0, client: transactionClient,

@@ -166,6 +166,8 @@ function createSendMessageUseCase({
         fail(providerResolution.error, { status: providerResolution.status, code: "CHAT_PROVIDER_INVALID" });
       }
       const { providerId, modelId, providerDefinition } = providerResolution;
+      const modelDefinition = providerDefinition?.models?.find(model => model.id === modelId);
+      const requestTimeoutMs = Math.max(timeoutMs, modelDefinition?.requestTimeoutMs || 0);
       const validationError = settings.validate(mergedSettings, { providerId, modelId });
       if (validationError) fail(validationError, { status: 400, code: "CHAT_SETTINGS_INVALID" });
 
@@ -244,6 +246,7 @@ function createSendMessageUseCase({
           model: modelId,
           messages: context.messages,
           settings: effectiveSettings,
+          timeoutMs: requestTimeoutMs,
           signal,
         });
         signal?.throwIfAborted();
@@ -270,7 +273,7 @@ function createSendMessageUseCase({
       const abortFromScope = () => abortController.abort(signal?.reason || new Error("Request cancelled"));
       if (signal?.aborted) abortFromScope();
       else signal?.addEventListener("abort", abortFromScope, { once: true });
-      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
+      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), requestTimeoutMs);
       let assistantContent = "";
       let finalAssistantContent = "";
       try {
@@ -280,6 +283,7 @@ function createSendMessageUseCase({
           model: modelId,
           messages: context.messages,
           settings: effectiveSettings,
+          timeoutMs: requestTimeoutMs,
           signal: abortController.signal,
         });
         for await (const event of llm.streamDeltas({ providerId, response: upstreamResponse })) {

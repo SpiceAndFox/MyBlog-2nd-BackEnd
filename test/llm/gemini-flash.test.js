@@ -73,7 +73,7 @@ for (const modelId of ["gemini-3.8-flash", "gemini-3.7-flash"]) {
 test("retained Gemini preview models keep their settings and removed models are unavailable", async () => {
   const { catalog, settings, runtime, requests } = harness();
   assert.deepEqual(catalog.models.listModelsForProvider("gemini").map(model => model.id), [
-    "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+    "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-4-argon",
   ]);
   for (const modelId of ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]) {
     assert.equal(settings.resolveProviderModel({ providerId: "gemini", modelId }).status, 400);

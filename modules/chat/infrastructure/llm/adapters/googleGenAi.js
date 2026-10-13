@@ -311,7 +311,7 @@ async function createChatCompletion({
   }
 }
 
-async function createChatCompletionStreamResponse({ providerId, model, messages, signal, settings, rawConfig } = {}) {
+async function createChatCompletionStreamResponse({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, signal, settings, rawConfig } = {}) {
   const provider = getProviderConfig(providerId);
   const ai = new GoogleGenAIClass({ apiKey: provider.apiKey });
 
@@ -321,7 +321,7 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
     model,
     baseUrl: provider.baseUrl,
     systemInstruction,
-    timeoutMs: llmConfig.timeoutMs,
+    timeoutMs,
     signal,
     settings,
     rawConfig,

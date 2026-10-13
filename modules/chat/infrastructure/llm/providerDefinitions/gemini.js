@@ -17,7 +17,10 @@ const thinkingLevelOptions = [
 const thinkingLevelProOptions = thinkingLevelOptions.filter((option) =>
   ["LOW", "MEDIUM", "HIGH"].includes(option.value),
 );
-// Official model specs and migration rules (checked 2026-09-12):
+const fixedSamplingModels = ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash"];
+// Official model specs and migration rules (checked 2026-10-14):
+// https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
+// https://ai.google.dev/gemini-api/docs/generate-content/long-decode
 // https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
 // https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash
 // https://ai.google.dev/gemini-api/docs/thinking
@@ -34,7 +37,8 @@ module.exports = {
     isBodyParamAllowed: ({ model, paramName, settings }) => {
       const normalizedModel = String(model || "").trim();
       if (["presencePenalty", "frequencyPenalty", "thinkingBudget"].includes(paramName)) return false;
-      if (["gemini-3.8-flash", "gemini-3.7-flash"].includes(normalizedModel)) {
+      if (normalizedModel === "gemini-4-argon" && paramName === "cachedContent") return false;
+      if (fixedSamplingModels.includes(normalizedModel)) {
         if (["temperature", "topP", "topK", "candidateCount"].includes(paramName)) return false;
         if (paramName === "thinkingLevel") {
           return ["LOW", "MEDIUM", "HIGH"].includes(
@@ -62,7 +66,7 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "temperature",
-      modelBlocklist: ["gemini-3.8-flash", "gemini-3.7-flash"],
+      modelBlocklist: fixedSamplingModels,
     },
     {
       key: "topP",
@@ -73,7 +77,7 @@ module.exports = {
       step: 0.05,
       decimals: 2,
       capability: "topP",
-      modelBlocklist: ["gemini-3.8-flash", "gemini-3.7-flash"],
+      modelBlocklist: fixedSamplingModels,
     },
     {
       key: "maxOutputTokens",
@@ -83,7 +87,7 @@ module.exports = {
       max: 24000,
       step: 64,
       capability: "maxTokens",
-      modelBlocklist: ["gemini-3.8-flash", "gemini-3.7-flash"],
+      modelBlocklist: fixedSamplingModels,
     },
     {
       key: "maxOutputTokens",
@@ -115,7 +119,7 @@ module.exports = {
       options: thinkingLevelProOptions,
       default: "HIGH",
       capability: "thinking",
-      modelBlocklist: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3-flash-preview"],
+      modelBlocklist: [...fixedSamplingModels, "gemini-3-flash-preview"],
     },
     {
       key: "thinkingLevel",
@@ -124,7 +128,7 @@ module.exports = {
       options: thinkingLevelOptions,
       default: "MINIMAL",
       capability: "thinking",
-      modelBlocklist: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"],
+      modelBlocklist: [...fixedSamplingModels, "gemini-3.1-pro-preview"],
     },
     {
       key: "stream",
@@ -172,6 +176,11 @@ module.exports = {
     { id: "gemini-3.7-flash", name: "gemini-3.7-flash", defaults: { thinkingLevel: "MEDIUM" } },
     { id: "gemini-3-flash-preview", name: "gemini-3-flash-preview" },
     { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro-preview" },
+    {
+      id: "gemini-4-argon", name: "gemini-4-argon",
+      defaults: { thinkingLevel: "MEDIUM", maxOutputTokens: 65536 },
+      requestTimeoutMs: 1200000,
+    },
   ],
   capabilities: {
     stream: true,

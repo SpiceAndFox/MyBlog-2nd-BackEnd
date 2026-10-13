@@ -1,14 +1,28 @@
 const modelId = "gemini-3.1-pro-preview";
 const reasoningEfforts = ["low", "medium", "high"];
 const defaultReasoningEffort = "low";
+// Official Argon defaults and OpenAI-compatible thinking mapping (checked 2026-10-14):
+// https://ai.google.dev/gemini-api/docs/latest-model
+// https://ai.google.dev/gemini-api/docs/openai
+// https://ai.google.dev/gemini-api/docs/generate-content/long-decode
+const argonModelId = "gemini-4-argon";
+const models = [
+  { id: modelId, name: modelId, reasoningEfforts, defaults: { reasoningEffort: defaultReasoningEffort } },
+  {
+    id: argonModelId, name: argonModelId, reasoningEfforts,
+    defaults: { reasoningEffort: "medium", maxOutputTokens: 65536 },
+    requestTimeoutMs: 1200000,
+  },
+];
 
 // Keep gateway-specific wire parameters here, outside the shared transport.
 // Native Gemini fields and other providers' extensions must not leak through.
 const bodyParameters = new Set(["temperature", "top_p", "max_tokens", "reasoning_effort"]);
 
 function buildBodyExtensions({ model, settings } = {}) {
-  if (model !== modelId) throw new Error(`Unsupported BotCF model: ${model}`);
-  const effort = settings?.reasoningEffort ?? defaultReasoningEffort;
+  const definition = models.find(entry => entry.id === model);
+  if (!definition) throw new Error(`Unsupported BotCF model: ${model}`);
+  const effort = settings?.reasoningEffort ?? definition.defaults.reasoningEffort;
   if (!reasoningEfforts.includes(effort)) {
     throw new Error(`Invalid reasoningEffort for model ${model}: ${effort}. Allowed values: ${reasoningEfforts.join(", ")}`);
   }
@@ -23,16 +37,21 @@ module.exports = {
   baseUrlEnv: ["BOTCF_BASE_URL"],
   openaiCompatible: { bodyExtensions: buildBodyExtensions },
   parameterPolicy: {
-    isBodyParamAllowed: ({ model, paramName }) => model === modelId && bodyParameters.has(paramName),
+    isBodyParamAllowed: ({ model, paramName }) => {
+      if (!models.some(entry => entry.id === model) || !bodyParameters.has(paramName)) return false;
+      return model !== argonModelId || !["temperature", "top_p"].includes(paramName);
+    },
   },
   settingsSchema: [
     {
       key: "temperature", label: "Temperature", type: "range",
       min: 0, max: 2, step: 0.1, decimals: 1, capability: "temperature",
+      modelBlocklist: [argonModelId],
     },
     {
       key: "topP", label: "Top P", type: "range",
       min: 0, max: 1, step: 0.05, decimals: 2, capability: "topP",
+      modelBlocklist: [argonModelId],
     },
     {
       key: "maxOutputTokens", label: "Max Output Tokens", type: "number",
@@ -45,10 +64,7 @@ module.exports = {
     },
     { key: "stream", label: "Streaming", type: "toggle", capability: "stream" },
   ],
-  models: [{
-    id: modelId, name: modelId, reasoningEfforts,
-    defaults: { reasoningEffort: defaultReasoningEffort },
-  }],
+  models,
   capabilities: {
     stream: true,
     temperature: true,

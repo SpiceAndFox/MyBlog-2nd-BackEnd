@@ -43,7 +43,7 @@ test("BotCF appears in chat metadata with independent credentials and editable s
   const meta = await getMeta();
   const provider = meta.providers.find(entry => entry.id === providerId);
   assert.equal(provider.adapter, "openai-compatible");
-  assert.deepEqual(provider.models.map(model => model.id), [modelId]);
+  assert.deepEqual(provider.models.map(model => model.id), [modelId, "gemini-4-argon"]);
   assert.equal(meta.defaults.providerId, providerId);
   assert.equal(meta.defaults.modelId, modelId);
   assert.equal(meta.defaults.reasoningEffort, "low");
