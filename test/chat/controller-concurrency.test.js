@@ -524,6 +524,22 @@ test("send failures expose the application error code to clients", async () => {
   });
 });
 
+for (const stream of [false, true]) test(`upstream model access denial stays a chat error instead of site authentication failure (stream=${stream})`, async () => {
+  sessions.get(11).settings.stream = stream;
+  const message = "This token has no access to model gemini-4-argon";
+  const reject = async () => { throw Object.assign(new Error(message), { status: 403 }); };
+  completeChat = reject;
+  createStreamResponse = reject;
+  const response = new TestResponse();
+  await chatController.sendMessage(request(11, "Hello", "botcf-denied"), response);
+  assert.equal(response.statusCode, stream ? 200 : 500);
+  const payload = stream ? JSON.parse(response.chunks.at(-1).slice(6)) : response.body;
+  assert.equal(payload.error, message);
+  assert.equal(payload.code, "CHAT_MESSAGE_SEND_FAILED");
+  assert.equal(payload.user_message.role, "user");
+  assert.equal(messages.filter(entry => entry.role === "assistant").length, 0);
+});
+
 test("two sends in different sessions of one preset commit complete turns in scope order", async () => {
   let releaseFirst;
   let firstStartedResolve;
