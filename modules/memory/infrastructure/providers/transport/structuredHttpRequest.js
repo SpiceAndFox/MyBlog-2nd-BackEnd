@@ -7,7 +7,7 @@ const { normalizeProviderAdapter } = require("../../../config/providerAdapters")
 const { compileDeepSeekToolParameters } = require("./deepSeekSchemaCompiler");
 const { compileDeepSeekTodoSchema } = require("./deepSeekTodoSchemaCompiler");
 const { TODO_SCHEMA_NAME } = require("../output/todoWireProtocol");
-const { stripUniqueItems } = require("./schemaPolicies");
+const { stripUniqueItems, shareEnumDefinitions } = require("./schemaPolicies");
 const { buildProviderHeaders } = require("./providerHeaders");
 
 function normalizeBaseUrl(value) {
@@ -172,8 +172,14 @@ function buildStructuredHttpRequest(configuration, request) {
   const { policy, controls } = resolveMemoryProviderRequestPolicy(config, request.proposer);
   const builder = config.adapter === "openai-compatible-json-object"
     ? buildOpenAiJsonObjectHttpRequest : buildOpenAiHttpRequest;
+  const compileSchema = policy.schemaPolicy === "strip-unique-items" ? stripUniqueItems : config.compileSchema;
   const result = builder(config, request, {
-    compileSchema: policy.schemaPolicy === "strip-unique-items" ? stripUniqueItems : config.compileSchema,
+    compileSchema: responseSchema => {
+      const compiled = typeof compileSchema === "function" ? compileSchema(responseSchema) : responseSchema;
+      return policy.enumPolicy === "shared-definitions"
+        ? { ...compiled, schema: shareEnumDefinitions(compiled.schema) }
+        : compiled;
+    },
     extraBody: ({ proposer, model }) => ({
       ...controls,
       ...(typeof config.extraBody === "function" ? config.extraBody({ proposer, model }) : config.extraBody),

@@ -13,6 +13,7 @@ const DEFAULT_POLICY = deepFreeze({
   reasoningEfforts: REASONING_EFFORT_VALUES,
   thinkingModes: THINKING_MODE_VALUES,
   schemaPolicy: "preserve",
+  enumPolicy: "preserve",
   outputModes: ["json_schema", "json_object"],
   outputTokenField: "max_tokens",
   repairRole: "assistant",
@@ -22,6 +23,7 @@ const DEFAULT_POLICY = deepFreeze({
 const ENUM_FIELDS = {
   reasoningEncoding: ["none", "reasoning-effort", "thinking", "openrouter"],
   schemaPolicy: ["preserve", "strip-unique-items"],
+  enumPolicy: ["preserve", "shared-definitions"],
   outputTokenField: ["max_tokens", "max_completion_tokens"],
   repairRole: ["assistant", "user-diagnostic"],
   headerPolicy: ["none", "opencode-session"],
