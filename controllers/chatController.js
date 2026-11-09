@@ -352,7 +352,10 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
 
     async sendMessage(req, res) {
       const clientAbort = new AbortController();
+      let heartbeat;
+      let streamMeta;
       const onResponseClose = () => {
+        clearInterval(heartbeat);
         if (!res.writableEnded) clientAbort.abort(new Error("Client disconnected"));
       };
       res.once("close", onResponseClose);
@@ -366,7 +369,8 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           resumeMessageId: req.params.messageId || undefined,
           rawSettings: req.body?.settings,
           signal: clientAbort.signal,
-          onStreamStart({ sessionId, userMessage }) {
+          onStreamStart({ sessionId, userMessage, providerId, modelId }) {
+            streamMeta = { sessionId, userMessageId: userMessage.id, providerId, modelId };
             res.status(200);
             res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
             res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -374,6 +378,9 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
             res.setHeader("X-Accel-Buffering", "no");
             res.flushHeaders?.();
             writeSse(res, { type: "start", session_id: sessionId, user_message: userMessage });
+            heartbeat = setInterval(() => {
+              if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) res.write(": heartbeat\n\n");
+            }, 15_000);
           },
           onStreamDelta(delta) {
             writeSse(res, { type: "delta", delta });
@@ -392,6 +399,11 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         }
         return res.status(200).json(payload);
       } catch (error) {
+        if (streamMeta) {
+          logger.error("chat_stream_failed", withRequestContext(req, {
+            ...streamMeta, code: error?.code, error: error?.message, clientDisconnected: clientAbort.signal.aborted,
+          }));
+        }
         if (res.destroyed || res.writableEnded) return;
         const message = error?.message || "Internal Server Error";
         if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
@@ -416,6 +428,7 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         }
         return res.status(Number(error?.status) || 500).json(payload);
       } finally {
+        clearInterval(heartbeat);
         res.removeListener("close", onResponseClose);
       }
     },

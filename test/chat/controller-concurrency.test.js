@@ -233,7 +233,7 @@ replaceModule("../../config", {
   llmConfig: { timeoutMs: 1000 },
 });
 replaceModule("../../modules/memory", { markRecoveryNotificationsDelivered: async () => {} });
-const testLogger = { debug() {}, warn() {}, error() {} };
+const testLogger = { debug() {}, info() {}, warn() {}, error() {} };
 replaceModule("../../logger", { logger: testLogger, withRequestContext: (_req, value) => value });
 const providerCatalog = {
   getProviderDefinition: () => ({ capabilities: { webSearch: false } }),
@@ -524,7 +524,8 @@ test("send failures expose the application error code to clients", async () => {
   });
 });
 
-for (const stream of [false, true]) test(`upstream model access denial stays a chat error instead of site authentication failure (stream=${stream})`, async () => {
+for (const stream of [false, true]) test(`upstream model access denial stays a chat error instead of site authentication failure (stream=${stream})`, async t => {
+  const logError = t.mock.method(testLogger, "error");
   sessions.get(11).settings.stream = stream;
   const message = "This token has no access to model gemini-4-argon";
   const reject = async () => { throw Object.assign(new Error(message), { status: 403 }); };
@@ -535,6 +536,12 @@ for (const stream of [false, true]) test(`upstream model access denial stays a c
   assert.equal(response.statusCode, stream ? 200 : 500);
   const payload = stream ? JSON.parse(response.chunks.at(-1).slice(6)) : response.body;
   assert.equal(payload.error, message);
+  if (stream) {
+    const [event, meta] = logError.mock.calls[0].arguments;
+    assert.equal(event, "chat_stream_failed");
+    assert.equal(meta.error, message);
+    assert.equal(meta.userMessageId, payload.user_message.id);
+  }
   assert.equal(payload.code, "CHAT_MESSAGE_SEND_FAILED");
   assert.equal(payload.user_message.role, "user");
   assert.equal(messages.filter(entry => entry.role === "assistant").length, 0);
@@ -761,9 +768,20 @@ test("retired retrieval metadata is excluded from chat responses", async () => {
   assert.equal(Object.hasOwn(response.body.assistant_message, "rag_debug"), false);
 });
 
-test("streaming sends HTTP events while committing only the normalized final Provider response", async () => {
+test("streaming sends heartbeats while waiting and logs the first model text once", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const info = t.mock.method(testLogger, "info");
   sessions.get(11).settings.stream = true;
-  createStreamResponse = async () => ({ body: "upstream" });
+  createStreamResponse = async () => {
+    t.mock.timers.tick(14_999);
+    assert.equal(response.chunks.length, 1);
+    t.mock.timers.tick(1);
+    assert.equal(response.chunks.at(-1), ": heartbeat\n\n");
+    t.mock.timers.tick(15_000);
+    assert.equal(response.chunks.length, 3);
+    assert.equal(info.mock.callCount(), 0);
+    return { body: "upstream" };
+  };
   readStreamDeltas = async function* stream() {
     yield "partial ";
     yield { type: "delta", delta: "draft" };
@@ -777,8 +795,12 @@ test("streaming sends HTTP events while committing only the normalized final Pro
   assert.equal(response.getHeader("Content-Type"), "text/event-stream; charset=utf-8");
   assert.equal(response.writableEnded, true);
   assert.match(response.chunks[0], /"type":"start"/);
-  assert.match(response.chunks[1], /"type":"delta","delta":"partial "/);
-  assert.match(response.chunks[2], /"type":"delta","delta":"draft"/);
+  assert.match(response.chunks[3], /"type":"delta","delta":"partial "/);
+  assert.match(response.chunks[4], /"type":"delta","delta":"draft"/);
+  assert.equal(info.mock.callCount(), 1);
+  const [event, meta] = info.mock.calls[0].arguments;
+  assert.equal(event, "chat_model_first_text");
+  assert.ok(meta.elapsedMs >= 0);
   assert.match(response.chunks.at(-1), /"type":"done"/);
   assert.equal(messages.at(-1).content, "canonical final");
 });

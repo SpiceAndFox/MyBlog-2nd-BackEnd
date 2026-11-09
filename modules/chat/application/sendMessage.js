@@ -268,7 +268,7 @@ function createSendMessageUseCase({
         };
       }
 
-      onStreamStart?.({ sessionId, userMessage, context });
+      onStreamStart?.({ sessionId, userMessage, context, providerId, modelId });
       const abortController = new AbortController();
       const abortFromScope = () => abortController.abort(signal?.reason || new Error("Request cancelled"));
       if (signal?.aborted) abortFromScope();
@@ -276,6 +276,8 @@ function createSendMessageUseCase({
       const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), requestTimeoutMs);
       let assistantContent = "";
       let finalAssistantContent = "";
+      const modelStartedAt = performance.now();
+      let receivedText = false;
       try {
         const upstreamResponse = await llm.createStreamResponse({
           providerId,
@@ -287,21 +289,22 @@ function createSendMessageUseCase({
           signal: abortController.signal,
         });
         for await (const event of llm.streamDeltas({ providerId, response: upstreamResponse })) {
-          if (typeof event === "string") {
-            if (!event) continue;
-            assistantContent += event;
-            onStreamDelta?.(event);
-            continue;
+          const isFinal = event?.type === "final";
+          const text = typeof event === "string" ? event : isFinal ? event.content : event?.delta;
+          if (typeof text !== "string" || !text) continue;
+          if (!receivedText && text.trim()) {
+            receivedText = true;
+            logger.info("chat_model_first_text", {
+              userId, sessionId, userMessageId: userMessage.id, providerId, modelId,
+              elapsedMs: Math.round(performance.now() - modelStartedAt),
+            });
           }
-          if (!event || typeof event !== "object") continue;
-          if (event.type === "final") {
-            if (typeof event.content === "string" && event.content.trim()) finalAssistantContent = event.content;
-            continue;
+          if (isFinal) {
+            if (text.trim()) finalAssistantContent = text;
+          } else {
+            assistantContent += text;
+            onStreamDelta?.(text);
           }
-          const delta = typeof event.delta === "string" ? event.delta : "";
-          if (!delta) continue;
-          assistantContent += delta;
-          onStreamDelta?.(delta);
         }
       } catch (error) {
         if (abortController.signal.aborted) {
