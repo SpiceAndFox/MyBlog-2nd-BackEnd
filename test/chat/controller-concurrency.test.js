@@ -335,6 +335,65 @@ const chatController = createChatController({
 
 test.beforeEach(resetHarness);
 
+for (const stream of [true, false]) test(`closed client still commits once and concurrent resume replays (stream=${stream})`, async () => {
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  let calls = 0;
+  async function generate({ signal }) {
+    calls++;
+    started.resolve(signal);
+    await finish.promise;
+    signal.throwIfAborted();
+    return "完整回复";
+  }
+  sessions.get(11).settings.stream = stream;
+  completeChat = generate;
+  createStreamResponse = generate;
+  readStreamDeltas = async function* ({ response }) { yield response; };
+  const res = new TestResponse();
+  const pending = chatController.sendMessage(request(11, "Hello", "key"), res);
+  const signal = await started.promise;
+  res.destroyed = true;
+  res.emit("close");
+  const replay = new TestResponse();
+  const retry = chatController.sendMessage(resumeRequest(messages[0]), replay);
+  finish.resolve();
+  await Promise.all([pending, retry]);
+  assert.equal(signal.aborted, false);
+  assert.equal(calls, 1);
+  assert.equal(messages.length, 2);
+  assert.equal(replay.body.assistant_message.content, "完整回复");
+  assert.equal(res.chunks.length, stream ? 1 : 0);
+  assert.equal(res.body, null);
+});
+
+test("an explicit stop targets only the authenticated user's specific generation", async () => {
+  const started = Promise.withResolvers();
+  sessions.get(11).settings.stream = true;
+  createStreamResponse = ({ signal }) => new Promise((_, reject) => {
+    started.resolve(signal);
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  const res = new TestResponse();
+  const pending = chatController.sendMessage(request(11, "hello", "turn", { generationId: "attempt" }), res);
+  const signal = await started.promise;
+  function stop(userId, sessionId, generationId) {
+    const response = new TestResponse();
+    chatController.stopGeneration({ user: { id: userId }, params: { sessionId, generationId } }, response);
+    return response.body.stopped;
+  }
+  assert.equal(stop(8, "11", "attempt"), false);
+  assert.equal(stop(7, "12", "attempt"), false);
+  assert.equal(stop(7, "11", "another-attempt"), false);
+  assert.equal(signal.aborted, false);
+  assert.equal(stop(7, "11", "attempt"), true);
+  await pending;
+  assert.equal(signal.aborted, true);
+  assert.equal(JSON.parse(res.chunks.at(-1).slice(6)).code, "CHAT_GENERATION_STOPPED");
+  assert.equal(messages.length, 1);
+  assert.equal(stop(7, "11", "attempt"), false);
+});
+
 for (const stream of [false, true]) test(`Argon chat uses its model timeout through completion and streaming (stream=${stream})`, async t => {
   const definition = require("../../modules/chat/infrastructure/llm/providerDefinitions/gemini");
   t.mock.method(providerCatalog, "getProviderDefinition", () => definition);

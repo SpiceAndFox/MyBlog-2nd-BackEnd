@@ -79,7 +79,7 @@ function createSendMessageUseCase({
     }
   }
 
-  async function commitAssistant({ userId, sessionId, presetId, userMessage, assistantContent, requireLatest = false }) {
+  async function commitAssistant({ userId, sessionId, presetId, userMessage, assistantContent, signal, requireLatest = false }) {
     const { message: assistantMessage } = await transaction.run(async (client) => {
       const guard = await memory.lockSourceWriteGuard(userId, presetId, { client });
       if (requireLatest) {
@@ -94,6 +94,7 @@ function createSendMessageUseCase({
         error.code = "CHAT_TURN_STALE";
         throw error;
       }
+      signal?.throwIfAborted();
       return chatRepository.createAssistantMessageForTurn(
         userId,
         sessionId,
@@ -256,6 +257,7 @@ function createSendMessageUseCase({
           presetId,
           userMessage,
           assistantContent,
+          signal,
           requireLatest: Boolean(resumeMessageId),
         });
         return {
@@ -309,7 +311,7 @@ function createSendMessageUseCase({
       } catch (error) {
         if (abortController.signal.aborted) {
           throw new ChatApplicationError(getAbortReasonMessage(abortController.signal) || "Request cancelled", {
-            code: error?.code || signal?.reason?.code || "CHAT_REQUEST_ABORTED",
+            code: signal?.reason?.code || error?.code || "CHAT_REQUEST_ABORTED",
             status: signal?.reason?.code === "CHAT_SCOPE_MUTATED" ? 409 : 500,
             session: errorSession,
             userMessage,
@@ -330,6 +332,7 @@ function createSendMessageUseCase({
         presetId,
         userMessage,
         assistantContent: normalizedAssistantContent,
+        signal,
         requireLatest: Boolean(resumeMessageId),
       });
       return {

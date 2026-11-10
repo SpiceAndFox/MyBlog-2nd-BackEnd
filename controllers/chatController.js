@@ -18,6 +18,11 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
   if (typeof logger?.error !== "function" || typeof logger?.warn !== "function") throw new Error("Chat logger is required");
   if (typeof withRequestContext !== "function") throw new Error("Request context adapter is required");
 
+  const activeGenerations = new Map();
+  function generationKey(req, id) {
+    return JSON.stringify([String(req.user.id), req.params.sessionId, id]);
+  }
+
   function sendFailure(req, res, event, error, detail = {}, { exposeInternal = false } = {}) {
     const status = Number(error?.status) || 500;
     if (status >= 500) logger.error(event, withRequestContext(req, { error, ...detail }));
@@ -350,13 +355,34 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
       }
     },
 
+    stopGeneration(req, res) {
+      const controller = activeGenerations.get(generationKey(req, req.params.generationId));
+      if (controller) controller.abort(Object.assign(new Error("已停止生成回复"), { code: "CHAT_GENERATION_STOPPED" }));
+      return res.status(200).json({ stopped: Boolean(controller) });
+    },
+
     async sendMessage(req, res) {
-      const clientAbort = new AbortController();
+      const generationId = req.body?.generationId;
+      let key;
+      let controller;
+      if (generationId !== undefined) {
+        if (typeof generationId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(generationId)) {
+          return res.status(400).json({ error: "Invalid generationId" });
+        }
+        key = generationKey(req, generationId);
+        if (activeGenerations.has(key)) return res.status(409).json({ error: "Generation ID already in use" });
+        controller = new AbortController();
+        activeGenerations.set(key, controller);
+      }
       let heartbeat;
       let streamMeta;
+      let disconnected = false;
+      const canWrite = () => !disconnected && !res.destroyed && !res.writableEnded;
       const onResponseClose = () => {
         clearInterval(heartbeat);
-        if (!res.writableEnded) clientAbort.abort(new Error("Client disconnected"));
+        if (res.writableEnded) return;
+        disconnected = true;
+        logger.info?.("chat_client_disconnected", withRequestContext(req, { sessionId: req.params.sessionId, ...streamMeta }));
       };
       res.once("close", onResponseClose);
       try {
@@ -368,9 +394,10 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           idempotencyKey,
           resumeMessageId: req.params.messageId || undefined,
           rawSettings: req.body?.settings,
-          signal: clientAbort.signal,
+          signal: controller?.signal,
           onStreamStart({ sessionId, userMessage, providerId, modelId }) {
             streamMeta = { sessionId, userMessageId: userMessage.id, providerId, modelId };
+            if (!canWrite()) return;
             res.status(200);
             res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
             res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -379,13 +406,14 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
             res.flushHeaders?.();
             writeSse(res, { type: "start", session_id: sessionId, user_message: userMessage });
             heartbeat = setInterval(() => {
-              if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) res.write(": heartbeat\n\n");
+              if (canWrite() && !res.writableNeedDrain) res.write(": heartbeat\n\n");
             }, 15_000);
           },
           onStreamDelta(delta) {
-            writeSse(res, { type: "delta", delta });
+            if (canWrite()) writeSse(res, { type: "delta", delta });
           },
         });
+        if (!canWrite()) return;
         const payload = attachContextHealth({
           session: result.session,
           user_message: { ...result.userMessage, reply_status: "complete", can_resume: false },
@@ -399,16 +427,21 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
         }
         return res.status(200).json(payload);
       } catch (error) {
-        if (streamMeta) {
-          logger.error("chat_stream_failed", withRequestContext(req, {
-            ...streamMeta, code: error?.code, error: error?.message, clientDisconnected: clientAbort.signal.aborted,
-          }));
+        const stopped = error?.code === "CHAT_GENERATION_STOPPED";
+        if (!stopped) {
+          if (streamMeta) {
+            logger.error("chat_stream_failed", withRequestContext(req, {
+              ...streamMeta, code: error?.code, error: error?.message, clientDisconnected: disconnected,
+            }));
+          } else {
+            logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
+          }
         }
-        if (res.destroyed || res.writableEnded) return;
+        if (!canWrite()) return;
         const message = error?.message || "Internal Server Error";
         if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
           try {
-            if (message !== "Client disconnected") writeSse(res, { type: "error", error: message,
+            writeSse(res, { type: "error", error: message,
               code: error?.code, user_message: error?.userMessage });
             res.end();
           } catch {
@@ -416,7 +449,6 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           }
           return;
         }
-        logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
         const payload = { error: message };
         if (error?.code) payload.code = error.code;
         if (error?.session) payload.session = error.session;
@@ -426,8 +458,9 @@ function createChatController({ chatModule, memory, logger, withRequestContext }
           payload.retry_after_ms = error.retryAfterMs;
           res.setHeader("Retry-After", String(Math.ceil(error.retryAfterMs / 1000)));
         }
-        return res.status(Number(error?.status) || 500).json(payload);
+        return res.status(stopped ? 409 : Number(error?.status) || 500).json(payload);
       } finally {
+        if (key) activeGenerations.delete(key);
         clearInterval(heartbeat);
         res.removeListener("close", onResponseClose);
       }

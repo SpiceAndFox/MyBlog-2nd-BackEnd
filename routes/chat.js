@@ -32,6 +32,7 @@ function createChatRouter({ authMiddleware, chatController, uploadPresetAvatar }
   router.get("/sessions/:sessionId/messages", chatController.listMessages);
   router.patch("/sessions/:sessionId/messages/:messageId", chatController.editMessage);
   router.post("/sessions/:sessionId/messages/:messageId/resume", chatController.sendMessage);
+  router.post("/sessions/:sessionId/generations/:generationId/stop", chatController.stopGeneration);
   router.post("/sessions/:sessionId/messages", chatController.sendMessage);
 
   return router;
