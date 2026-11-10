@@ -8,10 +8,9 @@ const { createChatSettingsService } = require("../../modules/chat/application/se
 const { createGetChatMetaUseCase } = require("../../modules/chat/application/meta");
 const { loadApplicationConfig } = require("../../config");
 
-const modelId = "gemini-4-argon";
 const messages = [{ role: "system", content: "Be helpful." }, { role: "user", content: "Hello" }];
 
-function harness(providerId, { timeoutMs = 60000, completionAdapters } = {}) {
+function harness(providerId, modelId, { timeoutMs = 60000, completionAdapters } = {}) {
   const environment = {
     ...dotenv.parse(fs.readFileSync(path.join(__dirname, "../../.env.example"))),
     NODE_ENV: "test", DATABASE_URL: "postgres://test:test@localhost/test", JWT_SECRET: "test-secret",
@@ -48,11 +47,16 @@ function harness(providerId, { timeoutMs = 60000, completionAdapters } = {}) {
   return { catalog, config, settings, getMeta, runtime, requests };
 }
 
-for (const providerId of ["gemini", "botcf"]) {
+for (const [providerId, modelId] of [
+  ["gemini", "gemini-4-argon"],
+  ["gemini", "gemini-4-carbon"],
+  ["botcf", "gemini-4-argon"],
+  ["botcf", "gemini-4-carbon"],
+]) {
   const effortKey = providerId === "gemini" ? "thinkingLevel" : "reasoningEffort";
   const efforts = providerId === "gemini" ? ["LOW", "MEDIUM", "HIGH"] : ["low", "medium", "high"];
-  test(`${providerId} Argon metadata and settings use official defaults without changing explicit token limits`, async () => {
-    const { catalog, config, settings, getMeta } = harness(providerId);
+  test(`${providerId} ${modelId} metadata and settings use official defaults without changing explicit token limits`, async () => {
+    const { catalog, config, settings, getMeta } = harness(providerId, modelId);
     const context = { providerId, modelId };
     assert.equal(config.chatConfig.defaultModelByProvider[providerId], modelId);
     assert.equal(settings.resolveProviderModel({}).modelId, modelId);
@@ -79,7 +83,7 @@ for (const providerId of ["gemini", "botcf"]) {
     }
   });
 
-  test(`${providerId} Argon remains subject to production model approval`, () => {
+  test(`${providerId} ${modelId} remains subject to production model approval`, () => {
     const policy = chat => createProductionModelPolicy({ NODE_ENV: "production",
       CHAT_PRODUCTION_CONTEXT_MODEL_ALLOWLIST_JSON: JSON.stringify({ chat, memory: ["existing-memory-model"] }),
     });
@@ -88,8 +92,8 @@ for (const providerId of ["gemini", "botcf"]) {
   });
 
   for (const method of ["createChatCompletion", "createChatCompletionStreamResponse"]) {
-    test(`${providerId} Argon ${method} filters incompatible parameters and preserves thinking controls`, async () => {
-      const { settings, runtime, requests } = harness(providerId);
+    test(`${providerId} ${modelId} ${method} filters incompatible parameters and preserves thinking controls`, async () => {
+      const { settings, runtime, requests } = harness(providerId, modelId);
       for (const effort of [undefined, ...efforts]) {
         const normalized = settings.normalize(effort ? { [effortKey]: effort } : {}, { providerId, modelId });
         await runtime[method]({ providerId, model: modelId, messages,
@@ -125,20 +129,20 @@ for (const providerId of ["gemini", "botcf"]) {
     });
   }
 
-  test(`${providerId} Argon timeout defaults preserve explicit worker timeouts and longer configured timeouts`, async () => {
+  test(`${providerId} ${modelId} timeout defaults preserve explicit worker timeouts and longer configured timeouts`, async () => {
     const received = [];
     const adapter = {
       createChatCompletion: async options => received.push(options),
       createChatCompletionStreamResponse: async options => received.push(options),
     };
     const completionAdapters = { googleGenAi: adapter, openAiCompatible: adapter };
-    const { runtime } = harness(providerId, { completionAdapters });
+    const { runtime } = harness(providerId, modelId, { completionAdapters });
     for (const method of ["createChatCompletion", "createChatCompletionStreamResponse"]) {
       await runtime[method]({ providerId, model: modelId });
       assert.equal(received.at(-1).timeoutMs, 1200000);
       await runtime[method]({ providerId, model: modelId, timeoutMs: 30000 });
       assert.equal(received.at(-1).timeoutMs, 30000);
-      const longer = harness(providerId, { timeoutMs: 1800000, completionAdapters });
+      const longer = harness(providerId, modelId, { timeoutMs: 1800000, completionAdapters });
       await longer.runtime[method]({ providerId, model: modelId });
       assert.equal(received.at(-1).timeoutMs, 1800000);
     }

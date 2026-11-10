@@ -17,7 +17,12 @@ const thinkingLevelOptions = [
 const thinkingLevelProOptions = thinkingLevelOptions.filter((option) =>
   ["LOW", "MEDIUM", "HIGH"].includes(option.value),
 );
-const fixedSamplingModels = ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash"];
+const gemini4Models = ["gemini-4-argon", "gemini-4-carbon"];
+const fixedSamplingModels = [...gemini4Models, "gemini-3.8-flash", "gemini-3.7-flash"];
+// Carbon specs and migration rules (checked 2026-11-10):
+// https://aistudio.google.com/docs/models/gemini-4-carbon
+// https://aistudio.google.com/docs/whats-new-gemini-4-carbon
+// https://aistudio.google.com/docs/long-decode?generate-content=true
 // Official model specs and migration rules (checked 2026-10-14):
 // https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
 // https://ai.google.dev/gemini-api/docs/generate-content/long-decode
@@ -37,7 +42,7 @@ module.exports = {
     isBodyParamAllowed: ({ model, paramName, settings }) => {
       const normalizedModel = String(model || "").trim();
       if (["presencePenalty", "frequencyPenalty", "thinkingBudget"].includes(paramName)) return false;
-      if (normalizedModel === "gemini-4-argon" && paramName === "cachedContent") return false;
+      if (gemini4Models.includes(normalizedModel) && paramName === "cachedContent") return false;
       if (fixedSamplingModels.includes(normalizedModel)) {
         if (["temperature", "topP", "topK", "candidateCount"].includes(paramName)) return false;
         if (paramName === "thinkingLevel") {
@@ -178,6 +183,11 @@ module.exports = {
     { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro-preview" },
     {
       id: "gemini-4-argon", name: "gemini-4-argon",
+      defaults: { thinkingLevel: "MEDIUM", maxOutputTokens: 65536 },
+      requestTimeoutMs: 1200000,
+    },
+    {
+      id: "gemini-4-carbon", name: "gemini-4-carbon",
       defaults: { thinkingLevel: "MEDIUM", maxOutputTokens: 65536 },
       requestTimeoutMs: 1200000,
     },

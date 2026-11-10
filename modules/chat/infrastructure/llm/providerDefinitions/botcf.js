@@ -6,10 +6,19 @@ const defaultReasoningEffort = "low";
 // https://ai.google.dev/gemini-api/docs/openai
 // https://ai.google.dev/gemini-api/docs/generate-content/long-decode
 const argonModelId = "gemini-4-argon";
+const carbonModelId = "gemini-4-carbon";
+const gemini4Models = [argonModelId, carbonModelId];
+// Carbon uses the same request schema as Argon (checked 2026-11-10):
+// https://aistudio.google.com/docs/whats-new-gemini-4-carbon
 const models = [
   { id: modelId, name: modelId, reasoningEfforts, defaults: { reasoningEffort: defaultReasoningEffort } },
   {
     id: argonModelId, name: argonModelId, reasoningEfforts,
+    defaults: { reasoningEffort: "medium", maxOutputTokens: 65536 },
+    requestTimeoutMs: 1200000,
+  },
+  {
+    id: carbonModelId, name: carbonModelId, reasoningEfforts,
     defaults: { reasoningEffort: "medium", maxOutputTokens: 65536 },
     requestTimeoutMs: 1200000,
   },
@@ -39,19 +48,19 @@ module.exports = {
   parameterPolicy: {
     isBodyParamAllowed: ({ model, paramName }) => {
       if (!models.some(entry => entry.id === model) || !bodyParameters.has(paramName)) return false;
-      return model !== argonModelId || !["temperature", "top_p"].includes(paramName);
+      return !gemini4Models.includes(model) || !["temperature", "top_p"].includes(paramName);
     },
   },
   settingsSchema: [
     {
       key: "temperature", label: "Temperature", type: "range",
       min: 0, max: 2, step: 0.1, decimals: 1, capability: "temperature",
-      modelBlocklist: [argonModelId],
+      modelBlocklist: gemini4Models,
     },
     {
       key: "topP", label: "Top P", type: "range",
       min: 0, max: 1, step: 0.05, decimals: 2, capability: "topP",
-      modelBlocklist: [argonModelId],
+      modelBlocklist: gemini4Models,
     },
     {
       key: "maxOutputTokens", label: "Max Output Tokens", type: "number",
